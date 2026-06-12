@@ -145,9 +145,26 @@ export default function Home() {
                   Portrait beaut&eacute; ou r&eacute;sultat sourcils naturels
                 </p>
               </div>
-              <div className="float-gentle absolute bottom-5 left-5 bg-white/60 backdrop-blur-md border border-white/50 rounded-xl px-3.5 py-2 shadow-[0_4px_16px_rgba(0,0,0,0.05)]">
-                <p className="text-xs font-medium text-sage-600">Lille</p>
-              </div>
+              <a
+                href="https://www.instagram.com/eg_maquillagepermanent/"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Voir le compte Instagram d'Eszter Gyori"
+                className="float-gentle absolute bottom-5 left-5 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-white/55 text-warm-700 backdrop-blur-md border border-white/55 shadow-[0_4px_16px_rgba(0,0,0,0.05)] transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-white/70 hover:shadow-[0_8px_24px_rgba(0,0,0,0.08)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage-500">
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  className="h-5 w-5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="5" />
+                  <circle cx="12" cy="12" r="4" />
+                  <circle cx="17.5" cy="6.5" r="0.8" fill="currentColor" stroke="none" />
+                </svg>
+              </a>
               <div
                 className="float-gentle absolute top-5 right-5 bg-white/55 backdrop-blur-md border border-white/45 rounded-xl px-3 py-1.5 shadow-[0_4px_16px_rgba(0,0,0,0.04)]"
                 style={{ animationDelay: "-3s" }}>
@@ -495,7 +512,7 @@ export default function Home() {
                   <div className="absolute inset-0 bg-gradient-to-t from-white/15 to-transparent" />
                   <div className="w-20 h-8 border-b-[1.5px] border-sage-400/45 rounded-b-[48%] relative z-10 transition-transform duration-700 group-hover:scale-[1.03]" />
                   <div className="absolute bottom-4 left-4 text-[11px] tracking-wide uppercase text-warm-500/80">
-                    Cicatrisation J+30
+                    Cicatrisation
                   </div>
                 </div>
                 <div className="px-5 py-4">
@@ -598,7 +615,7 @@ export default function Home() {
             <div className="relative aspect-[3/4] rounded-2xl overflow-hidden bg-gradient-to-br from-sage-200 via-mist-100 to-warm-200 border border-white/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_12px_40px_rgba(0,0,0,0.06)] flex items-center justify-center p-8 group transition-shadow duration-500 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_16px_48px_rgba(0,0,0,0.08)]">
               <div className="absolute inset-0 bg-gradient-to-t from-white/20 via-transparent to-white/10" />
               <p className="text-sm text-warm-500 text-center leading-relaxed relative z-10">
-                Portrait professionnel d&apos;Eszter en studio
+                Portrait professionnel d&apos;Eszter
               </p>
             </div>
           </div>
