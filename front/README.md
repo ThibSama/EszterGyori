@@ -1,36 +1,74 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Eszter Frontend
 
-## Getting Started
+Application Next.js publique et prototype `/admin` local.
 
-First, run the development server:
+Le frontend depend du package partage local `@eszter/contracts`, situe dans `../contracts`. Vercel doit donc construire avec le depot complet comme contexte et garder `front` comme Root Directory.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Commandes
+
+```powershell
+npm install
+npm run lint
+npm run build
+npm run start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Contenu public
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+La page `/` charge le contenu publie cote serveur via `CONTENT_API_URL` quand la variable est configuree.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```text
+CONTENT_API_URL=https://api.example.com/api/content
+```
 
-## Learn More
+Cette variable est server-only :
 
-To learn more about Next.js, take a look at the following resources:
+- ne pas utiliser de prefixe `NEXT_PUBLIC_` ;
+- fournir l'URL complete incluant `/api/content` ;
+- ne pas exposer la valeur au navigateur ;
+- ne pas la rendre obligatoire pour le build Vercel.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Si la variable est absente, invalide, si l'API est indisponible, ou si la reponse ne valide pas `PublishedContentEnvelopeV1`, la page utilise `defaultSiteContent`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+La revalidation Next.js est de 60 secondes.
 
-## Deploy on Vercel
+## Admin
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+`/admin` reste local-only :
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- edition en memoire ;
+- brouillon `localStorage` ;
+- import/export JSON ;
+- aucun appel API ;
+- aucune authentification.
+
+## Vercel
+
+Le Root Directory Vercel doit rester :
+
+```text
+front
+```
+
+Apres deploiement public de l'API :
+
+```text
+Project Settings
+-> Environment Variables
+-> CONTENT_API_URL
+-> https://<public-api-domain>/api/content
+```
+
+Tant que cette variable n'est pas configuree, la production continue de rendre `defaultSiteContent`.
+
+## API Docker
+
+Le frontend n'est pas dockerise dans cette passe. L'image Docker concerne uniquement `API/`.
+
+Quand l'API sera deployee publiquement, Vercel devra conserver `front` comme Root Directory et recevoir la variable server-only :
+
+```text
+CONTENT_API_URL=https://<public-api-domain>/api/content
+```
+
+Sans cette variable, le frontend continue d'utiliser le fallback `defaultSiteContent`.

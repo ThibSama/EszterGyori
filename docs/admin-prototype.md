@@ -2,26 +2,27 @@
 
 La route `/admin` fournit un editeur de contenu cote frontend pour le site vitrine Eszter. Elle utilise le contrat partage `SiteContent` sans authentification, sans publication et sans stockage serveur.
 
-Un service Express minimal existe maintenant dans `API/`, mais `/admin` ne l'appelle pas. Le service expose uniquement `GET /api/health`.
+Le service Express existe dans `API/` et expose `GET /api/health` et `GET /api/content`, mais `/admin` ne l'appelle pas.
 
 ## Contrat partage
 
-Le contrat runtime est defini hors de `front/app/`, dans `front/contracts/`.
+Le contrat runtime et le contenu par defaut canonique sont definis hors de `front/app/`, dans le package partage racine `contracts/`, expose sous le nom `@eszter/contracts`.
 
-- `front/contracts/site-content.ts` definit le schema strict `siteContentSchema`.
-- `front/contracts/content-envelopes.ts` definit les enveloppes versionnees.
+- `contracts/site-content.ts` definit le schema strict `siteContentSchema`.
+- `contracts/content-envelopes.ts` definit les enveloppes versionnees.
+- `contracts/default-site-content.ts` definit `defaultSiteContent`.
 - `front/app/types/site-content.ts` re-exporte les types inferes pour conserver les imports frontend existants.
 
-La dependance de validation runtime est `zod`, declaree directement dans `front/package.json`.
+## Rendu public et admin
 
-## Rendu et apercu
+La homepage publique peut consommer `GET /api/content` cote serveur via `CONTENT_API_URL`, avec fallback vers `defaultSiteContent`.
 
-Le site public et l'apercu admin consomment le meme composant `SitePreview`.
+`/admin` reste local-only :
 
-- La homepage publique passe toujours `defaultSiteContent`.
-- `/admin` passe l'etat edite en memoire.
-- Les changements admin ne modifient jamais `/`.
-- Aucun appel API n'est effectue depuis l'admin.
+- la homepage publique passe le contenu charge cote serveur a `SitePreview` ;
+- `/admin` passe l'etat edite en memoire ;
+- les changements admin ne modifient jamais `/` ;
+- aucun appel API n'est effectue depuis l'admin.
 
 ## Etat local
 
@@ -35,28 +36,7 @@ eszter:admin-content-draft:v1
 
 Le brouillon local est specifique au navigateur courant. Il n'est pas disponible sur un autre appareil, n'est pas envoye a un serveur et ne publie pas le site public.
 
-## Validation runtime
-
-Le module `front/app/lib/admin-draft-storage.ts` utilise les schemas partages pour valider les brouillons locaux et les fichiers importes.
-
-La validation rejette notamment :
-
-- JSON malforme ;
-- `schemaVersion` manquant ;
-- version non supportee ;
-- `savedAt` invalide ;
-- section manquante ;
-- champ du mauvais type ;
-- champ inconnu ;
-- ID technique modifie ;
-- item repete manquant ou supplementaire ;
-- item repete reordonne ;
-- source media de type invalide ;
-- URL dangereuse comme `javascript:` ;
-- email invalide ;
-- structure incompatible avec le site actuel.
-
-## Sauvegarde, import et export
+## Import et export
 
 La sauvegarde locale est explicite via `Enregistrer le brouillon local`. Elle valide le contenu courant, cree une enveloppe `schemaVersion: 1`, ecrit le JSON dans `localStorage` et marque l'etat comme propre.
 
@@ -77,4 +57,4 @@ Cette passe ne permet pas de modifier :
 
 La route `/admin` n'a pas encore d'authentification ni d'autorisation. Elle sert a valider le contrat et l'ergonomie avant l'integration backend.
 
-Le module de persistance locale pourra etre remplace plus tard par un depot appuye sur une API Express exposant le meme contrat `SiteContent`.
+`GET /api/content` est public et read-only. Il lit uniquement `published.json`, retourne `PublishedContentEnvelopeV1`, supporte les ETags, et n'expose pas le brouillon.

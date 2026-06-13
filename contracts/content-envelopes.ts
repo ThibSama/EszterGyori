@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { SITE_CONTENT_SCHEMA_VERSION, siteContentSchema } from "./site-content";
+import { SITE_CONTENT_SCHEMA_VERSION, siteContentSchema } from "./site-content.js";
 
 export const CONTENT_ENVELOPE_SCHEMA_VERSION = SITE_CONTENT_SCHEMA_VERSION;
 

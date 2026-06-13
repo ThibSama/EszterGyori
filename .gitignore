@@ -9,6 +9,8 @@ front/out/
 
 # API build output
 API/dist/
+API/data/
+contracts/dist/
 
 # logs
 *.log

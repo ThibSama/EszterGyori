@@ -1,14 +1,25 @@
 import express from "express";
 import type { ErrorRequestHandler, Request, Response } from "express";
 import { ZodError } from "zod";
-import { SITE_CONTENT_SCHEMA_VERSION } from "../../front/contracts/site-content";
+import { SITE_CONTENT_SCHEMA_VERSION } from "@eszter/contracts";
 import { HttpError, createErrorBody } from "./http-error";
 import { requestIdMiddleware } from "./request-id";
+import {
+  type PublishedContentReader,
+  handleGetPublicContent,
+} from "./routes/public-content";
 
 export const SERVICE_NAME = "eszter-api";
 const JSON_LIMIT = "64kb";
 
-function sendMethodNotAllowed(request: Request, response: Response) {
+export interface AppDependencies {
+  publishedContentReader: PublishedContentReader;
+}
+
+function sendMethodNotAllowed(
+  request: Request,
+  response: Response,
+) {
   response.setHeader("Allow", "GET");
   response
     .status(405)
@@ -21,7 +32,7 @@ function sendMethodNotAllowed(request: Request, response: Response) {
     );
 }
 
-export function createApp() {
+export function createApp(dependencies: AppDependencies) {
   const app = express();
 
   app.disable("x-powered-by");
@@ -39,6 +50,16 @@ export function createApp() {
   });
 
   app.all("/api/health", sendMethodNotAllowed);
+
+  app.get("/api/content", (request, response, next) => {
+    handleGetPublicContent(
+      dependencies.publishedContentReader,
+      request,
+      response,
+    ).catch(next);
+  });
+
+  app.all("/api/content", sendMethodNotAllowed);
 
   app.use((request, response) => {
     response

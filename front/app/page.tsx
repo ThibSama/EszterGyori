@@ -1,6 +1,10 @@
 import { SitePreview } from "./components/site-preview";
-import { getDefaultSiteContent } from "./content/default-site-content";
+import { loadPublicSiteContent } from "./lib/server/public-content";
 
-export default function Home() {
-  return <SitePreview content={getDefaultSiteContent()} />;
+export const revalidate = 60;
+
+export default async function Home() {
+  const result = await loadPublicSiteContent();
+
+  return <SitePreview content={result.content} />;
 }

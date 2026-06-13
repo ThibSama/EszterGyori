@@ -18,4 +18,4 @@ export type {
   ServicesContent,
   ServiceVisualKind,
   SiteContent,
-} from "../../contracts";
+} from "@eszter/contracts";

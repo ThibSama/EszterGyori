@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import { ZodError } from "zod";
 import { loadConfig } from "../src/config";
 
@@ -10,6 +11,7 @@ test("default configuration is valid", () => {
   assert.equal(config.host, "127.0.0.1");
   assert.equal(config.port, 4000);
   assert.equal(config.logLevel, "info");
+  assert.equal(config.contentDataDir, resolve("data"));
 });
 
 test("explicit valid configuration is parsed", () => {
@@ -18,12 +20,28 @@ test("explicit valid configuration is parsed", () => {
     HOST: "0.0.0.0",
     PORT: "5050",
     LOG_LEVEL: "debug",
+    CONTENT_DATA_DIR: "custom-data",
   });
 
   assert.equal(config.nodeEnv, "test");
   assert.equal(config.host, "0.0.0.0");
   assert.equal(config.port, 5050);
   assert.equal(config.logLevel, "debug");
+  assert.equal(config.contentDataDir, resolve("custom-data"));
+});
+
+test("absolute CONTENT_DATA_DIR is preserved", () => {
+  const absolutePath = resolve("absolute-content-data");
+  const config = loadConfig({ CONTENT_DATA_DIR: absolutePath });
+
+  assert.equal(config.contentDataDir, absolutePath);
+});
+
+test("empty CONTENT_DATA_DIR is rejected", () => {
+  assert.throws(
+    () => loadConfig({ CONTENT_DATA_DIR: "   " }),
+    (error: unknown) => error instanceof ZodError,
+  );
 });
 
 test("invalid PORT is rejected", () => {

@@ -2,11 +2,20 @@ import type { Server } from "node:http";
 import { createApp } from "./app";
 import type { ServerConfig } from "./config";
 import { loadConfig } from "./config";
+import { defaultSiteContent } from "@eszter/contracts";
+import { createContentStorage } from "./storage";
 
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
-export function startServer(config: ServerConfig = loadConfig()): Server {
-  const app = createApp();
+export async function startServer(config: ServerConfig = loadConfig()): Promise<Server> {
+  const contentStorage = createContentStorage(config.contentDataDir);
+  const initialization = await contentStorage.initialize(defaultSiteContent);
+  console.info("Content storage initialized.", {
+    draft: initialization.draft,
+    published: initialization.published,
+  });
+
+  const app = createApp({ publishedContentReader: contentStorage });
   const server = app.listen(config.port, config.host, () => {
     console.info(
       `eszter-api listening on http://${config.host}:${config.port} (${config.nodeEnv})`,

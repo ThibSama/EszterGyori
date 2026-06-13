@@ -4,7 +4,7 @@ import {
   siteContentSchema,
   type SiteContent,
   type SiteContentDraftV1,
-} from "../../contracts";
+} from "@eszter/contracts";
 import type { ZodIssue } from "zod";
 
 export const SITE_CONTENT_DRAFT_STORAGE_KEY = "eszter:admin-content-draft:v1";
