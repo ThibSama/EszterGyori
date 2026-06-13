@@ -1,7 +1,7 @@
 import express from "express";
 import type { ErrorRequestHandler, Request, Response } from "express";
 import { ZodError } from "zod";
-import { SITE_CONTENT_SCHEMA_VERSION } from "../../contracts/site-content";
+import { SITE_CONTENT_SCHEMA_VERSION } from "../../front/contracts/site-content";
 import { HttpError, createErrorBody } from "./http-error";
 import { requestIdMiddleware } from "./request-id";
 

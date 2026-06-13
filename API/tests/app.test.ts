@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createApp, SERVICE_NAME } from "../src/app";
-import { SITE_CONTENT_SCHEMA_VERSION } from "../../contracts/site-content";
+import { SITE_CONTENT_SCHEMA_VERSION } from "../../front/contracts/site-content";
 
 interface HealthResponse {
   status: string;

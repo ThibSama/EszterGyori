@@ -20,10 +20,6 @@
 # production
 /build
 
-# backend
-/server/dist/
-/server/node_modules/
-
 # misc
 .DS_Store
 *.pem

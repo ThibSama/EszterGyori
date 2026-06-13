@@ -1,9 +1,25 @@
-@"
 .claude/
+
+# dependencies
 **/node_modules/
+
+# frontend build output
 front/.next/
 front/out/
+
+# API build output
 API/dist/
-contracts/dist/
+
+# logs
 *.log
-"@ | Set-Content -Path "E:\Eszter\.gitignore" -Encoding utf8
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# environment files
+.env*
+
+# OS/editor files
+.DS_Store
+Thumbs.db

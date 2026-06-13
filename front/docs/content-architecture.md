@@ -1,16 +1,26 @@
 # Architecture de contenu actuelle
 
-Ce document décrit l'état actuel du dépôt Eszter.
+Ce document decrit l'etat actuel du depot Eszter.
 
-## Contrat partagé
+## Applications
 
-Le contrat de contenu runtime est défini dans `contracts/`.
+- `front/` contient l'application Next.js publique et l'admin frontend local.
+- `API/` contient le service Express TypeScript minimal.
+- `front/contracts/` contient temporairement le contrat runtime partage.
 
-- `contracts/site-content.ts` contient les schémas Zod stricts du contenu du site.
-- `contracts/content-envelopes.ts` contient les enveloppes versionnées.
-- `contracts/index.ts` ré-exporte les schémas, constantes et types.
+Le service Express expose uniquement `GET /api/health`. Le frontend public et `/admin` ne consomment pas encore l'API.
 
-`app/types/site-content.ts` conserve les imports frontend existants en ré-exportant les types inférés depuis `contracts/`.
+## Contrat partage
+
+Le contrat de contenu runtime est defini temporairement dans `front/contracts/`.
+
+- `front/contracts/site-content.ts` contient les schemas Zod stricts du contenu du site.
+- `front/contracts/content-envelopes.ts` contient les enveloppes versionnees.
+- `front/contracts/index.ts` re-exporte les schemas, constantes et types.
+
+`front/app/types/site-content.ts` conserve les imports frontend existants en re-exportant les types inferes depuis le contrat.
+
+Une passe dediee pourra plus tard extraire ce contrat dans un vrai package partage racine.
 
 ## Structure du contenu
 
@@ -26,30 +36,28 @@ Le type racine `SiteContent` contient les sections fixes suivantes :
 - `contact`
 - `footer`
 
-Les collections répétées conservent un nombre, un ordre et des IDs techniques fixes. Les schémas rejettent les champs inconnus, les sections manquantes, les mauvais types, les IDs modifiés, les items ajoutés ou supprimés et les URLs dangereuses.
+Les collections repetees conservent un nombre, un ordre et des IDs techniques fixes. Les schemas rejettent les champs inconnus, les sections manquantes, les mauvais types, les IDs modifies, les items ajoutes ou supprimes et les URLs dangereuses.
 
-Les médias utilisent `MediaAsset` avec :
+Les medias utilisent `MediaAsset` avec :
 
 - `id`
 - `src: string | null`
 - `alt`
 
-Le contenu par défaut conserve actuellement des placeholders CSS : les `src` médias valent `null`.
+## Source par defaut
 
-## Source par défaut
-
-Le contenu de référence est stocké dans `app/content/default-site-content.ts`.
+Le contenu de reference est stocke dans `front/app/content/default-site-content.ts`.
 
 Ce fichier exporte :
 
-- `defaultSiteContent`, typé en `SiteContent`
+- `defaultSiteContent`, type en `SiteContent`
 - `getDefaultSiteContent()`
 
-`defaultSiteContent` est validé au chargement du module avec `siteContentSchema.parse(defaultSiteContent)`, ce qui permet de détecter une structure invalide pendant le développement ou le build.
+`defaultSiteContent` est valide au chargement du module avec `siteContentSchema.parse(defaultSiteContent)`.
 
 ## Rendu public
 
-`app/page.tsx` rend toujours :
+`front/app/page.tsx` rend toujours :
 
 ```tsx
 <SitePreview content={getDefaultSiteContent()} />
@@ -59,31 +67,21 @@ Le site public ne lit pas `localStorage`, ne consomme pas de brouillon admin et 
 
 ## Administration frontend
 
-La route `/admin` existe et fournit un éditeur frontend local.
+La route `/admin` existe et fournit un editeur frontend local.
 
-L'éditeur :
+L'editeur :
 
-- initialise son état depuis une copie de `defaultSiteContent` ;
-- permet de modifier les textes, URLs éditables, sources médias et textes alternatifs ;
-- affiche un aperçu via le même `SitePreview` que le site public ;
+- initialise son etat depuis une copie de `defaultSiteContent` ;
+- permet de modifier les textes, URLs editables, sources medias et textes alternatifs ;
+- affiche un apercu via le meme `SitePreview` que le site public ;
 - conserve l'ordre, le nombre d'items, les IDs techniques et la structure des sections.
 
 ## Brouillon local et JSON
 
-Le brouillon local utilise `localStorage` sous la clé :
+Le brouillon local utilise `localStorage` sous la cle :
 
 ```text
 eszter:admin-content-draft:v1
-```
-
-Le format courant est :
-
-```ts
-interface SiteContentDraftV1 {
-  schemaVersion: 1;
-  savedAt: string;
-  content: SiteContent;
-}
 ```
 
 L'admin permet :
@@ -91,38 +89,25 @@ L'admin permet :
 - l'enregistrement explicite du brouillon local ;
 - la restauration au rechargement de `/admin` ;
 - la suppression du brouillon local ;
-- l'export JSON versionné ;
+- l'export JSON versionne ;
 - l'import JSON avec validation runtime ;
 - le reset vers `defaultSiteContent`.
 
-Ces opérations restent locales au navigateur et ne publient pas le site public.
+Ces operations restent locales au navigateur et ne publient pas le site public.
 
 ## Service Express actuel
 
-Le dépôt contient maintenant un package Express TypeScript minimal dans `server/`.
+Le depot contient un package Express TypeScript minimal dans `API/`.
 
 Ce service :
 
-- importe le contrat partagé depuis `contracts/` ;
-- valide sa configuration au démarrage ;
+- importe le contrat partage depuis `front/contracts/` ;
+- valide sa configuration au demarrage ;
 - expose uniquement `GET /api/health` ;
 - retourne des erreurs JSON de base ;
-- gère l'arrêt gracieux.
+- gere l'arret gracieux.
 
-Le frontend public et `/admin` ne consomment pas ce service.
-
-## Éléments fixes dans le code
-
-Restent volontairement codés dans les composants :
-
-- l'ordre des sections ;
-- les ancres de sections ;
-- les layouts, classes CSS, gradients, animations et breakpoints ;
-- la logique du menu mobile ;
-- la logique du bouton Instagram hero ;
-- les comportements techniques non éditables.
-
-## Fonctionnalités non encore présentes
+## Fonctionnalites non encore presentes
 
 Le projet ne contient pas encore :
 
@@ -131,9 +116,9 @@ Le projet ne contient pas encore :
 - publication ;
 - authentification ;
 - cookies ou sessions ;
-- base de données ;
+- base de donnees ;
 - stockage JSON serveur ;
 - stockage serveur d'images ;
-- upload réel ;
+- upload reel ;
 - Docker ou reverse proxy ;
-- intégration du frontend avec l'API Express.
+- integration du frontend avec l'API Express.
