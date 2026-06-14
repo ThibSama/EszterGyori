@@ -1,5 +1,3 @@
-"use client";
-
 import type { NavigationContent } from "../types/site-content";
 import { MobileNav } from "./mobile-nav";
 
