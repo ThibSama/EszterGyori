@@ -5,6 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   CONTENT_ENVELOPE_SCHEMA_VERSION,
+  defaultSiteAppearance,
   type PublishedContentEnvelopeV1,
   type ServerDraftEnvelopeV1,
   publishedContentEnvelopeV1Schema,
@@ -49,6 +50,11 @@ function createPublished(
     content: defaultSiteContent,
     ...overrides,
   });
+}
+
+function createLegacyContentWithoutAppearance() {
+  const { appearance: _appearance, ...legacyContent } = defaultSiteContent;
+  return legacyContent;
 }
 
 async function readJson(path: string): Promise<unknown> {
@@ -261,5 +267,111 @@ test("partial initialization creates only missing counterpart files", async () =
     assert.deepEqual(result, { draft: "created", published: "validated" });
     assert.deepEqual(await createContentStorage(directory).readPublished(), published);
     assert.equal((await createContentStorage(directory).readDraft()).revision, 0);
+  });
+});
+
+test("legacy stored content without appearance is accepted and not rewritten", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const legacyDraft = {
+      schemaVersion: CONTENT_ENVELOPE_SCHEMA_VERSION,
+      revision: 3,
+      updatedAt: "2026-06-13T11:00:00.000Z",
+      content: createLegacyContentWithoutAppearance(),
+    };
+    const legacyPublished = {
+      schemaVersion: CONTENT_ENVELOPE_SCHEMA_VERSION,
+      revision: 4,
+      publishedAt: "2026-06-13T11:00:00.000Z",
+      content: createLegacyContentWithoutAppearance(),
+    };
+
+    const draftPath = join(directory, "draft.json");
+    const publishedPath = join(directory, "published.json");
+    await writeFile(draftPath, `${JSON.stringify(legacyDraft, null, 2)}\n`, "utf8");
+    await writeFile(
+      publishedPath,
+      `${JSON.stringify(legacyPublished, null, 2)}\n`,
+      "utf8",
+    );
+    const beforeDraft = await readFile(draftPath, "utf8");
+    const beforePublished = await readFile(publishedPath, "utf8");
+
+    const storage = createContentStorage(directory);
+    assert.deepEqual(await storage.initialize(defaultSiteContent), {
+      draft: "validated",
+      published: "validated",
+    });
+
+    assert.deepEqual((await storage.readDraft()).content.appearance, defaultSiteAppearance);
+    assert.deepEqual(
+      (await storage.readPublished()).content.appearance,
+      defaultSiteAppearance,
+    );
+    assert.equal(await readFile(draftPath, "utf8"), beforeDraft);
+    assert.equal(await readFile(publishedPath, "utf8"), beforePublished);
+  });
+});
+
+test("custom appearance survives storage read", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const customContent = {
+      ...defaultSiteContent,
+      appearance: {
+        palette: {
+          ...defaultSiteAppearance.palette,
+          background: "#F0F1F4" as const,
+          primary: "#3D4845" as const,
+        },
+        sectionTints: {
+          ...defaultSiteAppearance.sectionTints,
+          contact: "#CDD1D8" as const,
+        },
+      },
+    };
+    const storage = createContentStorage(directory);
+    await storage.initialize(defaultSiteContent);
+    await storage.writePublished(createPublished({ content: customContent }));
+
+    assert.deepEqual(
+      (await createContentStorage(directory).readPublished()).content.appearance,
+      customContent.appearance,
+    );
+  });
+});
+
+test("invalid appearance blocks startup safely", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const storage = createContentStorage(directory);
+    await storage.initialize(defaultSiteContent);
+
+    for (const appearance of [
+      {
+        ...defaultSiteAppearance,
+        palette: { ...defaultSiteAppearance.palette, primary: "red" },
+      },
+      {
+        ...defaultSiteAppearance,
+        palette: { ...defaultSiteAppearance.palette, text: "#F5F4F1" },
+      },
+      {
+        ...defaultSiteAppearance,
+        extra: "#FFFFFF",
+      },
+    ]) {
+      await writeFile(
+        join(directory, "published.json"),
+        `${JSON.stringify({
+          ...createPublished(),
+          content: { ...defaultSiteContent, appearance },
+        })}\n`,
+        "utf8",
+      );
+      await assert.rejects(
+        () => createContentStorage(directory).initialize(defaultSiteContent),
+        (error: unknown) =>
+          error instanceof StorageError &&
+          error.code === "STORAGE_VALIDATION_FAILED",
+      );
+    }
   });
 });

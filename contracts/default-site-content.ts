@@ -1,7 +1,9 @@
+import { defaultSiteAppearance } from "./appearance.js";
 import type { SiteContent } from "./site-content.js";
 import { siteContentSchema } from "./site-content.js";
 
 export const defaultSiteContent: SiteContent = {
+  appearance: defaultSiteAppearance,
   navigation: {
     brandLabel: "Eszter Gyori",
     menuOpenLabel: "Ouvrir le menu",
@@ -9,8 +11,8 @@ export const defaultSiteContent: SiteContent = {
     links: [
       { id: "prestations", label: "Prestations", href: "#prestations" },
       { id: "parcours", label: "Parcours", href: "#parcours" },
-      { id: "realisations", label: "RÃ©alisations", href: "#realisations" },
-      { id: "a-propos", label: "Ã€ propos", href: "#a-propos" },
+      { id: "realisations", label: "Réalisations", href: "#realisations" },
+      { id: "a-propos", label: "À propos", href: "#a-propos" },
       { id: "contact", label: "Prendre contact", href: "#contact" },
     ],
   },
@@ -18,13 +20,13 @@ export const defaultSiteContent: SiteContent = {
     title: {
       prefix: "Un maquillage permanent",
       emphasized: "naturel",
-      suffix: ", pensÃ© pour rÃ©vÃ©ler votre visage.",
+      suffix: ", pensé pour révéler votre visage.",
     },
     description:
-      "Dermopigmentation des sourcils, eye-liner, lÃ¨vres et faux freckles. Des rÃ©sultats doux et durables, prÃ¨s de Lille.",
+      "Dermopigmentation des sourcils, eye-liner, lèvres et faux freckles. Des résultats doux et durables, près de Lille.",
     primaryCta: {
       id: "discover-services",
-      label: "DÃ©couvrir les prestations",
+      label: "Découvrir les prestations",
       href: "#prestations",
     },
     secondaryCta: {
@@ -35,7 +37,7 @@ export const defaultSiteContent: SiteContent = {
     visual: {
       id: "hero-placeholder",
       src: null,
-      alt: "Portrait beautÃ© ou rÃ©sultat sourcils naturels",
+      alt: "Portrait beauté ou résultat sourcils naturels",
     },
     badgeLabel: "Naturel",
     instagramAriaLabel: "Voir le compte Instagram d'Eszter Gyori",
@@ -44,27 +46,27 @@ export const defaultSiteContent: SiteContent = {
     items: [
       {
         id: "natural-result",
-        title: "RÃ©sultat naturel",
+        title: "Résultat naturel",
         description:
-          "Chaque trait est pensÃ© pour sublimer votre visage sans artificialitÃ©. L'objectif est toujours un rÃ©sultat qui vous ressemble.",
+          "Chaque trait est pensé pour sublimer votre visage sans artificialité. L'objectif est toujours un résultat qui vous ressemble.",
       },
       {
         id: "morphological-analysis",
         title: "Analyse morphologique",
         description:
-          "Avant chaque sÃ©ance, une Ã©tude complÃ¨te de votre visage permet de dÃ©finir la forme et la teinte idÃ©ales.",
+          "Avant chaque séance, une étude complète de votre visage permet de définir la forme et la teinte idéales.",
       },
       {
         id: "hygiene-precision",
-        title: "HygiÃ¨ne et prÃ©cision",
+        title: "Hygiène et précision",
         description:
-          "MatÃ©riel stÃ©rile Ã  usage unique, pigments certifiÃ©s, protocoles stricts. Votre sÃ©curitÃ© est une prioritÃ©.",
+          "Matériel stérile à usage unique, pigments certifiés, protocoles stricts. Votre sécurité est une priorité.",
       },
       {
         id: "personal-support",
-        title: "Accompagnement personnalisÃ©",
+        title: "Accompagnement personnalisé",
         description:
-          "De la premiÃ¨re consultation jusqu'Ã  la retouche, chaque Ã©tape est expliquÃ©e et adaptÃ©e Ã  vos besoins.",
+          "De la première consultation jusqu'à la retouche, chaque étape est expliquée et adaptée à vos besoins.",
       },
     ],
   },
@@ -75,107 +77,107 @@ export const defaultSiteContent: SiteContent = {
         id: "brows",
         title: "Sourcils",
         description:
-          "Restructuration complÃ¨te ou densification naturelle. Technique adaptÃ©e Ã  votre type de peau et Ã  la forme de votre visage pour un rÃ©sultat harmonieux.",
-        ctaLabel: "En savoir plus â†’",
+          "Restructuration complète ou densification naturelle. Technique adaptée à votre type de peau et à la forme de votre visage pour un résultat harmonieux.",
+        ctaLabel: "En savoir plus →",
         visualKind: "brows",
         visual: {
           id: "service-brows-placeholder",
           src: null,
-          alt: "Photo Ã  venir",
+          alt: "Photo à venir",
         },
       },
       {
         id: "eyeliner",
         title: "Eye-liner",
         description:
-          "Un trait subtil au ras des cils ou un eye-liner plus marquÃ© selon vos envies. Le regard est immÃ©diatement structurÃ© et mis en valeur.",
-        ctaLabel: "En savoir plus â†’",
+          "Un trait subtil au ras des cils ou un eye-liner plus marqué selon vos envies. Le regard est immédiatement structuré et mis en valeur.",
+        ctaLabel: "En savoir plus →",
         visualKind: "eyeliner",
         visual: {
           id: "service-eyeliner-placeholder",
           src: null,
-          alt: "Photo Ã  venir",
+          alt: "Photo à venir",
         },
       },
       {
         id: "lips",
-        title: "LÃ¨vres",
+        title: "Lèvres",
         description:
-          "Contour, remplissage ou candy lips. Retrouvez une couleur uniforme et un contour dÃ©fini, adaptÃ©s Ã  votre carnation naturelle.",
-        ctaLabel: "En savoir plus â†’",
+          "Contour, remplissage ou candy lips. Retrouvez une couleur uniforme et un contour défini, adaptés à votre carnation naturelle.",
+        ctaLabel: "En savoir plus →",
         visualKind: "lips",
         visual: {
           id: "service-lips-placeholder",
           src: null,
-          alt: "Photo Ã  venir",
+          alt: "Photo à venir",
         },
       },
       {
         id: "freckles",
         title: "Faux freckles",
         description:
-          "Des taches de rousseur dÃ©licates et rÃ©alistes, placÃ©es une Ã  une pour un effet soleil naturel. Technique fine et personnalisÃ©e.",
-        ctaLabel: "En savoir plus â†’",
+          "Des taches de rousseur délicates et réalistes, placées une à une pour un effet soleil naturel. Technique fine et personnalisée.",
+        ctaLabel: "En savoir plus →",
         visualKind: "freckles",
         visual: {
           id: "service-freckles-placeholder",
           src: null,
-          alt: "Photo Ã  venir",
+          alt: "Photo à venir",
         },
       },
     ],
   },
   process: {
-    title: "Comment se dÃ©roule une sÃ©ance",
+    title: "Comment se déroule une séance",
     steps: [
       {
         id: "exchange-analysis",
         number: "01",
-        title: "Ã‰change et analyse",
+        title: "Échange et analyse",
         description:
-          "On discute de vos attentes et j'analyse votre visage pour dÃ©finir ensemble la forme et la teinte les plus adaptÃ©es.",
+          "On discute de vos attentes et j'analyse votre visage pour définir ensemble la forme et la teinte les plus adaptées.",
       },
       {
         id: "drawing-validation",
         number: "02",
         title: "Dessin et validation",
         description:
-          "Un dessin prÃ©alable est rÃ©alisÃ© directement sur votre peau. Rien n'est dÃ©finitif tant que vous n'avez pas validÃ©.",
+          "Un dessin préalable est réalisé directement sur votre peau. Rien n'est définitif tant que vous n'avez pas validé.",
       },
       {
         id: "procedure",
         number: "03",
-        title: "RÃ©alisation",
+        title: "Réalisation",
         description:
-          "La pigmentation est rÃ©alisÃ©e avec prÃ©cision, dans un environnement calme et confortable. SÃ©ance d'environ 2 heures.",
+          "La pigmentation est réalisée avec précision, dans un environnement calme et confortable. Séance d'environ 2 heures.",
       },
       {
         id: "healing-touch-up",
         number: "04",
         title: "Cicatrisation et retouche",
         description:
-          "Le rÃ©sultat final apparaÃ®t aprÃ¨s cicatrisation. Une retouche est prÃ©vue 4 Ã  6 semaines aprÃ¨s pour parfaire le rÃ©sultat.",
+          "Le résultat final apparaît après cicatrisation. Une retouche est prévue 4 à 6 semaines après pour parfaire le résultat.",
       },
     ],
   },
   gallery: {
-    title: "RÃ©alisations",
+    title: "Réalisations",
     items: [
       {
         id: "natural-brows",
         caption: "Sourcils naturels",
-        label: "Avant / AprÃ¨s",
+        label: "Avant / Après",
         visualKind: "beforeAfterBrows",
         featured: true,
         visual: {
           id: "gallery-natural-brows-placeholder",
           src: null,
-          alt: "Avant / AprÃ¨s",
+          alt: "Avant / Après",
         },
       },
       {
         id: "healed-brows",
-        caption: "Sourcils cicatrisÃ©s",
+        caption: "Sourcils cicatrisés",
         label: "Cicatrisation",
         visualKind: "healedBrows",
         visual: {
@@ -186,35 +188,35 @@ export const defaultSiteContent: SiteContent = {
       },
       {
         id: "delicate-eyeliner",
-        caption: "Eye-liner dÃ©licat",
-        label: "RÃ©sultat",
+        caption: "Eye-liner délicat",
+        label: "Résultat",
         visualKind: "eyeliner",
         visual: {
           id: "gallery-delicate-eyeliner-placeholder",
           src: null,
-          alt: "RÃ©sultat",
+          alt: "Résultat",
         },
       },
       {
         id: "powder-lips",
-        caption: "LÃ¨vres poudrÃ©es",
-        label: "Avant / AprÃ¨s",
+        caption: "Lèvres poudrées",
+        label: "Avant / Après",
         visualKind: "lips",
         visual: {
           id: "gallery-powder-lips-placeholder",
           src: null,
-          alt: "Avant / AprÃ¨s",
+          alt: "Avant / Après",
         },
       },
       {
         id: "freckles",
         caption: "Faux freckles",
-        label: "RÃ©sultat",
+        label: "Résultat",
         visualKind: "freckles",
         visual: {
           id: "gallery-freckles-placeholder",
           src: null,
-          alt: "RÃ©sultat",
+          alt: "Résultat",
         },
       },
     ],
@@ -232,18 +234,18 @@ export const defaultSiteContent: SiteContent = {
       alt: "Portrait professionnel d'Eszter",
     },
     paragraphs: [
-      "SpÃ©cialiste en dermopigmentation installÃ©e prÃ¨s de Lille, je pratique le maquillage permanent avec une approche centrÃ©e sur le naturel et la prÃ©cision.",
-      "Mon objectif est simple : sublimer vos traits sans les transformer. Chaque visage est unique, et chaque prestation est pensÃ©e sur mesure, dans le respect de votre morphologie et de vos envies.",
-      "FormÃ©e aux techniques les plus rÃ©centes, je m'engage Ã  travailler avec des pigments certifiÃ©s et du matÃ©riel stÃ©rile Ã  usage unique, pour votre sÃ©curitÃ© et votre tranquillitÃ© d'esprit.",
+      "Spécialiste en dermopigmentation installée près de Lille, je pratique le maquillage permanent avec une approche centrée sur le naturel et la précision.",
+      "Mon objectif est simple : sublimer vos traits sans les transformer. Chaque visage est unique, et chaque prestation est pensée sur mesure, dans le respect de votre morphologie et de vos envies.",
+      "Formée aux techniques les plus récentes, je m'engage à travailler avec des pigments certifiés et du matériel stérile à usage unique, pour votre sécurité et votre tranquillité d'esprit.",
     ],
   },
   contact: {
-    title: "Ã‰changeons sur votre projet",
+    title: "Échangeons sur votre projet",
     description:
-      "Vous avez des questions ou souhaitez prendre rendez-vous ? Je vous rÃ©ponds avec plaisir pour discuter de vos envies et vous accompagner dans votre dÃ©marche.",
+      "Vous avez des questions ou souhaitez prendre rendez-vous ? Je vous réponds avec plaisir pour discuter de vos envies et vous accompagner dans votre démarche.",
     instagramCta: {
       id: "write-instagram",
-      label: "Ã‰crire sur Instagram",
+      label: "Écrire sur Instagram",
       href: "https://www.instagram.com/eg_maquillagepermanent/",
     },
     emailCta: {
@@ -254,7 +256,7 @@ export const defaultSiteContent: SiteContent = {
   },
   footer: {
     copyrightName: "Eszter Gyori",
-    copyrightSuffix: "Tous droits rÃ©servÃ©s.",
+    copyrightSuffix: "Tous droits réservés.",
     links: [
       {
         id: "instagram",

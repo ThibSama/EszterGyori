@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  defaultSiteAppearance,
+  siteAppearanceSchema,
+} from "./appearance.js";
 
 export const SITE_CONTENT_SCHEMA_VERSION = 1;
 
@@ -384,6 +388,7 @@ export const footerContentSchema = strictObject({
 });
 
 export const siteContentSchema = strictObject({
+  appearance: siteAppearanceSchema.optional().default(defaultSiteAppearance),
   navigation: navigationContentSchema,
   hero: heroContentSchema,
   reassurance: reassuranceContentSchema,
@@ -411,6 +416,7 @@ export type GalleryContent = z.infer<typeof galleryContentSchema>;
 export type AboutContent = z.infer<typeof aboutContentSchema>;
 export type ContactContent = z.infer<typeof contactContentSchema>;
 export type FooterContent = z.infer<typeof footerContentSchema>;
+export type { HexColor, SiteAppearance, SitePalette, SiteSectionTints } from "./appearance.js";
 export type SiteContent = z.infer<typeof siteContentSchema>;
 
 export function validateSiteContent(candidate: unknown): candidate is SiteContent {

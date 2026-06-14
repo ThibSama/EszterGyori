@@ -6,6 +6,7 @@ import { createApp, SERVICE_NAME } from "../src/app";
 import { SITE_CONTENT_SCHEMA_VERSION } from "@eszter/contracts";
 import {
   CONTENT_ENVELOPE_SCHEMA_VERSION,
+  defaultSiteAppearance,
   type PublishedContentEnvelopeV1,
 } from "@eszter/contracts";
 import { defaultSiteContent } from "@eszter/contracts";
@@ -150,6 +151,28 @@ test("GET /api/content returns the validated published envelope", async () => {
       assert.equal(body.publishedAt, envelope.publishedAt);
       assert.deepEqual(body.content, defaultSiteContent);
       assert.equal((body as { updatedAt?: string }).updatedAt, undefined);
+    },
+    { published: envelope },
+  );
+});
+
+test("GET /api/content normalizes legacy appearance without changing ETag format", async () => {
+  const { appearance: _appearance, ...legacyContent } = defaultSiteContent;
+  const envelope = {
+    schemaVersion: CONTENT_ENVELOPE_SCHEMA_VERSION,
+    revision: 15,
+    publishedAt: "2026-06-13T12:00:00.000Z",
+    content: legacyContent,
+  };
+
+  await withTestServer(
+    async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/content`);
+      const body = await readJson<PublishedContentEnvelopeV1>(response);
+
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("etag"), '"published-15"');
+      assert.deepEqual(body.content.appearance, defaultSiteAppearance);
     },
     { published: envelope },
   );

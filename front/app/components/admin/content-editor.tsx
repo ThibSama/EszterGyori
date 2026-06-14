@@ -1,7 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { SitePreview } from "../site-preview";
+import { AdminPreviewViewport } from "./admin-preview-viewport";
+import {
+  cloneSiteContent,
+  createCompleteResetState,
+} from "../../lib/admin-content-reset";
+import {
+  defaultSiteAppearance,
+  getAppearanceValidationMessage,
+  normalizeEditableHexColor,
+} from "../../lib/site-appearance";
 import {
   deleteDraft,
   loadDraft,
@@ -27,6 +36,7 @@ import type {
   ServiceItemContent,
   ServicesContent,
   SiteContent,
+  SiteAppearance,
 } from "../../types/site-content";
 
 interface ContentEditorProps {
@@ -36,7 +46,7 @@ interface ContentEditorProps {
 type TextInputType = "text" | "url" | "email";
 
 function cloneContent(content: SiteContent): SiteContent {
-  return structuredClone(content);
+  return cloneSiteContent(content);
 }
 
 function normalizeOptionalSource(value: string): string | null {
@@ -74,6 +84,7 @@ function Field({
   onChange,
   type = "text",
   help,
+  placeholder,
 }: {
   id: string;
   label: string;
@@ -81,6 +92,7 @@ function Field({
   onChange: (value: string) => void;
   type?: TextInputType;
   help?: string;
+  placeholder?: string;
 }) {
   return (
     <div className="space-y-1.5">
@@ -91,8 +103,9 @@ function Field({
         id={id}
         type={type}
         value={value}
+        placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-xl border border-warm-300/70 bg-white/80 px-3 py-2 text-sm text-warm-800 shadow-sm outline-none transition focus:border-sage-500 focus:ring-2 focus:ring-sage-300/50"
+        className="w-full rounded-xl border border-warm-300/70 bg-white/80 px-3 py-2 text-sm text-warm-800 shadow-sm outline-none transition placeholder:text-warm-400 focus:border-sage-500 focus:ring-2 focus:ring-sage-300/50"
       />
       {help && <p className="text-xs leading-relaxed text-warm-500">{help}</p>}
     </div>
@@ -105,12 +118,14 @@ function TextArea({
   value,
   onChange,
   rows = 4,
+  placeholder,
 }: {
   id: string;
   label: string;
   value: string;
   onChange: (value: string) => void;
   rows?: number;
+  placeholder?: string;
 }) {
   return (
     <div className="space-y-1.5">
@@ -121,8 +136,9 @@ function TextArea({
         id={id}
         value={value}
         rows={rows}
+        placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full resize-y rounded-xl border border-warm-300/70 bg-white/80 px-3 py-2 text-sm leading-relaxed text-warm-800 shadow-sm outline-none transition focus:border-sage-500 focus:ring-2 focus:ring-sage-300/50"
+        className="w-full resize-y rounded-xl border border-warm-300/70 bg-white/80 px-3 py-2 text-sm leading-relaxed text-warm-800 shadow-sm outline-none transition placeholder:text-warm-400 focus:border-sage-500 focus:ring-2 focus:ring-sage-300/50"
       />
     </div>
   );
@@ -133,6 +149,197 @@ function ReadOnlyId({ label, value }: { label: string; value: string }) {
     <div className="rounded-lg bg-warm-100/70 px-3 py-2 text-xs text-warm-500">
       <span className="font-medium text-warm-600">{label} :</span> {value}
     </div>
+  );
+}
+
+function ColorField({
+  id,
+  label,
+  value,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-warm-200/80 bg-white/65 p-3">
+      <label htmlFor={id} className="block text-sm font-medium text-warm-800">
+        {label}
+      </label>
+      <div className="mt-2 flex items-center gap-3">
+        <input
+          id={id}
+          type="color"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="h-11 w-14 cursor-pointer rounded-lg border border-warm-300 bg-white p-1 focus:outline-none focus:ring-2 focus:ring-sage-300"
+        />
+        <span
+          className="h-8 w-8 rounded-full border border-warm-300 shadow-sm"
+          style={{ backgroundColor: value }}
+          aria-hidden="true"
+        />
+        <code className="rounded-md bg-warm-100 px-2 py-1 text-xs text-warm-600">
+          {value}
+        </code>
+      </div>
+    </div>
+  );
+}
+
+const paletteLabels: Record<keyof SiteAppearance["palette"], string> = {
+  background: "Fond général",
+  surface: "Surface des cartes",
+  text: "Texte principal",
+  mutedText: "Texte secondaire",
+  primary: "Couleur principale",
+  secondary: "Couleur secondaire",
+  warmAccent: "Accent chaud",
+};
+
+const sectionTintLabels: Record<keyof SiteAppearance["sectionTints"], string> = {
+  navigation: "Navigation",
+  hero: "Hero",
+  reassurance: "Réassurance",
+  services: "Prestations",
+  process: "Parcours",
+  gallery: "Réalisations",
+  about: "À propos",
+  contact: "Contact",
+  footer: "Pied de page",
+};
+
+function AppearanceEditor({
+  appearance,
+  onChange,
+  onError,
+}: {
+  appearance: SiteAppearance;
+  onChange: (appearance: SiteAppearance) => void;
+  onError: (message: string | null) => void;
+}) {
+  function commitAppearance(nextAppearance: SiteAppearance) {
+    const message = getAppearanceValidationMessage(nextAppearance);
+    if (message) {
+      onError(message);
+      return;
+    }
+    onError(null);
+    onChange(nextAppearance);
+  }
+
+  function updatePalette(
+    key: keyof SiteAppearance["palette"],
+    rawValue: string,
+  ) {
+    const value = normalizeEditableHexColor(rawValue);
+    if (!value) {
+      onError("La couleur doit utiliser le format #RRGGBB.");
+      return;
+    }
+    commitAppearance({
+      ...appearance,
+      palette: { ...appearance.palette, [key]: value },
+    });
+  }
+
+  function updateTint(
+    key: keyof SiteAppearance["sectionTints"],
+    rawValue: string,
+  ) {
+    const value = normalizeEditableHexColor(rawValue);
+    if (!value) {
+      onError("La couleur doit utiliser le format #RRGGBB.");
+      return;
+    }
+    commitAppearance({
+      ...appearance,
+      sectionTints: { ...appearance.sectionTints, [key]: value },
+    });
+  }
+
+  return (
+    <SectionCard
+      title="Apparence"
+      description="Ces réglages restent locaux tant qu'aucune publication serveur n'existe.">
+      <div className="space-y-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h3 className="text-base font-medium text-warm-800">
+              Palette globale
+            </h3>
+            <p className="text-sm text-warm-500">
+              Ces couleurs modifient l’identité globale du site tout en conservant sa mise en page.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              commitAppearance({
+                ...appearance,
+                palette: defaultSiteAppearance.palette,
+              })
+            }
+            className="inline-flex items-center justify-center rounded-full border border-sage-300 bg-white/80 px-4 py-2 text-sm font-medium text-sage-700 transition hover:bg-white">
+            Restaurer la palette d’origine
+          </button>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {Object.entries(paletteLabels).map(([key, label]) => (
+            <ColorField
+              key={key}
+              id={`appearance-palette-${key}`}
+              label={label}
+              value={appearance.palette[key as keyof SiteAppearance["palette"]]}
+              onChange={(value) =>
+                updatePalette(key as keyof SiteAppearance["palette"], value)
+              }
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-4 border-t border-warm-200 pt-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h3 className="text-base font-medium text-warm-800">
+              Teintes des sections
+            </h3>
+            <p className="text-sm text-warm-500">
+              Les teintes de section restent volontairement légères pour préserver la lisibilité.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              commitAppearance({
+                ...appearance,
+                sectionTints: defaultSiteAppearance.sectionTints,
+              })
+            }
+            className="inline-flex items-center justify-center rounded-full border border-sage-300 bg-white/80 px-4 py-2 text-sm font-medium text-sage-700 transition hover:bg-white">
+            Restaurer les teintes d’origine
+          </button>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {Object.entries(sectionTintLabels).map(([key, label]) => (
+            <ColorField
+              key={key}
+              id={`appearance-section-${key}`}
+              label={label}
+              value={
+                appearance.sectionTints[key as keyof SiteAppearance["sectionTints"]]
+              }
+              onChange={(value) =>
+                updateTint(key as keyof SiteAppearance["sectionTints"], value)
+              }
+            />
+          ))}
+        </div>
+      </div>
+    </SectionCard>
   );
 }
 
@@ -204,6 +411,7 @@ function MediaEditor({
         id={`${idPrefix}-src`}
         label="Source de l'image"
         value={source}
+        placeholder="Ex. /images/portrait.jpg"
         onChange={(value) => {
           setFailedSource(null);
           onChange({ ...media, src: normalizeOptionalSource(value) });
@@ -214,6 +422,7 @@ function MediaEditor({
         id={`${idPrefix}-alt`}
         label="Texte alternatif"
         value={media.alt}
+        placeholder="Ex. Portrait professionnel"
         onChange={(value) => onChange({ ...media, alt: value })}
       />
       <div className="overflow-hidden rounded-lg border border-warm-200 bg-white/70">
@@ -281,6 +490,7 @@ function NavigationEditor({
         id="navigation-brand"
         label="Nom affiché"
         value={content.brandLabel}
+        placeholder="Ex. Eszter Gyori"
         onChange={(brandLabel) => onChange({ ...content, brandLabel })}
       />
       <div className="grid gap-4 md:grid-cols-2">
@@ -302,10 +512,11 @@ function NavigationEditor({
       {content.links.map((link) => (
         <ItemCard key={link.id} title={`Lien ${link.label}`} id={link.id}>
           <Field
-            id={`navigation-link-${link.id}-label`}
-            label="Libellé"
-            value={link.label}
-            onChange={(label) =>
+          id={`navigation-link-${link.id}-label`}
+          label="Libellé"
+          value={link.label}
+          placeholder="Ex. Réalisations"
+          onChange={(label) =>
               onChange({
                 ...content,
                 links: updateLink(content.links, link.id, { label }),
@@ -333,6 +544,7 @@ function HeroEditor({
           id="hero-title-prefix"
           label="Titre avant emphase"
           value={content.title.prefix}
+          placeholder="Ex. Un maquillage permanent"
           onChange={(prefix) =>
             onChange({ ...content, title: { ...content.title, prefix } })
           }
@@ -341,6 +553,7 @@ function HeroEditor({
           id="hero-title-emphasis"
           label="Mot en emphase"
           value={content.title.emphasized}
+          placeholder="Ex. naturel"
           onChange={(emphasized) =>
             onChange({ ...content, title: { ...content.title, emphasized } })
           }
@@ -349,6 +562,7 @@ function HeroEditor({
           id="hero-title-suffix"
           label="Titre après emphase"
           value={content.title.suffix}
+          placeholder="Ex. pensé pour révéler…"
           onChange={(suffix) =>
             onChange({ ...content, title: { ...content.title, suffix } })
           }
@@ -358,6 +572,7 @@ function HeroEditor({
         id="hero-description"
         label="Description"
         value={content.description}
+        placeholder="Ex. Décrivez votre approche…"
         onChange={(description) => onChange({ ...content, description })}
       />
       <div className="grid gap-4 md:grid-cols-2">
@@ -365,6 +580,7 @@ function HeroEditor({
           id="hero-primary-label"
           label="Bouton principal"
           value={content.primaryCta.label}
+          placeholder="Ex. Découvrir les prestations"
           onChange={(label) =>
             onChange({
               ...content,
@@ -376,6 +592,7 @@ function HeroEditor({
           id="hero-secondary-label"
           label="Bouton secondaire"
           value={content.secondaryCta.label}
+          placeholder="Ex. Prendre contact"
           onChange={(label) =>
             onChange({
               ...content,
@@ -388,12 +605,14 @@ function HeroEditor({
         id="hero-badge"
         label="Badge visuel"
         value={content.badgeLabel}
+        placeholder="Ex. Naturel"
         onChange={(badgeLabel) => onChange({ ...content, badgeLabel })}
       />
       <Field
         id="hero-instagram-aria"
         label="Libellé accessibilité Instagram"
         value={content.instagramAriaLabel}
+        placeholder="Ex. Voir le compte Instagram"
         onChange={(instagramAriaLabel) =>
           onChange({ ...content, instagramAriaLabel })
         }
@@ -431,12 +650,14 @@ function ReassuranceEditor({
             id={`reassurance-${item.id}-title`}
             label="Titre"
             value={item.title}
+            placeholder="Ex. Résultat naturel"
             onChange={(title) => updateItem(item.id, { title })}
           />
           <TextArea
             id={`reassurance-${item.id}-description`}
             label="Description"
             value={item.description}
+            placeholder="Ex. Décrivez le bénéfice…"
             onChange={(description) => updateItem(item.id, { description })}
           />
         </ItemCard>
@@ -467,6 +688,7 @@ function ServicesEditor({
         id="services-title"
         label="Titre de section"
         value={content.title}
+        placeholder="Ex. Prestations"
         onChange={(title) => onChange({ ...content, title })}
       />
       {content.items.map((item) => (
@@ -475,18 +697,21 @@ function ServicesEditor({
             id={`service-${item.id}-title`}
             label="Nom de la prestation"
             value={item.title}
+            placeholder="Ex. Lèvres"
             onChange={(title) => updateItem(item.id, { title })}
           />
           <TextArea
             id={`service-${item.id}-description`}
             label="Description"
             value={item.description}
+            placeholder="Ex. Décrivez la prestation…"
             onChange={(description) => updateItem(item.id, { description })}
           />
           <Field
             id={`service-${item.id}-cta`}
             label="Libellé du lien"
             value={item.ctaLabel}
+            placeholder="Ex. En savoir plus →"
             onChange={(ctaLabel) => updateItem(item.id, { ctaLabel })}
           />
           <ReadOnlyId label="Style visuel fixe" value={item.visualKind} />
@@ -528,6 +753,7 @@ function ProcessEditor({
         id="process-title"
         label="Titre de section"
         value={content.title}
+        placeholder="Ex. Comment se déroule une séance"
         onChange={(title) => onChange({ ...content, title })}
       />
       {content.steps.map((step) => (
@@ -537,12 +763,14 @@ function ProcessEditor({
             id={`process-${step.id}-title`}
             label="Titre"
             value={step.title}
+            placeholder="Ex. Échange et analyse"
             onChange={(title) => updateStep(step.id, { title })}
           />
           <TextArea
             id={`process-${step.id}-description`}
             label="Description"
             value={step.description}
+            placeholder="Ex. Décrivez l’étape…"
             onChange={(description) => updateStep(step.id, { description })}
           />
         </ItemCard>
@@ -573,6 +801,7 @@ function GalleryEditor({
         id="gallery-title"
         label="Titre de section"
         value={content.title}
+        placeholder="Ex. Réalisations"
         onChange={(title) => onChange({ ...content, title })}
       />
       <div className="grid gap-4 md:grid-cols-2">
@@ -580,6 +809,7 @@ function GalleryEditor({
           id="gallery-instagram-label"
           label="Libellé du bouton Instagram"
           value={content.instagramCta.label}
+          placeholder="Ex. Voir plus sur Instagram"
           onChange={(label) =>
             onChange({
               ...content,
@@ -592,6 +822,7 @@ function GalleryEditor({
           label="URL Instagram"
           type="url"
           value={content.instagramCta.href}
+          placeholder="Ex. https://www.instagram.com/…"
           onChange={(href) =>
             onChange({
               ...content,
@@ -606,12 +837,14 @@ function GalleryEditor({
             id={`gallery-${item.id}-caption`}
             label="Légende"
             value={item.caption}
+            placeholder="Ex. Sourcils naturels"
             onChange={(caption) => updateItem(item.id, { caption })}
           />
           <Field
             id={`gallery-${item.id}-label`}
             label="Étiquette visuelle"
             value={item.label}
+            placeholder="Ex. Résultat naturel"
             onChange={(label) => updateItem(item.id, { label })}
           />
           <ReadOnlyId label="Style visuel fixe" value={item.visualKind} />
@@ -639,6 +872,7 @@ function AboutEditor({
         id="about-title"
         label="Titre"
         value={content.title}
+        placeholder="Ex. Eszter Gyori"
         onChange={(title) => onChange({ ...content, title })}
       />
       {content.paragraphs.map((paragraph, index) => (
@@ -647,6 +881,7 @@ function AboutEditor({
           id={`about-paragraph-${index + 1}`}
           label={`Paragraphe ${index + 1}`}
           value={paragraph}
+          placeholder="Ex. Présentez votre approche…"
           onChange={(value) =>
             onChange({
               ...content,
@@ -679,12 +914,14 @@ function ContactEditor({
         id="contact-title"
         label="Titre"
         value={content.title}
+        placeholder="Ex. Échangeons sur votre projet"
         onChange={(title) => onChange({ ...content, title })}
       />
       <TextArea
         id="contact-description"
         label="Description"
         value={content.description}
+        placeholder="Ex. Invitez à prendre contact…"
         onChange={(description) => onChange({ ...content, description })}
       />
       <div className="grid gap-4 md:grid-cols-2">
@@ -692,6 +929,7 @@ function ContactEditor({
           id="contact-instagram-label"
           label="Libellé Instagram"
           value={content.instagramCta.label}
+          placeholder="Ex. Écrire sur Instagram"
           onChange={(label) =>
             onChange({
               ...content,
@@ -704,6 +942,7 @@ function ContactEditor({
           label="URL Instagram"
           type="url"
           value={content.instagramCta.href}
+          placeholder="Ex. https://www.instagram.com/…"
           onChange={(href) =>
             onChange({
               ...content,
@@ -715,6 +954,7 @@ function ContactEditor({
           id="contact-email-label"
           label="Libellé email"
           value={content.emailCta.label}
+          placeholder="Ex. Envoyer un email"
           onChange={(label) =>
             onChange({ ...content, emailCta: { ...content.emailCta, label } })
           }
@@ -724,6 +964,7 @@ function ContactEditor({
           label="Adresse email"
           type="email"
           value={getEmailFromHref(content.emailCta.href)}
+          placeholder="Ex. contact@example.com"
           onChange={(email) =>
             onChange({
               ...content,
@@ -750,6 +991,7 @@ function FooterEditor({
           id="footer-copyright-name"
           label="Nom copyright"
           value={content.copyrightName}
+          placeholder="Ex. Eszter Gyori"
           onChange={(copyrightName) =>
             onChange({ ...content, copyrightName })
           }
@@ -758,6 +1000,7 @@ function FooterEditor({
           id="footer-copyright-suffix"
           label="Texte copyright"
           value={content.copyrightSuffix}
+          placeholder="Ex. Tous droits réservés."
           onChange={(copyrightSuffix) =>
             onChange({ ...content, copyrightSuffix })
           }
@@ -769,6 +1012,7 @@ function FooterEditor({
             id={`footer-${link.id}-label`}
             label="Libellé"
             value={link.label}
+            placeholder="Ex. Contact"
             onChange={(label) =>
               onChange({
                 ...content,
@@ -782,6 +1026,7 @@ function FooterEditor({
               label="Adresse email"
               type="email"
               value={getEmailFromHref(link.href)}
+              placeholder="Ex. contact@example.com"
               onChange={(email) =>
                 onChange({
                   ...content,
@@ -797,6 +1042,7 @@ function FooterEditor({
               label="URL"
               type="url"
               value={link.href}
+              placeholder="Ex. https://www.instagram.com/…"
               onChange={(href) =>
                 onChange({
                   ...content,
@@ -816,7 +1062,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
   const [content, setContent] = useState<SiteContent>(() =>
     cloneContent(defaultContent),
   );
-  const [cleanContent, setCleanContent] = useState<SiteContent>(() =>
+  const [, setCleanContent] = useState<SiteContent>(() =>
     cloneContent(defaultContent),
   );
   const [isDirty, setIsDirty] = useState(false);
@@ -1019,16 +1265,23 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
   function resetContent() {
     if (
       window.confirm(
-        "Réinitialiser toutes les modifications temporaires et revenir au contenu d'origine ?",
+        "Cette action supprimera le brouillon enregistré dans ce navigateur et restaurera l’intégralité du contenu d’origine. Continuer ?",
       )
     ) {
-      const defaultClone = cloneContent(defaultContent);
-      setContent(defaultClone);
-      setIsDirty(!contentsEqual(defaultClone, cleanContent));
-      setErrorMessage(null);
-      setStatusMessage(
-        "Contenu courant réinitialisé au contenu par défaut. Le brouillon local enregistré n'est pas supprimé.",
-      );
+      const result = createCompleteResetState(defaultContent, deleteDraft());
+
+      if (!result.ok) {
+        setErrorMessage(result.errorMessage);
+        return;
+      }
+
+      setContent(result.state.content);
+      setCleanContent(result.state.cleanContent);
+      setIsDirty(result.state.isDirty);
+      setDraftSavedAt(result.state.draftSavedAt);
+      setHasInvalidStoredDraft(result.state.hasInvalidStoredDraft);
+      setErrorMessage(result.state.errorMessage);
+      setStatusMessage(result.state.statusMessage);
     }
   }
 
@@ -1049,8 +1302,8 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
             enregistré localement n&apos;est pas publié, n&apos;est pas envoyé à un
             serveur et n&apos;est pas disponible sur un autre appareil. Exporter un
             fichier JSON est nécessaire pour obtenir une sauvegarde portable. Il
-            n&apos;y a pas encore de backend, d&apos;authentification, de publication,
-            d&apos;API ou d&apos;upload d&apos;image.
+            n&apos;y a pas encore d&apos;intégration API admin, de publication,
+            d&apos;écriture serveur ou d&apos;upload d&apos;image.
           </div>
           <div className="rounded-2xl border border-warm-300/70 bg-white/75 p-4 shadow-[0_8px_28px_rgba(44,43,40,0.06)]">
             <div className="grid gap-3 text-sm text-warm-600 md:grid-cols-3">
@@ -1128,7 +1381,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
               type="button"
               onClick={resetContent}
               className="inline-flex items-center justify-center rounded-full border border-warm-300 bg-white/70 px-5 py-2.5 text-sm font-medium text-warm-700 transition hover:bg-white">
-              Réinitialiser les modifications
+              Réinitialisation complète
             </button>
             <button
               type="button"
@@ -1141,6 +1394,13 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
 
         <div className="grid gap-8 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] xl:items-start">
           <div className="space-y-6">
+            <AppearanceEditor
+              appearance={content.appearance}
+              onChange={(appearance) =>
+                updateContent((current) => ({ ...current, appearance }))
+              }
+              onError={setErrorMessage}
+            />
             <NavigationEditor
               content={content.navigation}
               onChange={(navigation) =>
@@ -1197,19 +1457,8 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
             />
           </div>
 
-          <aside id="preview" className="min-w-0 space-y-4 xl:sticky xl:top-6">
-            <div className="rounded-2xl border border-warm-300/70 bg-white/80 p-4 shadow-[0_8px_28px_rgba(44,43,40,0.08)]">
-              <h2 className="font-display text-2xl font-normal text-warm-800">
-                Aperçu en direct
-              </h2>
-              <p className="text-sm text-warm-500">
-                Cet aperçu utilise les mêmes composants que le site public et le
-                contenu temporaire édité ci-contre.
-              </p>
-            </div>
-            <div className="max-h-[calc(100vh-7rem)] overflow-auto rounded-2xl border border-warm-300/70 bg-warm-50 shadow-[0_12px_40px_rgba(44,43,40,0.10)] [transform:translateZ(0)]">
-              <SitePreview content={content} />
-            </div>
+          <aside id="preview" className="min-w-0 xl:sticky xl:top-6">
+            <AdminPreviewViewport content={content} />
           </aside>
         </div>
 

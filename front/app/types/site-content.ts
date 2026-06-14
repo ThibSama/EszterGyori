@@ -17,5 +17,8 @@ export type {
   ServiceItemContent,
   ServicesContent,
   ServiceVisualKind,
+  SiteAppearance,
   SiteContent,
+  SitePalette,
+  SiteSectionTints,
 } from "@eszter/contracts";
