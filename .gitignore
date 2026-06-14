@@ -21,6 +21,8 @@ yarn-error.log*
 
 # environment files
 .env*
+!.env.example
+!**/.env.example
 
 # OS/editor files
 .DS_Store
