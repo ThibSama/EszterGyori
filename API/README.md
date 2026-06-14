@@ -87,6 +87,8 @@ Enveloppe initiale du contenu publie :
 
 Les fichiers existants sont toujours valides au demarrage. Un fichier invalide, malforme, trop volumineux ou incompatible fait echouer le demarrage. Le service ne remplace jamais silencieusement une donnee invalide par le contenu par defaut.
 
+Les anciens fichiers JSON dont `content` ne contient pas encore `appearance` restent valides. Le schema partage les normalise en memoire avec `defaultSiteAppearance`, sans reecrire le fichier pendant le demarrage. Les fichiers actuels qui contiennent une apparence complete conservent leurs couleurs. Une apparence partielle, une couleur malformee, un champ inconnu ou une palette au contraste insuffisant fait echouer la validation.
+
 ## Ecritures atomiques
 
 Les ecritures JSON utilisent :
@@ -148,6 +150,8 @@ Headers :
 
 La route supporte `If-None-Match`. Si l'ETag courant correspond, elle retourne `304` sans corps JSON.
 
+L'ETag reste base sur la revision stockee au format `"published-<revision>"`. Lorsque des routes de publication existeront, toute modification d'apparence devra incrementer la revision comme n'importe quel changement de contenu publie.
+
 En cas d'erreur de stockage ou de validation de reponse, la route retourne :
 
 ```json
@@ -164,6 +168,8 @@ Le brouillon serveur n'est jamais expose par cette route.
 
 Le frontend Next.js peut consommer cette route cote serveur avec la variable server-only `CONTENT_API_URL`. Cette variable doit contenir l'URL complete, par exemple `https://api.example.com/api/content`, et ne doit pas utiliser le prefixe `NEXT_PUBLIC_`.
 
+L'interface `/admin` du frontend est protegee par une session frontend signee, mais l'API Express ne valide pas encore cette session. Aucune future route de mutation ne doit s'appuyer uniquement sur la protection frontend.
+
 ## Limites actuelles
 
 Non implemente :
@@ -172,13 +178,14 @@ Non implemente :
 - endpoint d'ecriture de brouillon ;
 - publication ;
 - reset ;
-- authentification ;
+- authentification Express ;
 - cookies, sessions ou CSRF ;
 - upload media ;
 - base de donnees ;
 - historique ou rollback ;
 - sauvegarde automatisee ;
 - integration admin ou ecriture frontend.
+- saisie CSS arbitraire, edition de polices, edition d'espacements ou edition de layout.
 
 ## Contrat partage
 
@@ -189,9 +196,12 @@ Depuis `E:\Eszter\API`, `npm install` installe ce package via `file:../contracts
 Le package `@eszter/contracts` est la source unique pour :
 
 - `defaultSiteContent` ;
+- `defaultSiteAppearance` ;
 - `SITE_CONTENT_SCHEMA_VERSION` ;
 - les schemas `SiteContent` et enveloppes versionnees ;
 - les types TypeScript inferes.
+
+`SiteContent.appearance` est inclus dans le contrat sans changement de version d'enveloppe. Les clients legacy sans ce champ sont acceptes et normalises en memoire.
 
 ## Image Docker production
 

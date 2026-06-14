@@ -13,9 +13,11 @@ Implemente :
 - endpoint public read-only `GET /api/content` ;
 - stockage JSON local `draft.json` et `published.json` ;
 - initialisation depuis `contracts/default-site-content.ts` via `@eszter/contracts` ;
+- contrat `SiteContent.appearance` avec palette globale, teintes de sections, validation hex et contraste ;
 - ecritures atomiques par fichier temporaire puis renommage ;
 - validation du stockage avant ouverture du port ;
 - integration serveur Next.js de la homepage via `CONTENT_API_URL` ;
+- protection frontend de `/admin` via `/admin/login` et session signee ;
 - fallback controle vers `defaultSiteContent` ;
 - erreurs JSON de base ;
 - IDs de requete ;
@@ -31,8 +33,8 @@ Non implemente :
 - endpoint de brouillon serveur ;
 - endpoint d'ecriture de brouillon ;
 - publication ;
-- authentification ;
-- cookies ou sessions ;
+- authentification Express ;
+- sessions API ;
 - CSRF ;
 - base de donnees ;
 - upload media ;
@@ -40,6 +42,7 @@ Non implemente :
 - workflow de backup ou rollback ;
 - deploiement chez un fournisseur ;
 - monitoring.
+- API admin, publication et upload media pour l'apparence.
 
 ## Docker API actuel
 
@@ -76,6 +79,10 @@ La valeur doit contenir l'URL complete de `GET /api/content`. Elle ne doit pas u
 Le fetch est effectue cote serveur par Next.js avec une revalidation de 60 secondes. Le navigateur ne recoit pas l'URL API et ne fait pas de requete directe vers l'API.
 
 Sans cette variable, ou en cas d'erreur API/schema, la page publique rend `defaultSiteContent`. `/admin` reste local-only.
+
+Le contenu publie peut maintenant contenir `appearance`. Les anciens `draft.json` et `published.json` sans ce champ sont acceptes et normalises en memoire avec `defaultSiteAppearance`, sans reecriture silencieuse au demarrage. Les futures mutations serveur devront incrementer la revision lorsqu'elles modifient texte ou apparence afin de conserver la validite des ETags `"published-<revision>"`.
+
+`/admin` est protege cote Next.js par une session signee, mais cette protection ne doit pas servir d'autorisation pour de futures routes Express. Toute route API de mutation devra verifier une authentification/autorisation backend independante.
 
 ## Cycle de vie cible
 
