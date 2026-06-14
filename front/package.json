@@ -4,11 +4,13 @@
   "private": true,
   "scripts": {
     "auth:hash-password": "node scripts/generate-admin-password-hash.mjs",
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "build:contracts": "node --preserve-symlinks ./node_modules/typescript/bin/tsc -p ./node_modules/@eszter/contracts/tsconfig.json",
+    "postinstall": "npm run build:contracts",
+    "dev": "node --preserve-symlinks ./node_modules/next/dist/bin/next dev",
+    "build": "npm run build:contracts && node --preserve-symlinks ./node_modules/next/dist/bin/next build",
+    "start": "node --preserve-symlinks ./node_modules/next/dist/bin/next start",
     "lint": "eslint",
-    "test": "node --conditions=react-server --import tsx --test tests/**/*.test.ts"
+    "test": "node --preserve-symlinks --conditions=react-server --import tsx --test tests/**/*.test.ts"
   },
   "dependencies": {
     "@eszter/contracts": "file:../contracts",

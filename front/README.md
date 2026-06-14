@@ -13,6 +13,16 @@ npm run build
 npm run start
 ```
 
+`front/.npmrc` sets `install-links=true` so npm installs the local `file:../contracts` dependency as a package copy instead of a symlink. This keeps runtime dependencies such as `zod` resolvable during Next.js builds on Vercel and locally.
+
+The frontend owns compilation of the shared package during install and production build:
+
+```powershell
+npm run build:contracts
+```
+
+This script uses the frontend-local TypeScript binary from `front/node_modules`; no global TypeScript installation is required. `contracts` no longer builds through `prepare`, so standalone contracts work remains `cd E:\Eszter\contracts`, `npm install`, then `npm run build`.
+
 ## Contenu public
 
 La page `/` charge le contenu publie cote serveur via `CONTENT_API_URL` quand la variable est configuree.
@@ -89,6 +99,8 @@ Le Root Directory Vercel doit rester :
 ```text
 front
 ```
+
+Vercel doit installer depuis ce dossier avec le fichier `front/.npmrc` conserve. L'installation frontend compile `@eszter/contracts` avant le build Next.js ; il ne faut pas ajouter de build command separee dans `contracts`.
 
 Apres deploiement public de l'API :
 

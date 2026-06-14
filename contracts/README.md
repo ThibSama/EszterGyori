@@ -23,6 +23,8 @@ npm run build
 
 The package compiles TypeScript sources to `dist/`. Both `front/` and `API/` consume it through `file:../contracts` and resolve package exports from `dist/`.
 
+`contracts` does not build from an npm `prepare` lifecycle. Standalone development requires installing its own dependencies first, then running `npm run build`. This keeps local-package installation safe on hosts such as Vercel where the frontend installs `file:../contracts` before `contracts/node_modules/.bin/tsc` exists.
+
 The API Docker image builds this package inside the image from the repository root context. Do not rely on a host-generated `contracts/dist/` for Docker builds.
 
 ## Appearance
