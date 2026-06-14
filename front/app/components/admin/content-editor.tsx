@@ -2,15 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AdminPreviewViewport } from "./admin-preview-viewport";
+import { AppearanceEditor } from "./appearance-editor";
+import { ItemCard, SectionCard } from "./editor-cards";
+import { Field, ReadOnlyId, TextArea } from "./editor-fields";
+import { MediaEditor } from "./media-editor";
 import {
   cloneSiteContent,
   createCompleteResetState,
 } from "../../lib/admin-content-reset";
-import {
-  defaultSiteAppearance,
-  getAppearanceValidationMessage,
-  normalizeEditableHexColor,
-} from "../../lib/site-appearance";
 import {
   deleteDraft,
   loadDraft,
@@ -28,7 +27,6 @@ import type {
   GalleryItemContent,
   HeroContent,
   LinkContent,
-  MediaAsset,
   NavigationContent,
   ProcessContent,
   ReassuranceContent,
@@ -36,23 +34,17 @@ import type {
   ServiceItemContent,
   ServicesContent,
   SiteContent,
-  SiteAppearance,
 } from "../../types/site-content";
 
 interface ContentEditorProps {
   defaultContent: SiteContent;
 }
 
-type TextInputType = "text" | "url" | "email";
 
 function cloneContent(content: SiteContent): SiteContent {
   return cloneSiteContent(content);
 }
 
-function normalizeOptionalSource(value: string): string | null {
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
 
 function getEmailFromHref(href: string): string {
   return href.startsWith("mailto:") ? href.slice("mailto:".length) : href;
@@ -60,390 +52,6 @@ function getEmailFromHref(href: string): string {
 
 function setEmailHref(email: string): string {
   return `mailto:${email.trim()}`;
-}
-
-function isPreviewableImageSource(source: string): boolean {
-  const trimmed = source.trim();
-
-  if (trimmed.startsWith("/")) {
-    return true;
-  }
-
-  try {
-    const parsed = new URL(trimmed);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function Field({
-  id,
-  label,
-  value,
-  onChange,
-  type = "text",
-  help,
-  placeholder,
-}: {
-  id: string;
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  type?: TextInputType;
-  help?: string;
-  placeholder?: string;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <label htmlFor={id} className="block text-sm font-medium text-warm-800">
-        {label}
-      </label>
-      <input
-        id={id}
-        type={type}
-        value={value}
-        placeholder={placeholder}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-xl border border-warm-300/70 bg-white/80 px-3 py-2 text-sm text-warm-800 shadow-sm outline-none transition placeholder:text-warm-400 focus:border-sage-500 focus:ring-2 focus:ring-sage-300/50"
-      />
-      {help && <p className="text-xs leading-relaxed text-warm-500">{help}</p>}
-    </div>
-  );
-}
-
-function TextArea({
-  id,
-  label,
-  value,
-  onChange,
-  rows = 4,
-  placeholder,
-}: {
-  id: string;
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  rows?: number;
-  placeholder?: string;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <label htmlFor={id} className="block text-sm font-medium text-warm-800">
-        {label}
-      </label>
-      <textarea
-        id={id}
-        value={value}
-        rows={rows}
-        placeholder={placeholder}
-        onChange={(event) => onChange(event.target.value)}
-        className="w-full resize-y rounded-xl border border-warm-300/70 bg-white/80 px-3 py-2 text-sm leading-relaxed text-warm-800 shadow-sm outline-none transition placeholder:text-warm-400 focus:border-sage-500 focus:ring-2 focus:ring-sage-300/50"
-      />
-    </div>
-  );
-}
-
-function ReadOnlyId({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg bg-warm-100/70 px-3 py-2 text-xs text-warm-500">
-      <span className="font-medium text-warm-600">{label} :</span> {value}
-    </div>
-  );
-}
-
-function ColorField({
-  id,
-  label,
-  value,
-  onChange,
-}: {
-  id: string;
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div className="rounded-xl border border-warm-200/80 bg-white/65 p-3">
-      <label htmlFor={id} className="block text-sm font-medium text-warm-800">
-        {label}
-      </label>
-      <div className="mt-2 flex items-center gap-3">
-        <input
-          id={id}
-          type="color"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          className="h-11 w-14 cursor-pointer rounded-lg border border-warm-300 bg-white p-1 focus:outline-none focus:ring-2 focus:ring-sage-300"
-        />
-        <span
-          className="h-8 w-8 rounded-full border border-warm-300 shadow-sm"
-          style={{ backgroundColor: value }}
-          aria-hidden="true"
-        />
-        <code className="rounded-md bg-warm-100 px-2 py-1 text-xs text-warm-600">
-          {value}
-        </code>
-      </div>
-    </div>
-  );
-}
-
-const paletteLabels: Record<keyof SiteAppearance["palette"], string> = {
-  background: "Fond général",
-  surface: "Surface des cartes",
-  text: "Texte principal",
-  mutedText: "Texte secondaire",
-  primary: "Couleur principale",
-  secondary: "Couleur secondaire",
-  warmAccent: "Accent chaud",
-};
-
-const sectionTintLabels: Record<keyof SiteAppearance["sectionTints"], string> = {
-  navigation: "Navigation",
-  hero: "Hero",
-  reassurance: "Réassurance",
-  services: "Prestations",
-  process: "Parcours",
-  gallery: "Réalisations",
-  about: "À propos",
-  contact: "Contact",
-  footer: "Pied de page",
-};
-
-function AppearanceEditor({
-  appearance,
-  onChange,
-  onError,
-}: {
-  appearance: SiteAppearance;
-  onChange: (appearance: SiteAppearance) => void;
-  onError: (message: string | null) => void;
-}) {
-  function commitAppearance(nextAppearance: SiteAppearance) {
-    const message = getAppearanceValidationMessage(nextAppearance);
-    if (message) {
-      onError(message);
-      return;
-    }
-    onError(null);
-    onChange(nextAppearance);
-  }
-
-  function updatePalette(
-    key: keyof SiteAppearance["palette"],
-    rawValue: string,
-  ) {
-    const value = normalizeEditableHexColor(rawValue);
-    if (!value) {
-      onError("La couleur doit utiliser le format #RRGGBB.");
-      return;
-    }
-    commitAppearance({
-      ...appearance,
-      palette: { ...appearance.palette, [key]: value },
-    });
-  }
-
-  function updateTint(
-    key: keyof SiteAppearance["sectionTints"],
-    rawValue: string,
-  ) {
-    const value = normalizeEditableHexColor(rawValue);
-    if (!value) {
-      onError("La couleur doit utiliser le format #RRGGBB.");
-      return;
-    }
-    commitAppearance({
-      ...appearance,
-      sectionTints: { ...appearance.sectionTints, [key]: value },
-    });
-  }
-
-  return (
-    <SectionCard
-      title="Apparence"
-      description="Ces réglages restent locaux tant qu'aucune publication serveur n'existe.">
-      <div className="space-y-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h3 className="text-base font-medium text-warm-800">
-              Palette globale
-            </h3>
-            <p className="text-sm text-warm-500">
-              Ces couleurs modifient l’identité globale du site tout en conservant sa mise en page.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() =>
-              commitAppearance({
-                ...appearance,
-                palette: defaultSiteAppearance.palette,
-              })
-            }
-            className="inline-flex items-center justify-center rounded-full border border-sage-300 bg-white/80 px-4 py-2 text-sm font-medium text-sage-700 transition hover:bg-white">
-            Restaurer la palette d’origine
-          </button>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {Object.entries(paletteLabels).map(([key, label]) => (
-            <ColorField
-              key={key}
-              id={`appearance-palette-${key}`}
-              label={label}
-              value={appearance.palette[key as keyof SiteAppearance["palette"]]}
-              onChange={(value) =>
-                updatePalette(key as keyof SiteAppearance["palette"], value)
-              }
-            />
-          ))}
-        </div>
-      </div>
-
-      <div className="space-y-4 border-t border-warm-200 pt-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h3 className="text-base font-medium text-warm-800">
-              Teintes des sections
-            </h3>
-            <p className="text-sm text-warm-500">
-              Les teintes de section restent volontairement légères pour préserver la lisibilité.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() =>
-              commitAppearance({
-                ...appearance,
-                sectionTints: defaultSiteAppearance.sectionTints,
-              })
-            }
-            className="inline-flex items-center justify-center rounded-full border border-sage-300 bg-white/80 px-4 py-2 text-sm font-medium text-sage-700 transition hover:bg-white">
-            Restaurer les teintes d’origine
-          </button>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {Object.entries(sectionTintLabels).map(([key, label]) => (
-            <ColorField
-              key={key}
-              id={`appearance-section-${key}`}
-              label={label}
-              value={
-                appearance.sectionTints[key as keyof SiteAppearance["sectionTints"]]
-              }
-              onChange={(value) =>
-                updateTint(key as keyof SiteAppearance["sectionTints"], value)
-              }
-            />
-          ))}
-        </div>
-      </div>
-    </SectionCard>
-  );
-}
-
-function SectionCard({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-2xl border border-white/70 bg-white/55 p-4 shadow-[0_8px_28px_rgba(44,43,40,0.06)] backdrop-blur-xl sm:p-6">
-      <div className="mb-5 space-y-1">
-        <h2 className="font-display text-2xl font-normal text-warm-800">
-          {title}
-        </h2>
-        {description && (
-          <p className="text-sm leading-relaxed text-warm-500">
-            {description}
-          </p>
-        )}
-      </div>
-      <div className="space-y-5">{children}</div>
-    </section>
-  );
-}
-
-function ItemCard({
-  title,
-  id,
-  children,
-}: {
-  title: string;
-  id: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="space-y-4 rounded-xl border border-warm-200/80 bg-white/65 p-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <h3 className="text-base font-medium text-warm-800">{title}</h3>
-        <ReadOnlyId label="ID technique" value={id} />
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function MediaEditor({
-  idPrefix,
-  media,
-  onChange,
-}: {
-  idPrefix: string;
-  media: MediaAsset;
-  onChange: (media: MediaAsset) => void;
-}) {
-  const [failedSource, setFailedSource] = useState<string | null>(null);
-  const source = media.src ?? "";
-  const hasSource = source.trim().length > 0;
-  const canPreview =
-    hasSource && isPreviewableImageSource(source) && failedSource !== source;
-
-  return (
-    <div className="space-y-3 rounded-xl border border-sage-200/80 bg-sage-50/70 p-4">
-      <ReadOnlyId label="ID média" value={media.id} />
-      <Field
-        id={`${idPrefix}-src`}
-        label="Source de l'image"
-        value={source}
-        placeholder="Ex. /images/portrait.jpg"
-        onChange={(value) => {
-          setFailedSource(null);
-          onChange({ ...media, src: normalizeOptionalSource(value) });
-        }}
-        help="Saisir une URL ou un chemin public. Les vrais uploads seront ajoutés plus tard avec le backend."
-      />
-      <Field
-        id={`${idPrefix}-alt`}
-        label="Texte alternatif"
-        value={media.alt}
-        placeholder="Ex. Portrait professionnel"
-        onChange={(value) => onChange({ ...media, alt: value })}
-      />
-      <div className="overflow-hidden rounded-lg border border-warm-200 bg-white/70">
-        {canPreview ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={source}
-            alt={media.alt}
-            onError={() => setFailedSource(source)}
-            className="h-36 w-full object-cover"
-          />
-        ) : (
-          <div className="flex h-28 items-center justify-center px-4 text-center text-sm text-warm-500">
-            {hasSource
-              ? "Aperçu indisponible : saisir une URL http(s) valide ou un chemin public commençant par /."
-              : "Aucune source renseignée. Le site public conserve son placeholder actuel."}
-          </div>
-        )}
-      </div>
-    </div>
-  );
 }
 
 function updateLink(
