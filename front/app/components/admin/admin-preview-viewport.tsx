@@ -4,13 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createAdminPreviewContentMessage } from "../../lib/admin-preview-messaging";
 import type { SiteContent } from "../../types/site-content";
 
-type PreviewMode = "phone" | "desktop";
+type PreviewMode = "phone" | "tablet" | "desktop";
 
 const PREVIEW_DIMENSIONS: Record<
   PreviewMode,
   { label: string; width: number; height: number }
 > = {
-  phone: { label: "Téléphone", width: 390, height: 820 },
+  phone: { label: "Téléphone", width: 390, height: 844 },
+  tablet: { label: "Tablette", width: 768, height: 1024 },
   desktop: { label: "Ordinateur", width: 1280, height: 860 },
 };
 
@@ -65,15 +66,15 @@ export function AdminPreviewViewport({ content }: { content: SiteContent }) {
           </p>
         </div>
         <div
-          className="inline-flex rounded-full border border-warm-300 bg-warm-100/70 p-1"
+          className="inline-flex max-w-full flex-wrap gap-1 rounded-2xl border border-warm-300 bg-warm-100/70 p-1 sm:rounded-full"
           aria-label="Mode d’aperçu">
-          {(["phone", "desktop"] as const).map((nextMode) => (
+          {(["phone", "tablet", "desktop"] as const).map((nextMode) => (
             <button
               key={nextMode}
               type="button"
               aria-pressed={mode === nextMode}
               onClick={() => setMode(nextMode)}
-              className={`rounded-full px-4 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300 ${
+              className={`rounded-full px-3 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300 sm:px-4 ${
                 mode === nextMode
                   ? "bg-warm-800 text-porcelain shadow-sm"
                   : "text-warm-600 hover:bg-white/80 hover:text-warm-900"
@@ -95,7 +96,7 @@ export function AdminPreviewViewport({ content }: { content: SiteContent }) {
             width: dimensions.width * scale,
             height: wrapperHeight,
           }}>
-          {mode === "desktop" && (
+          {mode !== "phone" && (
             <div className="flex h-8 items-center gap-1.5 border-b border-warm-200 bg-warm-100 px-3">
               <span className="h-2.5 w-2.5 rounded-full bg-warm-300" />
               <span className="h-2.5 w-2.5 rounded-full bg-warm-300" />
