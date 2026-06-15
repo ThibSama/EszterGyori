@@ -1,5 +1,12 @@
+import type { Metadata } from "next";
 import { requireAdminSession } from "../../lib/auth";
 import Link from "next/link";
+import { PRIVATE_ROBOTS } from "../../lib/metadata/site-metadata";
+
+export const metadata: Metadata = {
+  title: "Administration",
+  robots: PRIVATE_ROBOTS,
+};
 
 export default async function ProtectedAdminLayout({
   children,
