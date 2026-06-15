@@ -119,6 +119,7 @@ function ReassuranceSection({
     <section className="site-section-reassurance relative z-10 py-16 md:py-32 px-4 md:px-6">
       <div className="absolute inset-0 bg-gradient-to-b from-warm-50/0 via-sage-100/70 to-warm-50/0 pointer-events-none" />
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-warm-300/60 to-transparent" />
+      <h2 className="sr-only">Pourquoi choisir Eszter Gyori</h2>
 
       <Reveal
         className="relative z-10 max-w-5xl mx-auto"
@@ -393,11 +394,11 @@ function Footer({ content }: { content: FooterContent }) {
   return (
     <footer className="site-section-footer relative z-10 border-t border-warm-300/50 py-8 md:py-10 px-4 md:px-6 bg-gradient-to-b from-warm-100/60 to-warm-200/40">
       <div className="max-w-6xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
-        <p className="text-sm text-warm-400">
+        <p className="text-sm text-warm-600">
           &copy; {new Date().getFullYear()} {content.copyrightName}.{" "}
           {content.copyrightSuffix}
         </p>
-        <div className="flex gap-6 text-sm text-warm-400">
+        <div className="flex gap-6 text-sm text-warm-600">
           {content.links.map((link) => (
             <a
               key={link.id}
@@ -406,7 +407,7 @@ function Footer({ content }: { content: FooterContent }) {
               rel={
                 link.href.startsWith("http") ? "noopener noreferrer" : undefined
               }
-              className="hover:text-warm-600 transition-colors duration-300">
+              className="hover:text-warm-800 transition-colors duration-300">
               {link.label}
             </a>
           ))}
@@ -449,33 +450,38 @@ export function SitePreview({
     <div
       className="site-preview flex flex-col min-h-screen relative"
       style={createSiteAppearanceVariables(content.appearance)}>
+      <a href="#main-content" className="skip-link">
+        Aller au contenu principal
+      </a>
       <AtmosphericLayer />
       <Navigation content={content.navigation} />
-      <HeroSection content={content.hero} />
-      <ReassuranceSection
-        content={content.reassurance}
-        disableRevealAnimations={disableRevealAnimations}
-      />
-      <ServicesSection
-        content={content.services}
-        disableRevealAnimations={disableRevealAnimations}
-      />
-      <ProcessSection
-        content={content.process}
-        disableRevealAnimations={disableRevealAnimations}
-      />
-      <GallerySection
-        content={content.gallery}
-        disableRevealAnimations={disableRevealAnimations}
-      />
-      <AboutSection
-        content={content.about}
-        disableRevealAnimations={disableRevealAnimations}
-      />
-      <ContactSection
-        content={content.contact}
-        disableRevealAnimations={disableRevealAnimations}
-      />
+      <main id="main-content" tabIndex={-1}>
+        <HeroSection content={content.hero} />
+        <ReassuranceSection
+          content={content.reassurance}
+          disableRevealAnimations={disableRevealAnimations}
+        />
+        <ServicesSection
+          content={content.services}
+          disableRevealAnimations={disableRevealAnimations}
+        />
+        <ProcessSection
+          content={content.process}
+          disableRevealAnimations={disableRevealAnimations}
+        />
+        <GallerySection
+          content={content.gallery}
+          disableRevealAnimations={disableRevealAnimations}
+        />
+        <AboutSection
+          content={content.about}
+          disableRevealAnimations={disableRevealAnimations}
+        />
+        <ContactSection
+          content={content.contact}
+          disableRevealAnimations={disableRevealAnimations}
+        />
+      </main>
       <Footer content={content.footer} />
     </div>
   );

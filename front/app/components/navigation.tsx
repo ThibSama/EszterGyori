@@ -7,10 +7,13 @@ interface NavigationProps {
 
 export function Navigation({ content }: NavigationProps) {
   return (
-    <nav className="fixed top-4 left-4 right-4 z-40 mx-auto max-w-6xl">
+    <nav
+      className="fixed top-4 left-4 right-4 z-40 mx-auto max-w-6xl"
+      aria-label="Navigation principale">
       <div className="site-navigation-glass glass-card backdrop-blur-2xl rounded-2xl px-4 md:px-6 h-14 flex items-center justify-between">
         <a
           href="#"
+          aria-label="Retour au début de la page"
           className="font-display text-lg md:text-xl tracking-tight text-warm-800">
           {content.brandLabel}
         </a>
