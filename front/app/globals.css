@@ -87,6 +87,10 @@ body {
   color: var(--site-text);
 }
 
+.site-preview :where(#main-content, #prestations, #parcours, #realisations, #a-propos, #contact) {
+  scroll-margin-top: 6rem;
+}
+
 .site-preview .site-section-hero,
 .site-preview .site-section-reassurance,
 .site-preview .site-section-services,
