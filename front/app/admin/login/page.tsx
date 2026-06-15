@@ -2,13 +2,11 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getOptionalAdminSession, sanitizeAdminRedirect } from "../../lib/auth";
+import { PRIVATE_ROBOTS } from "../../lib/metadata/site-metadata";
 
 export const metadata: Metadata = {
-  title: "Connexion admin - Eszter",
-  robots: {
-    index: false,
-    follow: false,
-  },
+  title: "Connexion",
+  robots: PRIVATE_ROBOTS,
 };
 
 export default async function AdminLoginPage({

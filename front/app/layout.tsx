@@ -1,5 +1,6 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Cormorant_Garamond } from "next/font/google";
+import { siteMetadata, siteViewport } from "./lib/metadata/site-metadata";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -14,11 +15,9 @@ const cormorant = Cormorant_Garamond({
   style: ["normal", "italic"],
 });
 
-export const metadata: Metadata = {
-  title: "Eszter Gyori - Maquillage Permanent | Lille",
-  description:
-    "Dermopigmentation et maquillage permanent naturel. Sourcils, eye-liner, levres, faux freckles. Resultats naturels et durables pres de Lille.",
-};
+export const metadata: Metadata = siteMetadata;
+
+export const viewport: Viewport = siteViewport;
 
 export default function RootLayout({
   children,
