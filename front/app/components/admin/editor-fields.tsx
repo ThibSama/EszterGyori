@@ -69,7 +69,7 @@ export function TextArea({
 
 export function ReadOnlyId({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-warm-100/70 px-3 py-2 text-xs text-warm-500">
+    <div className="break-all rounded-lg bg-warm-100/70 px-3 py-2 text-xs text-warm-500">
       <span className="font-medium text-warm-600">{label} :</span> {value}
     </div>
   );
@@ -104,7 +104,7 @@ export function ColorField({
           style={{ backgroundColor: value }}
           aria-hidden="true"
         />
-        <code className="rounded-md bg-warm-100 px-2 py-1 text-xs text-warm-600">
+        <code className="break-all rounded-md bg-warm-100 px-2 py-1 text-xs text-warm-600">
           {value}
         </code>
       </div>

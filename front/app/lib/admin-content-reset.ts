@@ -16,7 +16,7 @@ export type CompleteResetResult =
   | { ok: false; errorMessage: string };
 
 export const COMPLETE_RESET_SUCCESS_MESSAGE =
-  "Le contenu et le brouillon local ont été réinitialisés à la version d’origine.";
+  "Le contenu d’origine est restauré et le brouillon de cet appareil a été supprimé. Le site public reste inchangé.";
 
 export function cloneSiteContent(content: SiteContent): SiteContent {
   return structuredClone(content);

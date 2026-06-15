@@ -83,6 +83,16 @@ function getDraftFileName(date = new Date()): string {
   return `eszter-content-draft-${year}-${month}-${day}-${hours}${minutes}.json`;
 }
 
+function getModificationState(isDirty: boolean): string {
+  return isDirty ? "Modifications non enregistrées" : "Aucune modification non enregistrée";
+}
+
+function getDraftState(draftSavedAt: string | null): string {
+  return draftSavedAt
+    ? `Dernier enregistrement : ${formatFrenchDateTime(draftSavedAt)}`
+    : "Aucun brouillon enregistré sur cet appareil";
+}
+
 function NavigationEditor({
   content,
   onChange,
@@ -676,7 +686,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
   const [isDirty, setIsDirty] = useState(false);
   const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState(
-    "Aucun brouillon local enregistré pour ce navigateur.",
+    "Aucun brouillon enregistré sur cet appareil.",
   );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [hasInvalidStoredDraft, setHasInvalidStoredDraft] = useState(false);
@@ -698,14 +708,14 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
           setIsDirty(false);
           setDraftSavedAt(result.draft.savedAt);
           setStatusMessage(
-            `Brouillon local chargé (${formatFrenchDateTime(result.draft.savedAt)}).`,
+            `Brouillon chargé depuis ce navigateur (${formatFrenchDateTime(result.draft.savedAt)}). Le site public reste inchangé.`,
           );
         } else {
           setContent(cloneContent(defaultContent));
           setCleanContent(cloneContent(defaultContent));
           setIsDirty(false);
           setDraftSavedAt(null);
-          setStatusMessage("Aucun brouillon local enregistré pour ce navigateur.");
+          setStatusMessage("Aucun brouillon enregistré sur cet appareil.");
         }
         setErrorMessage(null);
         setHasInvalidStoredDraft(false);
@@ -745,7 +755,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
   function updateContent(updater: (current: SiteContent) => SiteContent) {
     setContent((current) => updater(current));
     setIsDirty(true);
-    setStatusMessage("Modifications non enregistrées.");
+    setStatusMessage("Modifications non enregistrées dans ce navigateur.");
     setErrorMessage(null);
   }
 
@@ -763,14 +773,14 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
     setHasInvalidStoredDraft(false);
     setErrorMessage(null);
     setStatusMessage(
-      `Brouillon local enregistré (${formatFrenchDateTime(result.draft.savedAt)}).`,
+      `Brouillon enregistré dans ce navigateur (${formatFrenchDateTime(result.draft.savedAt)}). Le site public reste inchangé.`,
     );
   }
 
   function handleDeleteDraft() {
     if (
       !window.confirm(
-        "Supprimer le brouillon local enregistré dans ce navigateur ? Le contenu actuellement affiché restera visible jusqu'au reset ou au rafraîchissement.",
+        "Supprimer le brouillon enregistré sur cet appareil ? Le site public restera inchangé. Le contenu actuellement affiché restera visible jusqu'à une restauration ou un rafraîchissement.",
       )
     ) {
       return;
@@ -790,7 +800,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
     setHasInvalidStoredDraft(false);
     setErrorMessage(null);
     setStatusMessage(
-      "Brouillon local supprimé. Le contenu affiché reste en mémoire jusqu'au reset ou au rafraîchissement.",
+      "Brouillon supprimé de cet appareil. Le site public reste inchangé.",
     );
   }
 
@@ -815,7 +825,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
     URL.revokeObjectURL(url);
     setErrorMessage(null);
     setStatusMessage(
-      "Export JSON généré avec le contenu actuellement affiché, y compris les modifications non enregistrées.",
+      "Sauvegarde JSON exportée avec le contenu actuellement affiché, y compris les modifications non enregistrées.",
     );
   }
 
@@ -859,7 +869,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
       setIsDirty(true);
       setErrorMessage(null);
       setStatusMessage(
-        "Brouillon JSON importé dans l'éditeur. Enregistrer localement pour le conserver dans ce navigateur.",
+        "Fichier JSON importé dans l'éditeur. Enregistrez-le sur cet appareil pour le conserver dans ce navigateur.",
       );
     } catch {
       setErrorMessage("Impossible de lire ce fichier JSON dans le navigateur.");
@@ -873,7 +883,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
   function resetContent() {
     if (
       window.confirm(
-        "Cette action supprimera le brouillon enregistré dans ce navigateur et restaurera l’intégralité du contenu d’origine. Continuer ?",
+        "Cette action supprimera le brouillon enregistré sur cet appareil et restaurera l’intégralité du contenu d’origine dans l’éditeur. Le site public restera inchangé. Continuer ?",
       )
     ) {
       const result = createCompleteResetState(defaultContent, deleteDraft());
@@ -905,39 +915,41 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
               Éditeur de contenu Eszter
             </h1>
           </div>
-          <div className="rounded-2xl border border-sage-300/70 bg-sage-100/75 p-4 text-sm leading-relaxed text-warm-700">
-            Les modifications restent locales à ce navigateur. Un brouillon
-            enregistré localement n&apos;est pas publié, n&apos;est pas envoyé à un
-            serveur et n&apos;est pas disponible sur un autre appareil. Exporter un
-            fichier JSON est nécessaire pour obtenir une sauvegarde portable. Il
-            n&apos;y a pas encore d&apos;intégration API admin, de publication,
-            d&apos;écriture serveur ou d&apos;upload d&apos;image.
+          <div className="rounded-2xl border border-sage-300/70 bg-sage-100/75 p-4 shadow-[0_8px_28px_rgba(44,43,40,0.05)]">
+            <h2 className="font-display text-2xl font-normal text-warm-800">
+              Brouillon enregistré uniquement sur cet appareil
+            </h2>
+            <div className="mt-2 space-y-2 text-sm leading-relaxed text-warm-700">
+              <p>
+                Enregistrer conserve le brouillon dans ce navigateur uniquement.
+                Le site public n&apos;est pas modifié. Pour sauvegarder ou
+                transférer le travail, exportez le fichier JSON.
+              </p>
+              <p>
+                La suppression des données du navigateur ou l&apos;utilisation de
+                la navigation privée peut supprimer le brouillon.
+              </p>
+            </div>
           </div>
           <div className="rounded-2xl border border-warm-300/70 bg-white/75 p-4 shadow-[0_8px_28px_rgba(44,43,40,0.06)]">
             <div className="grid gap-3 text-sm text-warm-600 md:grid-cols-3">
-              <div>
+              <div className="rounded-xl bg-warm-50/80 p-3">
                 <span className="block font-medium text-warm-800">
-                  État courant
+                  Modifications
                 </span>
-                {isDirty
-                  ? "Modifications non enregistrées"
-                  : "Aucune modification non enregistrée"}
+                {getModificationState(isDirty)}
               </div>
-              <div>
+              <div className="rounded-xl bg-warm-50/80 p-3">
                 <span className="block font-medium text-warm-800">
-                  Brouillon local
+                  Brouillon sur cet appareil
                 </span>
-                {draftSavedAt
-                  ? `Dernier enregistrement : ${formatFrenchDateTime(draftSavedAt)}`
-                  : "Aucun brouillon enregistré"}
+                {getDraftState(draftSavedAt)}
               </div>
-              <div>
+              <div className="rounded-xl bg-warm-50/80 p-3">
                 <span className="block font-medium text-warm-800">
-                  Clé locale
+                  Site public
                 </span>
-                <code className="break-all text-xs">
-                  {SITE_CONTENT_DRAFT_STORAGE_KEY}
-                </code>
+                Inchangé
               </div>
             </div>
             <p
@@ -953,11 +965,29 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
                 {errorMessage}
                 {hasInvalidStoredDraft && (
                   <span className="block pt-1">
-                    Vous pouvez supprimer ce brouillon local invalide ci-dessous.
+                    Vous pouvez supprimer ce brouillon de cet appareil ci-dessous.
                   </span>
                 )}
               </div>
             )}
+            <details className="mt-4 rounded-xl border border-warm-200 bg-warm-50/70 p-3 text-sm text-warm-600">
+              <summary className="cursor-pointer font-medium text-warm-800">
+                Informations techniques
+              </summary>
+              <div className="mt-2 space-y-2 leading-relaxed">
+                <p>
+                  Le brouillon est conservé dans le stockage du navigateur avec
+                  la clé suivante :
+                </p>
+                <code className="block break-all rounded-lg bg-white/80 px-3 py-2 text-xs text-warm-700">
+                  {SITE_CONTENT_DRAFT_STORAGE_KEY}
+                </code>
+                <p>
+                  Il n&apos;y a pas encore de sauvegarde serveur, de publication,
+                  d&apos;écriture API admin ou d&apos;upload d&apos;image dans ce prototype.
+                </p>
+              </div>
+            </details>
           </div>
           <div className="flex flex-col gap-3 rounded-2xl border border-warm-300/70 bg-white/65 p-4 sm:flex-row sm:flex-wrap sm:items-center">
             <a
@@ -969,18 +999,18 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
               type="button"
               onClick={handleSaveDraft}
               className="inline-flex items-center justify-center rounded-full bg-sage-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-sage-700">
-              Enregistrer le brouillon local
+              Enregistrer sur cet appareil
             </button>
             <button
               type="button"
               onClick={handleExportDraft}
               className="inline-flex items-center justify-center rounded-full border border-sage-300 bg-white/80 px-5 py-2.5 text-sm font-medium text-sage-700 transition hover:bg-white">
-              Exporter le brouillon JSON
+              Exporter une sauvegarde JSON
             </button>
             <label
               htmlFor="admin-draft-import"
               className="inline-flex cursor-pointer items-center justify-center rounded-full border border-sage-300 bg-white/80 px-5 py-2.5 text-sm font-medium text-sage-700 transition hover:bg-white">
-              Importer un JSON
+              Importer un fichier JSON
             </label>
             <input
               ref={fileInputRef}
@@ -996,14 +1026,21 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
               type="button"
               onClick={resetContent}
               className="inline-flex items-center justify-center rounded-full border border-warm-300 bg-white/70 px-5 py-2.5 text-sm font-medium text-warm-700 transition hover:bg-white">
-              Réinitialisation complète
+              Restaurer le contenu d&apos;origine
             </button>
             <button
               type="button"
               onClick={handleDeleteDraft}
               className="inline-flex items-center justify-center rounded-full border border-red-200 bg-red-50 px-5 py-2.5 text-sm font-medium text-red-700 transition hover:bg-red-100">
-              Supprimer le brouillon local
+              Supprimer le brouillon de cet appareil
             </button>
+            <div className="basis-full rounded-xl border border-warm-200 bg-warm-50/75 px-3 py-2 text-sm leading-relaxed text-warm-600">
+              <span className="font-medium text-warm-800">
+                Sauvegarde portable : fichier JSON.
+              </span>{" "}
+              Le fichier exporté peut être gardé comme sauvegarde, envoyé à une
+              autre personne ou importé dans un autre navigateur.
+            </div>
           </div>
         </header>
 
