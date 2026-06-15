@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AdminPreviewViewport } from "./admin-preview-viewport";
 import { AppearanceEditor } from "./appearance-editor";
 import { ItemCard, SectionCard } from "./editor-cards";
@@ -19,6 +19,10 @@ import {
   serializeDraft,
   SITE_CONTENT_DRAFT_STORAGE_KEY,
 } from "../../lib/admin-draft-storage";
+import {
+  ADMIN_PREVIEW_SECTIONS,
+  type AdminPreviewSectionKey,
+} from "../../lib/admin-preview-sections";
 import type {
   AboutContent,
   ContactContent,
@@ -39,6 +43,20 @@ import type {
 interface ContentEditorProps {
   defaultContent: SiteContent;
 }
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const EDITOR_SECTIONS = [
+  { href: "#editor-appearance", label: "Apparence" },
+  { href: "#editor-navigation", label: "Navigation" },
+  { href: "#editor-hero", label: "Hero" },
+  { href: "#editor-reassurance", label: "Réassurance" },
+  { href: "#editor-services", label: "Prestations" },
+  { href: "#editor-process", label: "Parcours" },
+  { href: "#editor-gallery", label: "Réalisations" },
+  { href: "#editor-about", label: "À propos" },
+  { href: "#editor-contact", label: "Contact" },
+  { href: "#editor-footer", label: "Pied de page" },
+];
 
 
 function cloneContent(content: SiteContent): SiteContent {
@@ -102,6 +120,7 @@ function NavigationEditor({
 }) {
   return (
     <SectionCard
+      id="editor-navigation"
       title="Navigation"
       description="Les ancres restent fixes ; seuls les libellés visibles sont modifiables.">
       <Field
@@ -127,8 +146,9 @@ function NavigationEditor({
           }
         />
       </div>
-      {content.links.map((link) => (
-        <ItemCard key={link.id} title={`Lien ${link.label}`} id={link.id}>
+      <div className="grid gap-4 2xl:grid-cols-2">
+        {content.links.map((link) => (
+          <ItemCard key={link.id} title={`Lien ${link.label}`} id={link.id}>
           <Field
           id={`navigation-link-${link.id}-label`}
           label="Libellé"
@@ -142,8 +162,9 @@ function NavigationEditor({
             }
           />
           <ReadOnlyId label="Destination fixe" value={link.href} />
-        </ItemCard>
-      ))}
+          </ItemCard>
+        ))}
+      </div>
     </SectionCard>
   );
 }
@@ -156,7 +177,7 @@ function HeroEditor({
   onChange: (content: HeroContent) => void;
 }) {
   return (
-    <SectionCard title="Hero">
+    <SectionCard id="editor-hero" title="Hero">
       <div className="grid gap-4 md:grid-cols-3">
         <Field
           id="hero-title-prefix"
@@ -261,9 +282,10 @@ function ReassuranceEditor({
   }
 
   return (
-    <SectionCard title="Réassurance">
-      {content.items.map((item) => (
-        <ItemCard key={item.id} title={item.title} id={item.id}>
+    <SectionCard id="editor-reassurance" title="Réassurance">
+      <div className="grid gap-4 2xl:grid-cols-2">
+        {content.items.map((item) => (
+          <ItemCard key={item.id} title={item.title} id={item.id}>
           <Field
             id={`reassurance-${item.id}-title`}
             label="Titre"
@@ -278,8 +300,9 @@ function ReassuranceEditor({
             placeholder="Ex. Décrivez le bénéfice…"
             onChange={(description) => updateItem(item.id, { description })}
           />
-        </ItemCard>
-      ))}
+          </ItemCard>
+        ))}
+      </div>
     </SectionCard>
   );
 }
@@ -301,7 +324,7 @@ function ServicesEditor({
   }
 
   return (
-    <SectionCard title="Prestations">
+    <SectionCard id="editor-services" title="Prestations">
       <Field
         id="services-title"
         label="Titre de section"
@@ -309,8 +332,9 @@ function ServicesEditor({
         placeholder="Ex. Prestations"
         onChange={(title) => onChange({ ...content, title })}
       />
-      {content.items.map((item) => (
-        <ItemCard key={item.id} title={item.title} id={item.id}>
+      <div className="grid gap-4 2xl:grid-cols-2">
+        {content.items.map((item) => (
+          <ItemCard key={item.id} title={item.title} id={item.id}>
           <Field
             id={`service-${item.id}-title`}
             label="Nom de la prestation"
@@ -338,8 +362,9 @@ function ServicesEditor({
             media={item.visual}
             onChange={(visual) => updateItem(item.id, { visual })}
           />
-        </ItemCard>
-      ))}
+          </ItemCard>
+        ))}
+      </div>
     </SectionCard>
   );
 }
@@ -365,6 +390,7 @@ function ProcessEditor({
 
   return (
     <SectionCard
+      id="editor-process"
       title="Parcours"
       description="La numérotation reflète l'ordre fixe des étapes et n'est pas modifiable ici.">
       <Field
@@ -374,8 +400,9 @@ function ProcessEditor({
         placeholder="Ex. Comment se déroule une séance"
         onChange={(title) => onChange({ ...content, title })}
       />
-      {content.steps.map((step) => (
-        <ItemCard key={step.id} title={`${step.number} - ${step.title}`} id={step.id}>
+      <div className="grid gap-4 2xl:grid-cols-2">
+        {content.steps.map((step) => (
+          <ItemCard key={step.id} title={`${step.number} - ${step.title}`} id={step.id}>
           <ReadOnlyId label="Numéro fixe" value={step.number} />
           <Field
             id={`process-${step.id}-title`}
@@ -391,8 +418,9 @@ function ProcessEditor({
             placeholder="Ex. Décrivez l’étape…"
             onChange={(description) => updateStep(step.id, { description })}
           />
-        </ItemCard>
-      ))}
+          </ItemCard>
+        ))}
+      </div>
     </SectionCard>
   );
 }
@@ -414,7 +442,7 @@ function GalleryEditor({
   }
 
   return (
-    <SectionCard title="Réalisations">
+    <SectionCard id="editor-gallery" title="Réalisations">
       <Field
         id="gallery-title"
         label="Titre de section"
@@ -449,8 +477,9 @@ function GalleryEditor({
           }
         />
       </div>
-      {content.items.map((item) => (
-        <ItemCard key={item.id} title={item.caption} id={item.id}>
+      <div className="grid gap-4 2xl:grid-cols-2">
+        {content.items.map((item) => (
+          <ItemCard key={item.id} title={item.caption} id={item.id}>
           <Field
             id={`gallery-${item.id}-caption`}
             label="Légende"
@@ -471,8 +500,9 @@ function GalleryEditor({
             media={item.visual}
             onChange={(visual) => updateItem(item.id, { visual })}
           />
-        </ItemCard>
-      ))}
+          </ItemCard>
+        ))}
+      </div>
     </SectionCard>
   );
 }
@@ -485,7 +515,7 @@ function AboutEditor({
   onChange: (content: AboutContent) => void;
 }) {
   return (
-    <SectionCard title="À propos">
+    <SectionCard id="editor-about" title="À propos">
       <Field
         id="about-title"
         label="Titre"
@@ -527,7 +557,7 @@ function ContactEditor({
   onChange: (content: ContactContent) => void;
 }) {
   return (
-    <SectionCard title="Contact">
+    <SectionCard id="editor-contact" title="Contact">
       <Field
         id="contact-title"
         label="Titre"
@@ -603,7 +633,7 @@ function FooterEditor({
   onChange: (content: FooterContent) => void;
 }) {
   return (
-    <SectionCard title="Pied de page">
+    <SectionCard id="editor-footer" title="Pied de page">
       <div className="grid gap-4 md:grid-cols-2">
         <Field
           id="footer-copyright-name"
@@ -624,8 +654,9 @@ function FooterEditor({
           }
         />
       </div>
-      {content.links.map((link) => (
-        <ItemCard key={link.id} title={`Lien ${link.label}`} id={link.id}>
+      <div className="grid gap-4 2xl:grid-cols-2">
+        {content.links.map((link) => (
+          <ItemCard key={link.id} title={`Lien ${link.label}`} id={link.id}>
           <Field
             id={`footer-${link.id}-label`}
             label="Libellé"
@@ -669,8 +700,9 @@ function FooterEditor({
               }
             />
           )}
-        </ItemCard>
-      ))}
+          </ItemCard>
+        ))}
+      </div>
     </SectionCard>
   );
 }
@@ -690,7 +722,10 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
   );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [hasInvalidStoredDraft, setHasInvalidStoredDraft] = useState(false);
+  const [activeSection, setActiveSection] =
+    useState<AdminPreviewSectionKey>("hero");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const explicitNavigationUntilRef = useRef(0);
 
   useEffect(() => {
     let mounted = true;
@@ -751,6 +786,72 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
       window.removeEventListener("beforeunload", handleBeforeUnload);
     };
   }, [isDirty]);
+
+  useEffect(() => {
+    const observedSections = ADMIN_PREVIEW_SECTIONS.flatMap((section) => {
+      const element = document.getElementById(section.editorTarget);
+      return element ? [{ section, element }] : [];
+    });
+
+    if (observedSections.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      () => {
+        if (Date.now() < explicitNavigationUntilRef.current) return;
+
+        const anchorY = 160;
+        let nextSection = observedSections[0]?.section.key ?? null;
+        let smallestPositiveDistance = Number.POSITIVE_INFINITY;
+
+        for (const { section, element } of observedSections) {
+          const rect = element.getBoundingClientRect();
+          const distance = rect.top - anchorY;
+          if (distance <= 0) {
+            nextSection = section.key;
+            continue;
+          }
+
+          if (nextSection === null && distance < smallestPositiveDistance) {
+            smallestPositiveDistance = distance;
+            nextSection = section.key;
+          }
+        }
+
+        if (!nextSection) return;
+        setActiveSection((current) =>
+          current === nextSection ? current : nextSection,
+        );
+      },
+      {
+        root: null,
+        rootMargin: "-128px 0px -45% 0px",
+        threshold: [0, 0.25, 0.5, 0.75, 1],
+      },
+    );
+
+    for (const { element } of observedSections) {
+      observer.observe(element);
+    }
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
+  const handleSectionNavigation = useCallback(
+    (section: (typeof ADMIN_PREVIEW_SECTIONS)[number]) => {
+      explicitNavigationUntilRef.current = Date.now() + 2_000;
+      setActiveSection(section.key);
+      document.getElementById(section.editorTarget)?.scrollIntoView({
+        block: "start",
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "auto"
+          : "smooth",
+      });
+      window.history.replaceState(null, "", `#${section.editorTarget}`);
+    },
+    [],
+  );
 
   function updateContent(updater: (current: SiteContent) => SiteContent) {
     setContent((current) => updater(current));
@@ -905,7 +1006,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
 
   return (
     <main className="min-h-screen bg-warm-50 text-warm-800">
-      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-[1800px] px-4 py-6 sm:px-6 lg:px-8 2xl:px-10">
         <header className="mb-8 space-y-4">
           <div>
             <p className="text-sm font-medium uppercase tracking-wide text-sage-600">
@@ -1044,8 +1145,33 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
           </div>
         </header>
 
-        <div className="grid gap-8 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] xl:items-start">
-          <div className="space-y-6">
+        <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,3fr)_minmax(480px,2fr)] xl:items-start 2xl:gap-8">
+          <div className="min-w-0 space-y-6">
+            <nav
+              aria-label="Sections de l’éditeur"
+              className="sticky top-[4.75rem] z-20 rounded-2xl border border-warm-200/80 bg-white/85 p-3 shadow-[0_8px_24px_rgba(44,43,40,0.06)] backdrop-blur">
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {ADMIN_PREVIEW_SECTIONS.map((section) => (
+                  <a
+                    key={section.key}
+                    href={`#${section.editorTarget}`}
+                    aria-current={
+                      activeSection === section.key ? "true" : undefined
+                    }
+                    onClick={(event) => {
+                      event.preventDefault();
+                      handleSectionNavigation(section);
+                    }}
+                    className={`shrink-0 rounded-full border px-3 py-1.5 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300 ${
+                      activeSection === section.key
+                        ? "border-warm-800 bg-warm-800 text-porcelain"
+                        : "border-warm-200 bg-warm-50/80 text-warm-600 hover:border-sage-300 hover:bg-white hover:text-warm-900"
+                    }`}>
+                    {section.label}
+                  </a>
+                ))}
+              </div>
+            </nav>
             <AppearanceEditor
               appearance={content.appearance}
               onChange={(appearance) =>
@@ -1109,8 +1235,13 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
             />
           </div>
 
-          <aside id="preview" className="min-w-0 xl:sticky xl:top-6">
-            <AdminPreviewViewport content={content} />
+          <aside
+            id="preview"
+            className="min-w-0 xl:sticky xl:top-[5.25rem] xl:h-[calc(100vh-6.5rem)]">
+            <AdminPreviewViewport
+              content={content}
+              activeSection={activeSection}
+            />
           </aside>
         </div>
 

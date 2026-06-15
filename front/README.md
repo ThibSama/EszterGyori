@@ -6,8 +6,21 @@ Le frontend depend du package partage local `@eszter/contracts`, situe dans `../
 
 ## Commandes
 
+Depuis la racine du depot :
+
+```powershell
+npm --prefix front install
+npm run dev
+npm run build
+```
+
+La commande de developpement recommandee est `npm run dev` depuis `E:\Eszter`. Elle delegue au frontend et execute automatiquement `npm run build:contracts` avant le demarrage Next.js.
+
+Depuis `front/` directement :
+
 ```powershell
 npm install
+npm run dev
 npm run lint
 npm run build
 npm run start
@@ -15,7 +28,7 @@ npm run start
 
 `front/.npmrc` sets `install-links=true` so npm installs the local `file:../contracts` dependency as a package copy instead of a symlink. This keeps runtime dependencies such as `zod` resolvable during Next.js builds on Vercel and locally.
 
-The frontend owns compilation of the shared package during install and production build:
+The frontend owns compilation of the shared package during install, development startup, and production build:
 
 ```powershell
 npm run build:contracts
@@ -76,11 +89,11 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'
 - edition de l'apparence via une palette globale et une teinte controlee par section ;
 - reinitialisation complete qui supprime le brouillon local du navigateur et restaure `defaultSiteContent`, y compris l'apparence canonique ;
 - champs avec placeholders d'exemple uniquement, sans remplacer les labels ;
-- apercu `Telephone` et `Ordinateur` via une iframe protegee `/admin/preview` ;
+- apercu `Telephone`, `Tablette` et `Ordinateur` via une iframe protegee `/admin/preview` ;
 - aucun appel API ;
 - aucune ecriture Express.
 
-L'apercu admin recoit seulement du `SiteContent` valide par `postMessage` same-origin. Le contenu d'apercu n'est pas persiste. Les animations reveal y sont desactivees pour que toutes les sections restent visibles dans les captures, tandis que le site public conserve ses animations normales et respecte `prefers-reduced-motion`.
+L'apercu admin recoit seulement du `SiteContent` valide par `postMessage` same-origin. Le contenu d'apercu n'est pas persiste. Les dimensions logiques sont fixes a 390 x 844 pour `Telephone`, 768 x 1024 pour `Tablette` et 1440 x 900 pour `Ordinateur`. Le panneau mesure l'espace disponible avec `ResizeObserver`, puis applique `scale = min(availableWidth / deviceWidth, availableHeight / deviceHeight, 1)` au viewport complet afin de conserver les vrais breakpoints dans l'iframe. Les animations reveal y sont desactivees pour que toutes les sections restent visibles dans les captures, tandis que le site public conserve ses animations normales et respecte `prefers-reduced-motion`.
 
 Les anciens brouillons locaux valides continuent d'etre charges tels quels, meme s'ils contiennent d'anciens textes. Ils ne sont pas reecrits silencieusement. L'utilisateur peut choisir `Reinitialisation complete` pour les supprimer et revenir au contenu canonique corrige.
 

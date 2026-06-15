@@ -1,0 +1,9 @@
+{
+  "name": "eszter",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix front run dev",
+    "build": "npm --prefix front run build",
+    "lint": "npm --prefix front run lint"
+  }
+}

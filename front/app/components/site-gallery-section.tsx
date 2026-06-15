@@ -106,6 +106,7 @@ export function GallerySection({
   return (
     <section
       id="realisations"
+      data-preview-section="site-section-gallery"
       className="site-section-gallery relative z-10 py-16 md:py-32 px-4 md:px-6 overflow-hidden">
       <div className="absolute inset-0 bg-gradient-to-b from-warm-50/0 via-warm-200/60 to-warm-50/0 pointer-events-none" />
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-sage-300/50 to-transparent" />

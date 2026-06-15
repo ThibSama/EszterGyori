@@ -80,6 +80,7 @@ export function AppearanceEditor({
 
   return (
     <SectionCard
+      id="editor-appearance"
       title="Apparence"
       description="Ces réglages restent locaux tant qu'aucune publication serveur n'existe.">
       <div className="space-y-4">

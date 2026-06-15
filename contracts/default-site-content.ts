@@ -10,63 +10,63 @@ export const defaultSiteContent: SiteContent = {
     menuCloseLabel: "Fermer le menu",
     links: [
       { id: "prestations", label: "Prestations", href: "#prestations" },
-      { id: "parcours", label: "Parcours", href: "#parcours" },
+      { id: "parcours", label: "La séance", href: "#parcours" },
       { id: "realisations", label: "Réalisations", href: "#realisations" },
       { id: "a-propos", label: "À propos", href: "#a-propos" },
-      { id: "contact", label: "Prendre contact", href: "#contact" },
+      { id: "contact", label: "Me contacter", href: "#contact" },
     ],
   },
   hero: {
     title: {
       prefix: "Un maquillage permanent",
-      emphasized: "naturel",
-      suffix: ", pensé pour révéler votre visage.",
+      emphasized: "pensé pour vous",
+      suffix: ", pas pour vous transformer.",
     },
     description:
-      "Dermopigmentation des sourcils, eye-liner, lèvres et faux freckles. Des résultats doux et durables, près de Lille.",
+      "Près de Lille, je vous accompagne vers un résultat naturel, harmonieux et adapté à votre visage, à vos envies et à votre quotidien.",
     primaryCta: {
       id: "discover-services",
-      label: "Découvrir les prestations",
+      label: "Voir les prestations",
       href: "#prestations",
     },
     secondaryCta: {
       id: "contact",
-      label: "Prendre contact",
+      label: "M'écrire sur Instagram",
       href: "#contact",
     },
     visual: {
       id: "hero-placeholder",
       src: null,
-      alt: "Portrait beauté ou résultat sourcils naturels",
+      alt: "Un rendu frais, précis, naturel : comme vous, avec le détail en plus.",
     },
-    badgeLabel: "Naturel",
+    badgeLabel: "Sur mesure",
     instagramAriaLabel: "Voir le compte Instagram d'Eszter Gyori",
   },
   reassurance: {
     items: [
       {
         id: "natural-result",
-        title: "Résultat naturel",
+        title: "On part de vous",
         description:
-          "Chaque trait est pensé pour sublimer votre visage sans artificialité. L'objectif est toujours un résultat qui vous ressemble.",
+          "Je prends le temps de comprendre ce que vous aimez, ce qui vous gêne et le résultat que vous imaginez. L'idée est de sublimer vos traits, pas de les remplacer.",
       },
       {
         id: "morphological-analysis",
-        title: "Analyse morphologique",
+        title: "Un résultat à votre mesure",
         description:
-          "Avant chaque séance, une étude complète de votre visage permet de définir la forme et la teinte idéales.",
+          "Sourcils, regard, lèvres ou taches de rousseur : l'intensité, la douceur et le fini doivent s'accorder à votre visage, à votre carnation et à votre style.",
       },
       {
         id: "hygiene-precision",
-        title: "Hygiène et précision",
+        title: "Une atmosphère bienveillante",
         description:
-          "Matériel stérile à usage unique, pigments certifiés, protocoles stricts. Votre sécurité est une priorité.",
+          "Je veux que vous vous sentiez écoutée, à l'aise et libre de poser vos questions. Mon rôle est aussi de vous rassurer avant de décider.",
       },
       {
         id: "personal-support",
-        title: "Accompagnement personnalisé",
+        title: "Toujours en progression",
         description:
-          "De la première consultation jusqu'à la retouche, chaque étape est expliquée et adaptée à vos besoins.",
+          "Le maquillage permanent demande de rester curieuse, investie et formée. Je continue à faire évoluer ma pratique pour répondre au mieux aux besoins de mes clientes.",
       },
     ],
   },
@@ -77,86 +77,86 @@ export const defaultSiteContent: SiteContent = {
         id: "brows",
         title: "Sourcils",
         description:
-          "Restructuration complète ou densification naturelle. Technique adaptée à votre type de peau et à la forme de votre visage pour un résultat harmonieux.",
-        ctaLabel: "En savoir plus →",
+          "Pour des sourcils plus définis, plus équilibrés ou simplement plus présents. Je vous aide à choisir une intensité qui respecte votre visage et votre manière de vous maquiller.",
+        ctaLabel: "En parler avec moi →",
         visualKind: "brows",
         visual: {
           id: "service-brows-placeholder",
           src: null,
-          alt: "Photo à venir",
+          alt: "Sourcils sur mesure",
         },
       },
       {
         id: "eyeliner",
         title: "Eye-liner",
         description:
-          "Un trait subtil au ras des cils ou un eye-liner plus marqué selon vos envies. Le regard est immédiatement structuré et mis en valeur.",
-        ctaLabel: "En savoir plus →",
+          "Pour apporter de la présence au regard, de façon très subtile ou plus marquée selon vos envies. L'objectif est de trouver le bon équilibre pour vos yeux.",
+        ctaLabel: "En parler avec moi →",
         visualKind: "eyeliner",
         visual: {
           id: "service-eyeliner-placeholder",
           src: null,
-          alt: "Photo à venir",
+          alt: "Regard intensifié",
         },
       },
       {
         id: "lips",
         title: "Lèvres",
         description:
-          "Contour, remplissage ou candy lips. Retrouvez une couleur uniforme et un contour défini, adaptés à votre carnation naturelle.",
-        ctaLabel: "En savoir plus →",
+          "Pour des lèvres à l'apparence plus régulière, plus fraîche et doucement rehaussée. La teinte et l'intensité se choisissent avec vous, selon votre carnation et le rendu souhaité.",
+        ctaLabel: "En parler avec moi →",
         visualKind: "lips",
         visual: {
           id: "service-lips-placeholder",
           src: null,
-          alt: "Photo à venir",
+          alt: "Lèvres rehaussées",
         },
       },
       {
         id: "freckles",
         title: "Faux freckles",
         description:
-          "Des taches de rousseur délicates et réalistes, placées une à une pour un effet soleil naturel. Technique fine et personnalisée.",
-        ctaLabel: "En savoir plus →",
+          "Des taches de rousseur délicates, pensées pour un effet soleil naturel. Le rendu reste léger, harmonieux et adapté à vos traits.",
+        ctaLabel: "En parler avec moi →",
         visualKind: "freckles",
         visual: {
           id: "service-freckles-placeholder",
           src: null,
-          alt: "Photo à venir",
+          alt: "Freckles effet soleil",
         },
       },
     ],
   },
   process: {
-    title: "Comment se déroule une séance",
+    title: "Comment se passe l'échange",
     steps: [
       {
         id: "exchange-analysis",
         number: "01",
-        title: "Échange et analyse",
+        title: "Vous me parlez de vous",
         description:
-          "On discute de vos attentes et j'analyse votre visage pour définir ensemble la forme et la teinte les plus adaptées.",
+          "On commence par vos envies, vos habitudes et vos questions. Vous pouvez m'écrire simplement, même si votre idée n'est pas encore totalement précise.",
       },
       {
         id: "drawing-validation",
         number: "02",
-        title: "Dessin et validation",
+        title: "On précise le rendu",
         description:
-          "Un dessin préalable est réalisé directement sur votre peau. Rien n'est définitif tant que vous n'avez pas validé.",
+          "Je vous aide à définir une direction réaliste : plus douce, plus présente, plus structurée, toujours en accord avec votre visage.",
       },
       {
         id: "procedure",
         number: "03",
-        title: "Réalisation",
+        title: "Vous validez l'intention",
         description:
-          "La pigmentation est réalisée avec précision, dans un environnement calme et confortable. Séance d'environ 2 heures.",
+          "Avant de passer à la prestation, je m'assure que vous comprenez le résultat recherché et que vous vous sentez à l'aise avec la suite.",
       },
       {
         id: "healing-touch-up",
         number: "04",
-        title: "Cicatrisation et retouche",
+        title: "Je vous accompagne après",
         description:
-          "Le résultat final apparaît après cicatrisation. Une retouche est prévue 4 à 6 semaines après pour parfaire le résultat.",
+          "Je vous explique les recommandations adaptées à la prestation choisie et je reste disponible si vous avez des questions.",
       },
     ],
   },
@@ -165,87 +165,87 @@ export const defaultSiteContent: SiteContent = {
     items: [
       {
         id: "natural-brows",
-        caption: "Sourcils naturels",
+        caption: "Sourcils restructurés",
         label: "Avant / Après",
         visualKind: "beforeAfterBrows",
         featured: true,
         visual: {
           id: "gallery-natural-brows-placeholder",
           src: null,
-          alt: "Avant / Après",
+          alt: "Avant / après sourcils restructurés",
         },
       },
       {
         id: "healed-brows",
-        caption: "Sourcils cicatrisés",
-        label: "Cicatrisation",
+        caption: "Résultat naturel",
+        label: "Harmonie",
         visualKind: "healedBrows",
         visual: {
           id: "gallery-healed-brows-placeholder",
           src: null,
-          alt: "Cicatrisation",
+          alt: "Résultat sourcils naturel",
         },
       },
       {
         id: "delicate-eyeliner",
-        caption: "Eye-liner délicat",
-        label: "Résultat",
+        caption: "Intensité du regard",
+        label: "Regard",
         visualKind: "eyeliner",
         visual: {
           id: "gallery-delicate-eyeliner-placeholder",
           src: null,
-          alt: "Résultat",
+          alt: "Intensité du regard",
         },
       },
       {
         id: "powder-lips",
-        caption: "Lèvres poudrées",
+        caption: "Lèvres rehaussées",
         label: "Avant / Après",
         visualKind: "lips",
         visual: {
           id: "gallery-powder-lips-placeholder",
           src: null,
-          alt: "Avant / Après",
+          alt: "Avant / après lèvres rehaussées",
         },
       },
       {
         id: "freckles",
-        caption: "Faux freckles",
-        label: "Résultat",
+        caption: "Faux freckles naturels",
+        label: "Effet soleil",
         visualKind: "freckles",
         visual: {
           id: "gallery-freckles-placeholder",
           src: null,
-          alt: "Résultat",
+          alt: "Faux freckles effet soleil",
         },
       },
     ],
     instagramCta: {
       id: "instagram-more",
-      label: "Voir plus sur Instagram",
+      label: "Voir les avant / après sur Instagram",
       href: "https://www.instagram.com/eg_maquillagepermanent/",
     },
   },
   about: {
-    title: "Eszter Gyori",
+    title: "Sziasztok, moi c'est Eszter",
     portrait: {
       id: "eszter-portrait-placeholder",
       src: null,
-      alt: "Portrait professionnel d'Eszter",
+      alt: "Eszter Gyori, spécialiste du maquillage permanent près de Lille",
     },
     paragraphs: [
-      "Spécialiste en dermopigmentation installée près de Lille, je pratique le maquillage permanent avec une approche centrée sur le naturel et la précision.",
-      "Mon objectif est simple : sublimer vos traits sans les transformer. Chaque visage est unique, et chaque prestation est pensée sur mesure, dans le respect de votre morphologie et de vos envies.",
-      "Formée aux techniques les plus récentes, je m'engage à travailler avec des pigments certifiés et du matériel stérile à usage unique, pour votre sécurité et votre tranquillité d'esprit.",
+      "Je suis originaire de Hongrie. Après des études en ressources humaines, j'ai suivi ce qui m'attirait depuis longtemps : la beauté, les visages, les détails qui donnent confiance.",
+      "À Paris, où j'ai vécu 12 ans, j'ai obtenu mon diplôme de maquilleuse professionnelle et j'ai exercé ce métier pendant 10 ans. J'ai ensuite posé mes valises à Lille, puis choisi de me challenger avec le maquillage permanent.",
+      "Ce que je recherche reste le même : sublimer sans transformer. Je vous reçois dans une atmosphère bienveillante, avec l'envie de vous écouter, de vous guider et de vous aider à vous sentir encore mieux dans votre peau.",
     ],
   },
   contact: {
-    title: "Échangeons sur votre projet",
+    title: "Écrivez-moi, on en parle simplement",
     description:
-      "Vous avez des questions ou souhaitez prendre rendez-vous ? Je vous réponds avec plaisir pour discuter de vos envies et vous accompagner dans votre démarche.",
+      "Le plus simple est de me contacter sur Instagram. Présentez-vous, dites-moi la prestation qui vous attire, le résultat que vous aimeriez obtenir et les questions que vous avez. Je vous répondrai avec une première orientation, sans pression.",
     instagramCta: {
       id: "write-instagram",
-      label: "Écrire sur Instagram",
+      label: "M'écrire en message privé",
       href: "https://www.instagram.com/eg_maquillagepermanent/",
     },
     emailCta: {
@@ -263,7 +263,7 @@ export const defaultSiteContent: SiteContent = {
         label: "Instagram",
         href: "https://www.instagram.com/eg_maquillagepermanent/",
       },
-      { id: "contact", label: "Contact", href: "mailto:contact@esztergyori.com" },
+      { id: "contact", label: "Me contacter", href: "mailto:contact@esztergyori.com" },
     ],
   },
 };

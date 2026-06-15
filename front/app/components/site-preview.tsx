@@ -39,7 +39,9 @@ function GlassCard({
 
 function HeroSection({ content }: { content: HeroContent }) {
   return (
-    <section className="site-section-hero relative z-10 min-h-svh md:min-h-[90vh] flex items-center pt-20 md:pt-24 pb-12 md:pb-16 px-4 md:px-6 overflow-hidden">
+    <section
+      data-preview-section="site-section-hero"
+      className="site-section-hero relative z-10 min-h-svh md:min-h-[90vh] flex items-center pt-20 md:pt-24 pb-12 md:pb-16 px-4 md:px-6 overflow-hidden">
       <div className="ambient-shape absolute top-[8%] left-[2%] w-[550px] h-[550px] rounded-full bg-sage-300/65 blur-[100px] pointer-events-none" />
       <div
         className="ambient-drift absolute bottom-[0%] right-[5%] w-[500px] h-[500px] rounded-full bg-mist-300/50 blur-[90px] pointer-events-none"
@@ -116,7 +118,9 @@ function ReassuranceSection({
   disableRevealAnimations?: boolean;
 }) {
   return (
-    <section className="site-section-reassurance relative z-10 py-16 md:py-32 px-4 md:px-6">
+    <section
+      data-preview-section="site-section-reassurance"
+      className="site-section-reassurance relative z-10 py-16 md:py-32 px-4 md:px-6">
       <div className="absolute inset-0 bg-gradient-to-b from-warm-50/0 via-sage-100/70 to-warm-50/0 pointer-events-none" />
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-warm-300/60 to-transparent" />
       <h2 className="sr-only">Pourquoi choisir Eszter Gyori</h2>
@@ -198,6 +202,7 @@ function ServicesSection({
   return (
     <section
       id="prestations"
+      data-preview-section="site-section-services"
       className="site-section-services relative z-10 py-16 md:py-32 px-4 md:px-6 overflow-hidden">
       <div className="absolute inset-0 bg-gradient-to-br from-warm-200/50 via-transparent to-sage-100/40 pointer-events-none" />
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-sage-300/50 to-transparent" />
@@ -251,6 +256,7 @@ function ProcessSection({
   return (
     <section
       id="parcours"
+      data-preview-section="site-section-process"
       className="site-section-process relative z-10 py-16 md:py-32 px-4 md:px-6 overflow-hidden">
       <div className="absolute inset-0 bg-gradient-to-b from-sage-100/60 via-sage-100/80 to-sage-100/50 pointer-events-none" />
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-warm-300/60 to-transparent" />
@@ -300,6 +306,7 @@ function AboutSection({
   return (
     <section
       id="a-propos"
+      data-preview-section="site-section-about"
       className="site-section-about relative z-10 py-16 md:py-32 px-4 md:px-6 overflow-hidden">
       <div className="absolute inset-0 bg-gradient-to-b from-sage-100/50 via-warm-200/60 to-warm-100/40 pointer-events-none" />
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-warm-300/60 to-transparent" />
@@ -348,6 +355,7 @@ function ContactSection({
   return (
     <section
       id="contact"
+      data-preview-section="site-section-contact"
       className="site-section-contact relative z-10 py-16 md:py-32 px-4 md:px-6 overflow-hidden">
       <div className="absolute inset-0 bg-gradient-to-br from-sage-100/60 via-mist-100/50 to-warm-200/50 pointer-events-none" />
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-sage-300/50 to-transparent" />
@@ -392,7 +400,9 @@ function ContactSection({
 
 function Footer({ content }: { content: FooterContent }) {
   return (
-    <footer className="site-section-footer relative z-10 border-t border-warm-300/50 py-8 md:py-10 px-4 md:px-6 bg-gradient-to-b from-warm-100/60 to-warm-200/40">
+    <footer
+      data-preview-section="site-section-footer"
+      className="site-section-footer relative z-10 border-t border-warm-300/50 py-8 md:py-10 px-4 md:px-6 bg-gradient-to-b from-warm-100/60 to-warm-200/40">
       <div className="max-w-6xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
         <p className="text-sm text-warm-600">
           &copy; {new Date().getFullYear()} {content.copyrightName}.{" "}

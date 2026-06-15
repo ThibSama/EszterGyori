@@ -69,10 +69,21 @@ test("admin preview exposes phone, tablet and desktop modes", () => {
   assert.match(source, /type PreviewMode = "phone" \| "tablet" \| "desktop"/);
   assert.match(source, /phone: \{ label: "Téléphone", width: 390, height: 844 \}/);
   assert.match(source, /tablet: \{ label: "Tablette", width: 768, height: 1024 \}/);
-  assert.match(source, /desktop: \{ label: "Ordinateur", width: 1280, height: 860 \}/);
-  assert.match(source, /aria-pressed=\{mode === nextMode\}/);
+  assert.match(source, /desktop: \{ label: "Ordinateur", width: 1440, height: 900 \}/);
+  assert.match(source, /availableSize\.width/);
+  assert.match(source, /availableSize\.height/);
+  assert.match(source, /ResizeObserver/);
+  assert.match(source, /role="tablist"/);
+  assert.match(source, /role="tab"/);
+  assert.match(source, /aria-selected=\{mode === nextMode\}/);
+  assert.match(source, /grid w-full max-w-sm grid-cols-3/);
+  assert.match(source, /whitespace-nowrap/);
   assert.match(source, /title="Aperçu en direct du site"/);
-  assert.match(source, /flex-wrap/);
+  assert.match(source, /tabIndex=\{-1\}/);
+  assert.match(source, /scrolling="no"/);
+  assert.match(source, /pointer-events-none/);
+  assert.doesNotMatch(source, /flex-wrap/);
+  assert.doesNotMatch(source, /0\.25/);
 });
 
 test("responsive admin primitives wrap technical ids and color values", () => {
@@ -91,4 +102,18 @@ test("public anchor targets keep space below the fixed navbar", () => {
   assert.match(globalsSource, /#realisations/);
   assert.match(globalsSource, /#a-propos/);
   assert.match(globalsSource, /#contact/);
+});
+
+test("admin workspace uses a wide 60/40 editor and preview layout", () => {
+  const editorSource = readAppFile("components", "admin", "content-editor.tsx");
+  const layoutSource = readAppFile("admin", "(protected)", "layout.tsx");
+
+  assert.match(editorSource, /max-w-\[1800px\]/);
+  assert.match(editorSource, /grid min-w-0 gap-6/);
+  assert.match(editorSource, /<div className="min-w-0 space-y-6">/);
+  assert.match(editorSource, /xl:grid-cols-\[minmax\(0,3fr\)_minmax\(480px,2fr\)\]/);
+  assert.match(editorSource, /xl:h-\[calc\(100vh-6\.5rem\)\]/);
+  assert.match(editorSource, /Sections de l’éditeur/);
+  assert.match(layoutSource, /sticky top-0/);
+  assert.match(layoutSource, /max-w-\[1800px\]/);
 });

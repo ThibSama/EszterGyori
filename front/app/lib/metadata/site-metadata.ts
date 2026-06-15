@@ -7,7 +7,7 @@ export const SITE_NAME = "Eszter Gyori";
 export const SITE_TITLE = "Eszter Gyori — Maquillage permanent à Lille";
 export const SITE_TITLE_TEMPLATE = "%s | Eszter Gyori";
 export const SITE_DESCRIPTION =
-  "Maquillage permanent et dermopigmentation près de Lille : sourcils, eye-liner, lèvres et faux freckles pour des résultats naturels.";
+  "Maquillage permanent près de Lille : sourcils, regard, lèvres et faux freckles pour un résultat naturel, harmonieux et personnalisé.";
 
 export const SOCIAL_IMAGE = {
   url: "/opengraph-image",

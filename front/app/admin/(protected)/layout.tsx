@@ -17,8 +17,8 @@ export default async function ProtectedAdminLayout({
 
   return (
     <>
-      <div className="border-b border-warm-200 bg-white/85 px-4 py-3 text-warm-800 shadow-sm backdrop-blur">
-        <div className="mx-auto flex max-w-7xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="sticky top-0 z-50 border-b border-warm-200 bg-white/85 px-4 py-3 text-warm-800 shadow-sm backdrop-blur">
+        <div className="mx-auto flex max-w-[1800px] flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:px-2 2xl:px-4">
           <p className="text-sm font-medium">Administration Eszter</p>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <Link
