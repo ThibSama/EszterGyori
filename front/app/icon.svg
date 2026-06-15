@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Eszter Gyori">
+  <rect width="64" height="64" rx="18" fill="#F5F4F1"/>
+  <path d="M16 48V16h29v7H25v6h17v7H25v5h21v7H16Z" fill="#2C2B28"/>
+  <path d="M46 15c5 4 7 10 5 17-1 5-5 9-10 11 8-1 15-7 17-16 1-7-3-12-12-12Z" fill="#7E8D87"/>
+</svg>
