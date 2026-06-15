@@ -940,9 +940,16 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
                 </code>
               </div>
             </div>
-            <p className="mt-3 text-sm text-warm-600">{statusMessage}</p>
+            <p
+              className="mt-3 text-sm text-warm-600"
+              role="status"
+              aria-live="polite">
+              {statusMessage}
+            </p>
             {errorMessage && (
-              <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <div
+                role="alert"
+                className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 {errorMessage}
                 {hasInvalidStoredDraft && (
                   <span className="block pt-1">
