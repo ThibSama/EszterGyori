@@ -29,9 +29,22 @@ and, since ESZ-025/026, the authenticated surface:
 - `POST /api/auth/login`
 - `POST /api/auth/logout`
 
-Everything else returns a structured JSON 404, including the not-yet-implemented
-`/api/admin/*` routes. That 404 is itself frozen, so accidentally shipping a half-built
-admin route is a test failure rather than a surprise.
+and, since Package 3.1 (ESZ-030/031/032/033), the authenticated content surface:
+
+- `GET /api/admin/content/draft` — read the server draft
+- `PUT /api/admin/content/draft` — replace it, with an `expectedRevision` precondition
+- `POST /api/admin/content/publish` — publish the stored draft
+- `POST /api/admin/content/reset` — rebuild the draft from published content
+
+Everything else returns a structured JSON 404. `/api/admin/media` is the only
+unimplemented route left, and that 404 is itself frozen, so accidentally shipping a
+half-built admin route is a test failure rather than a surprise.
+
+Package 3.1 also added `REVISION_CONFLICT` to the error codes and one response header,
+`x-content-revision`. Both exist to keep the error envelope closed: a caller that loses
+an optimistic-concurrency race needs to know which revision it lost to, and the
+alternatives were widening the frozen envelope for one endpoint family or making the
+client issue a second request to find out.
 
 The auth routes entered this document **before** they existed in PHP, which is the
 ordering `docs/hetzner-target-architecture.md` §6 requires and the reason the contract

@@ -28,12 +28,33 @@ final class ContentValidator
     public const TARGET_SERVER_DRAFT_ENVELOPE = 'serverDraftEnvelope';
     public const TARGET_SITE_CONTENT_DRAFT = 'siteContentDraft';
 
-    /** target => [schema artifact, envelope timestamp field or null] */
+    /**
+     * `PUT /api/admin/content/draft` (ESZ-031).
+     *
+     * A request body, not an envelope: it nests a whole `SiteContent` under
+     * `/content` like the stored envelopes do, but carries `expectedRevision`
+     * instead of a timestamp. It is a validation target rather than a bare schema
+     * check because the nested document must pass the **semantic** rules too, and
+     * running them here is what makes a bad save a 400 the caller can fix rather
+     * than a 500 raised later by the storage layer.
+     */
+    public const TARGET_ADMIN_DRAFT_SAVE_REQUEST = 'adminDraftSaveRequest';
+
+    /**
+     * target => [schema artifact, envelope timestamp field or null, JSON pointer
+     * to the SiteContent document, or '' when the document is the root]
+     *
+     * The last two were one flag until ESZ-031. They are separate now because the
+     * save request nests its content without carrying a timestamp, so "has a
+     * timestamp to check" and "the content is nested" stopped being the same
+     * question.
+     */
     private const TARGETS = [
-        self::TARGET_SITE_CONTENT => ['site-content.input.schema.json', null],
-        self::TARGET_PUBLISHED_ENVELOPE => ['published-content-envelope.input.schema.json', 'publishedAt'],
-        self::TARGET_SERVER_DRAFT_ENVELOPE => ['server-draft-envelope.input.schema.json', 'updatedAt'],
-        self::TARGET_SITE_CONTENT_DRAFT => ['site-content-draft.input.schema.json', 'savedAt'],
+        self::TARGET_SITE_CONTENT => ['site-content.input.schema.json', null, ''],
+        self::TARGET_PUBLISHED_ENVELOPE => ['published-content-envelope.input.schema.json', 'publishedAt', '/content'],
+        self::TARGET_SERVER_DRAFT_ENVELOPE => ['server-draft-envelope.input.schema.json', 'updatedAt', '/content'],
+        self::TARGET_SITE_CONTENT_DRAFT => ['site-content-draft.input.schema.json', 'savedAt', '/content'],
+        self::TARGET_ADMIN_DRAFT_SAVE_REQUEST => ['admin-draft-save-request.schema.json', null, '/content'],
     ];
 
     public function __construct(
@@ -62,7 +83,7 @@ final class ContentValidator
             throw new \InvalidArgumentException("Unknown validation target: {$target}");
         }
 
-        [$schemaFile, $timestampField] = self::TARGETS[$target];
+        [$schemaFile, $timestampField, $contentPrefix] = self::TARGETS[$target];
 
         $structuralIssues = $this->structural->validate($document, $schemaFile);
         if ($structuralIssues !== []) {
@@ -76,10 +97,9 @@ final class ContentValidator
         }
 
         /** @var array<string, mixed> $document */
-        $isEnvelope = $timestampField !== null;
-        $contentPrefix = $isEnvelope ? '/content' : '';
+        $nested = $contentPrefix !== '';
 
-        $normalized = $isEnvelope
+        $normalized = $nested
             ? $this->normalizeEnvelope($document)
             : $this->normalizeContent($document);
 
@@ -91,7 +111,7 @@ final class ContentValidator
         }
 
         /** @var mixed $content */
-        $content = $isEnvelope ? ($normalized['content'] ?? null) : $normalized;
+        $content = $nested ? ($normalized['content'] ?? null) : $normalized;
 
         if (\is_array($content)) {
             /** @var array<string, mixed> $content */

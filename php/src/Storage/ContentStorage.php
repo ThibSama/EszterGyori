@@ -19,8 +19,18 @@ use Eszter\Support\Clock;
  *
  * `revision` is a non-negative integer and the **only** input to the
  * `"published-<revision>"` ETag, so a write that changes content without bumping
- * it leaves every cache serving the old document indefinitely. Nothing here bumps
- * it implicitly; callers own that, and the publish path that will do so is ESZ-013+.
+ * it leaves every cache serving the old document indefinitely.
+ *
+ * Since ESZ-031 the sequence is **shared** by both files and moved only by the
+ * three operations below: `draft.revision` is the head, `published.revision` is
+ * the draft head that was published, and `published.revision <= draft.revision`
+ * holds at all times. The rationale is frozen in the HTTP contract as
+ * `contentRevisionSemantics`; the short version is that two independent counters
+ * cannot answer "is this draft published?", and one shared sequence can.
+ *
+ * {@see writeDraft()} and {@see writePublished()} still write whatever envelope
+ * they are given, revision included. They are not the contracted path and no
+ * route reaches them.
  *
  * ## Strict fail-fast
  *
@@ -171,12 +181,13 @@ final class ContentStorage implements PublishedContentReader
     }
 
     /**
-     * Validates then atomically replaces the draft envelope.
+     * Validates then atomically replaces the draft envelope, unconditionally.
      *
-     * No HTTP route reaches this yet — `/api/admin/content/draft` is frozen at 404
-     * until it is added to the contract first (`docs/contract-freeze.md`). The
-     * method exists so the storage layer is complete and testable, not so it can
-     * be called from a request.
+     * No HTTP route reaches this. The contracted write path is
+     * {@see saveDraft()}, which additionally enforces the optimistic-concurrency
+     * precondition; this one exists so the storage layer is complete and
+     * testable, and so a fixture can put storage into a known state without
+     * having to satisfy a precondition first.
      */
     public function writeDraft(mixed $envelope): void
     {
@@ -191,6 +202,232 @@ final class ContentStorage implements PublishedContentReader
         $this->lock->withLock(true, function () use ($envelope): void {
             $this->writeEnvelope(self::ROLE_PUBLISHED, $envelope);
         });
+    }
+
+    // ── The contracted content operations (ESZ-031/032/033) ─────────────────
+    //
+    // All three live here rather than in their endpoints for one reason:
+    // {@see FileLock} is not reentrant, so a read-modify-write cannot be
+    // assembled from the public read and write methods above without releasing
+    // the lock in the middle. The lock is this class's, and so is every
+    // operation that has to hold it across more than one step.
+    //
+    // Each one follows the same shape — acquire exclusive, read the
+    // authoritative draft, check the precondition, write, re-read — and every
+    // step is inside the same acquisition. `contentRevisionSemantics` in the
+    // HTTP contract is the specification these implement.
+
+    /**
+     * Replaces the draft with $content, provided the head is still $expectedRevision.
+     *
+     * $content must already have passed contract validation: this is the storage
+     * layer, and a document that fails validation *here* is a fault, reported as
+     * one. The endpoint validates what the caller sent so that a bad document is
+     * the caller's 400 rather than this method's 500.
+     *
+     * @param array<string, mixed> $content A complete, contract-valid SiteContent.
+     * @return array<string, mixed> The stored draft envelope at its new revision.
+     * @throws RevisionConflictException Before anything is written.
+     */
+    public function saveDraft(int $expectedRevision, array $content): array
+    {
+        $this->prepareDirectories();
+
+        /** @var array<string, mixed> */
+        return $this->lock->withLock(true, function () use ($expectedRevision, $content): array {
+            $head = $this->revisionOf($this->readOrSeedLocked(self::ROLE_DRAFT), self::ROLE_DRAFT);
+            $this->assertRevisionMatches($expectedRevision, $head);
+
+            $this->writeEnvelope(self::ROLE_DRAFT, [
+                'schemaVersion' => $this->artifacts->contentSchemaVersion(),
+                'revision' => $head + 1,
+                'updatedAt' => $this->clock->nowIso(),
+                'content' => $content,
+            ]);
+
+            // Re-read rather than returning what was just built: the caller gets
+            // the document as a subsequent reader would see it, normalisation
+            // included, so the response cannot describe a file that is not there.
+            return $this->readEnvelope(self::ROLE_DRAFT);
+        });
+    }
+
+    /**
+     * Publishes the stored draft.
+     *
+     * The draft is re-read and re-validated inside this lock acquisition, and the
+     * document that comes back is the one that gets published. Nothing the caller
+     * sent participates: publish takes what is stored.
+     *
+     * `published.revision` becomes the draft head that was published — it is not
+     * incremented — so republishing an unchanged draft is idempotent and a
+     * publish that advances the site always retires the previous ETag. See
+     * `contentRevisionSemantics` for why that is the frozen choice.
+     *
+     * The only mutation is a single `rename()` at the end of
+     * {@see AtomicJsonFile::write()}, which is what makes the operation
+     * all-or-nothing: a failure anywhere before it leaves the previous published
+     * envelope readable and byte-identical.
+     *
+     * @return array<string, mixed> The stored published envelope.
+     * @throws RevisionConflictException Before anything is written.
+     */
+    public function publishDraft(int $expectedRevision): array
+    {
+        $this->prepareDirectories();
+
+        /** @var array<string, mixed> */
+        return $this->lock->withLock(true, function () use ($expectedRevision): array {
+            // Reading is validating: readEnvelope() raises a StorageException on a
+            // draft that no longer satisfies the contract, so an unpublishable
+            // document stops the publish instead of becoming published.
+            $draft = $this->readOrSeedLocked(self::ROLE_DRAFT);
+            $head = $this->revisionOf($draft, self::ROLE_DRAFT);
+            $this->assertRevisionMatches($expectedRevision, $head);
+
+            /** @var mixed $content */
+            $content = $draft['content'] ?? null;
+
+            if (!\is_array($content)) {
+                // Unreachable through readEnvelope(), which validated the draft
+                // against a schema requiring `content`. Stated so the published
+                // document can never be built from something that is not one.
+                throw new StorageException(
+                    StorageException::VALIDATION_FAILED,
+                    'The stored draft carries no content object to publish.',
+                    self::ROLE_DRAFT,
+                );
+            }
+
+            $this->writeEnvelope(self::ROLE_PUBLISHED, [
+                'schemaVersion' => $this->artifacts->contentSchemaVersion(),
+                'revision' => $head,
+                'publishedAt' => $this->clock->nowIso(),
+                'content' => $content,
+            ]);
+
+            return $this->readEnvelope(self::ROLE_PUBLISHED);
+        });
+    }
+
+    /**
+     * Rebuilds the draft from the current published content.
+     *
+     * Published content is **read** here and never written: this method touches
+     * `draft.json` alone, so resetting an editor's work can never change what the
+     * public site serves or move the published revision.
+     *
+     * The rebuilt draft takes the next revision like any other draft write. A
+     * reset that left the head where it was would be the one draft mutation
+     * invisible to the concurrency check, and a concurrent editor's next save
+     * would silently undo it.
+     *
+     * @return array<string, mixed> The stored draft envelope at its new revision.
+     * @throws RevisionConflictException Before anything is written.
+     */
+    public function resetDraftToPublished(int $expectedRevision): array
+    {
+        $this->prepareDirectories();
+
+        /** @var array<string, mixed> */
+        return $this->lock->withLock(true, function () use ($expectedRevision): array {
+            $head = $this->revisionOf($this->readOrSeedLocked(self::ROLE_DRAFT), self::ROLE_DRAFT);
+            $this->assertRevisionMatches($expectedRevision, $head);
+
+            $published = $this->readOrSeedLocked(self::ROLE_PUBLISHED);
+            /** @var mixed $content */
+            $content = $published['content'] ?? null;
+
+            if (!\is_array($content)) {
+                throw new StorageException(
+                    StorageException::VALIDATION_FAILED,
+                    'The stored published envelope carries no content object to reset to.',
+                    self::ROLE_PUBLISHED,
+                );
+            }
+
+            $this->writeEnvelope(self::ROLE_DRAFT, [
+                'schemaVersion' => $this->artifacts->contentSchemaVersion(),
+                'revision' => $head + 1,
+                'updatedAt' => $this->clock->nowIso(),
+                'content' => $content,
+            ]);
+
+            return $this->readEnvelope(self::ROLE_DRAFT);
+        });
+    }
+
+    /**
+     * The draft head, for a caller that needs it without changing anything.
+     *
+     * Taken under the shared lock, so it never observes a half-written draft. It
+     * is a snapshot the instant it is returned and must never be used as the
+     * input to a write — the write paths above re-read the head under their own
+     * exclusive lock precisely so that no decision depends on a value read
+     * outside the lock that acts on it.
+     */
+    public function draftRevision(): int
+    {
+        return $this->revisionOf($this->read(self::ROLE_DRAFT), self::ROLE_DRAFT);
+    }
+
+    /**
+     * @throws RevisionConflictException
+     */
+    private function assertRevisionMatches(int $expected, int $head): void
+    {
+        if ($expected !== $head) {
+            throw new RevisionConflictException($expected, $head);
+        }
+    }
+
+    /**
+     * Reads one role, seeding it if absent, **assuming the lock is already held**.
+     *
+     * The public {@see read()} cannot be reused inside a locked closure: it takes
+     * the lock itself, and {@see FileLock} refuses to nest rather than silently
+     * releasing the outer one.
+     *
+     * @return array<string, mixed>
+     */
+    private function readOrSeedLocked(string $role): array
+    {
+        if (!is_file($this->descriptor($role)['path'])) {
+            $this->writeEnvelope($role, $this->seedEnvelope($role));
+        }
+
+        return $this->readEnvelope($role);
+    }
+
+    /**
+     * @param array<string, mixed> $envelope
+     */
+    private function revisionOf(array $envelope, string $role): int
+    {
+        /** @var mixed $revision */
+        $revision = $envelope['revision'] ?? null;
+
+        if (!\is_int($revision) || $revision < 0) {
+            // Unreachable through readEnvelope(), whose schema pins revision to a
+            // non-negative integer. Stated anyway: every revision decision below
+            // is arithmetic, and arithmetic on a non-integer is how a sequence
+            // silently stops being one.
+            throw new StorageException(
+                StorageException::VALIDATION_FAILED,
+                "The stored {$role} envelope carries no usable revision.",
+                $role,
+            );
+        }
+
+        return $revision;
+    }
+
+    /** The directory and filesystem checks every write path needs before locking. */
+    private function prepareDirectories(): void
+    {
+        $this->ensureDirectory($this->contentDirectory);
+        $this->ensureDirectory($this->tmpDirectory);
+        $this->assertSameFilesystem();
     }
 
     /** @return array{role: string, path: string, target: string, timestampField: string} */

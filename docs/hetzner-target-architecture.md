@@ -43,7 +43,7 @@ Everything below runs today and is covered by passing gates:
 | Component | State |
 | --- | --- |
 | `contracts/` | TypeScript + Zod source of truth; generated JSON Schema, semantic rules, parity corpus and HTTP contract committed under `contracts/generated/`. |
-| `front/` | Next.js 16 app, built with `output: "export"`. Every route is `○ (Static)`; there is no middleware, no route handler and no server-only dependency. Drafts still live in browser `localStorage`. Gate `front:export` asserts all of it. |
+| `front/` | Next.js 16 app, built with `output: "export"`. Every route is `○ (Static)`; there is no middleware, no route handler and no server-only dependency. Since Package 3.2 the editor loads and writes the **server** draft through `/api/admin/content/*`, signs in through `/api/auth/login`, and keeps `localStorage` only as an explicit backup the admin has to ask for. Gate `front:export` asserts all of it. |
 | `php/` | PHP 8.2+ backend, and since ESZ-015 the **only** one. Front controller, router, request ids, JSON error envelopes, file-based configuration, structured logging, contract-driven validation replaying the parity corpus 39/39, atomic `draft.json` / `published.json` storage with `flock` (shared for reads, exclusive for seeding and writes) and strict fail-fast, plus `GET /api/health`, `GET /api/content` and — since ESZ-021 — `GET|HEAD /` replaying the whole of `http-contract.json` with **no exemptions**. Since ESZ-025/026 also `GET /api/auth/session`, `POST /api/auth/login` and `POST /api/auth/logout`, server-enforced. Every other `/api` path answers the frozen JSON 404. No media, no cron. |
 | SQL | `php/migrations/` — ordered, forward-only, individually idempotent files applied by `php/bin/migrate.php` and recorded in `schema_migrations` with their checksums. `admin_accounts` and `admin_sessions` only; no booking, settings or notification tables, because none of those features exists. Gates `sql:migrations` and `sql:integration` run against a disposable MySQL when `ESZTER_TEST_DB_DSN` names one, and report NOT RUN otherwise. |
 | Admin identity | `php/bin/provision-admin.php`. Accounts are created by an operator, never by a migration and never at boot: a seeded default account would be identical on every deployment. The password is read from a terminal with echo off or from stdin, never from an argument. |
@@ -73,8 +73,10 @@ What remains owed, in the order it matters:
 
 - **Login throttling.** §6 asks for rate-limited attempts keyed by account and by source
   address. Not built. Everything else §6 specifies is.
-- **The browser half of `/admin`.** `/admin/login` still renders no form, so nothing in a
-  browser can sign in yet even though the API accepts it.
+- ~~**The browser half of `/admin`.**~~ Built (Package 3.2). `/admin/login` posts to
+  `/api/auth/login`, the editor reads and writes the server draft, and publish and reset
+  call their endpoints rather than re-implementing them. Still unproven *in a browser*:
+  `browser:admin` needs a deployed origin and a runner (§14).
 - **Deployment.** Still none, so `smoke:http`, `browser:*` and `security:config` remain
   NOT RUN and no `.htaccess` has been executed by a real Apache (§14).
 
@@ -176,7 +178,7 @@ Editorial content stays in **JSON files**, exactly as today. It is not moved int
 | Concurrency | `flock()` on `data/locks/content.lock`, held for the whole read-modify-write. This closes open question 1 of `docs/runtime-inventory.md` §12. |
 | Size cap | 1 MB, ported from `MAX_CONTENT_FILE_BYTES`, checked before the file is read. |
 | Seeding | Idempotent. A missing file is seeded from the canonical defaults; an existing file is **validated, never overwritten**. A file that exists but cannot be validated aborts the boot rather than being replaced (Package 1.1, strict fail-fast). |
-| Revision | Every write that changes text or appearance increments `revision`. Non-negotiable: `revision` is the sole input to the `"published-<revision>"` ETag. |
+| Revision | **One sequence, shared by both files** (frozen in Package 3.1 as `contentRevisionSemantics`). `draft.revision` is the head and moves on every draft write; `published.revision` is set *to* the draft head that was published, so it is not a count of publishes; `published.revision <= draft.revision` always. Non-negotiable: `revision` is the sole input to the `"published-<revision>"` ETag. |
 
 **Why JSON and not SQL.** The content document is a single versioned artifact that is
 read whole, written whole, and already has a frozen schema plus an executable parity
@@ -196,10 +198,26 @@ The lifecycle from `docs/backend-target-architecture.md` is unchanged and bindin
 canonical defaults ─seed/fallback─▶ server draft ─explicit publish─▶ published content
 ```
 
-Saving a draft must not alter the public site. Publishing is an explicit, validated,
-revision-bumping copy. Today's admin drafts live in browser `localStorage`; Phase 1
-moves them to `data/content/draft.json` behind authentication, which is what makes the
-CMS usable from more than one device.
+Saving a draft must not alter the public site. Publishing is an explicit, validated
+copy that moves `published.revision` up to the draft head it published.
+
+> **Built (Packages 3.1 and 3.2).** `data/content/draft.json` is written behind
+> authentication through `/api/admin/content/*`, which is what makes the CMS usable
+> from more than one device, and since Package 3.2 the browser editor is the client of
+> those routes: it loads the draft on entry, saves with the `expectedRevision` it was
+> handed, and treats a 409 as a conflict to *reconcile* rather than a write to retry: it
+> backs the local draft up, re-reads the server draft's content, merges the two three-way
+> against the base it loaded, and writes only a clean merge — once. A revision becomes
+> authoritative only from an envelope that carried its content, never from the header on
+> a refusal.
+> `localStorage` keeps one job, explicit backup, and is never read on load.
+>
+> One clarification the original sentence left open: it described publishing as
+> "revision-bumping", which is true of the *published* file's value and would be
+> misleading as a rule. Publishing does not increment a counter — it copies the draft
+> head across — so republishing an unchanged draft is idempotent and invalidates no
+> cache, while a publish that actually advances the site always retires the previous
+> ETag. `contentRevisionSemantics` carries the full reasoning.
 
 ---
 
@@ -323,7 +341,7 @@ single most important correction in this document.
 | Session | JWT HS256 cookie signed by Next (`jose`) | **Built (ESZ-025).** Opaque 256-bit random id, server-side record in `admin_sessions`, `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, no `Domain`, and the `__Host-` name prefix so the browser enforces the last three itself. Two deadlines: an idle timeout that slides forward, and an absolute ceiling that never does. The id rotates on login and the pre-login row is deleted; logout deletes the row **before** expiring the cookie, so a replayed cookie names nothing. |
 | Password | scrypt via `node:crypto` | **Built (ESZ-024).** `password_hash()` / `password_verify()` with `PASSWORD_DEFAULT` — Argon2id where the build has it, bcrypt otherwise — re-hashed on sign-in when the default moves. Unknown address, wrong password and disabled account answer one identical 401, and all three perform a verification so their *timing* does not separate them either. |
 | CSRF | Origin + `Sec-Fetch-Site` check only | **Built (ESZ-026).** A 256-bit per-session token, required in `X-CSRF-Token` on every state-changing request and compared with `hash_equals`. Bound to the *anonymous* session too, which is what lets `POST /api/auth/login` be protected — login CSRF, where a victim is silently signed into an attacker's account and everything they then write lands in it, is a real attack on an editing surface. The token is re-minted whenever the session id rotates. `SameSite=Strict` is required in addition, never instead: it is a browser behaviour, not a server check, it does nothing for a non-browser client, and a same-site subresource sails through it. |
-| Draft storage | browser `localStorage` | Still `localStorage`. `/api/admin/content/draft` is a later package and stays a frozen 404. |
+| Draft storage | browser `localStorage` | **Built (Packages 3.1 and 3.2).** `draft.json` behind authentication, read and replaced through `/api/admin/content/draft`, published explicitly through `…/publish` and rebuilt from published content through `…/reset`. The browser editor calls those routes and holds no authority of its own; `localStorage` survives only as an explicit backup and as the export/import format, never as the source of truth and never auto-applied over server state. |
 
 Restated from `docs/runtime-inventory.md` §6: **the frontend session must never be
 treated as authorization for a PHP endpoint.** With the middleware gone, PHP-side
@@ -346,14 +364,16 @@ listed as *not implemented* there — `/api/admin/content/*`, `/api/admin/media`
 first**, so the contract stays the source of truth rather than a description written
 afterwards.
 
-As of Package 2.2 the two public routes, `/` and the three `/api/auth/*` routes are
-implemented and replay the whole contract (gate `php:http-contract`). The auth routes
-were added to `contracts/http-contract.ts` **before** any PHP was written for them, which
-is what this paragraph asks for; the artifacts were regenerated and the drift gate
-(`contracts:verify:generated`) is what proves the committed copies match. The
-`/api/admin/*` routes are still unrouted and the contract still freezes them at 404. The one planned change to the surface has been
-applied: `/api/health` no longer carries `uptimeSeconds`, because shared-hosting PHP
-has no process to measure. See `docs/contract-freeze.md`, Part 4.
+As of Package 3.1 the two public routes, `/`, the three `/api/auth/*` routes and the
+three `/api/admin/content/*` paths are implemented and replay the whole contract (gate
+`php:http-contract`). Both authenticated families were added to
+`contracts/http-contract.ts` **before** any PHP was written for them, which is what this
+paragraph asks for; the artifacts were regenerated and the drift gate
+(`contracts:verify:generated`) is what proves the committed copies match.
+`/api/admin/media` is the only route the contract still freezes at 404. The one planned
+change to the surface has been applied: `/api/health` no longer carries `uptimeSeconds`,
+because shared-hosting PHP has no process to measure. See `docs/contract-freeze.md`,
+Part 4.
 
 ---
 

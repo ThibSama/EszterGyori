@@ -19,6 +19,10 @@ use Eszter\Database\Database;
 use Eszter\Contract\ContentValidator;
 use Eszter\Contract\ContractArtifactException;
 use Eszter\Contract\ContractArtifacts;
+use Eszter\Http\Endpoint\AdminDraftReadEndpoint;
+use Eszter\Http\Endpoint\AdminDraftSaveEndpoint;
+use Eszter\Http\Endpoint\AdminPublishEndpoint;
+use Eszter\Http\Endpoint\AdminResetEndpoint;
 use Eszter\Http\Endpoint\AuthLoginEndpoint;
 use Eszter\Http\Endpoint\AuthLogoutEndpoint;
 use Eszter\Http\Endpoint\AuthSessionEndpoint;
@@ -187,7 +191,7 @@ final class Kernel
         );
 
         if ($accounts !== null && $sessions !== null) {
-            $kernel->registerAuthRoutes($accounts, $sessions, $clock, $logger);
+            $kernel->registerAuthenticatedRoutes($accounts, $sessions, $clock, $logger);
         }
 
         // Logged after wiring, so the line reports what this request can actually
@@ -291,7 +295,7 @@ final class Kernel
      * do what is made by these three routes and the ones that will join them
      * (`auth.accessControl`).
      */
-    private function registerAuthRoutes(
+    private function registerAuthenticatedRoutes(
         AccountDirectory $accounts,
         SessionManager $sessions,
         Clock $clock,
@@ -299,22 +303,96 @@ final class Kernel
     ): void {
         $authenticator = new Authenticator($accounts, $sessions, $clock, $logger);
         $csrf = CsrfGuard::fromArtifacts($this->artifacts);
+        $structural = new StructuralValidator($this->artifacts);
 
         $this->router->register('GET', AuthSessionEndpoint::PATH, new AuthSessionEndpoint($authenticator));
         $this->router->register(
             'POST',
             AuthLoginEndpoint::PATH,
-            new AuthLoginEndpoint(
-                $authenticator,
-                $sessions,
-                $csrf,
-                new StructuralValidator($this->artifacts),
-            ),
+            new AuthLoginEndpoint($authenticator, $sessions, $csrf, $structural),
         );
         $this->router->register(
             'POST',
             AuthLogoutEndpoint::PATH,
             new AuthLogoutEndpoint($authenticator, $sessions, $csrf),
+        );
+
+        $this->registerAdminContentRoutes($authenticator, $sessions, $csrf, $structural, $logger);
+    }
+
+    /**
+     * The admin content surface (ESZ-030/031/032/033).
+     *
+     * Registered alongside `/api/auth/*` rather than beside the public routes,
+     * and gated on the same condition, because they share the thing that makes
+     * them possible: a session store. A deployment with no database has nowhere
+     * to keep a session, so it can authenticate nobody, so routing these would
+     * only produce endpoints that answer 401 forever. `Configuration` guarantees
+     * production is never such a deployment.
+     *
+     * These routes read and write through {@see ContentStorage} directly — the
+     * real one, not the `PublishedContentReader` seam the public routes accept.
+     * That seam exists so the conformance suite can replay storage *failures*
+     * against a read-only surface; a writing surface has to be exercised against
+     * a real directory, because atomic replacement, locking and the revision
+     * sequence are precisely what a fixture would fake away.
+     *
+     * `/api/admin/content/draft` is registered under two methods on one path, so
+     * the 405 `Allow` header is built from what is registered and reports
+     * `GET, PUT` without anything restating it.
+     */
+    private function registerAdminContentRoutes(
+        Authenticator $authenticator,
+        SessionManager $sessions,
+        CsrfGuard $csrf,
+        StructuralValidator $structural,
+        Logger $logger,
+    ): void {
+        /** @var array<string, mixed> $adminContent */
+        $adminContent = $this->artifacts->adminContentContract();
+        /** @var mixed $cacheControl */
+        $cacheControl = $adminContent['cacheControl'] ?? null;
+        /** @var mixed $revisionHeader */
+        $revisionHeader = $adminContent['revisionHeader'] ?? null;
+
+        if (!\is_string($cacheControl) || !\is_string($revisionHeader)) {
+            throw new \RuntimeException(
+                'http-contract.json has no adminContent.cacheControl/revisionHeader.',
+            );
+        }
+
+        $dependencies = [
+            $authenticator,
+            $sessions,
+            $csrf,
+            $this->storage,
+            $this->validator,
+            $structural,
+            $this->artifacts,
+            $logger,
+            $cacheControl,
+            $revisionHeader,
+        ];
+
+        $this->router->register(
+            'GET',
+            AdminDraftReadEndpoint::PATH,
+            new AdminDraftReadEndpoint(...$dependencies),
+        );
+        $this->router->register(
+            'PUT',
+            AdminDraftSaveEndpoint::PATH,
+            new AdminDraftSaveEndpoint(...$dependencies),
+        );
+        $this->router->register(
+            'POST',
+            AdminPublishEndpoint::PATH,
+            new AdminPublishEndpoint(...$dependencies),
+        );
+        $this->router->register(
+            'POST',
+            AdminResetEndpoint::PATH,
+            new AdminResetEndpoint(...$dependencies),
         );
     }
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Eszter\Tests\Http;
 
+use Eszter\Contract\ContentValidator;
 use Eszter\Contract\ContractArtifacts;
 use Eszter\Contract\StructuralValidator;
 use Eszter\Http\Request;
@@ -148,6 +149,8 @@ final class HttpContractConformanceTest extends TestCase
 
         $kernel = $this->bootFor($case);
 
+        $before = $this->storedContent();
+
         $response = $kernel->handle(new Request(
             $request['method'],
             $request['path'],
@@ -155,12 +158,14 @@ final class HttpContractConformanceTest extends TestCase
             // writes an explicit `cookie` — `auth.session.get.unknownSessionIdIsAnonymous`
             // does — keeps it.
             ($request['headers'] ?? []) + $this->authHeaders($case),
-            $request['rawBody'] ?? '',
+            $this->requestBody($request),
         ));
 
         self::assertSame($expected['status'], $response->status, 'status');
 
         $this->assertHeaders($expected, $response);
+        $this->assertContentRevision($expected, $response);
+        $this->assertStorageAfter($expected, $before);
         $this->assertSessionCookie($expected, $response);
         $requestId = $this->assertRequestId($case, $expected, $response);
         $this->assertBody($case, $expected, $response, $requestId);
@@ -188,6 +193,39 @@ final class HttpContractConformanceTest extends TestCase
         // contract change, visible in a diff, and never a way to quiet a runtime
         // that has stopped conforming.
         self::assertSame([], $exempt);
+    }
+
+    public function testTheSemanticFixtureIsSemanticOnly(): void
+    {
+        // `admin.draft.put.semanticallyInvalidContent` exists to prove the save
+        // route runs the semantic rules and not merely the JSON Schema. It only
+        // proves that while its fixture is structurally *valid* — otherwise the
+        // schema rejects the document first and the case passes against a route
+        // that never reached a rule.
+        $artifacts = TestEnvironment::artifacts();
+        $content = self::withSemanticViolation($artifacts->canonicalSiteContent());
+
+        self::assertSame(
+            [],
+            (new StructuralValidator($artifacts))->validate($content, 'site-content.input.schema.json'),
+            'the semantic fixture also breaks the structural schema',
+        );
+
+        // And it is genuinely rejected, so the case is not passing by accident.
+        $result = ContentValidator::create($artifacts)
+            ->validate($content, ContentValidator::TARGET_SITE_CONTENT);
+
+        self::assertFalse($result->valid, 'the semantic fixture is not actually invalid');
+
+        // The structural fixture is the mirror image: it must break the schema.
+        self::assertNotSame(
+            [],
+            (new StructuralValidator($artifacts))->validate(
+                self::withStructuralViolation($artifacts->canonicalSiteContent()),
+                'site-content.input.schema.json',
+            ),
+            'the structural fixture does not break the structural schema',
+        );
     }
 
     public function testEveryFrozenEndpointIsRouted(): void
@@ -550,7 +588,25 @@ final class HttpContractConformanceTest extends TestCase
 
         $this->seededSessionId = $session?->id;
 
+        // The admin content cases are about what a request *changes*, so storage
+        // has to already exist for "unchanged" to mean anything. Seeding it here
+        // rather than letting the first request do it also matches the state
+        // every real deployment is in after it has served once: both files
+        // present, both at revision 0, both holding the canonical defaults.
+        if (str_starts_with($this->casePath($case), '/api/admin/content/')) {
+            $kernel->storage->initialize();
+        }
+
         return $kernel;
+    }
+
+    /** @param array<mixed> $case */
+    private function casePath(array $case): string
+    {
+        /** @var array{path?: string} $request */
+        $request = $case['request'] ?? [];
+
+        return $request['path'] ?? '';
     }
 
     /**
@@ -600,6 +656,316 @@ final class HttpContractConformanceTest extends TestCase
         }
 
         return $headers;
+    }
+
+    /**
+     * The bytes a case sends.
+     *
+     * `rawBody` goes out verbatim — that is how the malformed-JSON cases work. A
+     * named `body` is *built* here instead, from the canonical document the
+     * artifacts already carry, because a valid `SiteContent` is about 8 kB of
+     * JSON and writing several of them into `http-contract.json` as literals
+     * would multiply the size of a file every implementation has to parse.
+     *
+     * The match is exhaustive with no default: an unrecognised name fails the
+     * case loudly rather than sending an empty body and reporting whatever the
+     * route does with nothing.
+     *
+     * @param array{
+     *     method: string,
+     *     path: string,
+     *     headers?: array<string, string>,
+     *     rawBody?: string,
+     *     body?: string,
+     * } $request
+     */
+    private function requestBody(array $request): string
+    {
+        if (isset($request['rawBody'])) {
+            return $request['rawBody'];
+        }
+
+        $name = $request['body'] ?? null;
+
+        if ($name === null) {
+            return '';
+        }
+
+        $artifacts = TestEnvironment::artifacts();
+        $content = $artifacts->canonicalSiteContent();
+        $stale = self::staleRevisionFixture();
+
+        $payload = match ($name) {
+            'draftSave.valid' => ['expectedRevision' => 0, 'content' => $content],
+            'draftSave.staleRevision' => ['expectedRevision' => $stale, 'content' => $content],
+            // Structurally intact — the key exists and is a string — but breaking
+            // a declared semantic rule, so a runtime that only ran JSON Schema
+            // would accept it. That is the case's whole point.
+            'draftSave.semanticallyInvalidContent' => [
+                'expectedRevision' => 0,
+                'content' => self::withSemanticViolation($content),
+            ],
+
+            // Wrong *type* for a required field, which JSON Schema alone catches.
+            'draftSave.structurallyInvalidContent' => [
+                'expectedRevision' => 0,
+                'content' => self::withStructuralViolation($content),
+            ],
+            'draftSave.missingContent' => ['expectedRevision' => 0],
+            'draftSave.unknownField' => [
+                'expectedRevision' => 0,
+                'content' => $content,
+                'publish' => true,
+            ],
+            'draftSave.missingExpectedRevision' => ['content' => $content],
+            'publish.valid' => ['expectedRevision' => 0],
+            'publish.staleRevision' => ['expectedRevision' => $stale],
+            'publish.missingExpectedRevision' => [],
+            'reset.valid' => ['expectedRevision' => 0, 'source' => 'published'],
+            'reset.staleRevision' => ['expectedRevision' => $stale, 'source' => 'published'],
+            'reset.unknownSource' => ['expectedRevision' => 0, 'source' => 'defaults'],
+            'reset.missingSource' => ['expectedRevision' => 0],
+            default => self::fail("Unknown named request body: {$name}"),
+        };
+
+        return (string) json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+
+    private static function staleRevisionFixture(): int
+    {
+        /** @var array<string, mixed> $admin */
+        $admin = self::contract()['adminContent'];
+        /** @var int $stale */
+        $stale = $admin['staleRevisionFixture'];
+
+        return $stale;
+    }
+
+    /**
+     * Canonical content with one semantic rule broken and its structure intact.
+     *
+     * `links.instagramHttpsHost` is declared in `semantic-rules.json` and has no
+     * JSON Schema equivalent: the value below is still a string, still a URL, and
+     * still `https:`, so every structural constraint on the field is satisfied
+     * and only the declared rule rejects it. That is what makes this case prove
+     * the semantic layer actually runs on a save — a fixture that also broke the
+     * schema would pass this test against a route that never ran a rule at all.
+     *
+     * {@see testTheSemanticFixtureIsSemanticOnly} holds that property in place.
+     *
+     * @param array<string, mixed> $content
+     * @return array<string, mixed>
+     */
+    private static function withSemanticViolation(array $content): array
+    {
+        /** @var array<string, mixed> $contact */
+        $contact = $content['contact'];
+        /** @var array<string, mixed> $cta */
+        $cta = $contact['instagramCta'];
+        $cta['href'] = 'https://not-instagram.example.com/eszter';
+        $contact['instagramCta'] = $cta;
+        $content['contact'] = $contact;
+
+        return $content;
+    }
+
+    /**
+     * Canonical content with a required field of the wrong type.
+     *
+     * @param array<string, mixed> $content
+     * @return array<string, mixed>
+     */
+    private static function withStructuralViolation(array $content): array
+    {
+        /** @var array<string, mixed> $hero */
+        $hero = $content['hero'] ?? [];
+        $hero['title'] = 42;
+        $content['hero'] = $hero;
+
+        return $content;
+    }
+
+    /**
+     * Asserts `expect.contentRevision`.
+     *
+     * The `absent` half is the load-bearing one: it is what proves a 401 or a 403
+     * never reached storage. A rejected caller must not be able to learn the head
+     * — or that there is one — from a response it was not entitled to.
+     *
+     * @param array<string, mixed> $expected
+     */
+    private function assertContentRevision(array $expected, Response $response): void
+    {
+        /** @var mixed $expectation */
+        $expectation = $expected['contentRevision'] ?? null;
+
+        if ($expectation === null) {
+            return;
+        }
+
+        /** @var array<string, mixed> $admin */
+        $admin = self::contract()['adminContent'];
+        /** @var string $header */
+        $header = $admin['revisionHeader'];
+        $value = $response->header($header);
+
+        if ($expectation === 'absent') {
+            self::assertNull($value, "{$header} must not be sent on this response");
+
+            return;
+        }
+
+        self::assertSame((string) $expectation, $value, $header);
+    }
+
+    /**
+     * Both stored envelopes, verbatim, or null where the file does not exist yet.
+     *
+     * Read as raw bytes rather than through the storage layer on purpose: the
+     * assertion these feed is "nothing changed", and re-reading through a
+     * validator that normalises would compare normalised forms and could call a
+     * rewritten file unchanged.
+     *
+     * @return array{draft: string|null, published: string|null}
+     */
+    private function storedContent(): array
+    {
+        $read = static function (string $path): ?string {
+            $raw = is_file($path) ? @file_get_contents($path) : false;
+
+            return $raw === false ? null : $raw;
+        };
+
+        return [
+            'draft' => $read($this->root . '/data/content/draft.json'),
+            'published' => $read($this->root . '/data/content/published.json'),
+        ];
+    }
+
+    /**
+     * Asserts `expect.storageAfter`.
+     *
+     * This is what turns "a conflict writes nothing" and "reset never touches
+     * published" from sentences in the contract into things a failing test can
+     * report. Byte comparison, not semantic comparison: a rejected request must
+     * not rewrite a file even to an equivalent one, because a rewrite is a write
+     * and the guarantee is that there was none.
+     *
+     * @param array<string, mixed> $expected
+     * @param array{draft: string|null, published: string|null} $before
+     */
+    private function assertStorageAfter(array $expected, array $before): void
+    {
+        /** @var mixed $expectation */
+        $expectation = $expected['storageAfter'] ?? null;
+
+        if ($expectation === null) {
+            return;
+        }
+
+        $after = $this->storedContent();
+
+        if ($expectation === 'unchanged') {
+            self::assertSame($before['draft'], $after['draft'], 'draft.json changed');
+            self::assertSame($before['published'], $after['published'], 'published.json changed');
+            self::assertSame([], $this->temporaryFiles(), 'a temp file was left behind');
+
+            return;
+        }
+
+        if ($expectation === 'draftAdvanced') {
+            $draft = self::decodeStored($after['draft'], 'draft');
+            $published = self::decodeStored($after['published'], 'published');
+
+            self::assertGreaterThan(
+                self::decodeStored($before['draft'], 'draft')['revision'] ?? -1,
+                $draft['revision'],
+                'the draft revision did not advance',
+            );
+
+            // `content.savingADraftDoesNotTouchPublished` and
+            // `content.resetNeverMutatesPublished` share this line: whatever the
+            // draft did, the public document is byte-identical afterwards.
+            self::assertSame($before['published'], $after['published'], 'published.json changed');
+
+            // The shared-sequence invariant, asserted on every draft write.
+            self::assertLessThanOrEqual(
+                $draft['revision'],
+                $published['revision'],
+                'published.revision overtook the draft head',
+            );
+
+            return;
+        }
+
+        if ($expectation === 'publishedMatchesDraft') {
+            $draft = self::decodeStored($after['draft'], 'draft');
+            $published = self::decodeStored($after['published'], 'published');
+
+            // `contentRevisionSemantics`: publish sets published.revision *to* the
+            // draft head it published rather than incrementing a counter of its own.
+            self::assertSame(
+                $draft['revision'],
+                $published['revision'],
+                'the published revision is not the draft head that was published',
+            );
+            self::assertSame(
+                $draft['content'],
+                $published['content'],
+                'the published content is not the draft content',
+            );
+            self::assertSame($before['draft'], $after['draft'], 'publishing modified the draft');
+
+            return;
+        }
+
+        self::fail("Unknown storageAfter expectation: {$expectation}");
+    }
+
+    /** @return array<string, mixed> */
+    private static function decodeStored(?string $raw, string $role): array
+    {
+        self::assertIsString($raw, "{$role}.json does not exist");
+        /** @var mixed $decoded */
+        $decoded = json_decode($raw, true);
+        self::assertIsArray($decoded, "{$role}.json is not a JSON object");
+
+        /** @var array<string, mixed> */
+        return $decoded;
+    }
+
+    /**
+     * Whatever is sitting in `var/tmp/`.
+     *
+     * A failed atomic write must clean up after itself. A surviving temp file is
+     * not a correctness bug on its own — no reader can see it — but it is the
+     * visible symptom of a write path that returned without finishing, and it
+     * fills a disk quietly.
+     *
+     * @return list<string>
+     */
+    private function temporaryFiles(): array
+    {
+        $entries = @scandir($this->root . '/var/tmp');
+
+        if ($entries === false) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            $entries,
+            static fn (string $entry): bool => $entry !== '.' && $entry !== '..',
+        ));
+    }
+
+    private static function adminCacheControl(): string
+    {
+        /** @var array<string, mixed> $admin */
+        $admin = self::contract()['adminContent'];
+        /** @var string $cacheControl */
+        $cacheControl = $admin['cacheControl'];
+
+        return $cacheControl;
     }
 
     private static function sessionCookieName(): string
@@ -785,6 +1151,26 @@ final class HttpContractConformanceTest extends TestCase
                 if (\array_key_exists('publishedRevision', $case)) {
                     self::assertSame($case['publishedRevision'], $body['revision']);
                 }
+                break;
+
+            case 'serverDraftEnvelope':
+                self::assertIsArray($body);
+                self::assertSame(
+                    [],
+                    $structural->validate($body, 'server-draft-envelope.output.schema.json'),
+                );
+                self::assertSame($artifacts->contentSchemaVersion(), $body['schemaVersion']);
+
+                // The draft is unpublished editorial work. It must not be
+                // storable by a browser or an intermediary, and it must not carry
+                // a second revision token a client could send back as a
+                // precondition this surface ignores.
+                self::assertSame(
+                    self::adminCacheControl(),
+                    $response->header('Cache-Control'),
+                    'the draft response is cacheable',
+                );
+                self::assertNull($response->header('ETag'), 'the draft response carries an ETag');
                 break;
 
             case 'errorEnvelope':

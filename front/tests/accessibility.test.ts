@@ -63,21 +63,36 @@ test("focus visibility and reduced motion are globally covered", () => {
 });
 
 test("admin forms and editor messages expose live feedback", () => {
-  const loginSource = readFileSync(join(appRoot, "admin", "login", "page.tsx"), "utf8");
+  const loginFormSource = readFileSync(
+    join(appRoot, "components", "admin", "admin-login-form.tsx"),
+    "utf8",
+  );
+  const sessionSource = readFileSync(
+    join(appRoot, "components", "admin", "admin-session-provider.tsx"),
+    "utf8",
+  );
   const contentEditorSource = readFileSync(
     join(appRoot, "components", "admin", "content-editor.tsx"),
     "utf8",
   );
 
-  // ESZ-020 replaced the login form with a static notice: there is no credential
-  // check in the export to report a failure from, so `role="alert"` — which
-  // interrupts a screen reader — would be announcing nothing. The page still has
-  // a live region, at the politeness level its content actually warrants.
+  // ESZ-020 replaced the login form with a static notice, and this test asserted
+  // the absence of a form because there was nothing in the export that could
+  // check a credential — `role="alert"` would have been announcing nothing.
   //
-  // Package 2.2 restores the form against `/api/auth/login`, and the assertion
-  // that a rejected sign-in is announced assertively comes back with it.
-  assert.match(loginSource, /role="status"/);
-  assert.doesNotMatch(loginSource, /<(input|form)\b/);
+  // ESZ-034 restores the form against `/api/auth/login`, so the assertion the old
+  // comment promised comes back with it: a rejected sign-in interrupts, because
+  // an admin who cannot see the field is otherwise left waiting on a form that
+  // silently did nothing. Progress stays polite.
+  assert.match(loginFormSource, /<form/);
+  assert.match(loginFormSource, /type="password"/);
+  assert.match(loginFormSource, /role="alert"/);
+  assert.match(loginFormSource, /aria-live="polite"/);
+
+  // The session bootstrap replaces the whole screen while it resolves, so its
+  // notice has to be announced rather than silently swapped in.
+  assert.match(sessionSource, /role="status"/);
+  assert.match(sessionSource, /aria-live="polite"/);
 
   assert.match(contentEditorSource, /role="status"/);
   assert.match(contentEditorSource, /aria-live="polite"/);

@@ -1,0 +1,365 @@
+import {
+  ADMIN_CONTENT_DRAFT_PATH,
+  ADMIN_CONTENT_PUBLISH_PATH,
+  ADMIN_CONTENT_RESET_PATH,
+  AUTH_LOGIN_PATH,
+  AUTH_LOGOUT_PATH,
+  AUTH_SESSION_PATH,
+  CONTENT_REVISION_HEADER,
+  CSRF_HEADER,
+  authSessionResponseSchema,
+  errorEnvelopeSchema,
+  publishedContentEnvelopeV1Schema,
+  serverDraftEnvelopeV1Schema,
+  type ApiErrorCode,
+  type AuthSessionResponse,
+  type PublishedContentEnvelopeV1,
+  type ServerDraftEnvelopeV1,
+  type SiteContent,
+} from "@eszter/contracts";
+
+/**
+ * The browser half of the admin API (ESZ-034).
+ *
+ * Everything privileged happens in PHP. This module is a transport: it names the
+ * routes from `@eszter/contracts` rather than spelling them, sends the session
+ * cookie, carries the CSRF token in the header the contract froze, and — this is
+ * the part that matters — refuses to hand the editor anything it has not
+ * validated against the same envelope schemas the server validated on the way
+ * out.
+ *
+ * It deliberately holds no state of its own. The CSRF token is passed in per
+ * call and lives in React state for the lifetime of the tab; it is never written
+ * to `localStorage`, never put in a URL and never logged. The session id is a
+ * `__Host-` cookie the script cannot read at all, which is the point.
+ *
+ * ## Why every failure is a value
+ *
+ * A rejected admin write is not exceptional — a stale revision, an expired
+ * session and a validation failure are all ordinary outcomes of editing, and each
+ * one needs a *different* recovery in the UI. Throwing would flatten them into
+ * one `catch`, so the client returns a discriminated failure instead and the
+ * editor is forced by the type checker to say what it does about each.
+ */
+
+/** A failure the editor has to react to differently for each `kind`. */
+export type AdminApiFailure =
+  /** The request never reached a response: offline, DNS, TLS, aborted. */
+  | { kind: "network"; message: string }
+  /** No live session. The editor must stop trusting anything it holds. */
+  | { kind: "unauthenticated"; message: string }
+  /** The CSRF token was missing, stale or wrong. Recoverable by re-reading it. */
+  | { kind: "forbidden"; message: string }
+  /** Login only: unknown e-mail, wrong password or disabled account, indistinguishably. */
+  | { kind: "invalid-credentials"; message: string }
+  /** The body failed contract validation server-side. Storage is unchanged. */
+  | { kind: "validation"; message: string }
+  /**
+   * The draft moved under this editor. `currentRevision` is the head the server
+   * reported in the revision header, so recovery needs no extra round trip.
+   */
+  | { kind: "conflict"; message: string; currentRevision: number | null }
+  /** 5xx, including STORAGE_FAILURE. Opaque by design. */
+  | { kind: "server"; message: string; status: number }
+  /** A 2xx whose body did not match the frozen schema. Never rendered. */
+  | { kind: "malformed-response"; message: string };
+
+export type AdminApiResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; failure: AdminApiFailure };
+
+export interface DraftSaveSuccess {
+  envelope: ServerDraftEnvelopeV1;
+}
+
+export interface AdminApiClient {
+  readSession(): Promise<AdminApiResult<AuthSessionResponse>>;
+  login(
+    credentials: { email: string; password: string },
+    csrfToken: string,
+  ): Promise<AdminApiResult<AuthSessionResponse>>;
+  logout(csrfToken: string): Promise<AdminApiResult<null>>;
+  readDraft(): Promise<AdminApiResult<ServerDraftEnvelopeV1>>;
+  saveDraft(
+    input: { content: SiteContent; expectedRevision: number },
+    csrfToken: string,
+  ): Promise<AdminApiResult<ServerDraftEnvelopeV1>>;
+  publish(
+    input: { expectedRevision: number },
+    csrfToken: string,
+  ): Promise<AdminApiResult<PublishedContentEnvelopeV1>>;
+  resetDraft(
+    input: { expectedRevision: number },
+    csrfToken: string,
+  ): Promise<AdminApiResult<ServerDraftEnvelopeV1>>;
+  readPublished(): Promise<AdminApiResult<PublishedContentEnvelopeV1>>;
+}
+
+/** The only reset source the contract defines. Stated once, sent from here. */
+const RESET_SOURCE = "published" as const;
+
+/** `/api/content`, the public read the editor uses to learn the published head. */
+const PUBLIC_CONTENT_PATH = "/api/content";
+
+/**
+ * User-facing text, in French, one message per outcome.
+ *
+ * Exported because the tests assert the editor shows *these* strings rather than
+ * a regex-shaped approximation of them, and because a message that only exists
+ * inline in a component cannot be reused by the login form.
+ */
+export const ADMIN_API_MESSAGES = {
+  network:
+    "Le serveur est injoignable. Vérifiez la connexion : aucune modification n’a été envoyée.",
+  unauthenticated:
+    "La session a expiré. Reconnectez-vous pour continuer à modifier le contenu.",
+  forbidden:
+    "La requête a été refusée pour raison de sécurité. Rechargez la page puis réessayez.",
+  invalidCredentials:
+    "Adresse email ou mot de passe incorrect.",
+  validation:
+    "Le contenu envoyé a été refusé par le serveur. Rien n’a été enregistré.",
+  conflict:
+    "Le brouillon a été modifié ailleurs depuis son chargement. Rien n’a été enregistré.",
+  server:
+    "Le serveur n’a pas pu traiter la demande. Rien n’a été enregistré.",
+  malformedResponse:
+    "La réponse du serveur est inexploitable. Rien n’a été appliqué dans l’éditeur.",
+} as const;
+
+function failure(failure: AdminApiFailure): { ok: false; failure: AdminApiFailure } {
+  return { ok: false, failure };
+}
+
+/**
+ * Reads the revision header off any response, success or conflict.
+ *
+ * Never defaulted to `0`. The contract is explicit that the header is absent when
+ * no revision was read under the lock, and a client that turned that absence into
+ * `0` would rebase onto a revision that may not exist.
+ */
+export function readRevisionHeader(headers: Headers): number | null {
+  const raw = headers.get(CONTENT_REVISION_HEADER);
+  if (raw === null) return null;
+
+  const revision = Number(raw);
+  if (!Number.isSafeInteger(revision) || revision < 0) return null;
+
+  return revision;
+}
+
+/** The error code from a frozen error envelope, or `null` if the body is not one. */
+function readErrorCode(body: unknown): ApiErrorCode | null {
+  const parsed = errorEnvelopeSchema.safeParse(body);
+  return parsed.success ? parsed.data.error.code : null;
+}
+
+/**
+ * Maps a non-2xx response onto the failure the editor reacts to.
+ *
+ * The code decides, and the status is only the fallback for a body that is not an
+ * error envelope at all — a proxy's own 502 page, say. Going the other way round
+ * would collapse 403 `CSRF_TOKEN_INVALID`, which is recoverable by re-reading the
+ * token, into the same bucket as a genuine authorisation failure.
+ */
+function failureFromResponse(
+  status: number,
+  headers: Headers,
+  body: unknown,
+): AdminApiFailure {
+  switch (readErrorCode(body)) {
+    case "UNAUTHENTICATED":
+      return { kind: "unauthenticated", message: ADMIN_API_MESSAGES.unauthenticated };
+    case "INVALID_CREDENTIALS":
+      return {
+        kind: "invalid-credentials",
+        message: ADMIN_API_MESSAGES.invalidCredentials,
+      };
+    case "CSRF_TOKEN_INVALID":
+      return { kind: "forbidden", message: ADMIN_API_MESSAGES.forbidden };
+    case "REVISION_CONFLICT":
+      return {
+        kind: "conflict",
+        message: ADMIN_API_MESSAGES.conflict,
+        currentRevision: readRevisionHeader(headers),
+      };
+    case "VALIDATION_FAILED":
+    case "INVALID_JSON":
+      return { kind: "validation", message: ADMIN_API_MESSAGES.validation };
+    case "STORAGE_FAILURE":
+    case "INTERNAL_ERROR":
+    case "INVALID_CONFIGURATION":
+      return { kind: "server", message: ADMIN_API_MESSAGES.server, status };
+    default:
+      break;
+  }
+
+  if (status === 401) {
+    return { kind: "unauthenticated", message: ADMIN_API_MESSAGES.unauthenticated };
+  }
+  if (status === 403) {
+    return { kind: "forbidden", message: ADMIN_API_MESSAGES.forbidden };
+  }
+  if (status === 409) {
+    return {
+      kind: "conflict",
+      message: ADMIN_API_MESSAGES.conflict,
+      currentRevision: readRevisionHeader(headers),
+    };
+  }
+  if (status === 400) {
+    return { kind: "validation", message: ADMIN_API_MESSAGES.validation };
+  }
+
+  return { kind: "server", message: ADMIN_API_MESSAGES.server, status };
+}
+
+export type FetchLike = (
+  input: string,
+  init?: RequestInit,
+) => Promise<Response>;
+
+/**
+ * Builds a client over one `fetch`.
+ *
+ * Injectable because the tests drive every branch of this file — expiry,
+ * conflict, malformed body — against a stub, and because a module that reached
+ * for the global `fetch` directly could not be exercised at all under
+ * `node:test`.
+ */
+export function createAdminApiClient(
+  fetchImpl: FetchLike = (input, init) => fetch(input, init),
+): AdminApiClient {
+  async function send(
+    path: string,
+    init: RequestInit & { csrfToken?: string },
+  ): Promise<
+    | { ok: true; status: number; headers: Headers; body: unknown }
+    | { ok: false; failure: AdminApiFailure }
+  > {
+    const headers = new Headers(init.headers);
+    headers.set("accept", "application/json");
+    if (init.csrfToken !== undefined) {
+      headers.set(CSRF_HEADER, init.csrfToken);
+    }
+    if (init.body !== undefined) {
+      headers.set("content-type", "application/json");
+    }
+
+    let response: Response;
+    try {
+      response = await fetchImpl(path, {
+        ...init,
+        headers,
+        // The session is a `__Host-` cookie on the same origin as the static
+        // export. `same-origin` rather than `include`: there is no cross-origin
+        // deployment of this surface, and asking for one would weaken the
+        // SameSite=Strict guarantee the contract relies on.
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+    } catch {
+      // Deliberately no cause, no URL and no error text: this string is rendered,
+      // and a network error's message can carry the request target.
+      return failure({ kind: "network", message: ADMIN_API_MESSAGES.network });
+    }
+
+    let body: unknown = null;
+    if (response.status !== 204) {
+      const text = await response.text().catch(() => "");
+      if (text !== "") {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = null;
+        }
+      }
+    }
+
+    if (!response.ok) {
+      return failure(failureFromResponse(response.status, response.headers, body));
+    }
+
+    return { ok: true, status: response.status, headers: response.headers, body };
+  }
+
+  function parsed<T>(
+    schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
+    body: unknown,
+  ): AdminApiResult<T> {
+    const result = schema.safeParse(body);
+    if (!result.success) {
+      return failure({
+        kind: "malformed-response",
+        message: ADMIN_API_MESSAGES.malformedResponse,
+      });
+    }
+    return { ok: true, value: result.data };
+  }
+
+  return {
+    async readSession() {
+      const response = await send(AUTH_SESSION_PATH, { method: "GET" });
+      if (!response.ok) return response;
+      return parsed(authSessionResponseSchema, response.body);
+    },
+
+    async login(credentials, csrfToken) {
+      const response = await send(AUTH_LOGIN_PATH, {
+        method: "POST",
+        csrfToken,
+        body: JSON.stringify(credentials),
+      });
+      if (!response.ok) return response;
+      return parsed(authSessionResponseSchema, response.body);
+    },
+
+    async logout(csrfToken) {
+      const response = await send(AUTH_LOGOUT_PATH, { method: "POST", csrfToken });
+      if (!response.ok) return response;
+      return { ok: true, value: null };
+    },
+
+    async readDraft() {
+      const response = await send(ADMIN_CONTENT_DRAFT_PATH, { method: "GET" });
+      if (!response.ok) return response;
+      return parsed(serverDraftEnvelopeV1Schema, response.body);
+    },
+
+    async saveDraft({ content, expectedRevision }, csrfToken) {
+      const response = await send(ADMIN_CONTENT_DRAFT_PATH, {
+        method: "PUT",
+        csrfToken,
+        body: JSON.stringify({ expectedRevision, content }),
+      });
+      if (!response.ok) return response;
+      return parsed(serverDraftEnvelopeV1Schema, response.body);
+    },
+
+    async publish({ expectedRevision }, csrfToken) {
+      const response = await send(ADMIN_CONTENT_PUBLISH_PATH, {
+        method: "POST",
+        csrfToken,
+        body: JSON.stringify({ expectedRevision }),
+      });
+      if (!response.ok) return response;
+      return parsed(publishedContentEnvelopeV1Schema, response.body);
+    },
+
+    async resetDraft({ expectedRevision }, csrfToken) {
+      const response = await send(ADMIN_CONTENT_RESET_PATH, {
+        method: "POST",
+        csrfToken,
+        body: JSON.stringify({ expectedRevision, source: RESET_SOURCE }),
+      });
+      if (!response.ok) return response;
+      return parsed(serverDraftEnvelopeV1Schema, response.body);
+    },
+
+    async readPublished() {
+      const response = await send(PUBLIC_CONTENT_PATH, { method: "GET" });
+      if (!response.ok) return response;
+      return parsed(publishedContentEnvelopeV1Schema, response.body);
+    },
+  };
+}

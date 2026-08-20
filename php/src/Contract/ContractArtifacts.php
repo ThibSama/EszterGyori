@@ -179,6 +179,29 @@ final class ContractArtifacts
         return $auth;
     }
 
+    /**
+     * The `adminContent` block of the HTTP contract (Package 3.1).
+     *
+     * Same reasoning as {@see authContract()}: the cache directive, the revision
+     * header name, the revision semantics and the concurrency rules are read from
+     * the frozen artifact rather than restated in PHP. A restatement is a place
+     * the two can disagree, and the one that would win is whichever was written
+     * last.
+     *
+     * @return array<mixed>
+     */
+    public function adminContentContract(): array
+    {
+        /** @var mixed $admin */
+        $admin = $this->httpContract()['adminContent'] ?? null;
+
+        if (!\is_array($admin)) {
+            throw new ContractArtifactException('http-contract.json has no `adminContent` block.');
+        }
+
+        return $admin;
+    }
+
     /** @return array<mixed> */
     public function parityCorpus(): array
     {

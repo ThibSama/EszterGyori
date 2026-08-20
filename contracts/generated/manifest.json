@@ -10,12 +10,24 @@
   ],
   "artifacts": [
     {
+      "file": "admin-draft-save-request.schema.json",
+      "sha256": "860e62aa2bc46dee2637a1ac7bb7a76fcd7fa0f07829e95b6b67429a228e753b"
+    },
+    {
+      "file": "admin-publish-request.schema.json",
+      "sha256": "74d6b7fa3afa88f75645395000ef9feea3e56a42ae409017d1aa9767183a0277"
+    },
+    {
+      "file": "admin-reset-request.schema.json",
+      "sha256": "51da22aff75d0a0c0c3138ae2996e5c8fe41fcd6807743a42445bb42565d28da"
+    },
+    {
       "file": "auth-session-response.schema.json",
       "sha256": "cdc3f3a886432ddae362fbd3ed38d1be484459134431132471adc06149dc6be9"
     },
     {
       "file": "error-envelope.schema.json",
-      "sha256": "3e033800dffb749cc72465f5930b4c0bc2a97f4f8fbe67fa570d870335e78ae9"
+      "sha256": "d30a05a175dcca21a0d7c15b9e5634022d81690a950763078a5ef7f6628d1244"
     },
     {
       "file": "health-response.schema.json",
@@ -23,7 +35,7 @@
     },
     {
       "file": "http-contract.json",
-      "sha256": "9ed69d34289603edd969366a1a642c098b10d902c7e7c1287019a67c37914d65"
+      "sha256": "0b01cc18982e260e67c6ae2b86f25724afd89cb1dac661e887c6d3c323aeeb51"
     },
     {
       "file": "login-request.schema.json",
@@ -48,6 +60,10 @@
     {
       "file": "server-draft-envelope.input.schema.json",
       "sha256": "acffe1cd4bb5434b503258deff76cf961c63488f1c1866f8d849dec32647bfa4"
+    },
+    {
+      "file": "server-draft-envelope.output.schema.json",
+      "sha256": "cd4ab7bb2e66524885367aa8809f2c244edcc7b206733a44b00d185d6d8ea9ea"
     },
     {
       "file": "site-content-draft.input.schema.json",

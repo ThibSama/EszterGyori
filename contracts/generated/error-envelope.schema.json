@@ -21,6 +21,7 @@
             "INVALID_CREDENTIALS",
             "UNAUTHENTICATED",
             "CSRF_TOKEN_INVALID",
+            "REVISION_CONFLICT",
             "INVALID_CONFIGURATION",
             "STORAGE_FAILURE",
             "INTERNAL_ERROR"

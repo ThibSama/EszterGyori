@@ -68,16 +68,88 @@ Le site public ne lit pas `localStorage` et ne consomme pas de brouillon admin.
 
 ## Administration frontend
 
-La route `/admin` existe et fournit un editeur frontend local protege par `/admin/login`.
+> Section corrigee au paquet 3.2 (ESZ-034/035). Elle decrivait un editeur purement
+> local, une protection assuree par le frontend et un cookie de session signe par
+> Next. Les trois affirmations sont fausses depuis les paquets 2.2 et 3.2.
+
+La route `/admin` est un fichier statique. Elle **n'applique aucun controle d'acces** et
+ne peut pas en appliquer : le controle et la ressource protegee s'executeraient tous
+deux dans le navigateur de l'appelant. L'autorite est PHP, par requete, sur chaque appel
+`/api/admin/*` (`auth.accessControl`).
+
+Ce que fait le shell est plus etroit : au montage, il appelle
+`GET /api/auth/session` et ne rend l'editeur que pour un appelant que PHP declare
+authentifie. C'est une decision d'affichage — elle evite de presenter des boutons qui
+repondraient tous 401 — et non une securite.
 
 L'editeur :
 
-- exige une session frontend valide avant de rendre `ContentEditor` ;
-- initialise son etat depuis une copie de `defaultSiteContent` ;
+- charge le brouillon serveur (`GET /api/admin/content/draft`) avant d'afficher un seul
+  champ, et affiche un ecran d'attente ou d'indisponibilite tant qu'il n'en a pas ;
+- enregistre via `PUT /api/admin/content/draft` en envoyant la revision qui lui a ete
+  remise comme `expectedRevision`, avec le jeton CSRF dans `X-CSRF-Token` ;
+- publie via `POST /api/admin/content/publish` et restaure le contenu publie via
+  `POST /api/admin/content/reset` (`source: "published"`), sans jamais reimplementer ces
+  operations cote navigateur ;
+- distingue trois etats : modifications non enregistrees, brouillon enregistre non
+  publie, publie ;
 - permet de modifier les textes, URLs editables, sources medias et textes alternatifs ;
-- affiche un apercu via le meme `SitePreview` que le site public ;
+- affiche un apercu via le meme `SitePreview` que le site public, alimente par le
+  contenu en cours d'edition : l'apercu montre donc les modifications non enregistrees,
+  et ne publie rien ;
 - conserve l'ordre, le nombre d'items, les IDs techniques et la structure des sections ;
-- n'appelle pas `GET /api/content`.
+- appelle `GET /api/content` en lecture seule, uniquement pour connaitre la revision
+  publiee affichee dans l'entete d'etat.
+
+### Conflits de revision
+
+`PUT`, `publish` et `reset` portent tous `expectedRevision`. Si le brouillon a bouge, PHP
+repond `409 REVISION_CONFLICT` sans rien ecrire, et transporte la tete courante dans
+`X-Content-Revision`.
+
+L'editeur ne rejoue jamais la requete automatiquement, et ne force jamais une ecriture.
+Sur un 409 a l'enregistrement il execute une **reconciliation a trois versions** :
+
+1. il ecrit une sauvegarde locale du brouillon de travail — a cet instant le contenu
+   affiche est la seule copie existante ;
+2. il relit le brouillon serveur courant, c'est-a-dire son **contenu**, pas seulement sa
+   tete ;
+3. il compare de maniere deterministe la base (le contenu de la revision chargee au
+   depart), la version locale et la version serveur ;
+4. il fusionne uniquement les modifications qui ne se chevauchent pas ;
+5. tout chevauchement — meme champ modifie des deux cotes, structure divergente, liste
+   reordonnee, ajoutee ou tronquee — est un conflit explicite, jamais devine ;
+6. il valide le document fusionne contre `SiteContent` avant toute ecriture ;
+7. si la fusion est propre, il adopte la revision de l'enveloppe relue et rejoue
+   l'enregistrement **une seule fois** ;
+8. sinon il n'ecrit rien, affiche la liste des elements en conflit et laisse le contenu
+   affiche intact, la sauvegarde locale restant disponible.
+
+Un second 409 pendant cette unique nouvelle tentative n'est pas rejoue : il est signale,
+et une nouvelle action explicite est requise. Il n'existe aucune boucle de reprise.
+
+Les listes sont traitees de facon conservatrice. Les collections de `SiteContent` sont de
+longueur fixe et indexees par `id` ; une longueur differente ou un ordre different n'est
+donc pas une modification editoriale ordinaire mais un changement structurel, et fusionner
+element par element apparierait des elements qui n'en sont pas. Ces cas sont refuses.
+
+La revision detenue par l'editeur n'avance que lorsque le serveur renvoie une enveloppe,
+c'est-a-dire une revision **accompagnee du contenu correspondant**. La tete annoncee dans
+`X-Content-Revision` sur un 409 est affichee a titre indicatif et n'est jamais adoptee :
+ecrire contre un numero dont le document n'a pas ete lu est exactement l'ecrasement que le
+409 empeche. Un editeur perime reste donc perime tant que la reconciliation n'a pas
+abouti, et sa prochaine ecriture est refusee sous verrou plutot que d'ecraser un contenu
+plus recent.
+
+Pour `publish` et `reset`, il n'y a rien a fusionner : ces operations portent sur ce qui
+est **stocke**. Un 409 y declenche une relecture de l'etat serveur, puis l'editeur
+s'arrete et attend une nouvelle action explicite. Rien n'est publie ni restaure
+automatiquement. Si l'editeur contient des modifications non enregistrees, le contenu relu
+n'est pas applique : la revision reste perimee et la reconciliation reste l'issue
+proposee.
+
+Une session expiree (401) bascule toute la zone admin sur l'ecran de connexion. Un jeton
+CSRF perime (403) ne deconnecte pas : la session est relue pour en obtenir un neuf.
 
 L'editeur expose des placeholders courts d'exemple dans les champs texte, URL, email et textarea. Ils ne remplacent pas les labels, ne sont pas persistes et ne changent pas la validation.
 
@@ -97,11 +169,18 @@ La route protegee `/admin/preview` est chargee dans une iframe same-origin. Le p
 
 Les reveal-on-scroll sont desactives uniquement dans l'apercu admin afin que les sections ne restent pas invisibles dans les captures ou dans le cadre contraint. Le site public conserve les animations normales et les utilisateurs en `prefers-reduced-motion` voient le contenu immediatement.
 
-La session admin est stockee dans un cookie `eszter_admin_session` `HttpOnly`, `SameSite=Strict`, `path=/admin`. Les sessions sont stateless : supprimer le cookie deconnecte le navigateur courant, mais un token deja emis ne peut pas etre revoque individuellement avant expiration sans etat serveur.
+La session admin est un identifiant opaque dans le cookie `__Host-eszter_session`
+(`HttpOnly`, `Secure`, `SameSite=Strict`, `path=/`), adosse a un enregistrement serveur
+dans `admin_sessions` (ESZ-025). Le navigateur ne peut pas lire ce cookie. Le jeton CSRF
+vit en memoire pour la duree de l'onglet : il n'est ecrit ni dans `localStorage`, ni dans
+une URL, ni dans un journal.
 
-## Brouillon local et JSON
+## Sauvegarde locale et JSON
 
-Le brouillon local utilise `localStorage` sous la cle :
+> Section corrigee au paquet 3.2. `localStorage` n'est plus la source de verite.
+
+Le brouillon serveur fait foi. `localStorage` conserve un seul role — **sauvegarde
+explicite de secours** — sous la cle :
 
 ```text
 eszter:admin-content-draft:v1
@@ -109,16 +188,23 @@ eszter:admin-content-draft:v1
 
 L'admin permet :
 
-- l'enregistrement explicite du brouillon local ;
-- la restauration au rechargement de `/admin` ;
-- la suppression du brouillon local ;
+- l'ecriture explicite d'une sauvegarde locale ;
+- sa restauration explicite dans l'editeur, qui n'atteint le serveur qu'apres un
+  enregistrement ;
+- sa suppression ;
 - l'export JSON versionne ;
 - l'import JSON avec validation runtime ;
-- la reinitialisation complete vers `defaultSiteContent`.
+- la restauration du contenu publie, qui passe par le serveur.
 
-Ces operations restent locales au navigateur et ne publient pas le site public.
+Ce qui a disparu : la restauration automatique au chargement de `/admin`. Une sauvegarde
+locale n'est jamais appliquee sans action de l'admin, et n'ecrase donc jamais l'etat
+serveur d'elle-meme. Elle est en revanche ecrite automatiquement avant toute operation
+qui va remplacer le contenu affiche — conflit 409, rechargement du brouillon serveur,
+restauration du contenu publie sur un editeur modifie — afin qu'un travail non
+enregistre ait toujours une copie.
 
-La reinitialisation complete supprime d'abord le brouillon `localStorage` du navigateur courant, puis remplace le contenu editeur, l'apparence et l'etat propre par le contenu canonique. Elle ne supprime pas le cookie d'authentification, les exports JSON, ni le contenu serveur (`php/data/content/draft.json`, `php/data/content/published.json`).
+La sauvegarde locale ne contient que `schemaVersion`, `savedAt` et `content`. Aucun
+identifiant de session ni jeton n'y figure.
 
 Les anciens brouillons locaux valides continuent d'etre charges sans reecriture silencieuse. Un ancien brouillon sans `appearance` recoit `defaultSiteAppearance` en memoire et inclura `appearance` seulement lors d'une sauvegarde ou export explicite.
 
@@ -180,16 +266,14 @@ configure dans ce depot.
 
 ## Fonctionnalites non encore presentes
 
+> Liste corrigee au paquet 3.1, puis au paquet 3.2. Elle affirmait encore l'absence de
+> l'authentification backend, des sessions serveur et de la base de donnees, livrees au
+> paquet 2.2 ; celle du brouillon serveur et de la publication, livres au paquet 3.1 ; et
+> celle de l'integration API admin cote navigateur, livree au paquet 3.2.
+
 Le projet ne contient pas encore :
 
-- endpoint de brouillon serveur ;
-- endpoint d'ecriture de brouillon ;
-- publication ;
-- integration API admin ;
-- authentification backend ;
-- cookies ou sessions serveur ;
-- base de donnees ;
-- routes HTTP d'ecriture de ce stockage ;
+- limitation du nombre de tentatives de connexion ;
 - stockage serveur d'images ;
 - upload reel ;
 - CSS arbitraire, edition de polices, edition d'espacement ou edition de layout ;

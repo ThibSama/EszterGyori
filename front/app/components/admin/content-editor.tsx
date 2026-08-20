@@ -1,15 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { AdminPreviewViewport } from "./admin-preview-viewport";
+import { useAdminSession } from "./admin-session-provider";
 import { AppearanceEditor } from "./appearance-editor";
 import { ItemCard, SectionCard } from "./editor-cards";
 import { Field, ReadOnlyId, TextArea } from "./editor-fields";
 import { MediaEditor } from "./media-editor";
-import {
-  cloneSiteContent,
-  createCompleteResetState,
-} from "../../lib/admin-content-reset";
+import type { AdminApiFailure } from "../../lib/admin-api";
+import type { AdminDraftOperation } from "../../lib/admin-server-draft";
+import { cloneSiteContent } from "../../lib/site-content-clone";
 import {
   deleteDraft,
   loadDraft,
@@ -19,6 +26,19 @@ import {
   serializeDraft,
   SITE_CONTENT_DRAFT_STORAGE_KEY,
 } from "../../lib/admin-draft-storage";
+import {
+  ADMIN_DRAFT_FRESHNESS_LABELS,
+  ADMIN_DRAFT_MESSAGES,
+  adminDraftReducer,
+  canWrite,
+  createInitialDraftState,
+  describeDraftFreshness,
+} from "../../lib/admin-server-draft";
+import {
+  reconcileDraftConflict,
+  refreshAfterWriteConflict,
+} from "../../lib/admin-draft-reconciliation";
+import { describeMergeConflict } from "../../lib/site-content-merge";
 import {
   ADMIN_PREVIEW_SECTIONS,
   type AdminPreviewSectionKey,
@@ -105,10 +125,31 @@ function getModificationState(isDirty: boolean): string {
   return isDirty ? "Modifications non enregistrées" : "Aucune modification non enregistrée";
 }
 
-function getDraftState(draftSavedAt: string | null): string {
-  return draftSavedAt
-    ? `Dernier enregistrement : ${formatFrenchDateTime(draftSavedAt)}`
-    : "Aucun brouillon enregistré sur cet appareil";
+/** The server draft line: which revision this editor is based on, and when. */
+function getServerDraftState(
+  revision: number | null,
+  updatedAt: string | null,
+): string {
+  if (revision === null) return "Aucun brouillon serveur chargé";
+  const stamp = updatedAt ? ` — ${formatFrenchDateTime(updatedAt)}` : "";
+  return `Révision ${revision}${stamp}`;
+}
+
+/** The public line: what visitors are actually being served right now. */
+function getPublishedState(
+  publishedRevision: number | null,
+  publishedAt: string | null,
+): string {
+  if (publishedRevision === null) return "État de publication inconnu";
+  const stamp = publishedAt ? ` — ${formatFrenchDateTime(publishedAt)}` : "";
+  return `Révision publiée ${publishedRevision}${stamp}`;
+}
+
+/** The local backup line. Explicitly secondary: it is never the source of truth. */
+function getLocalBackupState(backupSavedAt: string | null): string {
+  return backupSavedAt
+    ? `Sauvegarde locale du ${formatFrenchDateTime(backupSavedAt)}`
+    : "Aucune sauvegarde locale sur cet appareil";
 }
 
 function NavigationEditor({
@@ -707,71 +748,207 @@ function FooterEditor({
   );
 }
 
+/**
+ * Copy that more than one branch below shows, or that a test pins.
+ *
+ * Kept together rather than inline because these sentences are the whole UX of
+ * the state model: they are what tells an admin apart "saved here", "saved on the
+ * server" and "visible to the public", and a reworded duplicate of one of them
+ * two hundred lines down is how those three quietly become two.
+ */
+const EDITOR_MESSAGES = {
+  unsavedBeforePublish:
+    "Enregistrez le brouillon sur le serveur avant de publier : la publication publie ce qui est enregistré, pas ce qui est affiché ici.",
+  publishConfirm:
+    "Publier le brouillon enregistré sur le serveur ? Le site public affichera immédiatement ce contenu.",
+  resetConfirm:
+    "Remplacer le brouillon du serveur par le contenu actuellement publié ? Les modifications non publiées seront perdues. Le site public restera inchangé.",
+  reloadConfirm:
+    "Recharger le brouillon du serveur ? Le contenu affiché ici sera remplacé. Une sauvegarde locale de vos modifications est écrite avant le remplacement.",
+  reconcileRetryConfirm:
+    "Comparer à nouveau le contenu affiché ici avec le brouillon du serveur ? Rien ne sera écrit tant que la fusion n’est pas possible sans perte.",
+  reconcileRaceLost:
+    "Le brouillon du serveur a encore changé pendant la fusion. Rien n’a été écrit. Relancez la fusion : elle ne sera jamais rejouée automatiquement.",
+  reconcileWithoutBase:
+    "Impossible de fusionner : l’éditeur n’a pas de version de référence du serveur. Rechargez le brouillon du serveur — une sauvegarde locale de votre travail vient d’être écrite.",
+  restoreBackupConfirm:
+    "Remplacer le contenu affiché dans l’éditeur par la sauvegarde locale de cet appareil ? Le brouillon du serveur ne sera pas modifié tant que vous n’enregistrez pas.",
+  deleteBackupConfirm:
+    "Supprimer la sauvegarde locale de cet appareil ? Le brouillon du serveur et le site public resteront inchangés.",
+  importConfirm:
+    "Importer ce fichier remplacera le contenu actuellement affiché dans l'éditeur. Le brouillon du serveur ne sera pas modifié tant que vous n’enregistrez pas. Continuer ?",
+  backupSaved:
+    "Sauvegarde locale écrite sur cet appareil. Elle sert uniquement de secours : le brouillon du serveur fait foi.",
+  backupRestored:
+    "Sauvegarde locale chargée dans l’éditeur. Enregistrez sur le serveur pour la conserver.",
+  backupDeleted:
+    "Sauvegarde locale supprimée de cet appareil. Le brouillon du serveur reste inchangé.",
+  backupMissing: "Aucune sauvegarde locale n’est enregistrée sur cet appareil.",
+  exported:
+    "Sauvegarde JSON exportée avec le contenu actuellement affiché, y compris les modifications non enregistrées.",
+  imported:
+    "Fichier JSON importé dans l’éditeur. Enregistrez-le sur le serveur pour le conserver.",
+  importCancelled: "Import JSON annulé. Le contenu actuel est conservé.",
+} as const;
+
 export function ContentEditor({ defaultContent }: ContentEditorProps) {
+  const { api, csrfToken, markExpired, refreshSession } = useAdminSession();
   const initialContent = useMemo(() => cloneContent(defaultContent), [defaultContent]);
+
   const [content, setContent] = useState<SiteContent>(() =>
     cloneContent(defaultContent),
   );
-  const [, setCleanContent] = useState<SiteContent>(() =>
-    cloneContent(defaultContent),
-  );
   const [isDirty, setIsDirty] = useState(false);
-  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState(
-    "Aucun brouillon enregistré sur cet appareil.",
+  const [draft, dispatch] = useReducer(
+    adminDraftReducer,
+    undefined,
+    createInitialDraftState,
   );
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [hasInvalidStoredDraft, setHasInvalidStoredDraft] = useState(false);
+  const [backupSavedAt, setBackupSavedAt] = useState<string | null>(null);
+  const [hasInvalidStoredBackup, setHasInvalidStoredBackup] = useState(false);
   const [activeSection, setActiveSection] =
     useState<AdminPreviewSectionKey>("hero");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const explicitNavigationUntilRef = useRef(0);
 
+  /**
+   * The base snapshot: the content of the revision `draft.revision` names.
+   *
+   * Kept in step with the revision by construction — both move together, and
+   * only when the server hands back an envelope. That pairing is what makes the
+   * three-way reconciliation possible at all: without a base, "who changed this
+   * field" is unanswerable and the only recoveries left are the two lossy ones,
+   * take-mine and take-theirs.
+   *
+   * A ref rather than state because it is read inside event handlers to decide
+   * whether restored or imported content actually differs from what is stored —
+   * a comparison that must not cause a render, and that would otherwise mean
+   * stringifying the whole document on every keystroke.
+   */
+  const baseContentRef = useRef<SiteContent | null>(null);
+
+  /**
+   * Counts edits so an in-flight response can tell whether it is still current.
+   *
+   * A save takes a round trip, and the admin can keep typing during it. Applying
+   * the server's normalised copy unconditionally on return would delete every
+   * keystroke made in that window — a data-loss bug that only appears on a slow
+   * connection, which is exactly where it is least acceptable.
+   */
+  const editVersionRef = useRef(0);
+
+  /**
+   * The content as of the last commit, readable from a callback that was created
+   * earlier. Updated in an effect rather than during render: a ref written while
+   * rendering is one React is free to throw away.
+   */
+  const contentRef = useRef(content);
+  const isDirtyRef = useRef(isDirty);
   useEffect(() => {
-    let mounted = true;
+    contentRef.current = content;
+    isDirtyRef.current = isDirty;
+  }, [content, isDirty]);
 
-    queueMicrotask(() => {
-      if (!mounted) return;
+  /**
+   * Writes the editor's current content to the device as a backup.
+   *
+   * Never automatic on load and never authoritative: this is the "explicit
+   * backup / export-recovery" role `localStorage` keeps in Package 3.2, and
+   * nothing reads it back without the admin asking. It is called on its own
+   * button, and on the two paths that are about to replace what is on screen —
+   * a 409 and a server reload — so an unsaved edit always has somewhere to
+   * survive.
+   */
+  const writeLocalBackup = useCallback((content?: SiteContent): boolean => {
+    const result = saveDraft(content ?? contentRef.current);
+    if (!result.ok) {
+      dispatch({ type: "local-error", errorMessage: result.error.message });
+      return false;
+    }
+    setBackupSavedAt(result.draft.savedAt);
+    setHasInvalidStoredBackup(false);
+    return true;
+  }, []);
 
-      const result = loadDraft();
+  /**
+   * The single place a failed privileged call is turned into UI.
+   *
+   * Two side effects hang off it, and both are the difference between a useful
+   * error and a dead screen: a 401 flips the whole admin area to the signed-out
+   * notice, because every remaining button would 401 too; a 403 re-reads the
+   * session, because `CSRF_TOKEN_INVALID` means the token rotated under a session
+   * that is still perfectly alive and one refresh makes the next attempt work.
+   */
+  const reportFailure = useCallback(
+    (operation: AdminDraftOperation, failure: AdminApiFailure) => {
+      dispatch({ type: "operation-failed", operation, failure });
 
-      if (result.ok) {
-        if (result.draft) {
-          const restoredContent = cloneContent(result.draft.content);
-          setContent(restoredContent);
-          setCleanContent(cloneContent(result.draft.content));
-          setIsDirty(false);
-          setDraftSavedAt(result.draft.savedAt);
-          setStatusMessage(
-            `Brouillon chargé depuis ce navigateur (${formatFrenchDateTime(result.draft.savedAt)}). Le site public reste inchangé.`,
-          );
-        } else {
-          setContent(cloneContent(defaultContent));
-          setCleanContent(cloneContent(defaultContent));
-          setIsDirty(false);
-          setDraftSavedAt(null);
-          setStatusMessage("Aucun brouillon enregistré sur cet appareil.");
-        }
-        setErrorMessage(null);
-        setHasInvalidStoredDraft(false);
+      if (failure.kind === "unauthenticated") {
+        // Signing out replaces the whole admin area, which unmounts the editor
+        // and everything in it. A session can end mid-edit — an idle tab, an
+        // account disabled between two calls — so anything unsaved is written to
+        // the device before the screen goes away. Without this the honest
+        // handling of an expiry would itself be the data-loss path.
+        if (isDirtyRef.current) writeLocalBackup();
+        markExpired();
         return;
       }
+      if (failure.kind === "forbidden") {
+        void refreshSession();
+      }
+    },
+    [markExpired, refreshSession, writeLocalBackup],
+  );
 
-      setContent(cloneContent(defaultContent));
-      setCleanContent(cloneContent(defaultContent));
-      setIsDirty(false);
-      setDraftSavedAt(null);
-      setErrorMessage(result.error.message);
-      setHasInvalidStoredDraft(result.canDelete);
-      setStatusMessage(
-        "Le contenu par défaut est affiché car le brouillon local n'a pas pu être chargé.",
+  const loadServerDraft = useCallback(async () => {
+    dispatch({ type: "bootstrap-start" });
+
+    const result = await api.readDraft();
+
+    if (!result.ok) {
+      reportFailure("loading", result.failure);
+      return;
+    }
+
+    baseContentRef.current = cloneContent(result.value.content);
+    setContent(cloneContent(result.value.content));
+    setIsDirty(false);
+    editVersionRef.current += 1;
+    dispatch({ type: "draft-loaded", envelope: result.value });
+  }, [api, reportFailure]);
+
+  // Bootstrap: the server draft is the source of truth, so it is read before the
+  // editor renders any field. The published head is read separately and
+  // best-effort — it only feeds the "what the public sees" line, and a public
+  // endpoint being briefly unavailable must not stop an admin from editing.
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      await loadServerDraft();
+      if (cancelled) return;
+
+      // Whether a backup exists is *reported*, never applied. Reading it after
+      // the server draft is what lets the header say "a backup from 14:32
+      // exists" without that backup ever becoming the content anyone is editing.
+      const backup = loadDraft();
+      setBackupSavedAt(backup.ok ? (backup.draft?.savedAt ?? null) : null);
+      setHasInvalidStoredBackup(backup.ok ? false : backup.canDelete);
+
+      const published = await api.readPublished();
+      if (cancelled) return;
+
+      dispatch(
+        published.ok
+          ? { type: "published-loaded", envelope: published.value }
+          : { type: "published-unknown" },
       );
-    });
+    })();
 
     return () => {
-      mounted = false;
+      cancelled = true;
     };
-  }, [defaultContent]);
+  }, [api, loadServerDraft]);
 
   useEffect(() => {
     if (!isDirty) return;
@@ -787,7 +964,12 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
     };
   }, [isDirty]);
 
+  // Re-run once the editor fields exist. The sections are not in the document
+  // while the server draft is loading, so an observer created on mount would
+  // observe nothing and the section navigation would never highlight.
   useEffect(() => {
+    if (draft.phase === "loading" || draft.phase === "unavailable") return;
+
     const observedSections = ADMIN_PREVIEW_SECTIONS.flatMap((section) => {
       const element = document.getElementById(section.editorTarget);
       return element ? [{ section, element }] : [];
@@ -836,7 +1018,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
     return () => {
       observer.disconnect();
     };
-  }, []);
+  }, [draft.phase]);
 
   const handleSectionNavigation = useCallback(
     (section: (typeof ADMIN_PREVIEW_SECTIONS)[number]) => {
@@ -853,56 +1035,330 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
     [],
   );
 
-  function updateContent(updater: (current: SiteContent) => SiteContent) {
-    setContent((current) => updater(current));
-    setIsDirty(true);
-    setStatusMessage("Modifications non enregistrées dans ce navigateur.");
-    setErrorMessage(null);
+  function applyServerContent(next: SiteContent) {
+    baseContentRef.current = cloneContent(next);
+    setContent(cloneContent(next));
+    setIsDirty(false);
+    editVersionRef.current += 1;
   }
 
-  function handleSaveDraft() {
-    const result = saveDraft(content);
+  function updateContent(updater: (current: SiteContent) => SiteContent) {
+    editVersionRef.current += 1;
+    setContent((current) => updater(current));
+    setIsDirty(true);
+    dispatch({
+      type: "local-message",
+      statusMessage:
+        "Modifications non enregistrées. Elles ne sont ni sur le serveur ni publiées.",
+    });
+    dispatch({ type: "local-error", errorMessage: null });
+  }
+
+  async function handleSaveDraft() {
+    if (!canWrite(draft) || draft.revision === null) return;
+
+    const version = editVersionRef.current;
+    dispatch({ type: "operation-start", operation: "saving" });
+
+    const result = await api.saveDraft(
+      { content: contentRef.current, expectedRevision: draft.revision },
+      csrfToken,
+    );
 
     if (!result.ok) {
-      setErrorMessage(result.error.message);
+      // A 409 is not an error to report and stop on: it is the start of the
+      // reconciliation, which backs the local draft up before it does anything
+      // else. Every other failure is terminal for this attempt.
+      if (result.failure.kind === "conflict") {
+        await reconcileAfterSaveConflict(result.failure.currentRevision);
+        return;
+      }
+      reportFailure("saving", result.failure);
       return;
     }
 
-    setCleanContent(cloneContent(result.draft.content));
-    setIsDirty(false);
-    setDraftSavedAt(result.draft.savedAt);
-    setHasInvalidStoredDraft(false);
-    setErrorMessage(null);
-    setStatusMessage(
-      `Brouillon enregistré dans ce navigateur (${formatFrenchDateTime(result.draft.savedAt)}). Le site public reste inchangé.`,
+    dispatch({ type: "draft-saved", envelope: result.value });
+
+    if (editVersionRef.current === version) {
+      // Nothing was typed while the request was in flight, so the server's
+      // normalised copy can safely replace what is on screen.
+      applyServerContent(result.value.content);
+      return;
+    }
+
+    // Something was typed. The save succeeded and the revision has moved, but the
+    // editor still holds newer text than the server: it stays dirty, and the
+    // next save carries the revision this one just produced.
+    baseContentRef.current = cloneContent(result.value.content);
+  }
+
+  async function handlePublish() {
+    if (!canWrite(draft) || draft.revision === null) return;
+
+    if (isDirty) {
+      dispatch({
+        type: "local-error",
+        errorMessage: EDITOR_MESSAGES.unsavedBeforePublish,
+      });
+      return;
+    }
+
+    if (!window.confirm(EDITOR_MESSAGES.publishConfirm)) return;
+
+    dispatch({ type: "operation-start", operation: "publishing" });
+
+    const result = await api.publish(
+      { expectedRevision: draft.revision },
+      csrfToken,
+    );
+
+    if (!result.ok) {
+      if (result.failure.kind === "conflict") {
+        await refreshAfterRefusedAction("publishing", result.failure);
+        return;
+      }
+      reportFailure("publishing", result.failure);
+      return;
+    }
+
+    dispatch({ type: "content-published", envelope: result.value });
+  }
+
+  async function handleResetToPublished() {
+    if (!canWrite(draft) || draft.revision === null) return;
+    if (!window.confirm(EDITOR_MESSAGES.resetConfirm)) return;
+
+    if (isDirty) writeLocalBackup();
+
+    dispatch({ type: "operation-start", operation: "resetting" });
+
+    const result = await api.resetDraft(
+      { expectedRevision: draft.revision },
+      csrfToken,
+    );
+
+    if (!result.ok) {
+      if (result.failure.kind === "conflict") {
+        await refreshAfterRefusedAction("resetting", result.failure);
+        return;
+      }
+      reportFailure("resetting", result.failure);
+      return;
+    }
+
+    applyServerContent(result.value.content);
+    dispatch({ type: "draft-reset", envelope: result.value });
+  }
+
+  /** Conflict resolution, branch one: take the server's draft, keep a backup. */
+  async function handleReloadServerDraft() {
+    if (!window.confirm(EDITOR_MESSAGES.reloadConfirm)) return;
+
+    writeLocalBackup();
+
+    dispatch({ type: "operation-start", operation: "loading" });
+
+    const result = await api.readDraft();
+
+    if (!result.ok) {
+      reportFailure("loading", result.failure);
+      return;
+    }
+
+    applyServerContent(result.value.content);
+    dispatch({ type: "conflict-reloaded", envelope: result.value });
+  }
+
+  /**
+   * Conflict resolution, branch two: reconcile against the server's *content*.
+   *
+   * This replaces the rebase that used to live here, which adopted the head named
+   * in the 409 header and saved over it — a force-overwrite of a revision nobody
+   * had read. The 409 stays exactly as authoritative as it was; what changes is
+   * that recovery now goes and looks at what it collided with.
+   *
+   * Nothing is written unless the merge is clean, and the retry is single: a
+   * second refusal means a third editor moved the head between the fetch and the
+   * save, and a loop there would terminate only when everyone else stopped
+   * typing.
+   */
+  async function reconcileAfterSaveConflict(reportedRevision: number | null) {
+    const base = baseContentRef.current;
+
+    if (base === null) {
+      // No base snapshot means no three-way merge is possible — the editor never
+      // completed a load. Back the work up and stop; the reload path is the only
+      // honest offer left.
+      writeLocalBackup();
+      reportFailure("saving", {
+        kind: "conflict",
+        message: EDITOR_MESSAGES.reconcileWithoutBase,
+        currentRevision: reportedRevision,
+      });
+      return;
+    }
+
+    const version = editVersionRef.current;
+    dispatch({ type: "operation-start", operation: "reconciling" });
+
+    const outcome = await reconcileDraftConflict({
+      base,
+      local: contentRef.current,
+      csrfToken,
+      ports: api,
+      backup: (content) => writeLocalBackup(content),
+    });
+
+    if (outcome.kind === "failed") {
+      if (outcome.failure.kind === "conflict") {
+        // The second race. Reported, never retried.
+        reportFailure("saving", outcome.failure);
+        dispatch({
+          type: "local-error",
+          errorMessage: EDITOR_MESSAGES.reconcileRaceLost,
+        });
+        return;
+      }
+      reportFailure(outcome.stage === "read" ? "loading" : "saving", outcome.failure);
+      return;
+    }
+
+    if (outcome.kind === "unresolved") {
+      dispatch({
+        type: "conflict-unresolved",
+        conflicts: outcome.conflicts,
+        // From the fetched envelope, not from the 409 header — and it is still
+        // only displayed, because nothing was merged and nothing was written.
+        reportedServerRevision: outcome.serverEnvelope.revision,
+      });
+      return;
+    }
+
+    // Merged and saved, or already contained: either way the envelope carries the
+    // revision *and* its content, which is the only thing the editor adopts.
+    if (editVersionRef.current === version) {
+      applyServerContent(outcome.content);
+    } else {
+      // Typing continued during the round trip. The reconciled document is the
+      // new base, and the editor stays dirty so those keystrokes are still saved
+      // by the next attempt rather than silently dropped.
+      baseContentRef.current = cloneContent(outcome.content);
+    }
+
+    dispatch(
+      outcome.kind === "merged-saved"
+        ? { type: "conflict-merged", envelope: outcome.envelope }
+        : { type: "conflict-already-current", envelope: outcome.envelope },
     );
   }
 
-  function handleDeleteDraft() {
-    if (
-      !window.confirm(
-        "Supprimer le brouillon enregistré sur cet appareil ? Le site public restera inchangé. Le contenu actuellement affiché restera visible jusqu'à une restauration ou un rafraîchissement.",
-      )
-    ) {
+  /**
+   * What a refused publish or reset does: re-read, then wait to be asked again.
+   *
+   * There is no document to merge — both operations act on what is *stored* — so
+   * the only question a 409 raises is whether the admin still means the action
+   * now that the stored draft is a different one. That is not a question this
+   * code may answer, so it refreshes the state and stops. No forcing, no silent
+   * retry.
+   */
+  async function refreshAfterRefusedAction(
+    operation: "publishing" | "resetting",
+    failure: AdminApiFailure,
+  ) {
+    reportFailure(operation, failure);
+
+    // Unsaved work is about to be at risk only if the fetched draft replaces the
+    // screen, but the backup is free and the ordering has to be right the first
+    // time.
+    if (isDirtyRef.current) writeLocalBackup();
+
+    dispatch({ type: "operation-start", operation: "loading" });
+
+    const refreshed = await refreshAfterWriteConflict(api);
+
+    if (refreshed.kind === "failed") {
+      reportFailure("loading", refreshed.failure);
       return;
     }
+
+    // Replacing the on-screen document is only safe when there is nothing
+    // unsaved on it. With unsaved edits the editor keeps them, keeps its stale
+    // revision, and stays in the conflict phase — where reconciliation is the
+    // offer, not a forced action.
+    const contentAdopted = !isDirtyRef.current;
+    if (contentAdopted) applyServerContent(refreshed.envelope.content);
+
+    dispatch(
+      refreshed.published
+        ? { type: "published-loaded", envelope: refreshed.published }
+        : { type: "published-unknown" },
+    );
+    dispatch({
+      type: "conflict-refreshed",
+      envelope: refreshed.envelope,
+      operation,
+      contentAdopted,
+    });
+  }
+
+  function handleSaveLocalBackup() {
+    if (writeLocalBackup()) {
+      dispatch({
+        type: "local-message",
+        statusMessage: EDITOR_MESSAGES.backupSaved,
+      });
+    }
+  }
+
+  function handleRestoreLocalBackup() {
+    const result = loadDraft();
+
+    if (!result.ok) {
+      setHasInvalidStoredBackup(result.canDelete);
+      dispatch({ type: "local-error", errorMessage: result.error.message });
+      return;
+    }
+
+    if (!result.draft) {
+      dispatch({ type: "local-error", errorMessage: EDITOR_MESSAGES.backupMissing });
+      return;
+    }
+
+    if (!window.confirm(EDITOR_MESSAGES.restoreBackupConfirm)) return;
+
+    const restored = cloneContent(result.draft.content);
+    const stored = baseContentRef.current;
+
+    editVersionRef.current += 1;
+    setContent(restored);
+    // Restoring content identical to what the server already holds is not an
+    // edit, and marking it dirty would put a "unsaved changes" warning on a
+    // document that matches the draft byte for byte.
+    setIsDirty(stored === null || !contentsEqual(restored, stored));
+    dispatch({ type: "local-error", errorMessage: null });
+    dispatch({
+      type: "local-message",
+      statusMessage: EDITOR_MESSAGES.backupRestored,
+    });
+  }
+
+  function handleDeleteLocalBackup() {
+    if (!window.confirm(EDITOR_MESSAGES.deleteBackupConfirm)) return;
 
     const result = deleteDraft();
 
     if (!result.ok) {
-      setErrorMessage(result.error.message);
+      dispatch({ type: "local-error", errorMessage: result.error.message });
       return;
     }
 
-    const defaultClone = cloneContent(defaultContent);
-    setCleanContent(defaultClone);
-    setIsDirty(!contentsEqual(content, defaultClone));
-    setDraftSavedAt(null);
-    setHasInvalidStoredDraft(false);
-    setErrorMessage(null);
-    setStatusMessage(
-      "Brouillon supprimé de cet appareil. Le site public reste inchangé.",
-    );
+    setBackupSavedAt(null);
+    setHasInvalidStoredBackup(false);
+    dispatch({ type: "local-error", errorMessage: null });
+    dispatch({
+      type: "local-message",
+      statusMessage: EDITOR_MESSAGES.backupDeleted,
+    });
   }
 
   function handleExportDraft() {
@@ -910,7 +1366,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
     const parsed = parseDraft(json);
 
     if (!parsed.ok) {
-      setErrorMessage(parsed.error.message);
+      dispatch({ type: "local-error", errorMessage: parsed.error.message });
       return;
     }
 
@@ -924,10 +1380,8 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    setErrorMessage(null);
-    setStatusMessage(
-      "Sauvegarde JSON exportée avec le contenu actuellement affiché, y compris les modifications non enregistrées.",
-    );
+    dispatch({ type: "local-error", errorMessage: null });
+    dispatch({ type: "local-message", statusMessage: EDITOR_MESSAGES.exported });
   }
 
   async function handleImportDraft(file: File | undefined) {
@@ -939,12 +1393,18 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
         file.type === "application/json";
 
       if (!isJsonFile) {
-        setErrorMessage("Seuls les fichiers JSON sont acceptés.");
+        dispatch({
+          type: "local-error",
+          errorMessage: "Seuls les fichiers JSON sont acceptés.",
+        });
         return;
       }
 
       if (file.size > MAX_DRAFT_IMPORT_BYTES) {
-        setErrorMessage("Le fichier dépasse la limite autorisée de 1 Mo.");
+        dispatch({
+          type: "local-error",
+          errorMessage: "Le fichier dépasse la limite autorisée de 1 Mo.",
+        });
         return;
       }
 
@@ -952,28 +1412,29 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
       const parsed = parseDraft(text);
 
       if (!parsed.ok) {
-        setErrorMessage(parsed.error.message);
+        dispatch({ type: "local-error", errorMessage: parsed.error.message });
         return;
       }
 
-      if (
-        !window.confirm(
-          "Importer ce fichier remplacera le contenu actuellement affiché dans l'éditeur. Continuer ?",
-        )
-      ) {
-        setStatusMessage("Import JSON annulé. Le contenu actuel est conservé.");
-        setErrorMessage(null);
+      if (!window.confirm(EDITOR_MESSAGES.importConfirm)) {
+        dispatch({ type: "local-error", errorMessage: null });
+        dispatch({
+          type: "local-message",
+          statusMessage: EDITOR_MESSAGES.importCancelled,
+        });
         return;
       }
 
+      editVersionRef.current += 1;
       setContent(cloneContent(parsed.draft.content));
       setIsDirty(true);
-      setErrorMessage(null);
-      setStatusMessage(
-        "Fichier JSON importé dans l'éditeur. Enregistrez-le sur cet appareil pour le conserver dans ce navigateur.",
-      );
+      dispatch({ type: "local-error", errorMessage: null });
+      dispatch({ type: "local-message", statusMessage: EDITOR_MESSAGES.imported });
     } catch {
-      setErrorMessage("Impossible de lire ce fichier JSON dans le navigateur.");
+      dispatch({
+        type: "local-error",
+        errorMessage: "Impossible de lire ce fichier JSON dans le navigateur.",
+      });
     } finally {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -981,28 +1442,45 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
     }
   }
 
-  function resetContent() {
-    if (
-      window.confirm(
-        "Cette action supprimera le brouillon enregistré sur cet appareil et restaurera l’intégralité du contenu d’origine dans l’éditeur. Le site public restera inchangé. Continuer ?",
-      )
-    ) {
-      const result = createCompleteResetState(defaultContent, deleteDraft());
-
-      if (!result.ok) {
-        setErrorMessage(result.errorMessage);
-        return;
-      }
-
-      setContent(result.state.content);
-      setCleanContent(result.state.cleanContent);
-      setIsDirty(result.state.isDirty);
-      setDraftSavedAt(result.state.draftSavedAt);
-      setHasInvalidStoredDraft(result.state.hasInvalidStoredDraft);
-      setErrorMessage(result.state.errorMessage);
-      setStatusMessage(result.state.statusMessage);
-    }
+  if (draft.phase === "loading" || draft.phase === "unavailable") {
+    return (
+      <main className="min-h-screen bg-warm-50 px-4 py-10 text-warm-800 sm:px-6">
+        <div className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center">
+          <div
+            role="status"
+            aria-live="polite"
+            className="rounded-3xl border border-warm-200 bg-white/85 p-6 shadow-[0_18px_60px_rgba(44,43,40,0.10)] backdrop-blur sm:p-8">
+            <h1 className="font-display text-2xl font-light text-warm-900">
+              Éditeur de contenu Eszter
+            </h1>
+            <p className="mt-3 text-sm leading-relaxed text-warm-700">
+              {draft.statusMessage}
+            </p>
+            {draft.errorMessage && (
+              <p
+                role="alert"
+                className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {draft.errorMessage}
+              </p>
+            )}
+            {draft.phase === "unavailable" && (
+              <button
+                type="button"
+                onClick={() => {
+                  void loadServerDraft();
+                }}
+                className="mt-6 inline-flex w-full items-center justify-center rounded-full bg-warm-900 px-5 py-3 text-sm font-medium text-porcelain transition hover:bg-warm-700 focus:outline-none focus:ring-2 focus:ring-sage-300">
+                Réessayer
+              </button>
+            )}
+          </div>
+        </div>
+      </main>
+    );
   }
+
+  const freshness = describeDraftFreshness(draft, isDirty);
+  const writesAllowed = canWrite(draft);
 
   return (
     <main className="min-h-screen bg-warm-50 text-warm-800">
@@ -1010,7 +1488,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
         <header className="mb-8 space-y-4">
           <div>
             <p className="text-sm font-medium uppercase tracking-wide text-sage-600">
-              Prototype frontend
+              Back-office
             </p>
             <h1 className="font-display text-4xl font-light text-warm-800">
               Éditeur de contenu Eszter
@@ -1018,22 +1496,31 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
           </div>
           <div className="rounded-2xl border border-sage-300/70 bg-sage-100/75 p-4 shadow-[0_8px_28px_rgba(44,43,40,0.05)]">
             <h2 className="font-display text-2xl font-normal text-warm-800">
-              Brouillon enregistré uniquement sur cet appareil
+              Brouillon enregistré sur le serveur
             </h2>
             <div className="mt-2 space-y-2 text-sm leading-relaxed text-warm-700">
               <p>
-                Enregistrer conserve le brouillon dans ce navigateur uniquement.
-                Le site public n&apos;est pas modifié. Pour sauvegarder ou
-                transférer le travail, exportez le fichier JSON.
+                Enregistrer envoie le brouillon au serveur : il est conservé pour
+                tous les appareils et le site public n&apos;est pas modifié.
               </p>
               <p>
-                La suppression des données du navigateur ou l&apos;utilisation de
-                la navigation privée peut supprimer le brouillon.
+                Publier est une action distincte : c&apos;est elle, et elle seule,
+                qui met le brouillon enregistré en ligne.
+              </p>
+              <p>
+                La sauvegarde locale et le fichier JSON restent disponibles comme
+                secours. Ils ne remplacent jamais le brouillon du serveur sans une
+                action explicite.
               </p>
             </div>
           </div>
           <div className="rounded-2xl border border-warm-300/70 bg-white/75 p-4 shadow-[0_8px_28px_rgba(44,43,40,0.06)]">
-            <div className="grid gap-3 text-sm text-warm-600 md:grid-cols-3">
+            <p
+              className="mb-3 inline-flex rounded-full bg-warm-800 px-3 py-1 text-xs font-medium uppercase tracking-wide text-porcelain"
+              data-testid="admin-freshness">
+              {ADMIN_DRAFT_FRESHNESS_LABELS[freshness]}
+            </p>
+            <div className="grid gap-3 text-sm text-warm-600 md:grid-cols-4">
               <div className="rounded-xl bg-warm-50/80 p-3">
                 <span className="block font-medium text-warm-800">
                   Modifications
@@ -1042,50 +1529,126 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
               </div>
               <div className="rounded-xl bg-warm-50/80 p-3">
                 <span className="block font-medium text-warm-800">
-                  Brouillon sur cet appareil
+                  Brouillon serveur
                 </span>
-                {getDraftState(draftSavedAt)}
+                {getServerDraftState(draft.revision, draft.updatedAt)}
               </div>
               <div className="rounded-xl bg-warm-50/80 p-3">
                 <span className="block font-medium text-warm-800">
                   Site public
                 </span>
-                Inchangé
+                {getPublishedState(draft.publishedRevision, draft.publishedAt)}
+              </div>
+              <div className="rounded-xl bg-warm-50/80 p-3">
+                <span className="block font-medium text-warm-800">
+                  Sauvegarde locale
+                </span>
+                {getLocalBackupState(backupSavedAt)}
               </div>
             </div>
             <p
               className="mt-3 text-sm text-warm-600"
               role="status"
               aria-live="polite">
-              {statusMessage}
+              {draft.statusMessage}
             </p>
-            {errorMessage && (
+            {draft.errorMessage && (
               <div
                 role="alert"
                 className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                {errorMessage}
-                {hasInvalidStoredDraft && (
+                {draft.errorMessage}
+                {hasInvalidStoredBackup && (
                   <span className="block pt-1">
-                    Vous pouvez supprimer ce brouillon de cet appareil ci-dessous.
+                    Vous pouvez supprimer cette sauvegarde locale ci-dessous.
                   </span>
                 )}
               </div>
             )}
+
+            {draft.phase === "conflict" && (
+              <div
+                role="alert"
+                data-testid="admin-revision-conflict"
+                className="mt-3 space-y-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                <p className="font-medium">
+                  {draft.conflicts.length > 0
+                    ? ADMIN_DRAFT_MESSAGES.conflictUnresolved
+                    : ADMIN_DRAFT_MESSAGES.conflict}
+                </p>
+                <p>
+                  Votre version : révision {draft.revision ?? "inconnue"}. Version
+                  du serveur :{" "}
+                  {draft.reportedServerRevision === null
+                    ? "inconnue"
+                    : `révision ${draft.reportedServerRevision}`}
+                  . Rien n&apos;a été écrit sur le serveur.
+                </p>
+                {draft.conflicts.length > 0 && (
+                  <div data-testid="admin-merge-conflicts">
+                    <p className="font-medium">
+                      Éléments modifiés des deux côtés :
+                    </p>
+                    <ul className="mt-1 list-disc space-y-1 pl-5">
+                      {draft.conflicts.map((conflict) => (
+                        <li key={`${conflict.kind}:${conflict.path.join(".")}`}>
+                          {describeMergeConflict(conflict)}
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="mt-2">
+                      Reprenez ces éléments dans l&apos;éditeur — en vous appuyant
+                      au besoin sur l&apos;export JSON ci-dessous — puis relancez
+                      la fusion. Rien ne sera écrit tant qu&apos;un chevauchement
+                      subsiste.
+                    </p>
+                  </div>
+                )}
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!window.confirm(EDITOR_MESSAGES.reconcileRetryConfirm)) {
+                        return;
+                      }
+                      void reconcileAfterSaveConflict(draft.reportedServerRevision);
+                    }}
+                    disabled={draft.busy !== null}
+                    className="inline-flex items-center justify-center rounded-full bg-warm-800 px-4 py-2 text-sm font-medium text-porcelain transition hover:bg-warm-700 disabled:cursor-not-allowed disabled:opacity-60">
+                    Fusionner avec la version du serveur
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleReloadServerDraft();
+                    }}
+                    disabled={draft.busy !== null}
+                    className="inline-flex items-center justify-center rounded-full border border-amber-400 bg-white/80 px-4 py-2 text-sm font-medium text-amber-900 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60">
+                    Recharger la version du serveur
+                  </button>
+                </div>
+              </div>
+            )}
+
             <details className="mt-4 rounded-xl border border-warm-200 bg-warm-50/70 p-3 text-sm text-warm-600">
               <summary className="cursor-pointer font-medium text-warm-800">
                 Informations techniques
               </summary>
               <div className="mt-2 space-y-2 leading-relaxed">
                 <p>
-                  Le brouillon est conservé dans le stockage du navigateur avec
-                  la clé suivante :
+                  Le brouillon fait autorité côté serveur. La sauvegarde de secours
+                  de cet appareil utilise la clé suivante :
                 </p>
                 <code className="block break-all rounded-lg bg-white/80 px-3 py-2 text-xs text-warm-700">
                   {SITE_CONTENT_DRAFT_STORAGE_KEY}
                 </code>
                 <p>
-                  Il n&apos;y a pas encore de sauvegarde serveur, de publication,
-                  d&apos;écriture API admin ou d&apos;upload d&apos;image dans ce prototype.
+                  Aucun identifiant de session ni jeton de sécurité n&apos;est
+                  conservé dans le navigateur : la session est un cookie que la
+                  page ne peut pas lire.
+                </p>
+                <p>
+                  L&apos;upload d&apos;image, la réservation et les notifications
+                  ne sont pas encore implémentés.
                 </p>
               </div>
             </details>
@@ -1098,9 +1661,42 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
             </a>
             <button
               type="button"
-              onClick={handleSaveDraft}
-              className="inline-flex items-center justify-center rounded-full bg-sage-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-sage-700">
-              Enregistrer sur cet appareil
+              onClick={() => {
+                void handleSaveDraft();
+              }}
+              disabled={!writesAllowed}
+              className="inline-flex items-center justify-center rounded-full bg-sage-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-sage-700 disabled:cursor-not-allowed disabled:opacity-60">
+              Enregistrer le brouillon
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void handlePublish();
+              }}
+              disabled={!writesAllowed}
+              className="inline-flex items-center justify-center rounded-full bg-warm-900 px-5 py-2.5 text-sm font-medium text-porcelain transition hover:bg-warm-700 disabled:cursor-not-allowed disabled:opacity-60">
+              Publier
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void handleResetToPublished();
+              }}
+              disabled={!writesAllowed}
+              className="inline-flex items-center justify-center rounded-full border border-warm-300 bg-white/70 px-5 py-2.5 text-sm font-medium text-warm-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60">
+              Restaurer le contenu publié
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveLocalBackup}
+              className="inline-flex items-center justify-center rounded-full border border-sage-300 bg-white/80 px-5 py-2.5 text-sm font-medium text-sage-700 transition hover:bg-white">
+              Sauvegarder sur cet appareil
+            </button>
+            <button
+              type="button"
+              onClick={handleRestoreLocalBackup}
+              className="inline-flex items-center justify-center rounded-full border border-sage-300 bg-white/80 px-5 py-2.5 text-sm font-medium text-sage-700 transition hover:bg-white">
+              Restaurer la sauvegarde locale
             </button>
             <button
               type="button"
@@ -1125,22 +1721,17 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
             />
             <button
               type="button"
-              onClick={resetContent}
-              className="inline-flex items-center justify-center rounded-full border border-warm-300 bg-white/70 px-5 py-2.5 text-sm font-medium text-warm-700 transition hover:bg-white">
-              Restaurer le contenu d&apos;origine
-            </button>
-            <button
-              type="button"
-              onClick={handleDeleteDraft}
+              onClick={handleDeleteLocalBackup}
               className="inline-flex items-center justify-center rounded-full border border-red-200 bg-red-50 px-5 py-2.5 text-sm font-medium text-red-700 transition hover:bg-red-100">
-              Supprimer le brouillon de cet appareil
+              Supprimer la sauvegarde locale
             </button>
             <div className="basis-full rounded-xl border border-warm-200 bg-warm-50/75 px-3 py-2 text-sm leading-relaxed text-warm-600">
               <span className="font-medium text-warm-800">
                 Sauvegarde portable : fichier JSON.
               </span>{" "}
               Le fichier exporté peut être gardé comme sauvegarde, envoyé à une
-              autre personne ou importé dans un autre navigateur.
+              autre personne ou importé dans un autre navigateur. Il ne modifie le
+              brouillon du serveur qu&apos;après un enregistrement explicite.
             </div>
           </div>
         </header>
@@ -1177,7 +1768,9 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
               onChange={(appearance) =>
                 updateContent((current) => ({ ...current, appearance }))
               }
-              onError={setErrorMessage}
+              onError={(errorMessage) =>
+                dispatch({ type: "local-error", errorMessage })
+              }
             />
             <NavigationEditor
               content={content.navigation}

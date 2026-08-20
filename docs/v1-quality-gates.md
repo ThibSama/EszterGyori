@@ -137,8 +137,31 @@ important gate in the policy, because JSON Schema alone cannot express these rul
 
 `front:test` covers content encoding integrity (no mojibake, well-formed NFC UTF-8,
 diacritics preserved — asserted structurally rather than against editorial sentences),
-appearance and contrast rules, public/admin module isolation, local-draft semantics,
+appearance and contrast rules, public/admin module isolation, local-backup semantics,
 and responsive behaviour.
+
+Since Package 3.2 it also covers the admin client against a stub `fetch`: what the API
+client sends (the frozen paths, the CSRF header, `expectedRevision` on every write, and
+`source: "published"` on a reset), how it classifies what comes back (401 expiry, 403
+stale token, 409 with and without a revision header, 400 validation, a malformed 200,
+a transport failure), the draft state machine's refusal to advance a revision on a
+failed write, the sanitisation of `?next`, and the demotion of `localStorage` to an
+explicit backup that is never read on load and never holds a session or CSRF secret.
+
+Conflict recovery gets its own two suites, because it is the part with a defect worth
+naming. `site-content-merge` proves the three-way reconciliation itself: two tabs editing
+different sections both keep their work, the same field changed on both sides is refused
+rather than picked, a reordered or resized list is refused as structural rather than
+merged element-by-element, and the merged document is validated against `SiteContent`
+before it is ever offered for a save. `admin-draft-reconciliation` proves what the editor
+does with it, asserting on the *calls* and not only on the result: the local draft is
+backed up before the first network call, a conflict writes nothing at all, a clean merge
+is saved exactly once against the revision that arrived with the content it was merged
+against, losing the second race fails without a retry, and publish/reset answer a 409 by
+re-reading state and stopping. Alongside them the state machine asserts that no action
+carrying no server envelope can move `revision` — the regression test for the removed
+blind rebase, which used to adopt the head named in a 409 header and write over content
+it had never read.
 
 ### Stage 5 — Build
 
@@ -169,9 +192,9 @@ is what stops it being reintroduced by accident.
 | `php:composer-validate` | `composer validate --strict` | `composer.json` is valid and in sync with `composer.lock`. |
 | `php:lint` | `php bin/lint.php` | `php -l` over **every** PHP source file, including files no test happens to autoload — a parse error there is invisible to PHPUnit and fatal in production. |
 | `php:static-analysis` | `php bin/static-analysis.php` | PHPStan at **level max** over `src/` and `bin/`, **level 6** over `tests/`, plus PSR-12. Both levels are pinned in committed configs, so the gate cannot drift by dependency upgrade. |
-| `php:unit` | `vendor/bin/phpunit --testsuite eszter` | Configuration fail-fast — including ESZ-027's production refusals: a missing `database` block, a placeholder or empty DB password, a non-MySQL DSN, `session.cookieSecure: false`, and a config file readable by group or others. Plus contract-artifact digest verification, atomic JSON storage (temp-write, fsync, rename, size cap, locking, idempotent seeding, no silent replacement of an invalid file), the HTTP layer against `http-contract.json`, and ESZ-025/026's auth invariants. The suite is named explicitly rather than left to the default, so this gate cannot start depending on a database server. |
+| `php:unit` | `vendor/bin/phpunit --testsuite eszter` | Configuration fail-fast — including ESZ-027's production refusals: a missing `database` block, a placeholder or empty DB password, a non-MySQL DSN, `session.cookieSecure: false`, and a config file readable by group or others. Plus contract-artifact digest verification, atomic JSON storage (temp-write, fsync, rename, size cap, locking, idempotent seeding, no silent replacement of an invalid file), the HTTP layer against `http-contract.json`, ESZ-025/026's auth invariants, and Package 3.1's admin content invariants — the shared revision sequence, publish atomicity and idempotence, ETag invalidation across `/` and `/api/content`, draft/published isolation, conflict-leaves-storage-untouched, and real two-process concurrency against one content directory. The suite is named explicitly rather than left to the default, so this gate cannot start depending on a database server. |
 | `php:parity-corpus` | PHPUnit, contract suites | The PHP validator replays `contracts/generated/parity-corpus.json` with **identical** accept/reject outcomes and **identical** issue paths, every rule declared in `semantic-rules.json` is implemented, and structural validation is driven by the generated JSON Schema rather than a second hand-written schema. |
-| `php:http-contract` | PHPUnit, HTTP suites | The full `http-contract.json` case list against the PHP HTTP layer: statuses and `Allow` headers, the closed error envelope, request-id generation and echo, `ETag` / `If-None-Match` / 304, cache headers, opaque storage failures, the over-limit body outcome and the bootstrap-failure envelope. Since ESZ-021 this includes `/`, and the artifact's exemption set is asserted to be **empty**. |
+| `php:http-contract` | PHPUnit, HTTP suites | The full `http-contract.json` case list against the PHP HTTP layer: statuses and `Allow` headers, the closed error envelope, request-id generation and echo, `ETag` / `If-None-Match` / 304, cache headers, opaque storage failures, the over-limit body outcome and the bootstrap-failure envelope. Since ESZ-021 this includes `/`; since Package 3.1 it includes the three `/api/admin/content/*` paths, their `409 REVISION_CONFLICT` outcomes, the `x-content-revision` header and the per-case assertion that storage is byte-identical after every rejected write. The artifact's exemption set is asserted to be **empty**. |
 | `php:public-page` | PHPUnit, `PublicPageBootstrapTest` | The injector rewrites only the two bootstrap elements and leaves the rest of the export byte-identical; it locates them by `id` rather than by a remembered opening tag; a missing element raises instead of producing a half-injected page; the payload stays valid JSON that no editorial string can break out of; and the appearance block emits exactly the custom properties the contract declares, dropping any value that is not a validated hex colour. |
 | `php:routing` | PHPUnit, `DocumentRootRoutingTest` | `/api` resolves before anything can shadow it; static assets are served directly; `/admin` deep links survive a refresh; `/reservation` is reserved and ships no booking UI; `/` is never resolved as a static file; every declared rule is reachable; and the committed `.htaccess` is byte-identical to what the routing table renders, using only directives that are legal in that context. |
 
@@ -193,6 +216,15 @@ stub. Two details are worth stating because they are what keep it honest:
   stopped being true rather than being waived, and the set has been empty since. The
   suite asserts it is empty, so a skipped test can never be mistaken for a migration
   difference.
+- **Admin content cases run against real storage, and that is also the point.** The
+  opposite decision from the storage-failure cases above, for the opposite reason.
+  `/api/content` is a read, so a raising fixture is the honest way to stage a failure.
+  The admin routes *write*, and atomic replacement, locking and the revision sequence
+  are precisely what a fixture would fake away — so those cases run against a real
+  temp directory, real `draft.json` and `published.json` and the real `flock()`, and
+  each one snapshots both files before the request and compares the bytes afterwards.
+  Only the account directory and the session store stay doubles, so the gate still
+  needs no MySQL.
 - **Auth cases run against in-memory doubles, and that is the point.** The ESZ-025/026
   cases replay through `AccountDirectory` and `SessionStore` fixtures, so this gate
   proves the frozen surface anywhere, with no database. The SQL implementations of both
@@ -204,9 +236,10 @@ What stage 6 does **not** yet prove, and says so rather than being silently abse
 
 | Not covered | Why |
 | --- | --- |
-| Media, notification queue | `php:unit` covers what exists. Those subjects do not exist yet; the gate widens as they arrive. |
+| Media, notification queue, booking | `php:unit` covers what exists. Those subjects do not exist yet; the gate widens as they arrive. |
+| The browser editor writing to the server draft, end to end | Package 3.1 covered the `/api/admin/content/*` server surface; Package 3.2 connected the editor to it and covered the client side against a stub `fetch` (`front:test`). What neither half proves is the two running together against one origin: that is `browser:admin` in stage 9, and it needs a deployment. |
 | Login throttling | `docs/hetzner-target-architecture.md` §6 asks for rate-limited, throttled login attempts keyed by account and by source address. ESZ-025 did not build it, so there is nothing to gate. Everything else §6 asks of authentication is built and covered. |
-| The browser half of `/admin` | `/admin/login` renders no form yet, so there is no client flow to exercise. The server half is fully covered; `browser:admin` in stage 9 is where the two meet, and it stays NOT RUN. |
+| A real browser exercising `/admin` | Package 3.2 built the client flow — sign-in, draft load, save, conflict, publish, reset — and `front:test` drives every branch of it as units. The gap that remains is a real browser against a real origin: cookie attributes the `__Host-` prefix only enforces in one, and the redirect after sign-in. `browser:admin` in stage 9 stays NOT RUN. |
 
 ---
 

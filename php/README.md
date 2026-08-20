@@ -43,21 +43,27 @@ contract artifacts), `docs/hetzner-target-architecture.md` (the target topology)
 | Server-side sessions: opaque id, MySQL record, rotation on login, two deadlines | ESZ-025, done |
 | Per-session CSRF token on every state-changing request | ESZ-026, done |
 | Production config boundaries and secret hygiene | ESZ-027, done |
-| `/api/admin/*` | Not started; frozen at 404 by the contract |
+| `GET`/`PUT /api/admin/content/draft`, `POST …/publish`, `POST …/reset` | Package 3.1 (ESZ-030/031/032/033), done |
+| `/api/admin/media` | Not started; frozen at 404 by the contract |
 | Login throttling | **Not built.** `docs/hetzner-target-architecture.md` §6 asks for it; ESZ-025 did not deliver it |
 | The `/admin` login form in the browser | Not built. The API accepts a login; no page posts one yet |
 | Media, booking, notifications | Later packages |
 
-Six routes are registered: `/api/health`, `/api/content`, `/`, and the three
-`/api/auth/*`. Every other `/api/*` path answers the frozen structured JSON 404 —
+Nine routes are registered: `/api/health`, `/api/content`, `/`, the three
+`/api/auth/*`, and the three admin content paths (`/api/admin/content/draft` under
+both `GET` and `PUT`, plus `…/publish` and `…/reset`). Every other `/api/*` path —
+`/api/admin/media` is the only one left — answers the frozen structured JSON 404,
 the contract's specified behaviour for a path that is not implemented yet, asserted
-against `http-contract.json` by `tests/Http/HttpFoundationTest.php`. `/api/admin/*`
-stays unregistered on purpose: routing one before it is contracted would be a silent
-breaking change, which is why the auth routes were added to
-`contracts/http-contract.ts` *first* and the artifacts regenerated before a line of
-PHP was written for them.
+against `http-contract.json` by `tests/Http/HttpFoundationTest.php`.
 
-The auth routes are registered only when a database is configured. Production cannot
+An unimplemented route stays unregistered on purpose: routing one before it is
+contracted would be a silent breaking change. That ordering has now been followed
+twice — the auth routes in Package 2.2 and the admin content routes in Package 3.1
+were both added to `contracts/http-contract.ts` *first*, with the artifacts
+regenerated and the drift gate green, before a line of PHP was written for them.
+
+The auth and admin content routes are registered only when a database is configured,
+because both need somewhere to keep a session. Production cannot
 reach the state where they are missing — `Configuration` refuses to boot in production
 without a `database` block — and outside production a deployment that only serves the
 public read-only surface needs no SQL at all and opens no connection.

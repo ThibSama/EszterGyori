@@ -80,7 +80,7 @@ tous deux emis par PHP.
 
 ## Admin
 
-`/admin` est un **shell statique**. Il n'est plus protege.
+`/admin` est un **shell statique**, et il n'applique aucun controle d'acces.
 
 La connexion frontend server-side (middleware `proxy.ts`, routes `/admin/auth/*`,
 verification scrypt, session JWT signee) a ete **supprimee, pas portee** : un hebergement
@@ -88,37 +88,56 @@ statique n'a pas de middleware, et un controle execute dans le navigateur, devan
 page que l'appelant possede deja, n'est pas un controle d'acces — c'est une decoration
 qui rend la faille plus difficile a voir.
 
-Le paquet 2.2 place l'autorisation dans PHP, verifiee a chaque appel `/api/admin/*`
-(`docs/hetzner-target-architecture.md` §6). D'ici la :
+Le paquet 2.2 a place l'autorisation dans PHP, verifiee a chaque appel `/api/admin/*`
+(`docs/hetzner-target-architecture.md` §6), et c'est toujours la seule autorite.
 
-- `/admin/login` reste une route, mais affiche un message et non un formulaire ;
-- rien ne fuit — le shell n'a aucune API serveur a interroger, ne contient aucun secret,
-  et les brouillons restent dans le navigateur de l'editrice ;
-- le risque apparait avec les endpoints de 2.2, pas avant ;
-- `php/public/.htaccess` contient un bloc Basic auth commente, a activer si le site est
-  deploye avant 2.2. C'est un palliatif au niveau du serveur web, pas la conception.
+Le paquet 3.2 (ESZ-034/035) a branche le navigateur dessus :
 
-`/admin` reste local-only cote contenu :`/admin` reste local-only cote contenu :
+- `/admin/login` est un vrai formulaire. Il lit `GET /api/auth/session` pour obtenir le
+  jeton CSRF que la connexion elle-meme exige, poste vers `POST /api/auth/login`, et ne
+  verifie rien lui-meme ;
+- `/admin` appelle `GET /api/auth/session` au montage et ne rend l'editeur que pour un
+  appelant que PHP declare authentifie. C'est un choix d'affichage, pas une securite : un
+  401 sur n'importe quel appel reste la reponse qui fait autorite ;
+- l'editeur charge `GET /api/admin/content/draft`, enregistre via `PUT` avec la revision
+  recue comme `expectedRevision`, publie via `POST …/publish` et restaure le contenu
+  publie via `POST …/reset` ;
+- `php/public/.htaccess` contient un bloc Basic auth commente ; c'est un palliatif au
+  niveau du serveur web, jamais la conception.
 
-- edition en memoire ;
-- brouillon `localStorage` ;
+Cote contenu, `/admin` n'est plus local-only :
+
+- edition en memoire, apercu identique au site public ;
+- **brouillon serveur** faisant autorite, avec revision et `expectedRevision` sur chaque
+  ecriture ;
+- **resolution de conflit 409 par reconciliation a trois versions** (base / local /
+  serveur) : sauvegarde locale, relecture du contenu serveur, fusion deterministe des
+  seules modifications sans chevauchement, validation du resultat, puis une unique
+  nouvelle tentative. Aucun ecrasement force, aucune boucle de reprise, et la revision
+  n'avance jamais depuis un simple entete de reponse ;
+- **publication explicite**, distincte de l'enregistrement ;
+- `localStorage` conserve comme **sauvegarde de secours explicite** uniquement : jamais
+  relue au chargement, jamais appliquee sans confirmation, mais ecrite automatiquement
+  avant toute operation qui remplace le contenu affiche ;
 - import/export JSON ;
 - edition de l'apparence via une palette globale et une teinte controlee par section ;
-- reinitialisation complete qui supprime le brouillon local du navigateur et restaure `defaultSiteContent`, y compris l'apparence canonique ;
 - champs avec placeholders d'exemple uniquement, sans remplacer les labels ;
 - apercu `Telephone`, `Tablette` et `Ordinateur` via une iframe protegee `/admin/preview` ;
-- aucun appel API ;
-- aucune ecriture serveur.
+- aucun secret de session dans le navigateur : le cookie de session est `__Host-` et
+  illisible par le script, le jeton CSRF vit en memoire le temps de l'onglet.
+
+Ce qui n'est toujours pas la : l'upload media, la reservation, les notifications, et la
+limitation des tentatives de connexion.
 
 L'apercu admin recoit seulement du `SiteContent` valide par `postMessage` same-origin. Le contenu d'apercu n'est pas persiste. Les dimensions logiques sont fixes a 390 x 844 pour `Telephone`, 768 x 1024 pour `Tablette` et 1440 x 900 pour `Ordinateur`. Le panneau mesure l'espace disponible avec `ResizeObserver`, puis applique `scale = min(availableWidth / deviceWidth, availableHeight / deviceHeight, 1)` au viewport complet afin de conserver les vrais breakpoints dans l'iframe. Les animations reveal y sont desactivees pour que toutes les sections restent visibles dans les captures, tandis que le site public conserve ses animations normales et respecte `prefers-reduced-motion`.
 
-Les anciens brouillons locaux valides continuent d'etre charges tels quels, meme s'ils contiennent d'anciens textes. Ils ne sont pas reecrits silencieusement. L'utilisateur peut choisir `Reinitialisation complete` pour les supprimer et revenir au contenu canonique corrige.
+Les anciennes sauvegardes locales valides restent lisibles telles quelles, meme si elles contiennent d'anciens textes, et ne sont jamais reecrites silencieusement. Elles ne sont plus chargees automatiquement : il faut demander `Restaurer la sauvegarde locale`, puis enregistrer pour que le serveur en tienne compte.
 
-L'apparence est stockee dans `SiteContent.appearance`. Les anciennes sauvegardes sans `appearance` sont acceptees et normalisees en memoire vers `defaultSiteAppearance` ; elles ne sont pas reecrites dans `localStorage` avant une sauvegarde ou un export explicite. Les exports JSON actuels contiennent toujours `appearance`.
+L'apparence est stockee dans `SiteContent.appearance`. Les anciennes sauvegardes sans `appearance` sont acceptees et normalisees en memoire vers `defaultSiteAppearance` ; elles ne sont pas reecrites sur l'appareil avant une sauvegarde ou un export explicite. Les exports JSON actuels contiennent toujours `appearance`.
 
 Les controles couleur utilisent uniquement des champs natifs `input type="color"` et des valeurs hexadecimales `#RRGGBB` validees par le contrat. Les teintes de section sont appliquees avec une intensite fixe et legere pour conserver la lisibilite. Le contraste est valide avant sauvegarde/export, et les boutons remplis calculent automatiquement un texte blanc ou sombre.
 
-L'admin ne propose toujours pas de publication, de routes de brouillon serveur, d'upload media ou d'integration API admin. Le site public ne contient toujours aucun lien vers `/admin`.
+L'admin propose depuis le paquet 3.2 la publication et le brouillon serveur. Il ne propose toujours pas d'upload media. Le site public ne contient toujours aucun lien vers `/admin`.
 
 Aucune autorisation n'existe cote frontend, et c'est volontaire. Toute future route PHP
 de mutation devra verifier sa propre session et sa propre autorisation : la session du

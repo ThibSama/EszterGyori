@@ -15,7 +15,7 @@ import {
   parseAdminPreviewContentMessage,
   createAdminPreviewContentMessage,
 } from "../app/lib/admin-preview-messaging";
-import { createCompleteResetState } from "../app/lib/admin-content-reset";
+import { cloneSiteContent } from "../app/lib/site-content-clone";
 import { parseDraft, serializeDraft } from "../app/lib/admin-draft-storage";
 
 function customContent() {
@@ -65,12 +65,16 @@ test("appearance subsection resets preserve unrelated content and settings", () 
   assert.deepEqual(tintReset.appearance.sectionTints, defaultSiteAppearance.sectionTints);
 });
 
-test("complete reset restores canonical appearance", () => {
-  const result = createCompleteResetState(defaultSiteContent, { ok: true });
-  assert.equal(result.ok, true);
-  if (result.ok) {
-    assert.deepEqual(result.state.content.appearance, defaultSiteAppearance);
-  }
+test("content cloned into the editor carries canonical appearance by value", () => {
+  // The reset-to-defaults path moved to the server in ESZ-034, so what is left to
+  // check on this side is the clone every content boundary goes through: it must
+  // reproduce the appearance exactly and share no reference with its source, or a
+  // later edit would mutate the copy it is being compared against.
+  const cloned = cloneSiteContent(defaultSiteContent);
+
+  assert.deepEqual(cloned.appearance, defaultSiteAppearance);
+  assert.notEqual(cloned.appearance, defaultSiteContent.appearance);
+  assert.notEqual(cloned.appearance.palette, defaultSiteContent.appearance.palette);
 });
 
 test("local draft round-trip preserves appearance and legacy drafts receive defaults", () => {

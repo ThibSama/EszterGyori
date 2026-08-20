@@ -1,5 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import {
+  AdminSessionBadge,
+  AdminSessionProvider,
+} from "../../components/admin/admin-session-provider";
 import { PRIVATE_ROBOTS } from "../../lib/metadata/site-metadata";
 
 export const metadata: Metadata = {
@@ -8,23 +12,25 @@ export const metadata: Metadata = {
 };
 
 /**
- * The admin chrome (ESZ-020).
+ * The admin chrome (ESZ-020, ESZ-034).
  *
  * This layout used to `await requireAdminSession()`, which is what made `/admin`
- * a dynamic route and the whole frontend unexportable. The gate is gone because a
- * static file cannot enforce one — not because the requirement went away.
+ * a dynamic route and the whole frontend unexportable. It still does not gate
+ * anything, and cannot: `/admin` is a static file, so a check written here runs
+ * in the browser of the person it is meant to stop.
  *
- * **`/admin` is not access-controlled in this package.** Package 2.2 puts the
- * enforcement in PHP, where it belongs: the shell may redirect for UX, but every
- * `/api/admin/*` call is authorised server-side and the API is the authority
- * (`docs/hetzner-target-architecture.md` §6). Re-creating the check in the
- * browser would look like security and be none — the check and the thing it
- * guards would both be under the caller's control — so nothing stands in for it
- * here. The gap is tracked in `docs/v1-quality-gates.md`; until 2.2 lands, the
- * deployment note in `php/public/.htaccess` is the only server-side option.
+ * What changed in Package 3.2 is that there is now a session to *ask about*.
+ * {@link AdminSessionProvider} calls `GET /api/auth/session` on mount and renders
+ * the editor only for a caller PHP reports as signed in. That is a rendering
+ * decision — it stops an anonymous visitor being shown an editor whose every
+ * button would 401 — and it is not access control. The authority is unchanged:
+ * every `/api/admin/*` call is authorised server-side, per request, and a
+ * disabled account is refused on its next call rather than at its next login
+ * (`auth.accessControl`, `docs/hetzner-target-architecture.md` §6).
  *
- * Nothing under `/admin` can leak a secret in the meantime: the shell has no
- * server API to read from, and drafts still live in the editor's own browser.
+ * The consequence worth stating: the editor below this point can assume a session
+ * existed *when it rendered*, and must still handle a 401 on every call, because
+ * the session can end between two of them.
  */
 export default function ProtectedAdminLayout({
   children,
@@ -32,7 +38,7 @@ export default function ProtectedAdminLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <>
+    <AdminSessionProvider>
       <div className="sticky top-0 z-50 border-b border-warm-200 bg-white/85 px-4 py-3 text-warm-800 shadow-sm backdrop-blur">
         <div className="mx-auto flex max-w-[1800px] flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:px-2 2xl:px-4">
           <p className="text-sm font-medium">Administration Eszter</p>
@@ -42,10 +48,11 @@ export default function ProtectedAdminLayout({
               className="inline-flex items-center justify-center rounded-full border border-warm-300 bg-white/75 px-4 py-2 text-sm font-medium text-warm-700 transition hover:-translate-y-px hover:bg-white hover:text-warm-900 focus:outline-none focus:ring-2 focus:ring-sage-300">
               ← Retour au site
             </Link>
+            <AdminSessionBadge />
           </div>
         </div>
       </div>
       {children}
-    </>
+    </AdminSessionProvider>
   );
 }

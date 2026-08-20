@@ -239,6 +239,133 @@
       "passwordHash": "password_hash() with the runtime's default algorithm, Argon2id preferred and bcrypt acceptable. The hash is never returned by any endpoint."
     }
   },
+  "adminContent": {
+    "paths": {
+      "draft": "/api/admin/content/draft",
+      "publish": "/api/admin/content/publish",
+      "reset": "/api/admin/content/reset"
+    },
+    "cacheControl": "no-store",
+    "revisionHeader": "x-content-revision",
+    "revision": {
+      "sequence": "one monotonic non-negative integer, shared by draft and published",
+      "draftRevision": "the head; the most recent saved draft state",
+      "publishedRevision": "the exact draft head that was published; not a count of publishes",
+      "invariant": "published.revision <= draft.revision at all times",
+      "transitions": {
+        "saveDraft": "draft.revision = head + 1; published untouched",
+        "publish": "published.revision = draft.revision; draft untouched",
+        "resetDraft": "draft.revision = head + 1; published untouched"
+      },
+      "seed": "Both files seed at revision 0 from the canonical defaults, so a fresh deployment already satisfies the invariant.",
+      "requirements": [
+        "The head is read under the same lock that writes it; a revision is never computed from a value read outside the lock that used it.",
+        "Nothing outside these three operations moves either revision. Serving content never does.",
+        "`publishedAt` and `updatedAt` change on every successful write, including a republish at an unchanged revision, and neither ever reaches the ETag."
+      ]
+    },
+    "concurrency": {
+      "field": "expectedRevision",
+      "comparedAgainst": "draft.revision, read under the exclusive content lock",
+      "appliesTo": [
+        "PUT /api/admin/content/draft",
+        "POST /api/admin/content/publish",
+        "POST /api/admin/content/reset"
+      ],
+      "failure": {
+        "status": 409,
+        "errorCode": "REVISION_CONFLICT"
+      },
+      "revisionHeader": "x-content-revision",
+      "ignoredHeaders": [
+        "if-match",
+        "if-unmodified-since",
+        "if-none-match"
+      ],
+      "requirements": [
+        "The comparison happens under the exclusive lock, after the authoritative draft has been re-read. A check against a value read before the lock is not this mechanism.",
+        "A conflict writes nothing: no file is replaced, no temp file is left behind, and neither revision moves.",
+        "A conflict response carries the current head in the revision header, so recovery needs no extra round trip.",
+        "Conditional request headers are ignored on this surface; they are never a second way to state the precondition.",
+        "The field is required. An absent expectedRevision is 400 VALIDATION_FAILED, never an unconditional write."
+      ]
+    },
+    "read": {
+      "status": 200,
+      "body": "server-draft-envelope.output.schema.json",
+      "cacheControl": "no-store",
+      "requirements": [
+        "The response is the validated, normalised draft envelope, including its revision.",
+        "No ETag and no 304: the surface offers exactly one revision token, in the revision header.",
+        "An absent, unknown, expired or destroyed session is 401 UNAUTHENTICATED, with no hint that a draft exists.",
+        "A disabled account is 401 on this route too, resolved per request rather than at login.",
+        "A draft that cannot be read or validated is 500 STORAGE_FAILURE and is never repaired, replaced or partially served."
+      ]
+    },
+    "save": {
+      "status": 200,
+      "body": "server-draft-envelope.output.schema.json",
+      "requestBody": "admin-draft-save-request.schema.json",
+      "requirements": [
+        "The submitted content is validated against siteContent — structure *and* semantic rules — before any write.",
+        "Validation failure is 400 VALIDATION_FAILED and leaves storage unchanged.",
+        "The write is atomic: temp file, fsync, rename, under the exclusive lock. A reader never observes a partial draft.",
+        "The 1 MB storage size cap and the request body limit both still apply; neither is relaxed for this route.",
+        "Saving a draft never reads, writes or invalidates published content. The public site is unaffected.",
+        "The response is the stored envelope at its new revision, so the client does not have to re-read to stay in sync."
+      ]
+    },
+    "publish": {
+      "status": 200,
+      "body": "published-content-envelope.output.schema.json",
+      "requestBody": "admin-publish-request.schema.json",
+      "source": "the stored draft, re-read and re-validated under the lock; never the request body",
+      "requirements": [
+        "The whole read-validate-compare-write sequence runs under one exclusive content lock acquisition.",
+        "The published envelope's revision is the draft revision that was published (contentRevisionSemantics).",
+        "The published envelope's content is byte-equal to the draft content that was re-read under the lock.",
+        "A failure leaves the previous published envelope readable and unchanged; no partial state is ever observable.",
+        "A stored draft that fails re-validation is 500 STORAGE_FAILURE, opaque in the body and detailed in the log.",
+        "The published ETag follows from the new revision automatically; there is no separate invalidation step to forget.",
+        "Publishing does not modify the draft."
+      ]
+    },
+    "reset": {
+      "status": 200,
+      "body": "server-draft-envelope.output.schema.json",
+      "requestBody": "admin-reset-request.schema.json",
+      "sources": [
+        "published"
+      ],
+      "requirements": [
+        "`source` is required and closed; an unknown value is 400 VALIDATION_FAILED.",
+        "Published content is read under the lock and is never written, moved or revision-bumped by this route.",
+        "The rebuilt draft is validated before it is written, exactly like a save.",
+        "The new draft takes the next revision, so a concurrent editor holding the pre-reset revision loses its next save instead of silently undoing the reset.",
+        "Auth, CSRF and expectedRevision apply exactly as they do to a save; reset is not a lighter operation."
+      ]
+    },
+    "resetSources": [
+      "published"
+    ],
+    "requestBodies": [
+      "draftSave.valid",
+      "draftSave.staleRevision",
+      "draftSave.semanticallyInvalidContent",
+      "draftSave.structurallyInvalidContent",
+      "draftSave.missingContent",
+      "draftSave.unknownField",
+      "draftSave.missingExpectedRevision",
+      "publish.valid",
+      "publish.staleRevision",
+      "publish.missingExpectedRevision",
+      "reset.valid",
+      "reset.staleRevision",
+      "reset.unknownSource",
+      "reset.missingSource"
+    ],
+    "staleRevisionFixture": 4242
+  },
   "errorCodes": [
     "NOT_FOUND",
     "METHOD_NOT_ALLOWED",
@@ -247,6 +374,7 @@
     "INVALID_CREDENTIALS",
     "UNAUTHENTICATED",
     "CSRF_TOKEN_INVALID",
+    "REVISION_CONFLICT",
     "INVALID_CONFIGURATION",
     "STORAGE_FAILURE",
     "INTERNAL_ERROR"
@@ -259,6 +387,7 @@
     "INVALID_CREDENTIALS": "Identifiants invalides.",
     "UNAUTHENTICATED": "Authentification requise.",
     "CSRF_TOKEN_INVALID": "Jeton de sécurité invalide ou expiré.",
+    "REVISION_CONFLICT": "Le contenu a été modifié entre-temps. Rechargez le brouillon avant d'enregistrer.",
     "INVALID_CONFIGURATION": "La configuration du serveur est invalide.",
     "STORAGE_FAILURE": "Le contenu publié est momentanément indisponible.",
     "INTERNAL_ERROR": "Une erreur interne est survenue."
@@ -345,6 +474,58 @@
         405
       ],
       "successBodySchema": null
+    },
+    {
+      "path": "/api/admin/content/draft",
+      "methods": [
+        "GET",
+        "PUT"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        403,
+        405,
+        409,
+        500
+      ],
+      "requestBodySchema": "admin-draft-save-request.schema.json",
+      "successBodySchema": "server-draft-envelope.output.schema.json"
+    },
+    {
+      "path": "/api/admin/content/publish",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        403,
+        405,
+        409,
+        500
+      ],
+      "requestBodySchema": "admin-publish-request.schema.json",
+      "successBodySchema": "published-content-envelope.output.schema.json"
+    },
+    {
+      "path": "/api/admin/content/reset",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        403,
+        405,
+        409,
+        500
+      ],
+      "requestBodySchema": "admin-reset-request.schema.json",
+      "successBodySchema": "server-draft-envelope.output.schema.json"
     }
   ],
   "unknownRouteStatus": 404,
@@ -1254,49 +1435,780 @@
       }
     },
     {
-      "id": "unknown.get.unimplementedRoute.0",
-      "endpoint": "unknown",
-      "description": "/api/admin/content/draft is not implemented and must stay a 404.",
+      "id": "admin.draft.get.ok",
+      "endpoint": "/api/admin/content/draft",
+      "description": "An authenticated GET returns the stored draft envelope, uncacheable, with the revision header.",
       "request": {
         "method": "GET",
         "path": "/api/admin/content/draft"
       },
+      "auth": {
+        "session": "authenticated",
+        "account": "enabled"
+      },
       "expect": {
-        "status": 404,
-        "body": "errorEnvelope",
-        "errorCode": "NOT_FOUND"
+        "status": 200,
+        "body": "serverDraftEnvelope",
+        "headers": {
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8"
+        },
+        "contentRevision": 0
       }
     },
     {
-      "id": "unknown.get.unimplementedRoute.1",
-      "endpoint": "unknown",
-      "description": "/api/admin/content/publish is not implemented and must stay a 404.",
+      "id": "admin.draft.get.carriesNoEtag",
+      "endpoint": "/api/admin/content/draft",
+      "description": "The draft offers exactly one revision token. An ETag would be a second, usable as a precondition the surface does not honour.",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/content/draft"
+      },
+      "auth": {
+        "session": "authenticated",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "serverDraftEnvelope",
+        "forbiddenHeaderPatterns": {
+          "etag": "published"
+        }
+      }
+    },
+    {
+      "id": "admin.draft.get.unauthenticated",
+      "endpoint": "/api/admin/content/draft",
+      "description": "No session is 401, and the revision header is absent: an anonymous caller learns nothing about stored content.",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/content/draft"
+      },
+      "auth": {
+        "session": "none"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED",
+        "contentRevision": "absent"
+      }
+    },
+    {
+      "id": "admin.draft.get.anonymousSessionIsNotAuthenticated",
+      "endpoint": "/api/admin/content/draft",
+      "description": "An anonymous session — the one that holds a CSRF token — is not partial authentication.",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/content/draft"
+      },
+      "auth": {
+        "session": "anonymous"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.draft.get.disabledAccount",
+      "endpoint": "/api/admin/content/draft",
+      "description": "A live session whose account has since been disabled is 401 here, not only at the next login.",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/content/draft"
+      },
+      "auth": {
+        "session": "authenticated",
+        "account": "disabled"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED",
+        "contentRevision": "absent"
+      }
+    },
+    {
+      "id": "admin.draft.get.needsNoCsrfToken",
+      "endpoint": "/api/admin/content/draft",
+      "description": "A read changes no state and is exempt from the token (`csrf.readsAreExempt`).",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/content/draft"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "serverDraftEnvelope"
+      }
+    },
+    {
+      "id": "admin.draft.delete.methodNotAllowed",
+      "endpoint": "/api/admin/content/draft",
+      "description": "DELETE on the draft returns 405 with the allowed methods.",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/admin/content/draft"
+      },
+      "auth": {
+        "session": "authenticated",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "GET, PUT",
+          "content-type": "application/json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "id": "admin.draft.put.ok",
+      "endpoint": "/api/admin/content/draft",
+      "description": "A complete, valid document at the current revision is stored and answered with the new envelope at head + 1.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/content/draft",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "draftSave.valid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "serverDraftEnvelope",
+        "headers": {
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8"
+        },
+        "contentRevision": 1,
+        "storageAfter": "draftAdvanced"
+      }
+    },
+    {
+      "id": "admin.draft.put.staleRevisionConflicts",
+      "endpoint": "/api/admin/content/draft",
+      "description": "A save from an editor that has not seen the current head is refused with 409 and writes nothing.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/content/draft",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "draftSave.staleRevision"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 409,
+        "body": "errorEnvelope",
+        "errorCode": "REVISION_CONFLICT",
+        "contentRevision": 0,
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.draft.put.semanticallyInvalidContent",
+      "endpoint": "/api/admin/content/draft",
+      "description": "Structural validity is not enough: a document breaking a semantic rule is 400 and is not stored.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/content/draft",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "draftSave.semanticallyInvalidContent"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.draft.put.structurallyInvalidContent",
+      "endpoint": "/api/admin/content/draft",
+      "description": "A document failing the JSON Schema is 400 and is not stored.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/content/draft",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "draftSave.structurallyInvalidContent"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.draft.put.missingContent",
+      "endpoint": "/api/admin/content/draft",
+      "description": "The body is closed and complete: a save with no `content` is 400, never a partial update.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/content/draft",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "draftSave.missingContent"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.draft.put.missingExpectedRevision",
+      "endpoint": "/api/admin/content/draft",
+      "description": "An omitted precondition is a rejected request, never an unconditional write.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/content/draft",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "draftSave.missingExpectedRevision"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.draft.put.unknownField",
+      "endpoint": "/api/admin/content/draft",
+      "description": "An undeclared top-level key is rejected rather than ignored.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/content/draft",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "draftSave.unknownField"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.draft.put.unauthenticated",
+      "endpoint": "/api/admin/content/draft",
+      "description": "Authentication is resolved before CSRF and before the body: no session is 401 and nothing is validated or written.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/content/draft",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "draftSave.valid"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED",
+        "contentRevision": "absent",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.draft.put.csrfOmitted",
+      "endpoint": "/api/admin/content/draft",
+      "description": "An authenticated save with no token is 403 and writes nothing.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/content/draft",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "draftSave.valid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID",
+        "contentRevision": "absent",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.draft.put.csrfWrong",
+      "endpoint": "/api/admin/content/draft",
+      "description": "A well-formed token belonging to no session is refused the same way.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/content/draft",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "draftSave.valid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "wrong",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.draft.put.csrfCheckedBeforeValidation",
+      "endpoint": "/api/admin/content/draft",
+      "description": "A rejected token is 403 even when the body is also invalid, so an unauthorised caller cannot use this route as a validator.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/content/draft",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "draftSave.structurallyInvalidContent"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "wrong",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.draft.put.invalidJson",
+      "endpoint": "/api/admin/content/draft",
+      "description": "A malformed body is the pre-routing 400 INVALID_JSON, decided before auth, CSRF or the schema.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/content/draft",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{invalid-json"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "INVALID_JSON"
+      }
+    },
+    {
+      "id": "admin.publish.post.ok",
+      "endpoint": "/api/admin/content/publish",
+      "description": "Publishing answers the new published envelope, whose revision is the draft head that was published.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/content/publish",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "publish.valid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "publishedContentEnvelope",
+        "headers": {
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8"
+        },
+        "contentRevision": 0,
+        "storageAfter": "publishedMatchesDraft"
+      }
+    },
+    {
+      "id": "admin.publish.post.carriesNoPublishedEtag",
+      "endpoint": "/api/admin/content/publish",
+      "description": "The publish response is not a cacheable representation of the published document; only `/` and /api/content mint that validator.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/content/publish",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "publish.valid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "publishedContentEnvelope",
+        "forbiddenHeaderPatterns": {
+          "etag": "published"
+        },
+        "storageAfter": "publishedMatchesDraft"
+      }
+    },
+    {
+      "id": "admin.publish.post.staleRevisionConflicts",
+      "endpoint": "/api/admin/content/publish",
+      "description": "Publishing against a draft head the caller has not seen is 409, and published content is untouched.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/content/publish",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "publish.staleRevision"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 409,
+        "body": "errorEnvelope",
+        "errorCode": "REVISION_CONFLICT",
+        "contentRevision": 0,
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.publish.post.missingExpectedRevision",
+      "endpoint": "/api/admin/content/publish",
+      "description": "Publish carries the same required precondition as a save.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/content/publish",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "publish.missingExpectedRevision"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.publish.post.unauthenticated",
+      "endpoint": "/api/admin/content/publish",
+      "description": "No session is 401, and nothing is published.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/content/publish",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "publish.valid"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED",
+        "contentRevision": "absent",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.publish.post.csrfOmitted",
+      "endpoint": "/api/admin/content/publish",
+      "description": "An authenticated publish with no token is 403 and publishes nothing.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/content/publish",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "publish.valid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.publish.get.methodNotAllowed",
+      "endpoint": "/api/admin/content/publish",
+      "description": "Publishing is not a safe method; GET returns 405 with Allow: POST.",
       "request": {
         "method": "GET",
         "path": "/api/admin/content/publish"
       },
+      "auth": {
+        "session": "authenticated",
+        "account": "enabled"
+      },
       "expect": {
-        "status": 404,
+        "status": 405,
         "body": "errorEnvelope",
-        "errorCode": "NOT_FOUND"
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "POST",
+          "content-type": "application/json; charset=utf-8"
+        }
       }
     },
     {
-      "id": "unknown.get.unimplementedRoute.2",
-      "endpoint": "unknown",
-      "description": "/api/admin/content/reset is not implemented and must stay a 404.",
+      "id": "admin.reset.post.ok",
+      "endpoint": "/api/admin/content/reset",
+      "description": "Resetting from published rebuilds the draft at the next revision and answers the new draft envelope.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/content/reset",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "reset.valid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "serverDraftEnvelope",
+        "headers": {
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8"
+        },
+        "contentRevision": 1,
+        "storageAfter": "draftAdvanced"
+      }
+    },
+    {
+      "id": "admin.reset.post.staleRevisionConflicts",
+      "endpoint": "/api/admin/content/reset",
+      "description": "Reset is not a lighter operation: a stale precondition is refused exactly like a save.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/content/reset",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "reset.staleRevision"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 409,
+        "body": "errorEnvelope",
+        "errorCode": "REVISION_CONFLICT",
+        "contentRevision": 0,
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.reset.post.unknownSource",
+      "endpoint": "/api/admin/content/reset",
+      "description": "`source` is a closed enum; an unknown value is 400 and resets nothing.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/content/reset",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "reset.unknownSource"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.reset.post.missingSource",
+      "endpoint": "/api/admin/content/reset",
+      "description": "The source is required: a destructive operation must name what it is resetting to.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/content/reset",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "reset.missingSource"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.reset.post.unauthenticated",
+      "endpoint": "/api/admin/content/reset",
+      "description": "No session is 401, and the draft is untouched.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/content/reset",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "reset.valid"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED",
+        "contentRevision": "absent",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.reset.post.csrfOmitted",
+      "endpoint": "/api/admin/content/reset",
+      "description": "An authenticated reset with no token is 403 and the draft is untouched.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/content/reset",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "reset.valid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.reset.get.methodNotAllowed",
+      "endpoint": "/api/admin/content/reset",
+      "description": "GET on reset returns 405 with Allow: POST.",
       "request": {
         "method": "GET",
         "path": "/api/admin/content/reset"
       },
+      "auth": {
+        "session": "authenticated",
+        "account": "enabled"
+      },
       "expect": {
-        "status": 404,
+        "status": 405,
         "body": "errorEnvelope",
-        "errorCode": "NOT_FOUND"
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "POST",
+          "content-type": "application/json; charset=utf-8"
+        }
       }
     },
     {
-      "id": "unknown.get.unimplementedRoute.3",
+      "id": "unknown.get.unimplementedRoute.0",
       "endpoint": "unknown",
       "description": "/api/admin/media is not implemented and must stay a 404.",
       "request": {
@@ -1386,6 +2298,58 @@
     {
       "id": "csrf.readsAreExempt",
       "description": "GET /api/auth/session and the public read-only surface answer normally with no CSRF token, so a client can always obtain one without already having one."
+    },
+    {
+      "id": "adminContent.revisionSequenceIsShared",
+      "description": "draft.revision and published.revision are drawn from one sequence: a save moves the head, a publish sets published.revision to the draft head it published, and published.revision <= draft.revision holds after every operation."
+    },
+    {
+      "id": "adminContent.publishIsIdempotentAtAnUnchangedRevision",
+      "description": "Publishing an already-published draft twice yields the same revision and the same published ETag; only publishedAt moves. A retry after a timeout is therefore safe and invalidates no cache for nothing."
+    },
+    {
+      "id": "adminContent.publishInvalidatesBothPublicSurfaces",
+      "description": "After a publish that advanced published.revision, GET / and GET /api/content both mint the new `published-<revision>` ETag and a previously matching If-None-Match no longer answers 304. Invalidation follows from the revision, with no separate cache-busting step."
+    },
+    {
+      "id": "adminContent.publishReadsTheStoredDraftUnderOneLock",
+      "description": "Publish re-reads and re-validates the authoritative draft inside the same exclusive lock acquisition that writes published.json. A draft saved between a read and a write can never be the document that gets published, because there is no gap between them."
+    },
+    {
+      "id": "adminContent.publishIsAllOrNothing",
+      "description": "A publish that fails at any step leaves the previous published envelope readable and byte-identical. No request ever observes a published document whose content, revision and publishedAt come from different operations."
+    },
+    {
+      "id": "adminContent.draftWritesAreAtomicAndBounded",
+      "description": "Every draft write goes through the temp-file/fsync/rename sequence under the exclusive lock, and the 1 MB storage cap still applies. A concurrent reader observes either the old draft or the new one, never a partial file, and no temp file survives a failed write."
+    },
+    {
+      "id": "adminContent.savingADraftDoesNotTouchPublished",
+      "description": "A successful draft save leaves published.json byte-identical, so the public site and its ETag are unaffected. Saving is not a soft publish."
+    },
+    {
+      "id": "adminContent.resetNeverMutatesPublished",
+      "description": "A reset reads published.json and writes only draft.json. published.json is byte-identical afterwards — same content, same revision, same publishedAt — so resetting the draft can never change what the public site serves."
+    },
+    {
+      "id": "adminContent.conflictLeavesStorageUntouched",
+      "description": "A 409 REVISION_CONFLICT on save, publish or reset leaves both envelopes byte-identical and leaves no temp file behind, and reports the current head in x-content-revision so the caller can rebase."
+    },
+    {
+      "id": "adminContent.rejectedRequestsNeverReachStorage",
+      "description": "A 401, a 403 or a 405 on /api/admin/content/* sends no x-content-revision and changes nothing on disk: authentication and the token are resolved before the lock is taken."
+    },
+    {
+      "id": "adminContent.conditionalHeadersAreIgnoredOnTheAdminSurface",
+      "description": "If-Match, If-Unmodified-Since and If-None-Match have no effect on /api/admin/content/*. expectedRevision is the only precondition, so a client cannot believe itself protected by a header this surface does not read."
+    },
+    {
+      "id": "adminContent.adminResponsesAreNeverCacheable",
+      "description": "Every /api/admin/content/* response carries Cache-Control: no-store and no published ETag, so unpublished editorial work is never stored by a browser or an intermediary."
+    },
+    {
+      "id": "adminContent.storageFailuresStayOpaque",
+      "description": "A storage fault on the admin surface answers 500 STORAGE_FAILURE with a body that names no path, file, revision or schema internal, exactly like the public surface. The detail goes to the log."
     },
     {
       "id": "bootstrap.failureUsesFrozenEnvelope",

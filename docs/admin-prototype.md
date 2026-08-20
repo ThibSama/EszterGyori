@@ -1,12 +1,27 @@
 # Prototype d'administration frontend
 
-La route `/admin` fournit un editeur de contenu cote frontend pour le site vitrine Eszter. Elle utilise le contrat partage `SiteContent`, sans publication et sans stockage serveur.
+Ce document decrit le **prototype** d'editeur `/admin` tel qu'il existait avant le
+paquet 3.2. Il est conserve comme trace ; il n'est plus une description du systeme.
 
-> **Obsolete depuis le paquet 2.1 (ESZ-020) : la section « Authentification frontend » ci-dessous decrit un mecanisme supprime.** Le frontend est un export statique ; le middleware `proxy.ts`, les routes `/admin/auth/*` et tout `front/app/lib/auth/` ont ete supprimes, ainsi que les variables `ADMIN_*`. **`/admin` n'est plus protege.** Un hebergement statique ne peut pas executer ce controle, et le reproduire dans le navigateur ne serait pas un controle d'acces. Le paquet 2.2 place l'autorisation dans PHP, verifiee a chaque appel `/api/admin/*`. Voir `docs/static-frontend-and-injection.md` §3 et `docs/hetzner-target-architecture.md` §6.
+> **Obsolete a deux niveaux.**
 >
-> Tout ce qui concerne l'**editeur** lui-meme (brouillon `localStorage`, import/export, apparence, apercu) reste exact.
+> 1. **Depuis le paquet 2.1 (ESZ-020)** la section « Authentification frontend » decrit un
+>    mecanisme supprime : middleware `proxy.ts`, routes `/admin/auth/*`, `front/app/lib/auth/`
+>    et variables `ADMIN_*` n'existent plus. Un hebergement statique ne peut pas executer ce
+>    controle, et le reproduire dans le navigateur ne serait pas un controle d'acces. Le
+>    paquet 2.2 a place l'autorisation dans PHP, verifiee a chaque appel `/api/admin/*`.
+> 2. **Depuis le paquet 3.2 (ESZ-034/035)** la description de l'editeur lui-meme est
+>    perimee. Le brouillon fait autorite **cote serveur** (`/api/admin/content/*`), la
+>    publication est une action explicite, `/admin/login` est un vrai formulaire poste vers
+>    `/api/auth/login`, et `localStorage` n'est plus qu'une sauvegarde de secours qui n'est
+>    jamais relue au chargement.
+>
+> La description a jour est dans `docs/content-architecture.md` (« Administration
+> frontend ») et `front/README.md`. Voir aussi `docs/static-frontend-and-injection.md` §3
+> et `docs/hetzner-target-architecture.md` §6.
 
-Le backend PHP (`php/`) expose `GET /api/health`, `GET /api/content` et `GET | HEAD /`, mais `/admin` ne les appelle pas. Le service Express historique (`API/`) a ete retire au paquet 1.2 (ESZ-015).
+Ce qui reste exact ci-dessous : la structure des sections editables, les regles
+d'apparence, les placeholders, et le fonctionnement de l'apercu `/admin/preview`.
 
 ## Authentification frontend
 
