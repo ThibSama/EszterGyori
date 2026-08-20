@@ -21,6 +21,10 @@ use Eszter\Contract\ContractArtifactException;
 use Eszter\Contract\ContractArtifacts;
 use Eszter\Http\Endpoint\AdminDraftReadEndpoint;
 use Eszter\Http\Endpoint\AdminDraftSaveEndpoint;
+use Eszter\Http\Endpoint\AdminMediaDeleteEndpoint;
+use Eszter\Http\Endpoint\AdminMediaEndpoint;
+use Eszter\Http\Endpoint\AdminMediaListEndpoint;
+use Eszter\Http\Endpoint\AdminMediaUploadEndpoint;
 use Eszter\Http\Endpoint\AdminPublishEndpoint;
 use Eszter\Http\Endpoint\AdminResetEndpoint;
 use Eszter\Http\Endpoint\AuthLoginEndpoint;
@@ -38,6 +42,12 @@ use Eszter\Http\Request;
 use Eszter\Http\RequestId;
 use Eszter\Http\Response;
 use Eszter\Http\Router;
+use Eszter\Media\ImagePipeline;
+use Eszter\Media\MediaContract;
+use Eszter\Media\MediaIngest;
+use Eszter\Media\MediaLibrary;
+use Eszter\Media\PhpUploadTransport;
+use Eszter\Media\UploadTransport;
 use Eszter\Storage\ContentStorage;
 use Eszter\Storage\ExportedPageFile;
 use Eszter\Storage\PublishedContentReader;
@@ -94,6 +104,9 @@ final class Kernel
         public readonly RequestId $requestIds,
         public readonly Logger $logger,
         public readonly int $requestBodyLimitBytes,
+        /** The frozen `media` block, so the body guard can size the upload route. */
+        public readonly MediaContract $media,
+        public readonly MediaLibrary $mediaLibrary,
         /**
          * Null when no authenticated surface is wired, which happens only outside
          * production and only when no `database` block is configured. Production
@@ -122,6 +135,13 @@ final class Kernel
      *        `sql:integration` proves the SQL implementation of both against a
      *        real one. Production passes null for both and gets
      *        {@see AdminAccountRepository} and {@see PdoSessionStore}.
+     * @param UploadTransport|null $uploadTransport Overrides how a multipart part
+     *        is recognised and moved (ESZ-036). The seam exists because
+     *        `is_uploaded_file()` answers only for paths PHP itself wrote while
+     *        parsing the current request, which no test can arrange — and the
+     *        parts of the ingest worth testing all come after the move.
+     *        Production passes null and gets {@see PhpUploadTransport}, keeping
+     *        the real guarantee.
      */
     public static function boot(
         string $configPath,
@@ -130,6 +150,7 @@ final class Kernel
         ?ExportedPageReader $exportedPageReader = null,
         ?AccountDirectory $accountDirectory = null,
         ?SessionStore $sessionStore = null,
+        ?UploadTransport $uploadTransport = null,
     ): self {
         $clock ??= new SystemClock();
         $config = Configuration::fromFile($configPath);
@@ -143,6 +164,8 @@ final class Kernel
         $errors = ErrorCatalog::fromArtifacts($artifacts);
         $contract = $artifacts->httpContract();
         $requestIds = RequestId::fromContract($contract);
+        $structural = new StructuralValidator($artifacts);
+        $media = MediaContract::fromArtifacts($artifacts);
 
         $storage = new ContentStorage(
             $config->contentDir,
@@ -150,6 +173,22 @@ final class Kernel
             $config->lockDir,
             $artifacts,
             $validator,
+            $clock,
+        );
+
+        // Constructed unconditionally, like `ContentStorage`: it opens nothing,
+        // creates nothing and touches no disk until a media route calls it. A
+        // public-surface request therefore pays for it exactly as much as it pays
+        // for the content storage it also does not use.
+        $mediaLibrary = new MediaLibrary(
+            $media,
+            $config->contentDir,
+            $config->mediaOriginalsDir,
+            $config->mediaPublicDir(),
+            $config->tmpDir,
+            $config->lockDir,
+            $artifacts,
+            $structural,
             $clock,
         );
 
@@ -181,6 +220,8 @@ final class Kernel
             $requestIds,
             $logger,
             self::parseByteSize($contract['requestBodyLimit'] ?? '64kb'),
+            $media,
+            $mediaLibrary,
             $sessions,
         );
 
@@ -191,7 +232,14 @@ final class Kernel
         );
 
         if ($accounts !== null && $sessions !== null) {
-            $kernel->registerAuthenticatedRoutes($accounts, $sessions, $clock, $logger);
+            $kernel->registerAuthenticatedRoutes(
+                $accounts,
+                $sessions,
+                $clock,
+                $logger,
+                $structural,
+                $uploadTransport ?? new PhpUploadTransport(),
+            );
         }
 
         // Logged after wiring, so the line reports what this request can actually
@@ -300,10 +348,11 @@ final class Kernel
         SessionManager $sessions,
         Clock $clock,
         Logger $logger,
+        StructuralValidator $structural,
+        UploadTransport $uploadTransport,
     ): void {
         $authenticator = new Authenticator($accounts, $sessions, $clock, $logger);
         $csrf = CsrfGuard::fromArtifacts($this->artifacts);
-        $structural = new StructuralValidator($this->artifacts);
 
         $this->router->register('GET', AuthSessionEndpoint::PATH, new AuthSessionEndpoint($authenticator));
         $this->router->register(
@@ -318,6 +367,80 @@ final class Kernel
         );
 
         $this->registerAdminContentRoutes($authenticator, $sessions, $csrf, $structural, $logger);
+        $this->registerAdminMediaRoutes(
+            $authenticator,
+            $sessions,
+            $csrf,
+            $structural,
+            $logger,
+            $clock,
+            $uploadTransport,
+        );
+    }
+
+    /**
+     * The admin media surface (ESZ-036 / ESZ-037).
+     *
+     * Gated on the same condition as the content surface and for the same
+     * reason: a deployment with no session store can authenticate nobody, so
+     * routing these would only produce endpoints that answer 401 forever.
+     *
+     * Three verbs on one path, registered separately, so the 405 `Allow` header is
+     * built from what is registered and reports `DELETE, GET, POST` without
+     * anything restating it. There is no `{id}` route: `Router` is exact-path by
+     * construction, and `mediaDeleteRequestSchema` argues why the id travels in the
+     * body instead.
+     *
+     * The delete endpoint takes the real {@see ContentStorage}, not the
+     * `PublishedContentReader` seam the public routes accept, because it must read
+     * the *authoritative* draft as well as the published document — and the seam
+     * exists to fake published reads, which is exactly what a reference check must
+     * not be given.
+     */
+    private function registerAdminMediaRoutes(
+        Authenticator $authenticator,
+        SessionManager $sessions,
+        CsrfGuard $csrf,
+        StructuralValidator $structural,
+        Logger $logger,
+        Clock $clock,
+        UploadTransport $uploadTransport,
+    ): void {
+        $images = new ImagePipeline($this->media);
+
+        $shared = [
+            $authenticator,
+            $sessions,
+            $csrf,
+            $this->media,
+            $this->mediaLibrary,
+            $structural,
+            $logger,
+        ];
+
+        $this->router->register(
+            'GET',
+            AdminMediaEndpoint::PATH,
+            new AdminMediaListEndpoint(...$shared),
+        );
+        $this->router->register(
+            'POST',
+            AdminMediaEndpoint::PATH,
+            new AdminMediaUploadEndpoint(...$shared, ingest: new MediaIngest(
+                $this->media,
+                $images,
+                $this->mediaLibrary,
+                $structural,
+                $uploadTransport,
+                $clock,
+                $logger,
+            )),
+        );
+        $this->router->register(
+            'DELETE',
+            AdminMediaEndpoint::PATH,
+            new AdminMediaDeleteEndpoint(...$shared, storage: $this->storage),
+        );
     }
 
     /**
@@ -465,17 +588,30 @@ final class Kernel
      */
     private function rejectUnusableBody(Request $request): void
     {
+        $limit = $this->bodyLimitFor($request);
+
+        // Checked before the raw body, because on a `multipart/form-data` request
+        // `php://input` is empty by design — the parts are in `$_FILES` — so the
+        // declared length is the only evidence of size that reaches this point.
+        // `overLimitBody` leaves the detection method open ("declared
+        // Content-Length, bytes actually read") and freezes only the refusal.
+        $declared = $request->declaredContentLength();
+
+        if ($declared !== null && $declared > $limit) {
+            throw $this->overLimit($request, "declared {$declared} bytes, limit {$limit}");
+        }
+
         if ($request->rawBody === '') {
             return;
         }
 
-        if (\strlen($request->rawBody) > $this->requestBodyLimitBytes) {
+        if (\strlen($request->rawBody) > $limit) {
             // Frozen in Package 1.2 as `overLimitBodyOutcome`: 400 INVALID_JSON,
             // enforced before routing and regardless of Content-Type, so an
             // oversized body is a 400 even on a path that would otherwise 404 or
-            // 405. A write route that later accepts bodies may want a dedicated
-            // code; that would be a deliberate contract change.
-            throw HttpException::invalidJson('Request body exceeds the contract limit.');
+            // 405. The media upload route is the one exception, and it is an
+            // exception in both directions — a larger limit and a different code.
+            throw $this->overLimit($request, 'body exceeds the limit');
         }
 
         if (!$request->hasJsonContentType()) {
@@ -487,12 +623,58 @@ final class Kernel
         }
     }
 
+    /**
+     * The body limit that applies to one request.
+     *
+     * `REQUEST_BODY_LIMIT` is 64 kB and stays 64 kB for every route but one.
+     * Raising the global limit so that uploads could pass would hand every other
+     * route — the unauthenticated ones included — a 128× larger buffer to be
+     * asked to parse as JSON, which is a cost paid by the whole surface for the
+     * benefit of a single authenticated endpoint. The limit belongs to the route,
+     * so it is applied per route, and the exception is stated in exactly one
+     * place rather than being a condition inside the guard.
+     *
+     * The upload route's allowance is the file limit plus the multipart framing,
+     * because the framing is part of what a client must send in order to deliver a
+     * file of the maximum size — and rejecting a file of exactly the maximum size
+     * is the one refusal a user is most likely to hit deliberately.
+     */
+    private function bodyLimitFor(Request $request): int
+    {
+        return $request->method === 'POST' && $request->path === AdminMediaEndpoint::PATH
+            ? $this->media->requestLimitBytes()
+            : $this->requestBodyLimitBytes;
+    }
+
+    /**
+     * The refusal for an over-limit body: 413 on the upload route, 400 elsewhere.
+     *
+     * Two codes rather than one, because a client can act on the difference. On
+     * every JSON route an oversized body means the client built something wrong,
+     * and `overLimitBodyOutcome` freezes that as 400 `INVALID_JSON`. On the upload
+     * route it means the person chose a file that is too big, which their UI has
+     * to turn into a sentence about file size — and `INVALID_JSON` for a
+     * multipart image would be a lie about what was wrong.
+     */
+    private function overLimit(Request $request, string $detail): HttpException
+    {
+        return $request->method === 'POST' && $request->path === AdminMediaEndpoint::PATH
+            ? HttpException::payloadTooLarge("Upload over the media route limit: {$detail}.")
+            : HttpException::invalidJson("Request body exceeds the contract limit: {$detail}.");
+    }
+
     /** Runs the front controller: boot, handle, send. */
     public static function run(string $configPath): void
     {
         /** @var array<string, mixed> $server */
         $server = $_SERVER;
-        $request = Request::fromGlobals($server, file_get_contents('php://input') ?: '');
+        /** @var array<mixed> $files */
+        $files = $_FILES;
+
+        // `php://input` is empty on a multipart request — PHP consumed the body
+        // to populate `$_FILES` — so both have to be read for the request object
+        // to describe what actually arrived.
+        $request = Request::fromGlobals($server, file_get_contents('php://input') ?: '', $files);
 
         self::respond($configPath, $request)->send();
     }

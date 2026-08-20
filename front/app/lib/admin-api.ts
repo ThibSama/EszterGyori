@@ -2,6 +2,7 @@ import {
   ADMIN_CONTENT_DRAFT_PATH,
   ADMIN_CONTENT_PUBLISH_PATH,
   ADMIN_CONTENT_RESET_PATH,
+  ADMIN_MEDIA_PATH,
   AUTH_LOGIN_PATH,
   AUTH_LOGOUT_PATH,
   AUTH_SESSION_PATH,
@@ -9,10 +10,17 @@ import {
   CSRF_HEADER,
   authSessionResponseSchema,
   errorEnvelopeSchema,
+  MEDIA_UPLOAD_FIELD_NAME,
+  MEDIA_UPLOAD_LIMIT_BYTES,
+  mediaLibraryResponseSchema,
+  mediaUploadResponseSchema,
   publishedContentEnvelopeV1Schema,
   serverDraftEnvelopeV1Schema,
   type ApiErrorCode,
   type AuthSessionResponse,
+  type MediaAssetMetadata,
+  type MediaLibraryResponse,
+  type MediaUploadResponse,
   type PublishedContentEnvelopeV1,
   type ServerDraftEnvelopeV1,
   type SiteContent,
@@ -62,7 +70,13 @@ export type AdminApiFailure =
   /** 5xx, including STORAGE_FAILURE. Opaque by design. */
   | { kind: "server"; message: string; status: number }
   /** A 2xx whose body did not match the frozen schema. Never rendered. */
-  | { kind: "malformed-response"; message: string };
+  | { kind: "malformed-response"; message: string }
+  /** Upload only: the file is over the route's limit. Fixed by choosing a smaller one. */
+  | { kind: "payload-too-large"; message: string }
+  /** Media only: the asset is still used by the draft or the published site. */
+  | { kind: "media-referenced"; message: string }
+  /** Media only: no asset under that id. The library on screen is stale. */
+  | { kind: "not-found"; message: string };
 
 export type AdminApiResult<T> =
   | { ok: true; value: T }
@@ -93,6 +107,12 @@ export interface AdminApiClient {
     csrfToken: string,
   ): Promise<AdminApiResult<ServerDraftEnvelopeV1>>;
   readPublished(): Promise<AdminApiResult<PublishedContentEnvelopeV1>>;
+  listMedia(): Promise<AdminApiResult<MediaAssetMetadata[]>>;
+  uploadMedia(
+    file: File,
+    csrfToken: string,
+  ): Promise<AdminApiResult<MediaAssetMetadata>>;
+  deleteMedia(id: string, csrfToken: string): Promise<AdminApiResult<null>>;
 }
 
 /** The only reset source the contract defines. Stated once, sent from here. */
@@ -125,6 +145,14 @@ export const ADMIN_API_MESSAGES = {
     "Le serveur n’a pas pu traiter la demande. Rien n’a été enregistré.",
   malformedResponse:
     "La réponse du serveur est inexploitable. Rien n’a été appliqué dans l’éditeur.",
+  payloadTooLarge:
+    "L’image dépasse la taille maximale de 8 Mo. Choisissez un fichier plus léger : rien n’a été envoyé.",
+  mediaRejected:
+    "Ce fichier n’a pas été accepté. Formats acceptés : JPEG, PNG et WebP, jusqu’à 8 Mo. Rien n’a été enregistré.",
+  mediaReferenced:
+    "Ce média est encore utilisé par le brouillon ou par le site publié. Retirez-le du contenu, puis réessayez : rien n’a été supprimé.",
+  mediaNotFound:
+    "Ce média n’existe plus sur le serveur. La médiathèque a été rechargée.",
 } as const;
 
 function failure(failure: AdminApiFailure): { ok: false; failure: AdminApiFailure } {
@@ -186,6 +214,12 @@ function failureFromResponse(
     case "VALIDATION_FAILED":
     case "INVALID_JSON":
       return { kind: "validation", message: ADMIN_API_MESSAGES.validation };
+    case "PAYLOAD_TOO_LARGE":
+      return { kind: "payload-too-large", message: ADMIN_API_MESSAGES.payloadTooLarge };
+    case "MEDIA_REFERENCED":
+      return { kind: "media-referenced", message: ADMIN_API_MESSAGES.mediaReferenced };
+    case "NOT_FOUND":
+      return { kind: "not-found", message: ADMIN_API_MESSAGES.mediaNotFound };
     case "STORAGE_FAILURE":
     case "INTERNAL_ERROR":
     case "INVALID_CONFIGURATION":
@@ -209,6 +243,12 @@ function failureFromResponse(
   }
   if (status === 400) {
     return { kind: "validation", message: ADMIN_API_MESSAGES.validation };
+  }
+  if (status === 404) {
+    return { kind: "not-found", message: ADMIN_API_MESSAGES.mediaNotFound };
+  }
+  if (status === 413) {
+    return { kind: "payload-too-large", message: ADMIN_API_MESSAGES.payloadTooLarge };
   }
 
   return { kind: "server", message: ADMIN_API_MESSAGES.server, status };
@@ -242,7 +282,12 @@ export function createAdminApiClient(
     if (init.csrfToken !== undefined) {
       headers.set(CSRF_HEADER, init.csrfToken);
     }
-    if (init.body !== undefined) {
+    // A `FormData` body must NOT carry an explicit content-type: the browser
+    // has to set it itself so it can append the multipart boundary it generated.
+    // Setting `multipart/form-data` by hand produces a request with no boundary,
+    // which every server parses as zero parts — an upload that silently arrives
+    // empty.
+    if (init.body !== undefined && !(init.body instanceof FormData)) {
       headers.set("content-type", "application/json");
     }
 
@@ -360,6 +405,51 @@ export function createAdminApiClient(
       const response = await send(PUBLIC_CONTENT_PATH, { method: "GET" });
       if (!response.ok) return response;
       return parsed(publishedContentEnvelopeV1Schema, response.body);
+    },
+
+    async listMedia() {
+      const response = await send(ADMIN_MEDIA_PATH, { method: "GET" });
+      if (!response.ok) return response;
+
+      const library = parsed<MediaLibraryResponse>(mediaLibraryResponseSchema, response.body);
+      return library.ok ? { ok: true as const, value: library.value.assets } : library;
+    },
+
+    async uploadMedia(file, csrfToken) {
+      // Refused here as well as on the server, and the client-side check is the
+      // one the person actually benefits from: an 8 MB upload that is going to be
+      // rejected costs them the whole transfer before they are told. The server's
+      // check is the one that is load-bearing — this one can be bypassed by
+      // anyone who wants to, and nothing depends on it.
+      if (file.size > MEDIA_UPLOAD_LIMIT_BYTES) {
+        return failure({
+          kind: "payload-too-large",
+          message: ADMIN_API_MESSAGES.payloadTooLarge,
+        });
+      }
+
+      const body = new FormData();
+      body.append(MEDIA_UPLOAD_FIELD_NAME, file);
+
+      const response = await send(ADMIN_MEDIA_PATH, {
+        method: "POST",
+        csrfToken,
+        body,
+      });
+      if (!response.ok) return response;
+
+      const uploaded = parsed<MediaUploadResponse>(mediaUploadResponseSchema, response.body);
+      return uploaded.ok ? { ok: true as const, value: uploaded.value.asset } : uploaded;
+    },
+
+    async deleteMedia(id, csrfToken) {
+      const response = await send(ADMIN_MEDIA_PATH, {
+        method: "DELETE",
+        csrfToken,
+        body: JSON.stringify({ id }),
+      });
+      if (!response.ok) return response;
+      return { ok: true, value: null };
     },
   };
 }

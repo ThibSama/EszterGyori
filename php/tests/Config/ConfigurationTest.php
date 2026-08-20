@@ -39,6 +39,7 @@ final class ConfigurationTest extends TestCase
                 'locks' => '../data/locks',
                 'log' => '../var/log',
                 'contracts' => '/absolute/contracts',
+                'mediaOriginals' => '../data/media-originals',
                 'public' => '../public_html',
             ],
             // ESZ-023/027. Required in production, so every production fixture in

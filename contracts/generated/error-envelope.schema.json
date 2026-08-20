@@ -22,6 +22,8 @@
             "UNAUTHENTICATED",
             "CSRF_TOKEN_INVALID",
             "REVISION_CONFLICT",
+            "PAYLOAD_TOO_LARGE",
+            "MEDIA_REFERENCED",
             "INVALID_CONFIGURATION",
             "STORAGE_FAILURE",
             "INTERNAL_ERROR"

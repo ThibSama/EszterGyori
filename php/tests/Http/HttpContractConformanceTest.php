@@ -725,10 +725,30 @@ final class HttpContractConformanceTest extends TestCase
             'reset.staleRevision' => ['expectedRevision' => $stale, 'source' => 'published'],
             'reset.unknownSource' => ['expectedRevision' => 0, 'source' => 'defaults'],
             'reset.missingSource' => ['expectedRevision' => 0],
+            'mediaDelete.unknownId' => ['id' => self::unknownMediaIdFixture()],
+            // Well-formed JSON, wrong shape for an id. The request schema must
+            // refuse it as 400 before it can reach the catalogue; only a
+            // well-formed id that is absent there is 404.
+            'mediaDelete.malformedId' => ['id' => 'not-a-media-id'],
+            // A path fragment inside a field the schema pins to `[0-9a-f]`. It
+            // must never reach a filesystem call, and the pattern is what stops
+            // it — not a sanitiser downstream.
+            'mediaDelete.traversalId' => ['id' => '../../etc/passwd'],
+            'mediaDelete.missingId' => [],
             default => self::fail("Unknown named request body: {$name}"),
         };
 
         return (string) json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+
+    private static function unknownMediaIdFixture(): string
+    {
+        /** @var array<string, mixed> $media */
+        $media = self::contract()['media'];
+        /** @var string $id */
+        $id = $media['unknownAssetIdFixture'];
+
+        return $id;
     }
 
     private static function staleRevisionFixture(): int
@@ -1184,6 +1204,34 @@ final class HttpContractConformanceTest extends TestCase
 
             case 'publicPageHtml':
                 $this->assertPublicPage($case, $expected, $response);
+                break;
+
+            case 'mediaLibraryResponse':
+            case 'mediaUploadResponse':
+                self::assertIsArray($body);
+                self::assertSame([], $structural->validate(
+                    $body,
+                    $expected['body'] === 'mediaLibraryResponse'
+                        ? 'media-library-response.schema.json'
+                        : 'media-upload-response.schema.json',
+                ));
+
+                // Same rule as the draft: an asset list is a map of unpublished
+                // editorial work and must not be storable by a browser or a proxy.
+                self::assertSame(
+                    self::adminCacheControl(),
+                    $response->header('Cache-Control'),
+                    'the media response is cacheable',
+                );
+                self::assertNull($response->header('ETag'), 'the media response carries an ETag');
+
+                // `media.responsesNeverNameServerPaths`. The schemas are strict, so
+                // an unexpected key is already rejected; this catches the worse
+                // mistake of a server path arriving inside a declared one.
+                self::assertStringNotContainsString($this->root, $response->body);
+                self::assertStringNotContainsString('media-originals', $response->body);
+                self::assertStringNotContainsString('.intake', $response->body);
+                self::assertStringNotContainsString('.staging-', $response->body);
                 break;
 
             case 'authSessionResponse':

@@ -27,6 +27,23 @@ final class HtaccessRenderer
     private const PHP_FILE_PATTERN = '\\.(?i:php[0-9]?|phtml|phar|inc)$';
 
     /**
+     * The only file names `media/` may serve: a managed asset, and nothing else.
+     *
+     * Expressed as a negative lookahead so the rule is a *whitelist* — the thing
+     * a deny-list of extensions can never be. Ingest stages the derivative inside
+     * this directory before renaming it into place (`rename()` is only atomic
+     * within one filesystem), so for a moment there is a file here that is not an
+     * asset; this rule is what makes that moment harmless rather than a window.
+     *
+     * It also stops mattering *why* a stray file appeared. A leftover staging
+     * file, a backup an operator dropped in, an original someone copied across:
+     * none of them are addressable, because none of them are named
+     * `med_<32 hex>.<jpg|png|webp>`. The php deny-list below stays as well —
+     * belt and braces on the one directory where untrusted bytes land.
+     */
+    private const MEDIA_ASSET_NAME_PATTERN = '^(?!med_[0-9a-f]{32}\\.(?:jpg|png|webp)$).*$';
+
+    /**
      * The generated files, keyed by their path relative to the document root.
      *
      * @return array<string, string>
@@ -179,6 +196,7 @@ final class HtaccessRenderer
     {
         $banner = self::BANNER;
         $phpFiles = self::PHP_FILE_PATTERN;
+        $assetNames = self::MEDIA_ASSET_NAME_PATTERN;
 
         return <<<HTACCESS
             # {$banner}
@@ -197,6 +215,14 @@ final class HtaccessRenderer
 
             Options -Indexes -ExecCGI
 
+            # Only a managed asset is addressable here. Everything else — a
+            # staging file mid-ingest, a stray copy, anything at all — is denied
+            # by name rather than by extension, so the rule cannot be got past
+            # by finding a spelling the deny-list forgot.
+            <FilesMatch "{$assetNames}">
+                Require all denied
+            </FilesMatch>
+
             <FilesMatch "{$phpFiles}">
                 Require all denied
             </FilesMatch>
@@ -205,8 +231,10 @@ final class HtaccessRenderer
             RemoveType .php .phtml .phar
 
             <IfModule mod_headers.c>
-                # Derivatives are content-addressed: the id changes when the image
-                # does, so they can be cached indefinitely.
+                # A managed asset is immutable: its name carries a random id
+                # minted once at ingest and never reused, and the ingest never
+                # rewrites a file it has already published. Replacing an image
+                # means a new id and a new URL, so these can be cached forever.
                 Header always set Cache-Control "public, max-age=31536000, immutable"
                 Header always set X-Content-Type-Options "nosniff"
                 Header always set Content-Disposition "inline"

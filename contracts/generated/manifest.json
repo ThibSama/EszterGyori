@@ -27,7 +27,7 @@
     },
     {
       "file": "error-envelope.schema.json",
-      "sha256": "d30a05a175dcca21a0d7c15b9e5634022d81690a950763078a5ef7f6628d1244"
+      "sha256": "645790e6d6ec6c8aabb4bd2feb06fd57a953f7550db51169d800f3c195b42785"
     },
     {
       "file": "health-response.schema.json",
@@ -35,11 +35,27 @@
     },
     {
       "file": "http-contract.json",
-      "sha256": "0b01cc18982e260e67c6ae2b86f25724afd89cb1dac661e887c6d3c323aeeb51"
+      "sha256": "68c480046db4a523821fe9a499364022ca30c11362e9dc25ddb9242594d84426"
     },
     {
       "file": "login-request.schema.json",
       "sha256": "0dddcd0fcd39d2a8da309eb800f2d319d25352088195e3dfc537d70917c3f9df"
+    },
+    {
+      "file": "media-delete-request.schema.json",
+      "sha256": "63368a41cbb54492fcc594e954f78ead918979a177edec79964bd6d5f27be459"
+    },
+    {
+      "file": "media-library-index.schema.json",
+      "sha256": "590871fd7f0f2a33a6ebbe9dc6af3d24b37360fcd7300dafef235841b960938a"
+    },
+    {
+      "file": "media-library-response.schema.json",
+      "sha256": "03b2f7d6731035015f293cb1ce0927f07a1fad60f31a0879c573beacbf451476"
+    },
+    {
+      "file": "media-upload-response.schema.json",
+      "sha256": "69e7ed5c8b821e6d3307dfbf7e5e86bda0544616ac3bc9bf3668817cd2212374"
     },
     {
       "file": "parity-corpus.json",

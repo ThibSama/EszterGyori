@@ -39,6 +39,13 @@ return [
         // `docs/contract-freeze.md`, "What a PHP implementation must do".
         'contracts' => '../app/contracts',
 
+        // Uploaded media originals (ESZ-036). MUST NOT be web-reachable, and
+        // Intake is a child of this directory so finalising an original with
+        // rename() cannot cross a filesystem. Nothing ever serves a file from
+        // here: it exists so a derivative can be rebuilt without asking the
+        // editor to upload again.
+        'mediaOriginals' => '../data/media-originals',
+
         // The document root: the Next static export, copied at deploy time.
         // `/` is served by reading `index.html` from here and injecting the
         // published content into it (`docs/hetzner-target-architecture.md` §5),

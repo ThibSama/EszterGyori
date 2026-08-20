@@ -14,6 +14,14 @@
 
 Options -Indexes -ExecCGI
 
+# Only a managed asset is addressable here. Everything else — a
+# staging file mid-ingest, a stray copy, anything at all — is denied
+# by name rather than by extension, so the rule cannot be got past
+# by finding a spelling the deny-list forgot.
+<FilesMatch "^(?!med_[0-9a-f]{32}\.(?:jpg|png|webp)$).*$">
+    Require all denied
+</FilesMatch>
+
 <FilesMatch "\.(?i:php[0-9]?|phtml|phar|inc)$">
     Require all denied
 </FilesMatch>
@@ -22,8 +30,10 @@ RemoveHandler .php .phtml .phar
 RemoveType .php .phtml .phar
 
 <IfModule mod_headers.c>
-    # Derivatives are content-addressed: the id changes when the image
-    # does, so they can be cached indefinitely.
+    # A managed asset is immutable: its name carries a random id
+    # minted once at ingest and never reused, and the ingest never
+    # rewrites a file it has already published. Replacing an image
+    # means a new id and a new URL, so these can be cached forever.
     Header always set Cache-Control "public, max-age=31536000, immutable"
     Header always set X-Content-Type-Options "nosniff"
     Header always set Content-Disposition "inline"

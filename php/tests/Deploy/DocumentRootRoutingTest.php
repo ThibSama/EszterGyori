@@ -254,4 +254,53 @@ final class DocumentRootRoutingTest extends TestCase
         self::assertStringContainsString('phtml', $media);
         self::assertStringContainsString('Options -Indexes', $media);
     }
+
+    /**
+     * ESZ-036. `media/` serves managed assets and nothing else, and the rule that
+     * says so is a whitelist rather than another deny-list.
+     *
+     * The pattern is extracted from the generated file and executed here, because
+     * a negative-lookahead `FilesMatch` is exactly the kind of directive that
+     * looks right and matches the opposite of what its author meant. Apache
+     * compiles it with PCRE, so running it through `preg_match` is the same engine
+     * answering the same question.
+     */
+    public function testOnlyAManagedAssetIsAddressableUnderMedia(): void
+    {
+        $media = HtaccessRenderer::files()['media/.htaccess'];
+
+        self::assertSame(
+            1,
+            preg_match('/<FilesMatch "(\^\(\?!med_.*?)">/', $media, $found),
+            'the media .htaccess declares no managed-asset whitelist',
+        );
+
+        $pattern = '#' . str_replace('\\.', '\.', $found[1]) . '#';
+        $id = 'med_' . str_repeat('0', 32);
+
+        // Denied means the pattern matches: the rule is `Require all denied`.
+        foreach (
+            [
+                // The staging file the ingest writes before its final rename.
+                '.staging-' . str_repeat('a', 32),
+                // Anything an operator or a mistake might leave behind.
+                'portrait.jpg',
+                'index.php',
+                $id . '.php',
+                $id . '.jpg.php',
+                $id . '.svg',
+                $id . '.JPG',
+                'med_' . str_repeat('g', 32) . '.jpg',
+                $id . '.jpg.bak',
+                'x' . $id . '.jpg',
+            ] as $denied
+        ) {
+            self::assertSame(1, preg_match($pattern, $denied), "{$denied} is reachable");
+        }
+
+        // And a real asset is not denied, or the site would serve no images at all.
+        foreach (["{$id}.jpg", "{$id}.png", "{$id}.webp"] as $served) {
+            self::assertSame(0, preg_match($pattern, $served), "{$served} is denied");
+        }
+    }
 }

@@ -53,7 +53,16 @@ final class TestEnvironment
      */
     public static function writeDeployment(string $root, array $overrides = []): string
     {
-        foreach (['data/content', 'var/tmp', 'data/locks', 'var/log', 'public_html'] as $directory) {
+        foreach (
+            [
+                'data/content',
+                'data/media-originals',
+                'var/tmp',
+                'data/locks',
+                'var/log',
+                'public_html',
+            ] as $directory
+        ) {
             if (!is_dir($root . '/' . $directory) && !mkdir($root . '/' . $directory, 0o700, true)) {
                 throw new \RuntimeException("Could not create {$root}/{$directory}");
             }
@@ -68,6 +77,7 @@ final class TestEnvironment
                 'locks' => $root . '/data/locks',
                 'log' => $root . '/var/log',
                 'contracts' => self::contractsDirectory(),
+                'mediaOriginals' => $root . '/data/media-originals',
                 'public' => $root . '/public_html',
             ],
         ] ;

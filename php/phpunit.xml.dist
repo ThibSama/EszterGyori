@@ -29,6 +29,7 @@
       <directory>tests/Contract</directory>
       <directory>tests/Deploy</directory>
       <directory>tests/Http</directory>
+      <directory>tests/Media</directory>
       <directory>tests/Storage</directory>
       <directory>tests/Support</directory>
     </testsuite>

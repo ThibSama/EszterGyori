@@ -44,7 +44,7 @@ Everything below runs today and is covered by passing gates:
 | --- | --- |
 | `contracts/` | TypeScript + Zod source of truth; generated JSON Schema, semantic rules, parity corpus and HTTP contract committed under `contracts/generated/`. |
 | `front/` | Next.js 16 app, built with `output: "export"`. Every route is `○ (Static)`; there is no middleware, no route handler and no server-only dependency. Since Package 3.2 the editor loads and writes the **server** draft through `/api/admin/content/*`, signs in through `/api/auth/login`, and keeps `localStorage` only as an explicit backup the admin has to ask for. Gate `front:export` asserts all of it. |
-| `php/` | PHP 8.2+ backend, and since ESZ-015 the **only** one. Front controller, router, request ids, JSON error envelopes, file-based configuration, structured logging, contract-driven validation replaying the parity corpus 39/39, atomic `draft.json` / `published.json` storage with `flock` (shared for reads, exclusive for seeding and writes) and strict fail-fast, plus `GET /api/health`, `GET /api/content` and — since ESZ-021 — `GET|HEAD /` replaying the whole of `http-contract.json` with **no exemptions**. Since ESZ-025/026 also `GET /api/auth/session`, `POST /api/auth/login` and `POST /api/auth/logout`, server-enforced. Every other `/api` path answers the frozen JSON 404. No media, no cron. |
+| `php/` | PHP 8.2+ backend, and since ESZ-015 the **only** one. Front controller, router, request ids, JSON error envelopes, file-based configuration, structured logging, contract-driven validation replaying the parity corpus 39/39, atomic `draft.json` / `published.json` storage with `flock` (shared for reads, exclusive for seeding and writes) and strict fail-fast, plus `GET /api/health`, `GET /api/content` and — since ESZ-021 — `GET|HEAD /` replaying the whole of `http-contract.json` with **no exemptions**. Since ESZ-025/026 also `GET /api/auth/session`, `POST /api/auth/login` and `POST /api/auth/logout`, server-enforced; since Package 3.1 the three `/api/admin/content/*` routes; and since ESZ-036/037 the media surface — bounded multipart upload verified by two independent parsers and re-encoded, a JSON catalogue, and a delete that refuses while either content document still references the asset. Every other `/api` path answers the frozen JSON 404. No cron. |
 | SQL | `php/migrations/` — ordered, forward-only, individually idempotent files applied by `php/bin/migrate.php` and recorded in `schema_migrations` with their checksums. `admin_accounts` and `admin_sessions` only; no booking, settings or notification tables, because none of those features exists. Gates `sql:migrations` and `sql:integration` run against a disposable MySQL when `ESZTER_TEST_DB_DSN` names one, and report NOT RUN otherwise. |
 | Admin identity | `php/bin/provision-admin.php`. Accounts are created by an operator, never by a migration and never at boot: a seeded default account would be identical on every deployment. The password is read from a terminal with echo off or from stdin, never from an argument. |
 | Routing | `php/public/.htaccess` and `php/public/media/.htaccess`, **generated** from `src/Deploy/DocumentRootRouting.php` and drift-checked by `php:routing`. Not deployed, and not yet executed by a real Apache — see §14. |
@@ -132,9 +132,9 @@ $HOME/
 ├── app/                       ← PHP source, vendor/, templates. NOT web-reachable
 ├── config/                    ← secrets and environment config (§9)
 ├── data/
-│   ├── content/               ← draft.json, published.json (§4)
-│   ├── media-originals/       ← uploaded originals, never served directly
-│   └── locks/                 ← advisory lock files (§4, §8)
+│   ├── content/               ← draft.json, published.json, media-library.json (§4, §7)
+│   ├── media-originals/       ← uploaded originals + .intake/, never served (§7)
+│   └── locks/                 ← advisory lock files (§4, §7, §8)
 ├── var/
 │   ├── log/                   ← application + cron logs
 │   └── tmp/                   ← atomic-write staging (same filesystem as data/)
@@ -159,7 +159,8 @@ Rules:
 - Deny access to `*.json`, `*.md`, `*.log`, `.git`, `.env*`, `composer.*` anywhere
   under the document root.
 - Disable directory indexing (`Options -Indexes`).
-- Disable PHP execution under `media/` — an upload that lands there must be inert.
+- Disable PHP execution under `media/` — an upload that lands there must be inert —
+  and whitelist the names it may serve at all (§7).
 - Suppress `X-Powered-By` / `Server` banners (`docs/runtime-inventory.md` 1.6).
 - Force HTTPS and set HSTS, `X-Content-Type-Options: nosniff`, `Referrer-Policy`,
   and a CSP that permits only same-origin scripts.
@@ -370,7 +371,9 @@ three `/api/admin/content/*` paths are implemented and replay the whole contract
 `contracts/http-contract.ts` **before** any PHP was written for them, which is what this
 paragraph asks for; the artifacts were regenerated and the drift gate
 (`contracts:verify:generated`) is what proves the committed copies match.
-`/api/admin/media` is the only route the contract still freezes at 404. The one planned
+As of Package 3.3 the media surface joined them: `GET|POST|DELETE /api/admin/media`
+were added to `contracts/http-contract.ts` before any PHP was written for them, and
+no `/api` path is frozen at 404 any more. The one planned
 change to the surface has been applied: `/api/health` no longer carries `uptimeSeconds`,
 because shared-hosting PHP has no process to measure. See `docs/contract-freeze.md`,
 Part 4.
@@ -379,25 +382,97 @@ Part 4.
 
 ## 7. Media
 
+> **Built (ESZ-036 / ESZ-037).** `GET|POST|DELETE /api/admin/media` are frozen in
+> `contracts/http-contract.ts` under `media` and implemented in `php/src/Media/`.
+> Gate `php:media` runs the whole pipeline against real image bytes; `php:routing`
+> executes the `media/` whitelist. What is still unproven is Apache applying that
+> whitelist — `smoke:http` and `security:config`.
+
 | Stage | Location | Served? |
 | --- | --- | --- |
-| Upload target | `var/tmp/` | No |
+| Upload target | `data/media-originals/.intake/` | No |
 | Original | `data/media-originals/` | **No** |
+| Catalogue | `data/content/media-library.json` | No |
 | Published derivative | `public_html/media/` | Yes, directly by Apache |
+
+Two changes from what this section originally specified, both made while building
+it and both worth reading as corrections rather than as details:
+
+- **Intake moved from `var/tmp/` into the originals directory.** The intake file
+  is renamed into place as the original once it verifies, and `rename()` is only
+  atomic within one filesystem. Staging it inside the directory it graduates into
+  makes that true by construction instead of by a configuration rule someone has
+  to get right. The derivative is staged the same way, inside `public_html/media/`,
+  which is safe because of the whitelist below.
+- **The content document references media by *path*, not by id.** `MediaAsset.src`
+  holds a public path — that is what the content schema accepts and what the page
+  renders — so the path is what a document can be said to reference. An id→path
+  mapping would mean parsing an id back out of every `src`, and a spelling the
+  parser did not recognise would read as "not referenced", which is the one wrong
+  answer that loses data.
 
 Rules:
 
-- Accept an explicit allowlist of image types, verified by **content inspection**
-  (`getimagesize`, magic bytes), never by client-supplied extension or MIME type.
-- Store under a generated id; never reuse the client filename on disk.
-- Re-encode on ingest. This normalises dimensions and strips EXIF (including GPS)
-  as a side effect.
-- Serve derivatives with a long-lived immutable cache header; the id changes when the
-  image changes.
-- PHP execution disabled under `media/` at the web-server level (§3).
-- The content document references media by **id**, and the id→path mapping is the
-  contract boundary. Deleting a referenced asset must fail, not orphan the reference.
-- Media is not stored in SQL. SQL may hold upload metadata; bytes stay on disk.
+- Accept an explicit allowlist of image types, verified by **content inspection**,
+  never by client-supplied extension or MIME type. V1 is JPEG, PNG and WebP.
+  **No SVG**: an SVG is a scriptable document, and serving one from the origin
+  that holds the admin session is a stored-XSS primitive. No GIF, no AVIF.
+- Verify with **two independent parsers** — `finfo` on magic bytes and
+  `getimagesize()` on the image header — and require them to agree. A file that
+  answers them differently is a polyglot and is refused rather than resolved.
+- Bound the **decoded** dimensions from the header *before* decoding. A 40 kB PNG
+  can declare a 30 GB bitmap, and a byte limit alone does not bound memory.
+- Detect truncation from the bytes, by requiring the format's end-of-stream
+  marker. Decoders cannot be asked: libjpeg's error recovery turns a JPEG cut off
+  mid-transfer into a complete image with grey filler and reports nothing.
+- Store under a cryptographically random generated id; never reuse the client
+  filename on disk. The extension is derived from the verified type, so a filename
+  can express no extension at all.
+- Re-encode on ingest. This strips EXIF (including GPS) and any appended payload
+  as a consequence of how it works, rather than as a separate step someone can
+  forget.
+- Serve derivatives with a long-lived immutable cache header. The id is minted
+  once and never reused, and the ingest never rewrites a published file, so
+  replacing an image means a new id and a new URL.
+- PHP execution disabled under `media/` at the web-server level (§3), **and** a
+  whitelist: `media/.htaccess` denies every name that is not
+  `med_<32 hex>.<jpg|png|webp>`. A deny-list of extensions can always be got past
+  by a spelling it forgot; a whitelist cannot, and it is also what makes staging a
+  derivative inside the served directory harmless.
+- Deleting a referenced asset must fail, not orphan the reference — and the check
+  covers **both** the authoritative draft and the published document. An image
+  removed from the draft is still on the live site until someone publishes.
+- Nothing is ever deleted implicitly. Repointing a `MediaAsset.src` leaves the
+  previous asset in the library; reference-counting on save is how one mistaken
+  edit becomes unrecoverable.
+- Media is not stored in SQL. The catalogue is a JSON file written through the
+  same atomic temp-write/fsync/rename as `draft.json`; bytes stay on disk.
+
+### Hosting requirements
+
+The upload route needs PHP configured for it. These are deployment settings, not
+code, and the front controller cannot raise them from inside a request:
+
+| Setting | Minimum | Why |
+| --- | --- | --- |
+| `file_uploads` | `On` | Off means `$_FILES` is always empty. |
+| `upload_max_filesize` | `8M` | The frozen per-file limit. Below it, PHP refuses the file itself with `UPLOAD_ERR_INI_SIZE` and the route answers 413. |
+| `post_max_size` | `10M` | Must exceed `upload_max_filesize` plus multipart framing. **Below the body size, PHP discards the body silently** — empty `$_POST`, empty `$_FILES`, no error code. The route detects that case from the declared `Content-Length` and answers 413 rather than "no file attached", but the honest fix is the setting. |
+| `memory_limit` | `256M` | An 8000 × 5000 truecolour bitmap is ~160 MB in decoded pixels alone; the pixel cap (40 MP) is what actually bounds this, and the limit must also leave room for GD and PHP overhead. |
+| `max_execution_time` | `30` | Decode plus re-encode of a 24 MP JPEG. |
+| `extension=gd` | required, **with JPEG, PNG and WebP** | Decoding and re-encoding. A `gd` built without WebP is loaded, present, and silently unable to verify a third of the allowlist. |
+| `extension=fileinfo` | required | Typing an upload from its bytes. |
+
+A deployment missing `gd` or `fileinfo`, or missing a format the allowlist
+declares, answers **500 `INVALID_CONFIGURATION`** on upload and stores nothing.
+That is deliberate: every step of the pipeline exists because the ones before it
+are insufficient, so an ingest that skipped the decode because no decoder was
+installed would be accepting whatever the caller sent on the strength of its
+magic bytes alone. `imagick` is *not* required and is not used.
+
+`config.php` gains one key: `paths.mediaOriginals`, a sibling of the document
+root. It is required rather than derived, because the one directory that must
+stay unreachable should not depend on the shape of a path someone else configured.
 
 ---
 

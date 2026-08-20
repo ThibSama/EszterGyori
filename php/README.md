@@ -44,25 +44,32 @@ contract artifacts), `docs/hetzner-target-architecture.md` (the target topology)
 | Per-session CSRF token on every state-changing request | ESZ-026, done |
 | Production config boundaries and secret hygiene | ESZ-027, done |
 | `GET`/`PUT /api/admin/content/draft`, `POST …/publish`, `POST …/reset` | Package 3.1 (ESZ-030/031/032/033), done |
-| `/api/admin/media` | Not started; frozen at 404 by the contract |
+| `GET \| POST \| DELETE /api/admin/media` | Package 3.3 (ESZ-036/037), done |
 | Login throttling | **Not built.** `docs/hetzner-target-architecture.md` §6 asks for it; ESZ-025 did not deliver it |
-| The `/admin` login form in the browser | Not built. The API accepts a login; no page posts one yet |
-| Media, booking, notifications | Later packages |
+| The `/admin` login form in the browser | Package 3.2 (ESZ-034), done — reads the anonymous session for CSRF, posts credentials to PHP, then enters `/admin` |
+| Booking, notifications | Later packages |
 
-Nine routes are registered: `/api/health`, `/api/content`, `/`, the three
-`/api/auth/*`, and the three admin content paths (`/api/admin/content/draft` under
-both `GET` and `PUT`, plus `…/publish` and `…/reset`). Every other `/api/*` path —
-`/api/admin/media` is the only one left — answers the frozen structured JSON 404,
-the contract's specified behaviour for a path that is not implemented yet, asserted
-against `http-contract.json` by `tests/Http/HttpFoundationTest.php`.
+Ten routes are registered: `/api/health`, `/api/content`, `/`, the three
+`/api/auth/*`, the three admin content paths (`/api/admin/content/draft` under both
+`GET` and `PUT`, plus `…/publish` and `…/reset`), and `/api/admin/media` under `GET`,
+`POST` and `DELETE`. No `/api` path is frozen at 404 any more; an unknown one still
+answers the frozen structured JSON 404, asserted against `http-contract.json` by
+`tests/Http/HttpFoundationTest.php`.
 
 An unimplemented route stays unregistered on purpose: routing one before it is
 contracted would be a silent breaking change. That ordering has now been followed
-twice — the auth routes in Package 2.2 and the admin content routes in Package 3.1
-were both added to `contracts/http-contract.ts` *first*, with the artifacts
-regenerated and the drift gate green, before a line of PHP was written for them.
+three times — the auth routes in Package 2.2, the admin content routes in Package 3.1
+and the media routes in Package 3.3 were all added to `contracts/http-contract.ts`
+*first*, with the artifacts regenerated and the drift gate green, before a line of PHP
+was written for them.
 
-The auth and admin content routes are registered only when a database is configured,
+The media surface has no `{id}` route. `Router` is exact-path by construction, and the
+delete carries its id in a schema-validated body — the reasoning is in the contract
+under `mediaDeleteRequestSchema`, and the practical consequence is that an id which
+could express a path fragment is refused by the schema rather than by a sanitiser
+somewhere downstream.
+
+The auth, admin content and media routes are registered only when a database is configured,
 because both need somewhere to keep a session. Production cannot
 reach the state where they are missing — `Configuration` refuses to boot in production
 without a `database` block — and outside production a deployment that only serves the
@@ -362,6 +369,39 @@ php bin/migrate.php --config=$HOME/config/config.php    # before the swap, on th
 `chmod 0600` is not advice. In production the loader reads the file's mode and refuses
 to boot if it is readable by group or others, because on shared hosting that means
 readable by the other tenants and the file holds the database password.
+
+### PHP settings the upload route needs
+
+`POST /api/admin/media` accepts an 8 MiB image, and PHP has to be configured to let one
+through. These are hosting settings; the front controller cannot raise them from inside
+a request.
+
+| Setting | Minimum | Why it matters |
+| --- | --- | --- |
+| `file_uploads` | `On` | Off means `$_FILES` is always empty and every upload looks like a missing file. |
+| `upload_max_filesize` | `8M` | The frozen per-file limit. Below it PHP refuses the file itself and the route answers 413. |
+| `post_max_size` | `10M` | Must exceed `upload_max_filesize` plus the multipart framing. **Below the body size PHP discards the body silently** — empty `$_POST`, empty `$_FILES`, no error code — which is indistinguishable from "no file attached" without the `Content-Length` check `AdminMediaUploadEndpoint` performs. That check turns it into an honest 413; the setting is the actual fix. |
+| `memory_limit` | `256M` | Bounded by the 40-megapixel cap rather than by the byte limit: the decoded pixels alone can occupy about 160 MB, before GD and PHP overhead. |
+| `max_execution_time` | `30` | Decode plus re-encode of a 24 MP JPEG. |
+| `extension=gd` | required, **with JPEG, PNG and WebP** | A `gd` built without WebP loads fine and silently cannot verify a third of the allowlist, so the route checks `gd_info()` per format rather than trusting `extension_loaded('gd')`. |
+| `extension=fileinfo` | required | Typing an upload from its bytes. |
+
+A host missing `gd`, `fileinfo`, or one of the allowlisted GD codecs answers **500
+`INVALID_CONFIGURATION`** on upload and stores nothing, rather than degrading to a
+weaker check. The PHP size and execution settings are deployment prerequisites: an
+undersized request limit is surfaced as 413 where PHP leaves enough evidence, while a
+memory or execution limit can terminate PHP before the application can form an envelope.
+`imagick` is not required and is not used. Verify with:
+
+```bash
+php -r 'var_dump(ini_get("upload_max_filesize"), ini_get("post_max_size"), extension_loaded("gd"), extension_loaded("fileinfo"), gd_info()["WebP Support"]);'
+```
+
+`config.php` gains `paths.mediaOriginals`, a sibling of the document root that holds the
+verified originals and the `.intake/` staging directory. It must never be web-reachable.
+Intake is a subdirectory of it precisely so finalising the original cannot cross a
+filesystem boundary; derivative staging separately lives inside `public/media/` for the
+same reason.
 
 `config.php` must set `paths.public` to the document root: `/` is served by reading
 `index.html` out of it and injecting the published content, so a deployment that ships

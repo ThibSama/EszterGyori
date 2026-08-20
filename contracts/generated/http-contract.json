@@ -362,9 +362,168 @@
       "reset.valid",
       "reset.staleRevision",
       "reset.unknownSource",
-      "reset.missingSource"
+      "reset.missingSource",
+      "mediaDelete.unknownId",
+      "mediaDelete.malformedId",
+      "mediaDelete.traversalId",
+      "mediaDelete.missingId"
     ],
     "staleRevisionFixture": 4242
+  },
+  "media": {
+    "path": "/api/admin/media",
+    "cacheControl": "no-store",
+    "assetIdPattern": "^med_[0-9a-f]{32}$",
+    "publicPathPrefix": "/media/",
+    "publicPathPattern": "^/media/med_[0-9a-f]{32}\\.(jpg|png|webp)$",
+    "formats": [
+      {
+        "mimeType": "image/jpeg",
+        "extension": "jpg",
+        "imageType": "IMAGETYPE_JPEG"
+      },
+      {
+        "mimeType": "image/png",
+        "extension": "png",
+        "imageType": "IMAGETYPE_PNG"
+      },
+      {
+        "mimeType": "image/webp",
+        "extension": "webp",
+        "imageType": "IMAGETYPE_WEBP"
+      }
+    ],
+    "upload": {
+      "fieldName": "file",
+      "contentType": "multipart/form-data",
+      "limit": "8mb",
+      "limitBytes": 8388608,
+      "envelopeOverheadBytes": 16384
+    },
+    "dimensions": {
+      "minDimension": 1,
+      "maxDimension": 8000,
+      "maxPixels": 40000000
+    },
+    "storage": {
+      "intake": {
+        "location": "data/media-originals/.intake/",
+        "webReachable": false,
+        "note": "Where the multipart part is moved to before anything inspects it. Random name, no extension, unlinked on every exit path."
+      },
+      "original": {
+        "location": "data/media-originals/<id>.<ext>",
+        "webReachable": false,
+        "note": "The verified upload, kept for re-derivation. Never served, never named in a response."
+      },
+      "managed": {
+        "location": "public_html/media/<id>.<ext>",
+        "webReachable": true,
+        "note": "The re-encoded derivative. The only artefact of an upload that a URL can reach."
+      },
+      "requirements": [
+        "A byte sequence becomes addressable under /media/ only after it has passed every check in mediaIngest.pipeline.",
+        "No response body, error envelope or log line sent to a client names the intake or original path.",
+        "PHP execution is disabled under media/ at the web-server level, so an upload that somehow landed there would still be inert."
+      ]
+    },
+    "ingest": {
+      "pipeline": [
+        "authenticate",
+        "csrf",
+        "boundBytes",
+        "moveToIntake",
+        "detectTypeFromBytes",
+        "assertAllowlisted",
+        "boundDimensions",
+        "assertStreamIsComplete",
+        "decode",
+        "reencode",
+        "finalise"
+      ],
+      "fieldName": "file",
+      "contentType": "multipart/form-data",
+      "limitBytes": 8388608,
+      "formats": [
+        {
+          "mimeType": "image/jpeg",
+          "extension": "jpg",
+          "imageType": "IMAGETYPE_JPEG"
+        },
+        {
+          "mimeType": "image/png",
+          "extension": "png",
+          "imageType": "IMAGETYPE_PNG"
+        },
+        {
+          "mimeType": "image/webp",
+          "extension": "webp",
+          "imageType": "IMAGETYPE_WEBP"
+        }
+      ],
+      "requirements": [
+        "The declared Content-Type of the part and the client filename never influence acceptance, the stored type or the stored name.",
+        "The stored extension is derived from the verified type through `mediaFormats`, so a filename can express no extension at all.",
+        "The stored name is `<id>.<ext>` with a cryptographically random id, so two uploads never collide and no name is guessable.",
+        "A request carrying no file part, more than one part, or a part under a different name is 400 VALIDATION_FAILED.",
+        "A file over the route limit is 413 PAYLOAD_TOO_LARGE and is never inspected, decoded or stored.",
+        "A file whose detected type is not on the allowlist is 400 VALIDATION_FAILED, whatever it is named or declared as.",
+        "A file whose header type and magic-byte type disagree is 400 VALIDATION_FAILED.",
+        "A file missing its format's end-of-stream marker is 400 VALIDATION_FAILED: truncation is detected from the bytes, because decoders recover from it silently.",
+        "Bytes after the end-of-stream marker are not a refusal. Re-encoding already makes them unreachable, and refusing them would reject photographs real cameras produce.",
+        "A file that survives every check and still will not decode is 400 VALIDATION_FAILED, and nothing reaches the document root.",
+        "Every rejection leaves no intake file, no temp file, no original and no file under /media/.",
+        "The response body carries only mediaAssetMetadata; no server path, temp name or decoder detail appears in it or in an error envelope.",
+        "An environment without the image extensions the pipeline needs answers 500 INVALID_CONFIGURATION rather than accepting an unverified file."
+      ]
+    },
+    "list": {
+      "status": 200,
+      "body": "media-library-response.schema.json",
+      "cacheControl": "no-store",
+      "order": "uploadedAt descending, then id descending, so the list is total and stable",
+      "requirements": [
+        "Authenticated, and `no-store` like every other admin response: an asset list is a map of unpublished editorial work.",
+        "Every entry is a validated mediaAssetMetadata read from the catalogue; nothing is inferred from a directory listing.",
+        "An absent, unknown, expired or destroyed session is 401 UNAUTHENTICATED with no hint that a library exists.",
+        "Reading the library takes no content lock and never seeds, reads or writes draft.json or published.json."
+      ]
+    },
+    "uploadOutcome": {
+      "status": 201,
+      "body": "media-upload-response.schema.json",
+      "cacheControl": "no-store",
+      "requirements": [
+        "201, not 200: the request created a resource that did not exist and the body names it.",
+        "The stored asset is the re-encoded derivative; `mimeType`, `width`, `height` and `byteSize` describe what is on disk, not what was uploaded.",
+        "An absent, unknown, expired or destroyed session is 401 UNAUTHENTICATED and no byte is read.",
+        "A missing, empty or wrong CSRF token is 403 CSRF_TOKEN_INVALID and no byte is read.",
+        "Uploading does not touch draft.json or published.json. The library and the content document are separate, and pointing at an asset is a content edit the editor makes afterwards."
+      ]
+    },
+    "delete": {
+      "status": 204,
+      "body": "empty",
+      "cacheControl": "no-store",
+      "referenceCheck": "the authoritative draft and the published document, both read before anything is removed",
+      "refusal": {
+        "status": 409,
+        "errorCode": "MEDIA_REFERENCED"
+      },
+      "requirements": [
+        "204 with no body on success; the asset, its original and its catalogue entry are all gone.",
+        "A referenced asset is 409 MEDIA_REFERENCED and nothing is removed: not the file, not the original, not the entry.",
+        "The reference check covers every MediaAsset.src in both documents, compared against the asset's public path.",
+        "A well-formed id that names no catalogued asset is 404 NOT_FOUND.",
+        "An id that does not match the frozen pattern is 400 VALIDATION_FAILED from the request schema, and never reaches a filesystem call.",
+        "A missing or non-string id is 400 VALIDATION_FAILED.",
+        "Every media response carries Cache-Control: no-store, errors included.",
+        "Deleting never modifies draft.json or published.json, and never moves either revision.",
+        "The response names no filesystem path, in success or in refusal."
+      ]
+    },
+    "librarySchemaVersion": 1,
+    "unknownAssetIdFixture": "med_ffffffffffffffffffffffffffffffff"
   },
   "errorCodes": [
     "NOT_FOUND",
@@ -375,6 +534,8 @@
     "UNAUTHENTICATED",
     "CSRF_TOKEN_INVALID",
     "REVISION_CONFLICT",
+    "PAYLOAD_TOO_LARGE",
+    "MEDIA_REFERENCED",
     "INVALID_CONFIGURATION",
     "STORAGE_FAILURE",
     "INTERNAL_ERROR"
@@ -388,6 +549,8 @@
     "UNAUTHENTICATED": "Authentification requise.",
     "CSRF_TOKEN_INVALID": "Jeton de sécurité invalide ou expiré.",
     "REVISION_CONFLICT": "Le contenu a été modifié entre-temps. Rechargez le brouillon avant d'enregistrer.",
+    "PAYLOAD_TOO_LARGE": "Le fichier envoyé dépasse la taille maximale autorisée de 8 Mo.",
+    "MEDIA_REFERENCED": "Ce média est utilisé par le brouillon ou par le site publié. Retirez-le du contenu avant de le supprimer.",
     "INVALID_CONFIGURATION": "La configuration du serveur est invalide.",
     "STORAGE_FAILURE": "Le contenu publié est momentanément indisponible.",
     "INTERNAL_ERROR": "Une erreur interne est survenue."
@@ -526,6 +689,29 @@
       ],
       "requestBodySchema": "admin-reset-request.schema.json",
       "successBodySchema": "server-draft-envelope.output.schema.json"
+    },
+    {
+      "path": "/api/admin/media",
+      "methods": [
+        "GET",
+        "POST",
+        "DELETE"
+      ],
+      "statuses": [
+        200,
+        201,
+        204,
+        400,
+        401,
+        403,
+        404,
+        405,
+        409,
+        413,
+        500
+      ],
+      "requestBodySchema": "media-delete-request.schema.json",
+      "successBodySchema": "media-library-response.schema.json"
     }
   ],
   "unknownRouteStatus": 404,
@@ -2208,17 +2394,354 @@
       }
     },
     {
-      "id": "unknown.get.unimplementedRoute.0",
-      "endpoint": "unknown",
-      "description": "/api/admin/media is not implemented and must stay a 404.",
+      "id": "admin.media.get.unauthenticated",
+      "endpoint": "/api/admin/media",
+      "description": "Listing the library with no session is 401 and reveals nothing about it.",
       "request": {
         "method": "GET",
         "path": "/api/admin/media"
       },
+      "auth": {
+        "session": "none"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.get.anonymousSessionIsRejected",
+      "endpoint": "/api/admin/media",
+      "description": "An anonymous session is not partial authentication on the media surface either.",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/media"
+      },
+      "auth": {
+        "session": "anonymous"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.get.disabledAccountIsRejected",
+      "endpoint": "/api/admin/media",
+      "description": "A live session whose account has since been disabled is 401 here, resolved per request rather than at login.",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/media"
+      },
+      "auth": {
+        "session": "authenticated",
+        "account": "disabled"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.get.emptyLibrary",
+      "endpoint": "/api/admin/media",
+      "description": "An authenticated list on a deployment that has never uploaded anything is an empty array, not a 404.",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/media"
+      },
+      "auth": {
+        "session": "authenticated",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "mediaLibraryResponse",
+        "headers": {
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8"
+        },
+        "forbiddenHeaderPatterns": {
+          "etag": "^\"published-(0|[1-9][0-9]*)\"$"
+        },
+        "contentRevision": "absent",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.post.unauthenticated",
+      "endpoint": "/api/admin/media",
+      "description": "An upload with no session is 401 before any byte is inspected.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/media",
+        "headers": {
+          "content-type": "multipart/form-data; boundary=----eszter"
+        }
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.post.csrfOmitted",
+      "endpoint": "/api/admin/media",
+      "description": "An authenticated upload with no CSRF token is 403 before any byte is inspected.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/media",
+        "headers": {
+          "content-type": "multipart/form-data; boundary=----eszter"
+        }
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.post.csrfWrong",
+      "endpoint": "/api/admin/media",
+      "description": "A well-formed token belonging to no session is 403, so shape is not what is checked.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/media",
+        "headers": {
+          "content-type": "multipart/form-data; boundary=----eszter"
+        }
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "wrong",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.post.noFilePart",
+      "endpoint": "/api/admin/media",
+      "description": "An authenticated, token-carrying upload with no file part at all is 400 VALIDATION_FAILED.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/media",
+        "headers": {
+          "content-type": "multipart/form-data; boundary=----eszter"
+        }
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED",
+        "headers": {
+          "cache-control": "no-store"
+        },
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.delete.unauthenticated",
+      "endpoint": "/api/admin/media",
+      "description": "A delete with no session is 401 and the library is untouched.",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/admin/media",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "mediaDelete.unknownId"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.delete.csrfOmitted",
+      "endpoint": "/api/admin/media",
+      "description": "An authenticated delete with no token is 403, checked before the id is read.",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/admin/media",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "mediaDelete.unknownId"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.delete.unknownId",
+      "endpoint": "/api/admin/media",
+      "description": "A well-formed id that names nothing is 404 NOT_FOUND.",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/admin/media",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "mediaDelete.unknownId"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
       "expect": {
         "status": 404,
         "body": "errorEnvelope",
-        "errorCode": "NOT_FOUND"
+        "errorCode": "NOT_FOUND",
+        "headers": {
+          "cache-control": "no-store"
+        },
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.delete.malformedId",
+      "endpoint": "/api/admin/media",
+      "description": "An id that does not match the frozen pattern is refused by the request schema, before the library is consulted at all.",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/admin/media",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "mediaDelete.malformedId"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED",
+        "headers": {
+          "cache-control": "no-store"
+        },
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.delete.traversalId",
+      "endpoint": "/api/admin/media",
+      "description": "An id carrying `../` is a schema failure like any other malformed id, so no filesystem call ever has to survive one.",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/admin/media",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "mediaDelete.traversalId"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.delete.missingId",
+      "endpoint": "/api/admin/media",
+      "description": "A body with no id is a schema failure, not a delete of nothing.",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/admin/media",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "body": "mediaDelete.missingId"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED",
+        "storageAfter": "unchanged"
+      }
+    },
+    {
+      "id": "admin.media.put.methodNotAllowed",
+      "endpoint": "/api/admin/media",
+      "description": "PUT on the media surface returns 405 with Allow: DELETE, GET, POST.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/media"
+      },
+      "auth": {
+        "session": "authenticated",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "DELETE, GET, POST",
+          "content-type": "application/json; charset=utf-8"
+        },
+        "contentRevision": "absent",
+        "storageAfter": "unchanged"
       }
     }
   ],
@@ -2249,7 +2772,7 @@
     },
     {
       "id": "body.overLimitRejected",
-      "description": "A request body over REQUEST_BODY_LIMIT is rejected with 400 INVALID_JSON before routing, whatever the path, method or Content-Type."
+      "description": "A request body over REQUEST_BODY_LIMIT is rejected with 400 INVALID_JSON before routing, whatever the path, method or Content-Type, except POST /api/admin/media, whose independently bounded multipart envelope is rejected with 413 PAYLOAD_TOO_LARGE."
     },
     {
       "id": "page.etagMatchesContentEndpoint",
@@ -2350,6 +2873,46 @@
     {
       "id": "adminContent.storageFailuresStayOpaque",
       "description": "A storage fault on the admin surface answers 500 STORAGE_FAILURE with a body that names no path, file, revision or schema internal, exactly like the public surface. The detail goes to the log."
+    },
+    {
+      "id": "media.acceptanceIsDecidedByBytesAlone",
+      "description": "The upload's declared Content-Type and its filename never influence acceptance, the stored media type or the stored name. A PHP script named `photo.jpg` and sent as `image/jpeg` is refused, and a real JPEG named `x.txt` and sent as `application/octet-stream` is accepted."
+    },
+    {
+      "id": "media.storedNamesAreServerGenerated",
+      "description": "Every stored file is `<id>.<ext>` with a cryptographically random id and an extension derived from the verified type. No client-supplied byte reaches a path, so traversal sequences, double extensions and trailing dots are unrepresentable rather than filtered. Two uploads of identical bytes get different ids."
+    },
+    {
+      "id": "media.uploadIsBoundedIndependentlyOfTheJsonLimit",
+      "description": "REQUEST_BODY_LIMIT still applies to every route other than POST /api/admin/media, which is bounded by MEDIA_UPLOAD_LIMIT_BYTES instead. Raising the upload limit never raises the JSON limit, and an over-limit upload is 413 PAYLOAD_TOO_LARGE without being decoded."
+    },
+    {
+      "id": "media.dimensionsAreBoundedBeforeDecoding",
+      "description": "Width, height and their product are checked against the image header before any decoder runs, so a small file that decodes to an enormous bitmap is refused rather than survived."
+    },
+    {
+      "id": "media.finalisationLeavesNoPartialState",
+      "description": "A failure at any step of ingest leaves no intake file, no temp file, no original, no file under /media/ and no catalogue entry. A byte sequence becomes addressable under /media/ only after every check has passed."
+    },
+    {
+      "id": "media.storedBytesAreTheServersOwnEncoding",
+      "description": "The served derivative is the server's re-encode of the decoded image, not the uploaded bytes, so EXIF — including GPS — is absent from it and the file cannot carry an appended payload."
+    },
+    {
+      "id": "media.responsesNeverNameServerPaths",
+      "description": "No media response, success or error, contains the intake directory, the originals directory, a temp file name or an absolute path. `assets[].path` is the only location any client is told."
+    },
+    {
+      "id": "media.deleteRefusesWhileReferenced",
+      "description": "A delete is refused with 409 MEDIA_REFERENCED while the authoritative draft or the published document points at the asset, and refusing removes nothing — not the file, not the original, not the entry. Neither content revision moves on any media operation."
+    },
+    {
+      "id": "media.contentEditsNeverDeleteAssets",
+      "description": "Saving, publishing or resetting content never removes a media file. Repointing a MediaAsset.src leaves the previous asset in the library, so a mistaken edit is recoverable."
+    },
+    {
+      "id": "media.libraryIsTheOnlyRegistry",
+      "description": "The catalogue records what exists; the content document records what is used. Selecting an asset writes a path into the working draft through the ordinary draft save, so there is one content authority and the library never becomes a second one."
     },
     {
       "id": "bootstrap.failureUsesFrozenEnvelope",

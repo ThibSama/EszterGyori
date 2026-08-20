@@ -45,6 +45,9 @@ export const ADMIN_CONTENT_DRAFT_PATH = "/api/admin/content/draft";
 export const ADMIN_CONTENT_PUBLISH_PATH = "/api/admin/content/publish";
 export const ADMIN_CONTENT_RESET_PATH = "/api/admin/content/reset";
 
+/** Authenticated admin media surface. Added in Package 3.3 (ESZ-036/037). */
+export const ADMIN_MEDIA_PATH = "/api/admin/media";
+
 /**
  * Header reporting the current head of the content revision sequence.
  *
@@ -290,7 +293,22 @@ export function createPublishedEtag(revision: number): string {
 
 export const PUBLISHED_ETAG_PATTERN = '^"published-(0|[1-9][0-9]*)"$';
 
-/** Every error code the frozen surface is allowed to emit. */
+/**
+ * Every error code the frozen surface is allowed to emit.
+ *
+ * Two joined in Package 3.3, and both had to, because the media surface is the
+ * first one where a caller's request can fail for a reason the caller can *act*
+ * on differently. Until now every 400 meant one thing to a client — "fix the
+ * document" — so one code carried it. An upload has two distinct refusals: the
+ * file is too big, which the person fixes by choosing a smaller file, and the
+ * file is not an image this site accepts, which they fix by converting it. A
+ * single `VALIDATION_FAILED` would collapse the two into one message that has to
+ * guess, and the guess is wrong half the time.
+ *
+ * `MEDIA_REFERENCED` is the same argument for delete: "still in use" is not a
+ * validation failure and not a revision conflict, and the only useful response to
+ * it is to go and change the content that points at the asset.
+ */
 export const apiErrorCodes = [
   "NOT_FOUND",
   "METHOD_NOT_ALLOWED",
@@ -300,6 +318,10 @@ export const apiErrorCodes = [
   "UNAUTHENTICATED",
   "CSRF_TOKEN_INVALID",
   "REVISION_CONFLICT",
+  /** An upload over the route's own limit (ESZ-036). 413, never 400. */
+  "PAYLOAD_TOO_LARGE",
+  /** A delete refused because the draft or the published site still uses the asset (ESZ-037). */
+  "MEDIA_REFERENCED",
   "INVALID_CONFIGURATION",
   "STORAGE_FAILURE",
   "INTERNAL_ERROR",
@@ -767,6 +789,424 @@ export const adminResetRequestSchema = z
 
 export type AdminResetRequest = z.infer<typeof adminResetRequestSchema>;
 
+// ── The authenticated media surface (ESZ-036 / ESZ-037) ────────────────────
+
+/**
+ * The V1 image allowlist, and why it is exactly these three.
+ *
+ * The site needs photographs: a hero, four service visuals, five gallery
+ * visuals and a portrait (`mediaAssetIds`). Photographs are JPEG. PNG is here
+ * because an editor exporting from a phone or a design tool routinely produces
+ * one and telling them "convert it first" is a worse product than accepting it.
+ * WebP is here because it is what a modern export pipeline emits and refusing it
+ * would push editors back through a lossy round-trip.
+ *
+ * Nothing else. Specifically:
+ *
+ *  - **No SVG.** An SVG is a document, not a bitmap: it carries `<script>`,
+ *    `<foreignObject>`, external references and CSS, and serving one from the
+ *    site's own origin is a stored-XSS primitive on the origin that holds the
+ *    admin session. Sanitising it safely means shipping and maintaining a full
+ *    XML sanitiser, and the site has no vector artwork to justify one. If vector
+ *    logos ever arrive, the honest answer is a separate, sanitised pipeline —
+ *    not a fourth entry in this list.
+ *  - **No GIF.** Animated, frequently a decompression bomb, and nothing on the
+ *    page is animated artwork.
+ *  - **No AVIF.** Broadly supported in browsers, but decoder support in the
+ *    hosting PHP cannot be assumed (`gd_info()['AVIF Support']` is off on the
+ *    build this repository was developed against), and a format the server
+ *    cannot decode is a format the server cannot verify.
+ *
+ * Each entry pairs the **verified** media type with the single extension the
+ * stored file may take. The extension is derived from this table and never from
+ * the upload's filename, which is what makes `evil.php.jpg` and `../../x.jpg`
+ * unrepresentable rather than merely filtered.
+ */
+export const mediaFormats = [
+  { mimeType: "image/jpeg", extension: "jpg", imageType: "IMAGETYPE_JPEG" },
+  { mimeType: "image/png", extension: "png", imageType: "IMAGETYPE_PNG" },
+  { mimeType: "image/webp", extension: "webp", imageType: "IMAGETYPE_WEBP" },
+] as const;
+
+export type MediaMimeType = (typeof mediaFormats)[number]["mimeType"];
+
+export const mediaMimeTypes = mediaFormats.map((format) => format.mimeType) as
+  readonly MediaMimeType[];
+
+/**
+ * The multipart field carrying the image. Exactly one part, exactly this name.
+ *
+ * Named in the contract rather than left to the client because the server
+ * refuses a request that carries any other part: an upload endpoint that ignores
+ * unexpected parts is one that silently accepts whatever a future caller
+ * attaches.
+ */
+export const MEDIA_UPLOAD_FIELD_NAME = "file";
+
+/** The only Content-Type `POST /api/admin/media` accepts. */
+export const MEDIA_UPLOAD_CONTENT_TYPE = "multipart/form-data";
+
+/**
+ * The upload's own body limit, in bytes, and why the global one is untouched.
+ *
+ * `REQUEST_BODY_LIMIT` is 64 kB and stays 64 kB. It is enforced before routing
+ * on every request, and raising it so that one route could accept an image would
+ * hand every *other* route — including the unauthenticated ones — a 128× larger
+ * buffer to be asked to parse as JSON. The limit is a property of the route, so
+ * it lives on the route.
+ *
+ * 8 MiB is chosen against the material: a full-frame JPEG straight off a camera
+ * is 3–8 MB, a phone photo 1–4 MB, and a design-tool PNG export of a hero image
+ * rarely passes 6 MB. Bigger than that is a raw file or a mistake, and the
+ * refusal names the limit so the person can act on it.
+ *
+ * The limit applies to the **file part**, and the request as a whole is allowed
+ * a small multipart overhead above it — boundaries, headers and the field name.
+ * A server that applied the file limit to the whole envelope would reject a file
+ * of exactly the maximum size, which is the one size a user is most likely to
+ * have deliberately produced.
+ */
+export const MEDIA_UPLOAD_LIMIT_BYTES = 8 * 1024 * 1024;
+
+/** Human form of {@link MEDIA_UPLOAD_LIMIT_BYTES}, for copy and for docs. */
+export const MEDIA_UPLOAD_LIMIT = "8mb";
+
+/** Multipart framing allowed on top of the file itself. */
+export const MEDIA_UPLOAD_ENVELOPE_OVERHEAD_BYTES = 16 * 1024;
+
+/**
+ * Decoded-image bounds, checked **before** any decode is attempted.
+ *
+ * A 100 × 100 000 000 PNG is a few kilobytes on the wire and tens of gigabytes
+ * once decoded, so a byte limit alone does not bound memory. The dimensions come
+ * from the header inspection that already runs, and the pixel product is checked
+ * against `MEDIA_MAX_PIXELS` before a decoder ever sees the file — which is the
+ * only ordering that actually prevents the bomb rather than surviving it.
+ *
+ * 8000 px on a side is well past anything this site displays (the widest visual
+ * renders at ~1600 CSS px on a desktop) and still accepts an unmodified
+ * 24-megapixel camera frame.
+ */
+export const MEDIA_MAX_DIMENSION = 8000;
+export const MEDIA_MIN_DIMENSION = 1;
+export const MEDIA_MAX_PIXELS = 40_000_000;
+
+/**
+ * Stored asset ids: `med_` plus 128 bits of hex.
+ *
+ * Cryptographically random, not sequential and not derived from the file. A
+ * sequential id would let anyone holding one URL enumerate every other asset,
+ * including images an editor uploaded and has not published yet; a content hash
+ * would make identical bytes collide into one id, so deleting one usage would
+ * break the other. Random is the only one of the three with neither property.
+ */
+export const MEDIA_ASSET_ID_PREFIX = "med_";
+export const MEDIA_ASSET_ID_PATTERN = "^med_[0-9a-f]{32}$";
+
+/** Every managed asset is addressable here and nowhere else. */
+export const MEDIA_PUBLIC_PATH_PREFIX = "/media/";
+export const MEDIA_PUBLIC_PATH_PATTERN = "^/media/med_[0-9a-f]{32}\\.(jpg|png|webp)$";
+
+export const mediaAssetIdSchema = z
+  .string()
+  .regex(new RegExp(MEDIA_ASSET_ID_PATTERN), "Doit etre un identifiant de media valide.");
+
+export const mediaPublicPathSchema = z
+  .string()
+  .regex(new RegExp(MEDIA_PUBLIC_PATH_PATTERN), "Doit etre un chemin de media gere.");
+
+/**
+ * What the CMS is told about one stored asset — and, just as importantly, what
+ * it is not.
+ *
+ * Every field here is something the editor's UI needs: the id to address the
+ * asset, the path to put in `MediaAsset.src` and to preview, the media type and
+ * the dimensions to show what was actually stored after re-encoding, the byte
+ * size so "why is the page slow" has an answer, and the timestamp to sort by.
+ *
+ * Deliberately absent: the intake path, the original's path, the temp name, the
+ * uploader's filename and anything else describing the server's disk. The
+ * original never becomes addressable, so publishing its location would only be a
+ * hint for someone probing for a way to reach it — and the client filename is
+ * attacker-controlled text that would end up rendered in the admin UI for no
+ * benefit the id and the preview do not already give.
+ */
+export const mediaAssetMetadataSchema = z
+  .object({
+    id: mediaAssetIdSchema,
+    /** The public path, exactly what a `MediaAsset.src` may be set to. */
+    path: mediaPublicPathSchema,
+    /** The type of the **stored** file, after re-encoding. Never the declared one. */
+    mimeType: z.enum(mediaMimeTypes as unknown as [MediaMimeType, ...MediaMimeType[]]),
+    byteSize: z.number().int().positive(),
+    width: z.number().int().min(MEDIA_MIN_DIMENSION).max(MEDIA_MAX_DIMENSION),
+    height: z.number().int().min(MEDIA_MIN_DIMENSION).max(MEDIA_MAX_DIMENSION),
+    uploadedAt: isoTimestampSchema,
+  })
+  .strict();
+
+export type MediaAssetMetadata = z.infer<typeof mediaAssetMetadataSchema>;
+
+/** Body of a 200 `GET /api/admin/media`. */
+export const mediaLibraryResponseSchema = z
+  .object({ assets: z.array(mediaAssetMetadataSchema) })
+  .strict();
+
+export type MediaLibraryResponse = z.infer<typeof mediaLibraryResponseSchema>;
+
+/** Body of a 201 `POST /api/admin/media`. */
+export const mediaUploadResponseSchema = z
+  .object({ asset: mediaAssetMetadataSchema })
+  .strict();
+
+export type MediaUploadResponse = z.infer<typeof mediaUploadResponseSchema>;
+
+/**
+ * Body of `DELETE /api/admin/media`.
+ *
+ * The id is in the body rather than in the path, and that is a deliberate
+ * departure from what REST would suggest. `Router` is exact-path by
+ * construction — "no pattern matching, no parameters" — because every frozen
+ * path is a literal and the contract corpus replays literals. A single
+ * parameterised route would introduce path parsing into the one component whose
+ * simplicity is what guarantees `/api/...` can never be shadowed, and it would
+ * need the corpus to learn how to substitute a server-minted id into a URL.
+ *
+ * A body-carried id costs one thing — an intermediary that strips DELETE bodies
+ * would break it — and that failure is safe: an absent id is 400
+ * `VALIDATION_FAILED` and deletes nothing. The same reasoning already decided
+ * `expectedRevision`; see `optimisticConcurrency`, "Why a body field rather than
+ * If-Match".
+ */
+export const mediaDeleteRequestSchema = z
+  .object({ id: mediaAssetIdSchema })
+  .strict();
+
+export type MediaDeleteRequest = z.infer<typeof mediaDeleteRequestSchema>;
+
+/**
+ * The on-disk catalogue. Authoritative for what the library *contains*.
+ *
+ * It is a file rather than a SQL table because that is what
+ * `docs/hetzner-target-architecture.md` §7 says — "Media is not stored in SQL.
+ * SQL may hold upload metadata; bytes stay on disk" — and because the library
+ * has exactly the same durability requirement as `draft.json`: one writer, an
+ * atomic replacement, and a reader that never sees half a file. Reusing the
+ * mechanism that already satisfies that is cheaper and stronger than inventing a
+ * second one next to it.
+ *
+ * It lives outside the document root. Its `assets[].path` values are the only
+ * part of it any client ever sees.
+ */
+export const mediaLibraryIndexSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    assets: z.array(mediaAssetMetadataSchema),
+  })
+  .strict();
+
+export type MediaLibraryIndex = z.infer<typeof mediaLibraryIndexSchema>;
+
+export const MEDIA_LIBRARY_SCHEMA_VERSION = 1;
+
+/**
+ * Where bytes live at each stage, and which of those places is web-reachable.
+ *
+ * One of them is, and it is the last one. `docs/hetzner-target-architecture.md`
+ * §7 fixes the layout; this restates it as contract because the *client-visible*
+ * consequence — that `assets[].path` is the only server location a response ever
+ * names — is a promise to the CMS, not just a deployment convention.
+ */
+export const mediaStorageLayout = {
+  intake: {
+    location: "data/media-originals/.intake/",
+    webReachable: false,
+    note: "Where the multipart part is moved to before anything inspects it. Random name, no extension, unlinked on every exit path.",
+  },
+  original: {
+    location: "data/media-originals/<id>.<ext>",
+    webReachable: false,
+    note: "The verified upload, kept for re-derivation. Never served, never named in a response.",
+  },
+  managed: {
+    location: "public_html/media/<id>.<ext>",
+    webReachable: true,
+    note: "The re-encoded derivative. The only artefact of an upload that a URL can reach.",
+  },
+  requirements: [
+    "A byte sequence becomes addressable under /media/ only after it has passed every check in mediaIngest.pipeline.",
+    "No response body, error envelope or log line sent to a client names the intake or original path.",
+    "PHP execution is disabled under media/ at the web-server level, so an upload that somehow landed there would still be inert.",
+  ],
+} as const;
+
+/**
+ * The ingest pipeline, in order. The order is the specification.
+ *
+ * Each step exists because the step before it is insufficient on its own, and
+ * running them in a different order would make one of them decorative:
+ *
+ *  1. **Authenticate, then check the token.** Same order and same reason as
+ *     every other admin route — an anonymous caller is told 401, not 403, and an
+ *     unauthorised caller never gets to use the image decoder.
+ *  2. **Bound the bytes before reading them.** The route limit is applied to the
+ *     declared length and to what actually arrived. A file that claims to be
+ *     small and is not, or that arrives truncated, is refused before any
+ *     inspection.
+ *  3. **Move out of the request's temp file into intake.** Outside the document
+ *     root, under a random name with no extension.
+ *  4. **Detect the type from the bytes.** `finfo` on the file contents. The
+ *     upload's `Content-Type` header and its filename are read *only* to be
+ *     discarded — a caller controls both, and a check that consults them is a
+ *     check an attacker configures.
+ *  5. **Confirm the type is on the allowlist.**
+ *  6. **Read the image header and bound the dimensions.** `getimagesize()`, and
+ *     its reported type must agree with step 4. Disagreement means the file is
+ *     two things at once — a polyglot — and is refused rather than resolved.
+ *  7. **Require the end of the stream to be present.** Decoders are lenient by
+ *     design: libjpeg's error recovery turns a JPEG that was cut off mid-transfer
+ *     into a complete image with grey filler, and reports nothing. So truncation
+ *     cannot be detected by asking the decoder — it has to be asked of the bytes,
+ *     by requiring the format's terminator to be in the file. The terminator must
+ *     be *present*, not last: trailing bytes after it are refused by nothing,
+ *     because re-encoding has already made them unreachable, and cameras do
+ *     append them.
+ *  8. **Decode.** A file that survives every check above and still will not
+ *     decode is not an image, whatever its magic bytes say.
+ *  9. **Re-encode into the canonical format for its type.** This is what makes
+ *     the stored bytes the server's own output rather than the caller's input,
+ *     and it drops EXIF — including GPS coordinates the subject of a photograph
+ *     did not agree to publish — as a consequence of how it works rather than as
+ *     a separate stripping step someone could forget.
+ * 10. **Finalise.** Original into place, derivative into the document root,
+ *     catalogue entry last, and every partial state cleaned up on any failure.
+ *
+ * Steps 4 and 6 are two independent verifications, not one repeated. `finfo`
+ * reads magic bytes; `getimagesize()` parses the image header. Requiring both to
+ * agree is what refuses a file crafted to satisfy one of them.
+ */
+export const mediaIngest = {
+  pipeline: [
+    "authenticate",
+    "csrf",
+    "boundBytes",
+    "moveToIntake",
+    "detectTypeFromBytes",
+    "assertAllowlisted",
+    "boundDimensions",
+    "assertStreamIsComplete",
+    "decode",
+    "reencode",
+    "finalise",
+  ],
+  fieldName: MEDIA_UPLOAD_FIELD_NAME,
+  contentType: MEDIA_UPLOAD_CONTENT_TYPE,
+  limitBytes: MEDIA_UPLOAD_LIMIT_BYTES,
+  formats: mediaFormats,
+  requirements: [
+    "The declared Content-Type of the part and the client filename never influence acceptance, the stored type or the stored name.",
+    "The stored extension is derived from the verified type through `mediaFormats`, so a filename can express no extension at all.",
+    "The stored name is `<id>.<ext>` with a cryptographically random id, so two uploads never collide and no name is guessable.",
+    "A request carrying no file part, more than one part, or a part under a different name is 400 VALIDATION_FAILED.",
+    "A file over the route limit is 413 PAYLOAD_TOO_LARGE and is never inspected, decoded or stored.",
+    "A file whose detected type is not on the allowlist is 400 VALIDATION_FAILED, whatever it is named or declared as.",
+    "A file whose header type and magic-byte type disagree is 400 VALIDATION_FAILED.",
+    "A file missing its format's end-of-stream marker is 400 VALIDATION_FAILED: truncation is detected from the bytes, because decoders recover from it silently.",
+    "Bytes after the end-of-stream marker are not a refusal. Re-encoding already makes them unreachable, and refusing them would reject photographs real cameras produce.",
+    "A file that survives every check and still will not decode is 400 VALIDATION_FAILED, and nothing reaches the document root.",
+    "Every rejection leaves no intake file, no temp file, no original and no file under /media/.",
+    "The response body carries only mediaAssetMetadata; no server path, temp name or decoder detail appears in it or in an error envelope.",
+    "An environment without the image extensions the pipeline needs answers 500 INVALID_CONFIGURATION rather than accepting an unverified file.",
+  ],
+} as const;
+
+/** Uploading (ESZ-036). */
+export const mediaUploadOutcome = {
+  status: 201,
+  body: "media-upload-response.schema.json",
+  cacheControl: ADMIN_CONTENT_CACHE_CONTROL,
+  requirements: [
+    "201, not 200: the request created a resource that did not exist and the body names it.",
+    "The stored asset is the re-encoded derivative; `mimeType`, `width`, `height` and `byteSize` describe what is on disk, not what was uploaded.",
+    "An absent, unknown, expired or destroyed session is 401 UNAUTHENTICATED and no byte is read.",
+    "A missing, empty or wrong CSRF token is 403 CSRF_TOKEN_INVALID and no byte is read.",
+    "Uploading does not touch draft.json or published.json. The library and the content document are separate, and pointing at an asset is a content edit the editor makes afterwards.",
+  ],
+} as const;
+
+/** Listing (ESZ-037). */
+export const mediaListOutcome = {
+  status: 200,
+  body: "media-library-response.schema.json",
+  cacheControl: ADMIN_CONTENT_CACHE_CONTROL,
+  order: "uploadedAt descending, then id descending, so the list is total and stable",
+  requirements: [
+    "Authenticated, and `no-store` like every other admin response: an asset list is a map of unpublished editorial work.",
+    "Every entry is a validated mediaAssetMetadata read from the catalogue; nothing is inferred from a directory listing.",
+    "An absent, unknown, expired or destroyed session is 401 UNAUTHENTICATED with no hint that a library exists.",
+    "Reading the library takes no content lock and never seeds, reads or writes draft.json or published.json.",
+  ],
+} as const;
+
+/**
+ * Deleting (ESZ-037), and the one rule that makes it safe.
+ *
+ * A delete is refused while **either** the authoritative draft or the published
+ * document still points at the asset. Both, not just the draft: an asset removed
+ * from the draft is still on the live site until someone publishes, and deleting
+ * it would break the public page for every visitor while the CMS showed nothing
+ * wrong. Checking only the published document is the mirror failure — it would
+ * let an editor delete the image their unsaved layout depends on.
+ *
+ * ## Nothing is ever deleted implicitly
+ *
+ * Changing a `MediaAsset.src` to point somewhere else does **not** delete what it
+ * used to point at, and this endpoint is the only thing in the system that
+ * removes bytes. The alternative — reference-counting on save, and cleaning up
+ * what fell to zero — is how a single mistaken edit becomes an unrecoverable
+ * one, and it is exactly wrong for a CMS where the same photograph is routinely
+ * pointed at, unpointed and pointed at again while a page is being arranged.
+ * Unreferenced assets simply accumulate; a human removes them deliberately.
+ *
+ * ## Fail-safe, in both directions
+ *
+ * An id that does not match `MEDIA_ASSET_ID_PATTERN` never reaches the library:
+ * it fails the request schema and is 400 `VALIDATION_FAILED`, like any other
+ * malformed body on this surface. That is what keeps the pattern load-bearing
+ * rather than decorative — a path fragment or a traversal sequence is refused by
+ * the schema, so no filesystem call ever has to survive one. A well-formed id
+ * that names nothing is 404 `NOT_FOUND`, which is a different fact and gets a
+ * different answer.
+ *
+ * Collapsing the two into one status would buy nothing: the id space is 128 bits
+ * of CSPRNG output, the route is authenticated, and the caller already knows
+ * whether the id it sent was well-formed. What it would cost is the ability to
+ * tell a client bug from a stale reference.
+ *
+ * A catalogue entry whose file is already gone still deletes cleanly, so a
+ * disagreement between disk and catalogue can be resolved rather than becoming
+ * permanently undeletable. A file that is present but whose entry is absent is
+ * not addressable through this API at all and is never removed by it.
+ */
+export const mediaDeleteOutcome = {
+  status: 204,
+  body: "empty",
+  cacheControl: ADMIN_CONTENT_CACHE_CONTROL,
+  referenceCheck: "the authoritative draft and the published document, both read before anything is removed",
+  refusal: { status: 409, errorCode: "MEDIA_REFERENCED" },
+  requirements: [
+    "204 with no body on success; the asset, its original and its catalogue entry are all gone.",
+    "A referenced asset is 409 MEDIA_REFERENCED and nothing is removed: not the file, not the original, not the entry.",
+    "The reference check covers every MediaAsset.src in both documents, compared against the asset's public path.",
+    "A well-formed id that names no catalogued asset is 404 NOT_FOUND.",
+    "An id that does not match the frozen pattern is 400 VALIDATION_FAILED from the request schema, and never reaches a filesystem call.",
+    "A missing or non-string id is 400 VALIDATION_FAILED.",
+    "Every media response carries Cache-Control: no-store, errors included.",
+    "Deleting never modifies draft.json or published.json, and never moves either revision.",
+    "The response names no filesystem path, in success or in refusal.",
+  ],
+} as const;
+
 /**
  * The frozen French error messages. They are part of the contract because the
  * frontend and future PHP implementation must not diverge on user-facing copy.
@@ -781,6 +1221,10 @@ export const apiErrorMessages: Record<ApiErrorCode, string> = {
   CSRF_TOKEN_INVALID: "Jeton de sécurité invalide ou expiré.",
   REVISION_CONFLICT:
     "Le contenu a été modifié entre-temps. Rechargez le brouillon avant d'enregistrer.",
+  PAYLOAD_TOO_LARGE:
+    "Le fichier envoyé dépasse la taille maximale autorisée de 8 Mo.",
+  MEDIA_REFERENCED:
+    "Ce média est utilisé par le brouillon ou par le site publié. Retirez-le du contenu avant de le supprimer.",
   INVALID_CONFIGURATION: "La configuration du serveur est invalide.",
   STORAGE_FAILURE: "Le contenu publié est momentanément indisponible.",
   INTERNAL_ERROR: "Une erreur interne est survenue.",
@@ -798,6 +1242,8 @@ export const contractBodyMatchers = [
   "errorEnvelope",
   "publicPageHtml",
   "authSessionResponse",
+  "mediaLibraryResponse",
+  "mediaUploadResponse",
   "empty",
 ] as const;
 
@@ -841,6 +1287,14 @@ export const contractRequestBodies = [
   "reset.unknownSource",
   /** No `source` key at all. */
   "reset.missingSource",
+  /** A well-formed id that no catalogue entry can carry, on a freshly seeded library. */
+  "mediaDelete.unknownId",
+  /** An id that does not match `MEDIA_ASSET_ID_PATTERN` at all. */
+  "mediaDelete.malformedId",
+  /** An id shaped like a traversal attempt, to prove the pattern is what decides. */
+  "mediaDelete.traversalId",
+  /** Well-formed JSON object with no `id` key. */
+  "mediaDelete.missingId",
 ] as const;
 
 export type ContractRequestBody = (typeof contractRequestBodies)[number];
@@ -852,6 +1306,16 @@ export type ContractRequestBody = (typeof contractRequestBodies)[number];
  * means the runner and the assertion cannot drift apart on which one it is.
  */
 export const STALE_REVISION_FIXTURE = 4242;
+
+/**
+ * The id `mediaDelete.unknownId` sends: well-formed, and belonging to nothing.
+ *
+ * Fixed rather than random so the case is deterministic, and all-`f` so it is
+ * obviously a fixture in a log line. A freshly seeded library is empty, so any
+ * well-formed id is unknown there; naming this one means the runner and the
+ * assertion cannot disagree about which id was sent.
+ */
+export const UNKNOWN_MEDIA_ID_FIXTURE = "med_" + "f".repeat(32);
 
 /** How the response `X-Request-Id` relates to the request. */
 export const requestIdExpectations = ["echoesRequest", "generated"] as const;
@@ -898,6 +1362,7 @@ export interface HttpContractCase {
     | "/api/admin/content/draft"
     | "/api/admin/content/publish"
     | "/api/admin/content/reset"
+    | "/api/admin/media"
     | "unknown";
   description: string;
   request: {
@@ -2230,21 +2695,271 @@ export const httpContractCases: HttpContractCase[] = [
     },
   },
 
-  ...(
-    [
-      "/api/admin/media",
-    ] as const
-  ).map((path, index) => ({
-    id: `unknown.get.unimplementedRoute.${index}`,
-    endpoint: "unknown" as const,
-    description: `${path} is not implemented and must stay a 404.`,
-    request: { method: "GET", path },
+  // ── The media surface (ESZ-036 / ESZ-037) ────────────────────────────────
+  //
+  // What is replayed here is the *route boundary*: who may call it, what a
+  // wrong method answers, and how a delete responds to an id it cannot use.
+  // The ingest pipeline is not, and deliberately: a case would have to carry a
+  // real JPEG, a truncated JPEG and a PHP script renamed to `.jpg` as literals
+  // in an artifact every implementation parses, for the same reason
+  // `body.overLimitRejected` is an invariant with a computed body rather than a
+  // 64 kB case. `mediaIngest.requirements` states each of those outcomes and
+  // the PHP media suite builds the fixtures and asserts them.
+
+  {
+    id: "admin.media.get.unauthenticated",
+    endpoint: ADMIN_MEDIA_PATH,
+    description: "Listing the library with no session is 401 and reveals nothing about it.",
+    request: { method: "GET", path: ADMIN_MEDIA_PATH },
+    auth: { session: "none" },
+    expect: {
+      status: 401,
+      body: "errorEnvelope",
+      errorCode: "UNAUTHENTICATED",
+      headers: jsonContentType,
+      storageAfter: "unchanged",
+    },
+  },
+  {
+    id: "admin.media.get.anonymousSessionIsRejected",
+    endpoint: ADMIN_MEDIA_PATH,
+    description: "An anonymous session is not partial authentication on the media surface either.",
+    request: { method: "GET", path: ADMIN_MEDIA_PATH },
+    auth: { session: "anonymous" },
+    expect: {
+      status: 401,
+      body: "errorEnvelope",
+      errorCode: "UNAUTHENTICATED",
+      storageAfter: "unchanged",
+    },
+  },
+  {
+    id: "admin.media.get.disabledAccountIsRejected",
+    endpoint: ADMIN_MEDIA_PATH,
+    description:
+      "A live session whose account has since been disabled is 401 here, resolved per request rather than at login.",
+    request: { method: "GET", path: ADMIN_MEDIA_PATH },
+    auth: { session: "authenticated", account: "disabled" },
+    expect: {
+      status: 401,
+      body: "errorEnvelope",
+      errorCode: "UNAUTHENTICATED",
+      storageAfter: "unchanged",
+    },
+  },
+  {
+    id: "admin.media.get.emptyLibrary",
+    endpoint: ADMIN_MEDIA_PATH,
+    description:
+      "An authenticated list on a deployment that has never uploaded anything is an empty array, not a 404.",
+    request: { method: "GET", path: ADMIN_MEDIA_PATH },
+    auth: { session: "authenticated", account: "enabled" },
+    expect: {
+      status: 200,
+      body: "mediaLibraryResponse",
+      headers: { "cache-control": ADMIN_CONTENT_CACHE_CONTROL, ...jsonContentType },
+      forbiddenHeaderPatterns: { etag: PUBLISHED_ETAG_PATTERN },
+      contentRevision: "absent",
+      storageAfter: "unchanged",
+    },
+  },
+  {
+    id: "admin.media.post.unauthenticated",
+    endpoint: ADMIN_MEDIA_PATH,
+    description: "An upload with no session is 401 before any byte is inspected.",
+    request: {
+      method: "POST",
+      path: ADMIN_MEDIA_PATH,
+      headers: { "content-type": "multipart/form-data; boundary=----eszter" },
+    },
+    auth: { session: "none", csrf: "omitted" },
+    expect: {
+      status: 401,
+      body: "errorEnvelope",
+      errorCode: "UNAUTHENTICATED",
+      storageAfter: "unchanged",
+    },
+  },
+  {
+    id: "admin.media.post.csrfOmitted",
+    endpoint: ADMIN_MEDIA_PATH,
+    description: "An authenticated upload with no CSRF token is 403 before any byte is inspected.",
+    request: {
+      method: "POST",
+      path: ADMIN_MEDIA_PATH,
+      headers: { "content-type": "multipart/form-data; boundary=----eszter" },
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: {
+      status: 403,
+      body: "errorEnvelope",
+      errorCode: "CSRF_TOKEN_INVALID",
+      storageAfter: "unchanged",
+    },
+  },
+  {
+    id: "admin.media.post.csrfWrong",
+    endpoint: ADMIN_MEDIA_PATH,
+    description: "A well-formed token belonging to no session is 403, so shape is not what is checked.",
+    request: {
+      method: "POST",
+      path: ADMIN_MEDIA_PATH,
+      headers: { "content-type": "multipart/form-data; boundary=----eszter" },
+    },
+    auth: { session: "authenticated", csrf: "wrong", account: "enabled" },
+    expect: {
+      status: 403,
+      body: "errorEnvelope",
+      errorCode: "CSRF_TOKEN_INVALID",
+      storageAfter: "unchanged",
+    },
+  },
+  {
+    id: "admin.media.post.noFilePart",
+    endpoint: ADMIN_MEDIA_PATH,
+    description:
+      "An authenticated, token-carrying upload with no file part at all is 400 VALIDATION_FAILED.",
+    request: {
+      method: "POST",
+      path: ADMIN_MEDIA_PATH,
+      headers: { "content-type": "multipart/form-data; boundary=----eszter" },
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: {
+      status: 400,
+      body: "errorEnvelope",
+      errorCode: "VALIDATION_FAILED",
+      headers: { "cache-control": ADMIN_CONTENT_CACHE_CONTROL },
+      storageAfter: "unchanged",
+    },
+  },
+  {
+    id: "admin.media.delete.unauthenticated",
+    endpoint: ADMIN_MEDIA_PATH,
+    description: "A delete with no session is 401 and the library is untouched.",
+    request: {
+      method: "DELETE",
+      path: ADMIN_MEDIA_PATH,
+      headers: jsonContentType,
+      body: "mediaDelete.unknownId",
+    },
+    auth: { session: "none", csrf: "omitted" },
+    expect: {
+      status: 401,
+      body: "errorEnvelope",
+      errorCode: "UNAUTHENTICATED",
+      storageAfter: "unchanged",
+    },
+  },
+  {
+    id: "admin.media.delete.csrfOmitted",
+    endpoint: ADMIN_MEDIA_PATH,
+    description: "An authenticated delete with no token is 403, checked before the id is read.",
+    request: {
+      method: "DELETE",
+      path: ADMIN_MEDIA_PATH,
+      headers: jsonContentType,
+      body: "mediaDelete.unknownId",
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: {
+      status: 403,
+      body: "errorEnvelope",
+      errorCode: "CSRF_TOKEN_INVALID",
+      storageAfter: "unchanged",
+    },
+  },
+  {
+    id: "admin.media.delete.unknownId",
+    endpoint: ADMIN_MEDIA_PATH,
+    description: "A well-formed id that names nothing is 404 NOT_FOUND.",
+    request: {
+      method: "DELETE",
+      path: ADMIN_MEDIA_PATH,
+      headers: jsonContentType,
+      body: "mediaDelete.unknownId",
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: {
       status: 404,
-      body: "errorEnvelope" as const,
-      errorCode: "NOT_FOUND" as const,
+      body: "errorEnvelope",
+      errorCode: "NOT_FOUND",
+      headers: { "cache-control": ADMIN_CONTENT_CACHE_CONTROL },
+      storageAfter: "unchanged",
     },
-  })),
+  },
+  {
+    id: "admin.media.delete.malformedId",
+    endpoint: ADMIN_MEDIA_PATH,
+    description:
+      "An id that does not match the frozen pattern is refused by the request schema, before the library is consulted at all.",
+    request: {
+      method: "DELETE",
+      path: ADMIN_MEDIA_PATH,
+      headers: jsonContentType,
+      body: "mediaDelete.malformedId",
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: {
+      status: 400,
+      body: "errorEnvelope",
+      errorCode: "VALIDATION_FAILED",
+      headers: { "cache-control": ADMIN_CONTENT_CACHE_CONTROL },
+      storageAfter: "unchanged",
+    },
+  },
+  {
+    id: "admin.media.delete.traversalId",
+    endpoint: ADMIN_MEDIA_PATH,
+    description:
+      "An id carrying `../` is a schema failure like any other malformed id, so no filesystem call ever has to survive one.",
+    request: {
+      method: "DELETE",
+      path: ADMIN_MEDIA_PATH,
+      headers: jsonContentType,
+      body: "mediaDelete.traversalId",
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: {
+      status: 400,
+      body: "errorEnvelope",
+      errorCode: "VALIDATION_FAILED",
+      storageAfter: "unchanged",
+    },
+  },
+  {
+    id: "admin.media.delete.missingId",
+    endpoint: ADMIN_MEDIA_PATH,
+    description: "A body with no id is a schema failure, not a delete of nothing.",
+    request: {
+      method: "DELETE",
+      path: ADMIN_MEDIA_PATH,
+      headers: jsonContentType,
+      body: "mediaDelete.missingId",
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: {
+      status: 400,
+      body: "errorEnvelope",
+      errorCode: "VALIDATION_FAILED",
+      storageAfter: "unchanged",
+    },
+  },
+  {
+    id: "admin.media.put.methodNotAllowed",
+    endpoint: ADMIN_MEDIA_PATH,
+    description: "PUT on the media surface returns 405 with Allow: DELETE, GET, POST.",
+    request: { method: "PUT", path: ADMIN_MEDIA_PATH },
+    auth: { session: "authenticated", account: "enabled" },
+    expect: {
+      status: 405,
+      body: "errorEnvelope",
+      errorCode: "METHOD_NOT_ALLOWED",
+      headers: { allow: "DELETE, GET, POST", ...jsonContentType },
+      contentRevision: "absent",
+      storageAfter: "unchanged",
+    },
+  },
 ];
 
 /**
@@ -2285,7 +3000,7 @@ export const httpContractInvariants = [
   {
     id: "body.overLimitRejected",
     description:
-      "A request body over REQUEST_BODY_LIMIT is rejected with 400 INVALID_JSON before routing, whatever the path, method or Content-Type.",
+      "A request body over REQUEST_BODY_LIMIT is rejected with 400 INVALID_JSON before routing, whatever the path, method or Content-Type, except POST /api/admin/media, whose independently bounded multipart envelope is rejected with 413 PAYLOAD_TOO_LARGE.",
   },
   {
     id: "page.etagMatchesContentEndpoint",
@@ -2411,6 +3126,56 @@ export const httpContractInvariants = [
     id: "adminContent.storageFailuresStayOpaque",
     description:
       "A storage fault on the admin surface answers 500 STORAGE_FAILURE with a body that names no path, file, revision or schema internal, exactly like the public surface. The detail goes to the log.",
+  },
+  {
+    id: "media.acceptanceIsDecidedByBytesAlone",
+    description:
+      "The upload's declared Content-Type and its filename never influence acceptance, the stored media type or the stored name. A PHP script named `photo.jpg` and sent as `image/jpeg` is refused, and a real JPEG named `x.txt` and sent as `application/octet-stream` is accepted.",
+  },
+  {
+    id: "media.storedNamesAreServerGenerated",
+    description:
+      "Every stored file is `<id>.<ext>` with a cryptographically random id and an extension derived from the verified type. No client-supplied byte reaches a path, so traversal sequences, double extensions and trailing dots are unrepresentable rather than filtered. Two uploads of identical bytes get different ids.",
+  },
+  {
+    id: "media.uploadIsBoundedIndependentlyOfTheJsonLimit",
+    description:
+      "REQUEST_BODY_LIMIT still applies to every route other than POST /api/admin/media, which is bounded by MEDIA_UPLOAD_LIMIT_BYTES instead. Raising the upload limit never raises the JSON limit, and an over-limit upload is 413 PAYLOAD_TOO_LARGE without being decoded.",
+  },
+  {
+    id: "media.dimensionsAreBoundedBeforeDecoding",
+    description:
+      "Width, height and their product are checked against the image header before any decoder runs, so a small file that decodes to an enormous bitmap is refused rather than survived.",
+  },
+  {
+    id: "media.finalisationLeavesNoPartialState",
+    description:
+      "A failure at any step of ingest leaves no intake file, no temp file, no original, no file under /media/ and no catalogue entry. A byte sequence becomes addressable under /media/ only after every check has passed.",
+  },
+  {
+    id: "media.storedBytesAreTheServersOwnEncoding",
+    description:
+      "The served derivative is the server's re-encode of the decoded image, not the uploaded bytes, so EXIF — including GPS — is absent from it and the file cannot carry an appended payload.",
+  },
+  {
+    id: "media.responsesNeverNameServerPaths",
+    description:
+      "No media response, success or error, contains the intake directory, the originals directory, a temp file name or an absolute path. `assets[].path` is the only location any client is told.",
+  },
+  {
+    id: "media.deleteRefusesWhileReferenced",
+    description:
+      "A delete is refused with 409 MEDIA_REFERENCED while the authoritative draft or the published document points at the asset, and refusing removes nothing — not the file, not the original, not the entry. Neither content revision moves on any media operation.",
+  },
+  {
+    id: "media.contentEditsNeverDeleteAssets",
+    description:
+      "Saving, publishing or resetting content never removes a media file. Repointing a MediaAsset.src leaves the previous asset in the library, so a mistaken edit is recoverable.",
+  },
+  {
+    id: "media.libraryIsTheOnlyRegistry",
+    description:
+      "The catalogue records what exists; the content document records what is used. Selecting an asset writes a path into the working draft through the ordinary draft save, so there is one content authority and the library never becomes a second one.",
   },
   {
     id: "bootstrap.failureUsesFrozenEnvelope",

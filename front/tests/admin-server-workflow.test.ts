@@ -188,16 +188,26 @@ test("a 401 anywhere flips the admin area to signed out, a 403 only refreshes", 
   assert.match(provider, /Connexion requise/);
 });
 
-test("the login form is the only place credentials exist, and drops them at once", () => {
+test("/admin/login wires the real CSRF-bound form into the protected workflow", () => {
+  const page = readAppFile("admin", "login", "page.tsx");
   const source = readAppFile("components", "admin", "admin-login-form.tsx");
 
-  assert.match(source, /api\.login\(/);
+  // The exported route renders the client form rather than a placeholder.
+  assert.match(page, /import \{ AdminLoginForm \}/);
+  assert.match(page, /return <AdminLoginForm \/>;/);
+  assert.match(source, /<form onSubmit=\{handleSubmit\}/);
+
+  // Login itself is CSRF-protected. Mounting obtains the anonymous session and
+  // its token; submit passes that token to the PHP login transport.
+  assert.match(source, /useEffect\(\(\) => \{[\s\S]{0,120}void readSession\(\)/);
+  assert.match(source, /api\.login\([\s\S]{0,120}current\.csrfToken/);
   assert.match(source, /autoComplete="current-password"/);
   // Cleared before navigating: nothing keeps the password in a React tree that a
   // devtools inspection or an error overlay could surface.
-  assert.match(source, /setPassword\(""\);/);
-  // The session read comes first, because login itself needs a bound token.
-  assert.match(source, /readSession/);
+  assert.match(
+    source,
+    /if \(result\.ok\) \{[\s\S]{0,300}setPassword\(""\);[\s\S]{0,160}window\.location\.assign\(destination\(\)\)/,
+  );
   assert.doesNotMatch(source, /localStorage/);
 });
 

@@ -131,6 +131,7 @@ test("the generated HTTP contract carries every frozen case", async () => {
       "/api/admin/content/draft",
       "/api/admin/content/publish",
       "/api/admin/content/reset",
+      "/api/admin/media",
       "/api/auth/login",
       "/api/auth/logout",
       "/api/auth/session",
@@ -165,7 +166,14 @@ test("the generated HTTP contract carries every frozen case", async () => {
   assert.deepEqual(methodsByPath["/api/admin/content/publish"], ["POST"]);
   assert.deepEqual(methodsByPath["/api/admin/content/reset"], ["POST"]);
 
+  // Package 3.3. One path, three verbs, and no `{id}` segment: `Router` is
+  // exact-path by construction, and the delete carries its id in the body for
+  // the reason `mediaDeleteRequestSchema` documents.
+  assert.deepEqual(methodsByPath["/api/admin/media"], ["GET", "POST", "DELETE"]);
+
   assert.ok(contract.errorCodes.includes("STORAGE_FAILURE"));
+  assert.ok(contract.errorCodes.includes("PAYLOAD_TOO_LARGE"));
+  assert.ok(contract.errorCodes.includes("MEDIA_REFERENCED"));
 });
 
 test("the generated HTTP contract carries the auth and CSRF boundary", async () => {
@@ -268,6 +276,113 @@ test("every public-page HTML case states which document it must render", () => {
     assert.ok(
       httpCase.expect.pageContent === "published" || httpCase.expect.pageContent === "defaults",
       `${httpCase.id} asserts publicPageHtml without saying which document it carries`,
+    );
+  }
+});
+
+test("the generated HTTP contract carries the media boundary", async () => {
+  const contract = JSON.parse(await readGenerated("http-contract.json")) as {
+    media?: {
+      path: string;
+      cacheControl: string;
+      assetIdPattern: string;
+      publicPathPrefix: string;
+      publicPathPattern: string;
+      formats: Array<{ mimeType: string; extension: string }>;
+      upload: { fieldName: string; contentType: string; limitBytes: number };
+      dimensions: { maxDimension: number; maxPixels: number };
+      storage: {
+        intake: { webReachable: boolean };
+        original: { webReachable: boolean };
+        managed: { webReachable: boolean };
+      };
+      ingest: { pipeline: string[]; requirements: string[] };
+      delete: { refusal: { status: number; errorCode: string }; requirements: string[] };
+    };
+    errorCodes: string[];
+    cases: Array<{ id: string; endpoint: string; request: { body?: string } }>;
+  };
+
+  const media = contract.media;
+  assert.ok(media, "http-contract.json declares no media block");
+
+  assert.equal(media.path, "/api/admin/media");
+  // The library is a map of unpublished editorial work, exactly like the draft.
+  assert.equal(media.cacheControl, "no-store");
+
+  // The V1 allowlist, asserted as a set rather than as a length, so adding a
+  // format is a deliberate edit to this line and not a silent widening. SVG in
+  // particular is a scriptable document, not a bitmap, and must stay out.
+  assert.deepEqual(
+    media.formats.map((format) => format.mimeType).sort(),
+    ["image/jpeg", "image/png", "image/webp"],
+  );
+  assert.deepEqual(
+    media.formats.map((format) => format.extension).sort(),
+    ["jpg", "png", "webp"],
+  );
+  for (const format of media.formats) {
+    assert.ok(
+      !/svg|xml/i.test(format.mimeType),
+      "SVG is not a bitmap and must not be on the media allowlist",
+    );
+  }
+
+  // Only the derivative is reachable. If either of the other two ever became
+  // reachable, an unverified byte sequence would be addressable.
+  assert.equal(media.storage.intake.webReachable, false);
+  assert.equal(media.storage.original.webReachable, false);
+  assert.equal(media.storage.managed.webReachable, true);
+
+  // Every stored name is server-generated: the pattern admits no separator, no
+  // dot beyond the extension and no client-supplied byte at all.
+  assert.equal(media.assetIdPattern, "^med_[0-9a-f]{32}$");
+  assert.equal(media.publicPathPrefix, "/media/");
+  const publicPath = new RegExp(media.publicPathPattern);
+  assert.ok(publicPath.test(`/media/med_${"0".repeat(32)}.jpg`));
+  assert.ok(!publicPath.test(`/media/../med_${"0".repeat(32)}.jpg`));
+  assert.ok(!publicPath.test(`/media/med_${"0".repeat(32)}.php.jpg`));
+  assert.ok(!publicPath.test(`/media/med_${"0".repeat(32)}.svg`));
+
+  // The route's own limit, and the global one it must not have moved.
+  assert.equal(media.upload.fieldName, "file");
+  assert.equal(media.upload.contentType, "multipart/form-data");
+  assert.equal(media.upload.limitBytes, 8 * 1024 * 1024);
+  assert.ok(contract.errorCodes.includes("PAYLOAD_TOO_LARGE"));
+  assert.ok(contract.errorCodes.includes("MEDIA_REFERENCED"));
+
+  // Dimensions are bounded before a decoder runs, which is the only ordering
+  // that stops a decompression bomb rather than surviving one.
+  const detect = media.ingest.pipeline.indexOf("boundDimensions");
+  const decode = media.ingest.pipeline.indexOf("decode");
+  assert.ok(detect >= 0 && decode >= 0);
+  assert.ok(detect < decode, "dimensions must be bounded before decoding");
+
+  // And the bytes decide the type, before the allowlist is consulted.
+  const fromBytes = media.ingest.pipeline.indexOf("detectTypeFromBytes");
+  const allowlist = media.ingest.pipeline.indexOf("assertAllowlisted");
+  assert.ok(fromBytes >= 0 && fromBytes < allowlist);
+  assert.ok(media.ingest.pipeline.indexOf("csrf") < fromBytes);
+
+  // The delete refusal is its own code: a referenced asset is neither a
+  // validation failure nor a revision conflict, and the recovery differs.
+  assert.equal(media.delete.refusal.status, 409);
+  assert.equal(media.delete.refusal.errorCode, "MEDIA_REFERENCED");
+  assert.ok(
+    media.delete.requirements.some((requirement) =>
+      /draft/.test(requirement) && /published/.test(requirement),
+    ),
+    "the reference check must cover both the draft and the published document",
+  );
+
+  // Every media case that names a body names one the runner knows how to build.
+  const named = new Set(contractRequestBodies as readonly string[]);
+  for (const httpCase of contract.cases) {
+    if (httpCase.endpoint !== "/api/admin/media") continue;
+    if (httpCase.request.body === undefined) continue;
+    assert.ok(
+      named.has(httpCase.request.body),
+      `${httpCase.id} names an unbuildable body ${httpCase.request.body}`,
     );
   }
 });

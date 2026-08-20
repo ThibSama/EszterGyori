@@ -31,6 +31,12 @@ final class Configuration
         public readonly string $contractsDir,
         public readonly string $publicDir,
         /**
+         * Uploaded originals (ESZ-036). A sibling of the document root, never
+         * inside it: an original is the caller's own bytes, kept only so a
+         * derivative can be rebuilt, and nothing must be able to request one.
+         */
+        public readonly string $mediaOriginalsDir,
+        /**
          * Null when no operational database is configured. That is legal outside
          * production — the public read-only surface needs no SQL at all — and
          * fatal inside it, because the admin surface does.
@@ -130,6 +136,11 @@ final class Configuration
         // that forgot the export must fail at boot with a named key rather than
         // 500 on the home page.
         $publicDir = self::path($paths, 'public', $baseDir, $issues);
+        // Required rather than derived from `content`. Deriving it would make
+        // the one directory that must stay unreachable depend on the shape of a
+        // path someone else configured, and a deployment that got it wrong would
+        // find out by serving an original rather than by failing to boot.
+        $mediaOriginalsDir = self::path($paths, 'mediaOriginals', $baseDir, $issues);
 
         $isProduction = $environment === 'production';
         $database = self::database($raw, $isProduction, $issues);
@@ -148,6 +159,7 @@ final class Configuration
             $logDir,
             $contractsDir,
             $publicDir,
+            $mediaOriginalsDir,
             $database,
             $session,
         );
@@ -373,6 +385,37 @@ final class Configuration
     public function logFile(): string
     {
         return $this->logDir . \DIRECTORY_SEPARATOR . 'app.log';
+    }
+
+    /**
+     * Where a multipart part is parked while it is inspected (ESZ-036).
+     *
+     * A hidden subdirectory *of the originals directory*, not of `paths.tmp`.
+     * That looks arbitrary and is not: the intake file is renamed into place as
+     * the original once it verifies, and `rename()` is only atomic within one
+     * filesystem. Putting intake inside the directory it graduates into makes
+     * that true by construction, so no configuration mistake can turn the final
+     * step of ingest into a non-atomic copy.
+     *
+     * It inherits "never web-reachable" from its parent for free.
+     */
+    public function mediaIntakeDir(): string
+    {
+        return $this->mediaOriginalsDir . \DIRECTORY_SEPARATOR . '.intake';
+    }
+
+    /**
+     * The one web-reachable media location.
+     *
+     * Not configurable, because it is not a deployment choice: the public path
+     * of every managed asset is frozen in the contract as `/media/<id>.<ext>`,
+     * and the directory that serves it is that path resolved against the
+     * document root. Making it a setting would let a config file silently move
+     * the files out from under the URLs stored in published content.
+     */
+    public function mediaPublicDir(): string
+    {
+        return $this->publicDir . \DIRECTORY_SEPARATOR . 'media';
     }
 
     /**

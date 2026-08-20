@@ -14,6 +14,7 @@ import { AppearanceEditor } from "./appearance-editor";
 import { ItemCard, SectionCard } from "./editor-cards";
 import { Field, ReadOnlyId, TextArea } from "./editor-fields";
 import { MediaEditor } from "./media-editor";
+import { MediaLibraryProvider } from "./media-library-provider";
 import type { AdminApiFailure } from "../../lib/admin-api";
 import type { AdminDraftOperation } from "../../lib/admin-server-draft";
 import { cloneSiteContent } from "../../lib/site-content-clone";
@@ -1483,6 +1484,11 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
   const writesAllowed = canWrite(draft);
 
   return (
+    // The library is provided once, above every media field, so the four
+    // `MediaEditor`s share one fetch and one list rather than four of each
+    // (ESZ-037). It is given the working document so the delete control can warn
+    // that an asset is still in use; it never writes one.
+    <MediaLibraryProvider content={content}>
     <main className="min-h-screen bg-warm-50 text-warm-800">
       <div className="mx-auto max-w-[1800px] px-4 py-6 sm:px-6 lg:px-8 2xl:px-10">
         <header className="mb-8 space-y-4">
@@ -1845,5 +1851,6 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
         </p>
       </div>
     </main>
+    </MediaLibraryProvider>
   );
 }

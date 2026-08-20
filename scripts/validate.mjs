@@ -166,7 +166,7 @@ const gates = [
     // must not need a database, and the SQL suites are separate gates below.
     command: ["vendor/bin/phpunit", "--no-progress", "--testsuite", "eszter"],
     proves:
-      "Configuration fail-fast including the production refusals of ESZ-027, contract-artifact digest verification, atomic JSON storage (temp-write, fsync, rename, size cap, locking, idempotent seeding, no silent replacement of invalid files), the HTTP foundation against http-contract.json, and the ESZ-025/026 auth invariants against in-memory doubles. Media and the notification queue are not covered because they do not exist yet.",
+      "Configuration fail-fast including the production refusals of ESZ-027, contract-artifact digest verification, atomic JSON storage (temp-write, fsync, rename, size cap, locking, idempotent seeding, no silent replacement of invalid files), the HTTP foundation against http-contract.json, and the ESZ-025/026 auth invariants against in-memory doubles. Media has its own gate below; the notification queue is not covered because it does not exist yet.",
   },
   {
     id: "php:parity-corpus",
@@ -208,6 +208,21 @@ const gates = [
       "ESZ-021: the injector rewrites only the two bootstrap elements and leaves the rest of the export byte-identical, locates them by id rather than by a remembered opening tag, raises rather than emitting a half-injected page, keeps the payload valid JSON that no editorial string can break out of, and emits exactly the custom properties the contract declares — dropping any value that is not a validated hex colour.",
   },
   {
+    id: "php:media",
+    stage: "6. PHP validation",
+    cwd: "php",
+    command: [
+      "vendor/bin/phpunit",
+      "--no-progress",
+      "--testsuite",
+      "eszter",
+      "--filter",
+      "MediaUploadTest|MediaLibraryTest",
+    ],
+    proves:
+      "ESZ-036/037 against real image bytes: every allowed format is stored under a cryptographically random server-generated name with an extension derived from the verified type; a PHP script wearing JPEG magic bytes, an SVG, a GIF, a truncated JPEG and a polyglot whose two parsers disagree are all refused; a header declaring 1.6e10 pixels is refused before any decoder runs; the served derivative is the server's own re-encode, so EXIF and an appended payload are absent from it; an over-limit upload is 413 while the 64 kB JSON limit is unchanged on every other route; every refusal leaves no intake file, no original, no file under /media/ and no catalogue entry; and a delete is refused with 409 while either the authoritative draft or the published document still references the asset, removing nothing when it refuses.",
+  },
+  {
     id: "php:routing",
     stage: "6. PHP validation",
     cwd: "php",
@@ -220,7 +235,7 @@ const gates = [
       "DocumentRootRoutingTest",
     ],
     proves:
-      "ESZ-022: /api resolves before anything can shadow it, static assets are served directly, /admin deep links survive a refresh, /reservation is reserved and ships no booking UI, `/` is never resolved as a static file, every declared rule is reachable, and the committed .htaccess is byte-identical to what the routing table renders using only directives legal in that context.",
+      "ESZ-022: /api resolves before anything can shadow it, static assets are served directly, /admin deep links survive a refresh, /reservation is reserved and ships no booking UI, `/` is never resolved as a static file, every declared rule is reachable, and the committed .htaccess is byte-identical to what the routing table renders using only directives legal in that context. Since ESZ-036 it also proves media/ serves managed assets and nothing else: the generated whitelist is executed against staging names, double extensions and case variants.",
   },
 
   // ── Stage 7 — SQL ─────────────────────────────────────────────────────────────

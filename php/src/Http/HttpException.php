@@ -78,4 +78,34 @@ final class HttpException extends \RuntimeException
     {
         return new self(403, ErrorCatalog::CSRF_TOKEN_INVALID, [], $logMessage);
     }
+
+    /**
+     * An upload over the media route's own limit (ESZ-036).
+     *
+     * 413 rather than the 400 `overLimitBodyOutcome` gives an oversized JSON
+     * body, because the two are different problems with different fixes. A
+     * 65 kB save request means the client built something wrong; a 12 MB upload
+     * means the person chose a file that is too big, and the only useful response
+     * tells them so in a way their UI can turn into "choose a smaller image".
+     */
+    public static function payloadTooLarge(string $logMessage = ''): self
+    {
+        return new self(413, ErrorCatalog::PAYLOAD_TOO_LARGE, [], $logMessage);
+    }
+
+    /**
+     * A delete refused because content still points at the asset (ESZ-037).
+     *
+     * 409, like a revision conflict, and deliberately *not* the same code. Both
+     * mean "the state of something else forbids this", but the recoveries have
+     * nothing in common: a revision conflict is fixed by re-reading and retrying,
+     * and a client that retried this one would loop forever. The fix here is to
+     * edit the content that uses the image.
+     *
+     * @param array<string, string> $headers
+     */
+    public static function mediaReferenced(array $headers = [], string $logMessage = ''): self
+    {
+        return new self(409, ErrorCatalog::MEDIA_REFERENCED, $headers, $logMessage);
+    }
 }
