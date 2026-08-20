@@ -28,7 +28,7 @@ Local baseline before implementation:
 - Contracts: `npm ci`, `npm run typecheck`, `npm run build` passed
 - Frontend: `npm ci`, `npm run test`, `npm run lint`, `npm run build` passed
 - API: `npm ci`, `npm run typecheck`, `npm run build`, `npm run test` passed
-- Docker: `docker build --progress=plain -f API/Dockerfile -t eszter-api:local .` passed
+- Docker: `docker build --progress=plain -f API/Dockerfile -t eszter-api:local .` passed *(historical: the Express service and its Dockerfile were deleted in Package 1.2 / ESZ-015; this step no longer exists)*
 
 Known audit-only notes:
 

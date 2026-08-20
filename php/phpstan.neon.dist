@@ -1,0 +1,15 @@
+# Production code, pinned at the maximum level.
+#
+# `docs/v1-quality-gates.md` requires a pinned level so the gate cannot drift by
+# dependency upgrade. `max` is affordable on a tree this size and gets much less
+# affordable later, so it is the starting point rather than a goal.
+#
+# Tests are analysed separately (phpstan.tests.neon.dist) at a lower pin: they
+# build and mutate JSON documents by hand, and at `max` every nested offset needs
+# an `is_array` guard that asserts nothing about the code under test.
+parameters:
+    level: max
+    paths:
+        - src
+        - bin
+    treatPhpDocTypesAsCertain: false

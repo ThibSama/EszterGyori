@@ -4,6 +4,10 @@
   "scripts": {
     "dev": "npm --prefix front run dev",
     "build": "npm --prefix front run build",
-    "lint": "npm --prefix front run lint"
+    "lint": "npm --prefix front run lint",
+    "validate": "node scripts/validate.mjs",
+    "php:lint": "php php/bin/lint.php",
+    "php:stan": "php php/bin/static-analysis.php",
+    "php:test": "php/vendor/bin/phpunit -c php/phpunit.xml.dist"
   }
 }

@@ -1,41 +1,38 @@
 import type { CSSProperties } from "react";
 import {
+  createAppearanceCustomProperties,
   defaultSiteAppearance,
-  getReadableForeground,
   hexColorSchema,
-  mixHexColors,
   siteAppearanceSchema,
   type SiteAppearance,
 } from "@eszter/contracts";
 
 type SiteAppearanceVariables = CSSProperties & Record<`--site-${string}`, string>;
 
+/**
+ * The `--site-*` properties, as an inline style object.
+ *
+ * The list, the order and the one derived value (`--site-primary-contrast`) come
+ * from `@eszter/contracts`, which also generates them into
+ * `contracts/generated/http-contract.json` for the PHP injector to read. Both
+ * emitters are therefore driven by one declaration instead of two lists that have
+ * to be kept in step by hand.
+ *
+ * The per-section blends this used to compute — `mixHexColors(background, tint,
+ * 0.18)` and its eight siblings — moved into `globals.css` as `color-mix(in srgb,
+ * …)`, which is the same gamma-space sRGB interpolation. That is what lets PHP
+ * inject appearance at all: the injector now only ever copies hex values that
+ * already passed `hexColorSchema`, and never has to reproduce a blending formula.
+ */
 export function createSiteAppearanceVariables(
   appearance: SiteAppearance,
 ): SiteAppearanceVariables {
-  const palette = appearance.palette;
-  const tints = appearance.sectionTints;
-  const background = palette.background;
-
-  return {
-    "--site-background": palette.background,
-    "--site-surface": palette.surface,
-    "--site-text": palette.text,
-    "--site-muted-text": palette.mutedText,
-    "--site-primary": palette.primary,
-    "--site-primary-contrast": getReadableForeground(palette.primary),
-    "--site-secondary": palette.secondary,
-    "--site-warm-accent": palette.warmAccent,
-    "--site-section-navigation": mixHexColors(background, tints.navigation, 0.16),
-    "--site-section-hero": mixHexColors(background, tints.hero, 0.2),
-    "--site-section-reassurance": mixHexColors(background, tints.reassurance, 0.18),
-    "--site-section-services": mixHexColors(background, tints.services, 0.18),
-    "--site-section-process": mixHexColors(background, tints.process, 0.22),
-    "--site-section-gallery": mixHexColors(background, tints.gallery, 0.16),
-    "--site-section-about": mixHexColors(background, tints.about, 0.2),
-    "--site-section-contact": mixHexColors(background, tints.contact, 0.18),
-    "--site-section-footer": mixHexColors(background, tints.footer, 0.22),
-  };
+  return Object.fromEntries(
+    createAppearanceCustomProperties(appearance).map((property) => [
+      property.name,
+      property.value,
+    ]),
+  ) as SiteAppearanceVariables;
 }
 
 export function normalizeEditableHexColor(value: string): string | null {

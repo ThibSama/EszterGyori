@@ -1,0 +1,1283 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "contentSchemaVersion": 1,
+  "description": "Executable acceptance corpus. Apply each case's patch to the matching base document, validate, and compare the outcome.",
+  "patchOperations": [
+    "replace",
+    "add",
+    "remove"
+  ],
+  "pointerSpec": "RFC 6901",
+  "bases": {
+    "siteContent": {
+      "appearance": {
+        "palette": {
+          "background": "#F5F4F1",
+          "surface": "#FAFAF8",
+          "text": "#2C2B28",
+          "mutedText": "#6D6B67",
+          "primary": "#63726C",
+          "secondary": "#A8AEB8",
+          "warmAccent": "#D3D1CD"
+        },
+        "sectionTints": {
+          "navigation": "#FAFAF8",
+          "hero": "#DBE0DD",
+          "reassurance": "#DBE0DD",
+          "services": "#E0DEDB",
+          "process": "#DBE0DD",
+          "gallery": "#EDECE8",
+          "about": "#EDECE8",
+          "contact": "#E3E5EA",
+          "footer": "#EDECE8"
+        }
+      },
+      "navigation": {
+        "brandLabel": "Eszter Gyori",
+        "menuOpenLabel": "Ouvrir le menu",
+        "menuCloseLabel": "Fermer le menu",
+        "links": [
+          {
+            "id": "prestations",
+            "label": "Prestations",
+            "href": "#prestations"
+          },
+          {
+            "id": "parcours",
+            "label": "La séance",
+            "href": "#parcours"
+          },
+          {
+            "id": "realisations",
+            "label": "Réalisations",
+            "href": "#realisations"
+          },
+          {
+            "id": "a-propos",
+            "label": "À propos",
+            "href": "#a-propos"
+          },
+          {
+            "id": "contact",
+            "label": "Me contacter",
+            "href": "#contact"
+          }
+        ]
+      },
+      "hero": {
+        "title": {
+          "prefix": "Un maquillage permanent",
+          "emphasized": "pensé pour vous",
+          "suffix": ", pas pour vous transformer."
+        },
+        "description": "Près de Lille, je vous accompagne vers un résultat naturel, harmonieux et adapté à votre visage, à vos envies et à votre quotidien.",
+        "primaryCta": {
+          "id": "discover-services",
+          "label": "Voir les prestations",
+          "href": "#prestations"
+        },
+        "secondaryCta": {
+          "id": "contact",
+          "label": "M'écrire sur Instagram",
+          "href": "#contact"
+        },
+        "visual": {
+          "id": "hero-placeholder",
+          "src": null,
+          "alt": "Un rendu frais, précis, naturel : comme vous, avec le détail en plus."
+        },
+        "badgeLabel": "Sur mesure",
+        "instagramAriaLabel": "Voir le compte Instagram d'Eszter Gyori"
+      },
+      "reassurance": {
+        "items": [
+          {
+            "id": "natural-result",
+            "title": "On part de vous",
+            "description": "Je prends le temps de comprendre ce que vous aimez, ce qui vous gêne et le résultat que vous imaginez. L'idée est de sublimer vos traits, pas de les remplacer."
+          },
+          {
+            "id": "morphological-analysis",
+            "title": "Un résultat à votre mesure",
+            "description": "Sourcils, regard, lèvres ou taches de rousseur : l'intensité, la douceur et le fini doivent s'accorder à votre visage, à votre carnation et à votre style."
+          },
+          {
+            "id": "hygiene-precision",
+            "title": "Une atmosphère bienveillante",
+            "description": "Je veux que vous vous sentiez écoutée, à l'aise et libre de poser vos questions. Mon rôle est aussi de vous rassurer avant de décider."
+          },
+          {
+            "id": "personal-support",
+            "title": "Toujours en progression",
+            "description": "Le maquillage permanent demande de rester curieuse, investie et formée. Je continue à faire évoluer ma pratique pour répondre au mieux aux besoins de mes clientes."
+          }
+        ]
+      },
+      "services": {
+        "title": "Prestations",
+        "items": [
+          {
+            "id": "brows",
+            "title": "Sourcils",
+            "description": "Pour des sourcils plus définis, plus équilibrés ou simplement plus présents. Je vous aide à choisir une intensité qui respecte votre visage et votre manière de vous maquiller.",
+            "ctaLabel": "En parler avec moi →",
+            "visualKind": "brows",
+            "visual": {
+              "id": "service-brows-placeholder",
+              "src": null,
+              "alt": "Sourcils sur mesure"
+            }
+          },
+          {
+            "id": "eyeliner",
+            "title": "Eye-liner",
+            "description": "Pour apporter de la présence au regard, de façon très subtile ou plus marquée selon vos envies. L'objectif est de trouver le bon équilibre pour vos yeux.",
+            "ctaLabel": "En parler avec moi →",
+            "visualKind": "eyeliner",
+            "visual": {
+              "id": "service-eyeliner-placeholder",
+              "src": null,
+              "alt": "Regard intensifié"
+            }
+          },
+          {
+            "id": "lips",
+            "title": "Lèvres",
+            "description": "Pour des lèvres à l'apparence plus régulière, plus fraîche et doucement rehaussée. La teinte et l'intensité se choisissent avec vous, selon votre carnation et le rendu souhaité.",
+            "ctaLabel": "En parler avec moi →",
+            "visualKind": "lips",
+            "visual": {
+              "id": "service-lips-placeholder",
+              "src": null,
+              "alt": "Lèvres rehaussées"
+            }
+          },
+          {
+            "id": "freckles",
+            "title": "Faux freckles",
+            "description": "Des taches de rousseur délicates, pensées pour un effet soleil naturel. Le rendu reste léger, harmonieux et adapté à vos traits.",
+            "ctaLabel": "En parler avec moi →",
+            "visualKind": "freckles",
+            "visual": {
+              "id": "service-freckles-placeholder",
+              "src": null,
+              "alt": "Freckles effet soleil"
+            }
+          }
+        ]
+      },
+      "process": {
+        "title": "Comment se passe l'échange",
+        "steps": [
+          {
+            "id": "exchange-analysis",
+            "number": "01",
+            "title": "Vous me parlez de vous",
+            "description": "On commence par vos envies, vos habitudes et vos questions. Vous pouvez m'écrire simplement, même si votre idée n'est pas encore totalement précise."
+          },
+          {
+            "id": "drawing-validation",
+            "number": "02",
+            "title": "On précise le rendu",
+            "description": "Je vous aide à définir une direction réaliste : plus douce, plus présente, plus structurée, toujours en accord avec votre visage."
+          },
+          {
+            "id": "procedure",
+            "number": "03",
+            "title": "Vous validez l'intention",
+            "description": "Avant de passer à la prestation, je m'assure que vous comprenez le résultat recherché et que vous vous sentez à l'aise avec la suite."
+          },
+          {
+            "id": "healing-touch-up",
+            "number": "04",
+            "title": "Je vous accompagne après",
+            "description": "Je vous explique les recommandations adaptées à la prestation choisie et je reste disponible si vous avez des questions."
+          }
+        ]
+      },
+      "gallery": {
+        "title": "Réalisations",
+        "items": [
+          {
+            "id": "natural-brows",
+            "caption": "Sourcils restructurés",
+            "label": "Avant / Après",
+            "visualKind": "beforeAfterBrows",
+            "featured": true,
+            "visual": {
+              "id": "gallery-natural-brows-placeholder",
+              "src": null,
+              "alt": "Avant / après sourcils restructurés"
+            }
+          },
+          {
+            "id": "healed-brows",
+            "caption": "Résultat naturel",
+            "label": "Harmonie",
+            "visualKind": "healedBrows",
+            "visual": {
+              "id": "gallery-healed-brows-placeholder",
+              "src": null,
+              "alt": "Résultat sourcils naturel"
+            }
+          },
+          {
+            "id": "delicate-eyeliner",
+            "caption": "Intensité du regard",
+            "label": "Regard",
+            "visualKind": "eyeliner",
+            "visual": {
+              "id": "gallery-delicate-eyeliner-placeholder",
+              "src": null,
+              "alt": "Intensité du regard"
+            }
+          },
+          {
+            "id": "powder-lips",
+            "caption": "Lèvres rehaussées",
+            "label": "Avant / Après",
+            "visualKind": "lips",
+            "visual": {
+              "id": "gallery-powder-lips-placeholder",
+              "src": null,
+              "alt": "Avant / après lèvres rehaussées"
+            }
+          },
+          {
+            "id": "freckles",
+            "caption": "Faux freckles naturels",
+            "label": "Effet soleil",
+            "visualKind": "freckles",
+            "visual": {
+              "id": "gallery-freckles-placeholder",
+              "src": null,
+              "alt": "Faux freckles effet soleil"
+            }
+          }
+        ],
+        "instagramCta": {
+          "id": "instagram-more",
+          "label": "Voir les avant / après sur Instagram",
+          "href": "https://www.instagram.com/eg_maquillagepermanent/"
+        }
+      },
+      "about": {
+        "title": "Sziasztok, moi c'est Eszter",
+        "portrait": {
+          "id": "eszter-portrait-placeholder",
+          "src": null,
+          "alt": "Eszter Gyori, spécialiste du maquillage permanent près de Lille"
+        },
+        "paragraphs": [
+          "Je suis originaire de Hongrie. Après des études en ressources humaines, j'ai suivi ce qui m'attirait depuis longtemps : la beauté, les visages, les détails qui donnent confiance.",
+          "À Paris, où j'ai vécu 12 ans, j'ai obtenu mon diplôme de maquilleuse professionnelle et j'ai exercé ce métier pendant 10 ans. J'ai ensuite posé mes valises à Lille, puis choisi de me challenger avec le maquillage permanent.",
+          "Ce que je recherche reste le même : sublimer sans transformer. Je vous reçois dans une atmosphère bienveillante, avec l'envie de vous écouter, de vous guider et de vous aider à vous sentir encore mieux dans votre peau."
+        ]
+      },
+      "contact": {
+        "title": "Écrivez-moi, on en parle simplement",
+        "description": "Le plus simple est de me contacter sur Instagram. Présentez-vous, dites-moi la prestation qui vous attire, le résultat que vous aimeriez obtenir et les questions que vous avez. Je vous répondrai avec une première orientation, sans pression.",
+        "instagramCta": {
+          "id": "write-instagram",
+          "label": "M'écrire en message privé",
+          "href": "https://www.instagram.com/eg_maquillagepermanent/"
+        },
+        "emailCta": {
+          "id": "email",
+          "label": "Envoyer un email",
+          "href": "mailto:contact@esztergyori.com"
+        }
+      },
+      "footer": {
+        "copyrightName": "Eszter Gyori",
+        "copyrightSuffix": "Tous droits réservés.",
+        "links": [
+          {
+            "id": "instagram",
+            "label": "Instagram",
+            "href": "https://www.instagram.com/eg_maquillagepermanent/"
+          },
+          {
+            "id": "contact",
+            "label": "Me contacter",
+            "href": "mailto:contact@esztergyori.com"
+          }
+        ]
+      }
+    },
+    "publishedEnvelope": {
+      "schemaVersion": 1,
+      "revision": 7,
+      "publishedAt": "2026-06-13T12:00:00.000Z",
+      "content": {
+        "appearance": {
+          "palette": {
+            "background": "#F5F4F1",
+            "surface": "#FAFAF8",
+            "text": "#2C2B28",
+            "mutedText": "#6D6B67",
+            "primary": "#63726C",
+            "secondary": "#A8AEB8",
+            "warmAccent": "#D3D1CD"
+          },
+          "sectionTints": {
+            "navigation": "#FAFAF8",
+            "hero": "#DBE0DD",
+            "reassurance": "#DBE0DD",
+            "services": "#E0DEDB",
+            "process": "#DBE0DD",
+            "gallery": "#EDECE8",
+            "about": "#EDECE8",
+            "contact": "#E3E5EA",
+            "footer": "#EDECE8"
+          }
+        },
+        "navigation": {
+          "brandLabel": "Eszter Gyori",
+          "menuOpenLabel": "Ouvrir le menu",
+          "menuCloseLabel": "Fermer le menu",
+          "links": [
+            {
+              "id": "prestations",
+              "label": "Prestations",
+              "href": "#prestations"
+            },
+            {
+              "id": "parcours",
+              "label": "La séance",
+              "href": "#parcours"
+            },
+            {
+              "id": "realisations",
+              "label": "Réalisations",
+              "href": "#realisations"
+            },
+            {
+              "id": "a-propos",
+              "label": "À propos",
+              "href": "#a-propos"
+            },
+            {
+              "id": "contact",
+              "label": "Me contacter",
+              "href": "#contact"
+            }
+          ]
+        },
+        "hero": {
+          "title": {
+            "prefix": "Un maquillage permanent",
+            "emphasized": "pensé pour vous",
+            "suffix": ", pas pour vous transformer."
+          },
+          "description": "Près de Lille, je vous accompagne vers un résultat naturel, harmonieux et adapté à votre visage, à vos envies et à votre quotidien.",
+          "primaryCta": {
+            "id": "discover-services",
+            "label": "Voir les prestations",
+            "href": "#prestations"
+          },
+          "secondaryCta": {
+            "id": "contact",
+            "label": "M'écrire sur Instagram",
+            "href": "#contact"
+          },
+          "visual": {
+            "id": "hero-placeholder",
+            "src": null,
+            "alt": "Un rendu frais, précis, naturel : comme vous, avec le détail en plus."
+          },
+          "badgeLabel": "Sur mesure",
+          "instagramAriaLabel": "Voir le compte Instagram d'Eszter Gyori"
+        },
+        "reassurance": {
+          "items": [
+            {
+              "id": "natural-result",
+              "title": "On part de vous",
+              "description": "Je prends le temps de comprendre ce que vous aimez, ce qui vous gêne et le résultat que vous imaginez. L'idée est de sublimer vos traits, pas de les remplacer."
+            },
+            {
+              "id": "morphological-analysis",
+              "title": "Un résultat à votre mesure",
+              "description": "Sourcils, regard, lèvres ou taches de rousseur : l'intensité, la douceur et le fini doivent s'accorder à votre visage, à votre carnation et à votre style."
+            },
+            {
+              "id": "hygiene-precision",
+              "title": "Une atmosphère bienveillante",
+              "description": "Je veux que vous vous sentiez écoutée, à l'aise et libre de poser vos questions. Mon rôle est aussi de vous rassurer avant de décider."
+            },
+            {
+              "id": "personal-support",
+              "title": "Toujours en progression",
+              "description": "Le maquillage permanent demande de rester curieuse, investie et formée. Je continue à faire évoluer ma pratique pour répondre au mieux aux besoins de mes clientes."
+            }
+          ]
+        },
+        "services": {
+          "title": "Prestations",
+          "items": [
+            {
+              "id": "brows",
+              "title": "Sourcils",
+              "description": "Pour des sourcils plus définis, plus équilibrés ou simplement plus présents. Je vous aide à choisir une intensité qui respecte votre visage et votre manière de vous maquiller.",
+              "ctaLabel": "En parler avec moi →",
+              "visualKind": "brows",
+              "visual": {
+                "id": "service-brows-placeholder",
+                "src": null,
+                "alt": "Sourcils sur mesure"
+              }
+            },
+            {
+              "id": "eyeliner",
+              "title": "Eye-liner",
+              "description": "Pour apporter de la présence au regard, de façon très subtile ou plus marquée selon vos envies. L'objectif est de trouver le bon équilibre pour vos yeux.",
+              "ctaLabel": "En parler avec moi →",
+              "visualKind": "eyeliner",
+              "visual": {
+                "id": "service-eyeliner-placeholder",
+                "src": null,
+                "alt": "Regard intensifié"
+              }
+            },
+            {
+              "id": "lips",
+              "title": "Lèvres",
+              "description": "Pour des lèvres à l'apparence plus régulière, plus fraîche et doucement rehaussée. La teinte et l'intensité se choisissent avec vous, selon votre carnation et le rendu souhaité.",
+              "ctaLabel": "En parler avec moi →",
+              "visualKind": "lips",
+              "visual": {
+                "id": "service-lips-placeholder",
+                "src": null,
+                "alt": "Lèvres rehaussées"
+              }
+            },
+            {
+              "id": "freckles",
+              "title": "Faux freckles",
+              "description": "Des taches de rousseur délicates, pensées pour un effet soleil naturel. Le rendu reste léger, harmonieux et adapté à vos traits.",
+              "ctaLabel": "En parler avec moi →",
+              "visualKind": "freckles",
+              "visual": {
+                "id": "service-freckles-placeholder",
+                "src": null,
+                "alt": "Freckles effet soleil"
+              }
+            }
+          ]
+        },
+        "process": {
+          "title": "Comment se passe l'échange",
+          "steps": [
+            {
+              "id": "exchange-analysis",
+              "number": "01",
+              "title": "Vous me parlez de vous",
+              "description": "On commence par vos envies, vos habitudes et vos questions. Vous pouvez m'écrire simplement, même si votre idée n'est pas encore totalement précise."
+            },
+            {
+              "id": "drawing-validation",
+              "number": "02",
+              "title": "On précise le rendu",
+              "description": "Je vous aide à définir une direction réaliste : plus douce, plus présente, plus structurée, toujours en accord avec votre visage."
+            },
+            {
+              "id": "procedure",
+              "number": "03",
+              "title": "Vous validez l'intention",
+              "description": "Avant de passer à la prestation, je m'assure que vous comprenez le résultat recherché et que vous vous sentez à l'aise avec la suite."
+            },
+            {
+              "id": "healing-touch-up",
+              "number": "04",
+              "title": "Je vous accompagne après",
+              "description": "Je vous explique les recommandations adaptées à la prestation choisie et je reste disponible si vous avez des questions."
+            }
+          ]
+        },
+        "gallery": {
+          "title": "Réalisations",
+          "items": [
+            {
+              "id": "natural-brows",
+              "caption": "Sourcils restructurés",
+              "label": "Avant / Après",
+              "visualKind": "beforeAfterBrows",
+              "featured": true,
+              "visual": {
+                "id": "gallery-natural-brows-placeholder",
+                "src": null,
+                "alt": "Avant / après sourcils restructurés"
+              }
+            },
+            {
+              "id": "healed-brows",
+              "caption": "Résultat naturel",
+              "label": "Harmonie",
+              "visualKind": "healedBrows",
+              "visual": {
+                "id": "gallery-healed-brows-placeholder",
+                "src": null,
+                "alt": "Résultat sourcils naturel"
+              }
+            },
+            {
+              "id": "delicate-eyeliner",
+              "caption": "Intensité du regard",
+              "label": "Regard",
+              "visualKind": "eyeliner",
+              "visual": {
+                "id": "gallery-delicate-eyeliner-placeholder",
+                "src": null,
+                "alt": "Intensité du regard"
+              }
+            },
+            {
+              "id": "powder-lips",
+              "caption": "Lèvres rehaussées",
+              "label": "Avant / Après",
+              "visualKind": "lips",
+              "visual": {
+                "id": "gallery-powder-lips-placeholder",
+                "src": null,
+                "alt": "Avant / après lèvres rehaussées"
+              }
+            },
+            {
+              "id": "freckles",
+              "caption": "Faux freckles naturels",
+              "label": "Effet soleil",
+              "visualKind": "freckles",
+              "visual": {
+                "id": "gallery-freckles-placeholder",
+                "src": null,
+                "alt": "Faux freckles effet soleil"
+              }
+            }
+          ],
+          "instagramCta": {
+            "id": "instagram-more",
+            "label": "Voir les avant / après sur Instagram",
+            "href": "https://www.instagram.com/eg_maquillagepermanent/"
+          }
+        },
+        "about": {
+          "title": "Sziasztok, moi c'est Eszter",
+          "portrait": {
+            "id": "eszter-portrait-placeholder",
+            "src": null,
+            "alt": "Eszter Gyori, spécialiste du maquillage permanent près de Lille"
+          },
+          "paragraphs": [
+            "Je suis originaire de Hongrie. Après des études en ressources humaines, j'ai suivi ce qui m'attirait depuis longtemps : la beauté, les visages, les détails qui donnent confiance.",
+            "À Paris, où j'ai vécu 12 ans, j'ai obtenu mon diplôme de maquilleuse professionnelle et j'ai exercé ce métier pendant 10 ans. J'ai ensuite posé mes valises à Lille, puis choisi de me challenger avec le maquillage permanent.",
+            "Ce que je recherche reste le même : sublimer sans transformer. Je vous reçois dans une atmosphère bienveillante, avec l'envie de vous écouter, de vous guider et de vous aider à vous sentir encore mieux dans votre peau."
+          ]
+        },
+        "contact": {
+          "title": "Écrivez-moi, on en parle simplement",
+          "description": "Le plus simple est de me contacter sur Instagram. Présentez-vous, dites-moi la prestation qui vous attire, le résultat que vous aimeriez obtenir et les questions que vous avez. Je vous répondrai avec une première orientation, sans pression.",
+          "instagramCta": {
+            "id": "write-instagram",
+            "label": "M'écrire en message privé",
+            "href": "https://www.instagram.com/eg_maquillagepermanent/"
+          },
+          "emailCta": {
+            "id": "email",
+            "label": "Envoyer un email",
+            "href": "mailto:contact@esztergyori.com"
+          }
+        },
+        "footer": {
+          "copyrightName": "Eszter Gyori",
+          "copyrightSuffix": "Tous droits réservés.",
+          "links": [
+            {
+              "id": "instagram",
+              "label": "Instagram",
+              "href": "https://www.instagram.com/eg_maquillagepermanent/"
+            },
+            {
+              "id": "contact",
+              "label": "Me contacter",
+              "href": "mailto:contact@esztergyori.com"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "baseMetadata": {
+    "publishedAt": "2026-06-13T12:00:00.000Z",
+    "revision": 7
+  },
+  "cases": [
+    {
+      "id": "envelope.isoTimestampRoundTrip.valid",
+      "rule": "envelope.isoTimestampRoundTrip",
+      "expect": "valid",
+      "target": "publishedEnvelope",
+      "description": "A canonical UTC millisecond timestamp is accepted.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/publishedAt",
+          "value": "2025-01-02T03:04:05.678Z"
+        }
+      ]
+    },
+    {
+      "id": "envelope.isoTimestampRoundTrip.offsetRejected",
+      "rule": "envelope.isoTimestampRoundTrip",
+      "expect": "invalid",
+      "target": "publishedEnvelope",
+      "description": "A valid ISO 8601 value with a numeric offset does not round-trip and is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/publishedAt",
+          "value": "2026-06-13T14:00:00.000+02:00"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/publishedAt"
+      ]
+    },
+    {
+      "id": "envelope.isoTimestampRoundTrip.secondsPrecisionRejected",
+      "rule": "envelope.isoTimestampRoundTrip",
+      "expect": "invalid",
+      "target": "publishedEnvelope",
+      "description": "Second-precision timestamps do not round-trip and are rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/publishedAt",
+          "value": "2026-06-13T12:00:00Z"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/publishedAt"
+      ]
+    },
+    {
+      "id": "envelope.isoTimestampRoundTrip.nonDateRejected",
+      "rule": "envelope.isoTimestampRoundTrip",
+      "expect": "invalid",
+      "target": "publishedEnvelope",
+      "description": "A non-date string is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/publishedAt",
+          "value": "not-a-date"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/publishedAt"
+      ]
+    },
+    {
+      "id": "appearance.contrastTextOnBackground.invalid",
+      "rule": "appearance.contrastTextOnBackground",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Near-white primary text on the light background falls under 4.5:1 and is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/appearance/palette/text",
+          "value": "#EFEFEF"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/appearance/palette/text",
+        "/appearance/palette/text"
+      ]
+    },
+    {
+      "id": "appearance.contrastTextOnBackground.valid",
+      "rule": "appearance.contrastTextOnBackground",
+      "expect": "valid",
+      "target": "siteContent",
+      "description": "A dark primary text colour clears both 4.5:1 floors.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/appearance/palette/text",
+          "value": "#1A1A1A"
+        }
+      ]
+    },
+    {
+      "id": "appearance.contrastTextOnSurface.invalid",
+      "rule": "appearance.contrastTextOnSurface",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Raising the surface to match the text colour breaks the text-on-surface floor.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/appearance/palette/surface",
+          "value": "#2C2B28"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/appearance/palette/text"
+      ]
+    },
+    {
+      "id": "appearance.contrastMutedTextOnBackground.invalid",
+      "rule": "appearance.contrastMutedTextOnBackground",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Muted text too close to the background falls under 3:1.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/appearance/palette/mutedText",
+          "value": "#E8E7E4"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/appearance/palette/mutedText"
+      ]
+    },
+    {
+      "id": "appearance.contrastMutedTextOnBackground.valid",
+      "rule": "appearance.contrastMutedTextOnBackground",
+      "expect": "valid",
+      "target": "siteContent",
+      "description": "A darker muted text colour clears 3:1.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/appearance/palette/mutedText",
+          "value": "#5A5854"
+        }
+      ]
+    },
+    {
+      "id": "appearance.hexUppercaseNormalization.valid",
+      "rule": "appearance.hexUppercaseNormalization",
+      "expect": "valid",
+      "target": "siteContent",
+      "description": "A fully lowercase palette is accepted and normalized to uppercase.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/appearance/palette",
+          "value": {
+            "background": "#f5f4f1",
+            "surface": "#fafaf8",
+            "text": "#2c2b28",
+            "mutedText": "#6d6b67",
+            "primary": "#63726c",
+            "secondary": "#a8aeb8",
+            "warmAccent": "#d3d1cd"
+          }
+        }
+      ],
+      "expectedNormalization": {
+        "/appearance/palette/background": "#F5F4F1",
+        "/appearance/palette/text": "#2C2B28",
+        "/appearance/palette/warmAccent": "#D3D1CD"
+      }
+    },
+    {
+      "id": "appearance.defaultInjectionForLegacyContent.valid",
+      "rule": "appearance.defaultInjectionForLegacyContent",
+      "expect": "valid",
+      "target": "siteContent",
+      "description": "Legacy content without `appearance` validates and receives the default appearance.",
+      "patch": [
+        {
+          "op": "remove",
+          "path": "/appearance"
+        }
+      ],
+      "expectedNormalization": {
+        "/appearance/palette/background": "#F5F4F1",
+        "/appearance/sectionTints/hero": "#DBE0DD"
+      }
+    },
+    {
+      "id": "navigation.linkIdOrder.invalid",
+      "rule": "navigation.linkIdOrder",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Swapping two navigation link ids is rejected at both positions.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/navigation/links/0/id",
+          "value": "parcours"
+        },
+        {
+          "op": "replace",
+          "path": "/navigation/links/1/id",
+          "value": "prestations"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/navigation/links/0/id",
+        "/navigation/links/1/id"
+      ]
+    },
+    {
+      "id": "reassurance.itemIdOrder.invalid",
+      "rule": "reassurance.itemIdOrder",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Reordering reassurance items is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/reassurance/items/0/id",
+          "value": "hygiene-precision"
+        },
+        {
+          "op": "replace",
+          "path": "/reassurance/items/2/id",
+          "value": "natural-result"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/reassurance/items/0/id",
+        "/reassurance/items/2/id"
+      ]
+    },
+    {
+      "id": "services.itemIdOrder.invalid",
+      "rule": "services.itemIdOrder",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Renaming a service id is rejected at that position. The visualKind and visual.id checks are keyed on the expected id, so they stay satisfied and only one issue is reported.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/services/items/0/id",
+          "value": "lips"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/services/items/0/id"
+      ]
+    },
+    {
+      "id": "services.visualKindMatchesId.invalid",
+      "rule": "services.visualKindMatchesId",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "A service visualKind that disagrees with its id is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/services/items/1/visualKind",
+          "value": "lips"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/services/items/1/visualKind"
+      ]
+    },
+    {
+      "id": "services.visualIdMatchesId.invalid",
+      "rule": "services.visualIdMatchesId",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "A service visual.id from another service is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/services/items/1/visual/id",
+          "value": "service-lips-placeholder"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/services/items/1/visual/id"
+      ]
+    },
+    {
+      "id": "process.stepIdOrder.invalid",
+      "rule": "process.stepIdOrder",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Reordering process step ids is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/process/steps/1/id",
+          "value": "procedure"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/process/steps/1/id"
+      ]
+    },
+    {
+      "id": "process.stepNumberOrder.invalid",
+      "rule": "process.stepNumberOrder",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "A step number out of sequence is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/process/steps/2/number",
+          "value": "04"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/process/steps/2/number"
+      ]
+    },
+    {
+      "id": "gallery.itemIdOrder.invalid",
+      "rule": "gallery.itemIdOrder",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Renaming a gallery id is rejected at that position. The visualKind and visual.id checks are keyed on the expected id, so they stay satisfied and only one issue is reported.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/gallery/items/1/id",
+          "value": "freckles"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/gallery/items/1/id"
+      ]
+    },
+    {
+      "id": "gallery.visualKindMatchesId.invalid",
+      "rule": "gallery.visualKindMatchesId",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "A gallery visualKind not bound to its item id is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/gallery/items/0/visualKind",
+          "value": "healedBrows"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/gallery/items/0/visualKind"
+      ]
+    },
+    {
+      "id": "gallery.visualIdMatchesId.invalid",
+      "rule": "gallery.visualIdMatchesId",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "A gallery visual.id from another item is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/gallery/items/2/visual/id",
+          "value": "gallery-powder-lips-placeholder"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/gallery/items/2/visual/id"
+      ]
+    },
+    {
+      "id": "gallery.featuredOnlyFirstItem.firstMissing",
+      "rule": "gallery.featuredOnlyFirstItem",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Removing `featured` from the first gallery item is rejected.",
+      "patch": [
+        {
+          "op": "remove",
+          "path": "/gallery/items/0/featured"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/gallery/items/0/featured"
+      ]
+    },
+    {
+      "id": "gallery.featuredOnlyFirstItem.extraFeatured",
+      "rule": "gallery.featuredOnlyFirstItem",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Marking a second gallery item as featured is rejected, even with value false.",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/gallery/items/3/featured",
+          "value": false
+        }
+      ],
+      "expectedIssuePaths": [
+        "/gallery/items/3/featured"
+      ]
+    },
+    {
+      "id": "hero.fixedLinkAndMediaIds.primaryCta",
+      "rule": "hero.fixedLinkAndMediaIds",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Renaming hero.primaryCta.id is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/hero/primaryCta/id",
+          "value": "renamed"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/hero/primaryCta/id"
+      ]
+    },
+    {
+      "id": "hero.fixedLinkAndMediaIds.visual",
+      "rule": "hero.fixedLinkAndMediaIds",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Renaming hero.visual.id is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/hero/visual/id",
+          "value": "other-placeholder"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/hero/visual/id"
+      ]
+    },
+    {
+      "id": "about.portraitFixedId.invalid",
+      "rule": "about.portraitFixedId",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Renaming about.portrait.id is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/about/portrait/id",
+          "value": "portrait"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/about/portrait/id"
+      ]
+    },
+    {
+      "id": "gallery.instagramCtaFixedId.invalid",
+      "rule": "gallery.instagramCtaFixedId",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Renaming gallery.instagramCta.id is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/gallery/instagramCta/id",
+          "value": "renamed"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/gallery/instagramCta/id"
+      ]
+    },
+    {
+      "id": "contact.fixedLinkIds.email",
+      "rule": "contact.fixedLinkIds",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Renaming contact.emailCta.id is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/contact/emailCta/id",
+          "value": "mail"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/contact/emailCta/id"
+      ]
+    },
+    {
+      "id": "footer.linkIdOrder.invalid",
+      "rule": "footer.linkIdOrder",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "Renaming a footer link id is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/footer/links/1/id",
+          "value": "email"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/footer/links/1/id"
+      ]
+    },
+    {
+      "id": "links.mailtoHref.missingScheme",
+      "rule": "links.mailtoHref",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "A bare address without the mailto scheme is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/contact/emailCta/href",
+          "value": "contact@esztergyori.com"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/contact/emailCta/href"
+      ]
+    },
+    {
+      "id": "links.mailtoHref.invalidAddress",
+      "rule": "links.mailtoHref",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "A mailto link wrapping an unparseable address is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/contact/emailCta/href",
+          "value": "mailto:not-an-email"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/contact/emailCta/href"
+      ]
+    },
+    {
+      "id": "links.mailtoHref.valid",
+      "rule": "links.mailtoHref",
+      "expect": "valid",
+      "target": "siteContent",
+      "description": "A well-formed mailto link is accepted.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/contact/emailCta/href",
+          "value": "mailto:hello@example.com"
+        }
+      ]
+    },
+    {
+      "id": "links.instagramHttpsHost.httpRejected",
+      "rule": "links.instagramHttpsHost",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "A plain-HTTP Instagram URL is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/contact/instagramCta/href",
+          "value": "http://www.instagram.com/eg_maquillagepermanent/"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/contact/instagramCta/href"
+      ]
+    },
+    {
+      "id": "links.instagramHttpsHost.foreignHostRejected",
+      "rule": "links.instagramHttpsHost",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "An HTTPS URL on a look-alike host is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/contact/instagramCta/href",
+          "value": "https://instagram.com.evil.example/eg"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/contact/instagramCta/href"
+      ]
+    },
+    {
+      "id": "links.instagramHttpsHost.subdomainValid",
+      "rule": "links.instagramHttpsHost",
+      "expect": "valid",
+      "target": "siteContent",
+      "description": "An instagram.com subdomain over HTTPS is accepted.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/contact/instagramCta/href",
+          "value": "https://www.instagram.com/another_account/"
+        }
+      ]
+    },
+    {
+      "id": "media.sourceProtocol.javascriptRejected",
+      "rule": "media.sourceProtocol",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "A javascript: media source is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/hero/visual/src",
+          "value": "javascript:alert(1)"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/hero/visual/src"
+      ]
+    },
+    {
+      "id": "media.sourceProtocol.dataRejected",
+      "rule": "media.sourceProtocol",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "A data: media source is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/hero/visual/src",
+          "value": "data:image/png;base64,iVBORw0KGgo="
+        }
+      ],
+      "expectedIssuePaths": [
+        "/hero/visual/src"
+      ]
+    },
+    {
+      "id": "media.sourceProtocol.publicPathValid",
+      "rule": "media.sourceProtocol",
+      "expect": "valid",
+      "target": "siteContent",
+      "description": "A rooted public path is accepted.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/hero/visual/src",
+          "value": "/media/hero.webp"
+        }
+      ]
+    },
+    {
+      "id": "media.sourceProtocol.protocolRelativeRejected",
+      "rule": "media.sourceProtocol",
+      "expect": "invalid",
+      "target": "siteContent",
+      "description": "A protocol-relative //host path is rejected.",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/hero/visual/src",
+          "value": "//evil.example/x.png"
+        }
+      ],
+      "expectedIssuePaths": [
+        "/hero/visual/src"
+      ]
+    }
+  ]
+}

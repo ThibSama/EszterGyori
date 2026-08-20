@@ -108,13 +108,25 @@ const mailtoHrefSchema = z
     if (!value.startsWith("mailto:")) return false;
     return emailAddressSchema.safeParse(value.slice("mailto:".length)).success;
   }, "Doit etre un lien mailto valide.");
+// Zod keeps running refinements after `z.url()` has already rejected a value,
+// so these callbacks must never assume the input parses. Throwing here would
+// surface as an unexpected TypeError instead of a validation issue.
+function parseUrlSafely(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
 const httpsUrlSchema = z
   .url("Doit etre une URL valide.")
-  .refine((value) => new URL(value).protocol === "https:", {
+  .refine((value) => parseUrlSafely(value)?.protocol === "https:", {
     message: "Seules les URLs HTTPS sont acceptees.",
   });
 const instagramUrlSchema = httpsUrlSchema.refine((value) => {
-  const hostname = new URL(value).hostname.toLowerCase();
+  const hostname = parseUrlSafely(value)?.hostname.toLowerCase();
+  if (hostname === undefined) return false;
   return hostname === "instagram.com" || hostname.endsWith(".instagram.com");
 }, "Doit etre une URL Instagram HTTPS valide.");
 const publicAssetPathSchema = z
@@ -127,7 +139,7 @@ const mediaSourceSchema = z.union([
   z
     .url("Doit etre une URL valide.")
     .refine((value) => {
-      const protocol = new URL(value).protocol;
+      const protocol = parseUrlSafely(value)?.protocol;
       return protocol === "http:" || protocol === "https:";
     }, "Seules les URLs http(s) sont acceptees pour les medias."),
   z.null(),

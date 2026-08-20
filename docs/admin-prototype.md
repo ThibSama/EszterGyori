@@ -1,8 +1,12 @@
 # Prototype d'administration frontend
 
-La route `/admin` fournit un editeur de contenu cote frontend pour le site vitrine Eszter. Elle utilise le contrat partage `SiteContent`, une session frontend signee pour proteger l'acces a l'interface, sans publication et sans stockage serveur.
+La route `/admin` fournit un editeur de contenu cote frontend pour le site vitrine Eszter. Elle utilise le contrat partage `SiteContent`, sans publication et sans stockage serveur.
 
-Le service Express existe dans `API/` et expose `GET /api/health` et `GET /api/content`, mais `/admin` ne l'appelle pas.
+> **Obsolete depuis le paquet 2.1 (ESZ-020) : la section « Authentification frontend » ci-dessous decrit un mecanisme supprime.** Le frontend est un export statique ; le middleware `proxy.ts`, les routes `/admin/auth/*` et tout `front/app/lib/auth/` ont ete supprimes, ainsi que les variables `ADMIN_*`. **`/admin` n'est plus protege.** Un hebergement statique ne peut pas executer ce controle, et le reproduire dans le navigateur ne serait pas un controle d'acces. Le paquet 2.2 place l'autorisation dans PHP, verifiee a chaque appel `/api/admin/*`. Voir `docs/static-frontend-and-injection.md` §3 et `docs/hetzner-target-architecture.md` §6.
+>
+> Tout ce qui concerne l'**editeur** lui-meme (brouillon `localStorage`, import/export, apparence, apercu) reste exact.
+
+Le backend PHP (`php/`) expose `GET /api/health`, `GET /api/content` et `GET | HEAD /`, mais `/admin` ne les appelle pas. Le service Express historique (`API/`) a ete retire au paquet 1.2 (ESZ-015).
 
 ## Authentification frontend
 
@@ -19,7 +23,7 @@ L'en-tete protege affiche `Administration Eszter`, `Retour au site` et `Se decon
 
 Si la configuration est absente ou invalide, le build continue de fonctionner, le site public reste disponible, mais la connexion admin echoue fermee.
 
-Cette barriere protege seulement l'interface Next.js. Elle n'autorise aucune route Express et ne doit pas etre consideree suffisante pour de futures mutations serveur.
+Cette barriere protege seulement l'interface Next.js. Elle n'autorise aucune route backend et ne doit pas etre consideree suffisante pour de futures mutations serveur.
 
 ## Contrat partage
 
@@ -32,7 +36,7 @@ Le contrat runtime et le contenu par defaut canonique sont definis hors de `fron
 
 ## Rendu public et admin
 
-La homepage publique peut consommer `GET /api/content` cote serveur via `CONTENT_API_URL`, avec fallback vers `defaultSiteContent`.
+La homepage publique est exportee statiquement : PHP injecte le contenu publie dans le HTML exporte au moment de la requete, avec repli sur `defaultSiteContent`. `CONTENT_API_URL` n'existe plus.
 
 `/admin` reste local-only :
 
@@ -93,6 +97,6 @@ L'edition d'apparence reste volontairement limitee : pas de CSS arbitraire, pas 
 
 ## Securite et futur backend
 
-La route `/admin` a maintenant une protection frontend, mais l'API Express n'a pas encore d'authentification ni d'autorisation admin. Le backend devra verifier sa propre session avant toute route de brouillon, publication ou upload.
+La route `/admin` a maintenant une protection frontend, mais l'API PHP n'a pas d'authentification ni d'autorisation admin : elle n'expose que deux routes publiques read-only. Le backend devra verifier sa propre session avant toute route de brouillon, publication ou upload, et ces routes devront entrer dans `contracts/http-contract.ts` avant d'etre implementees.
 
 `GET /api/content` est public et read-only. Il lit uniquement `published.json`, retourne `PublishedContentEnvelopeV1`, supporte les ETags, et n'expose pas le brouillon.

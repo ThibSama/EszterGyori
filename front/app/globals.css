@@ -85,6 +85,69 @@ body {
 .site-preview {
   background: var(--site-background);
   color: var(--site-text);
+
+  /*
+   * Each section's background is its tint laid over the page background. This
+   * used to be `mixHexColors(background, tint, ratio)` in TypeScript, which meant
+   * only a JavaScript renderer could produce these values — and the public page no
+   * longer has one at request time. `color-mix(in srgb, …)` is the same operation:
+   * a channel-wise interpolation in gamma-encoded sRGB, at the same ratios.
+   *
+   * Moving it here is what keeps the PHP injector free of presentation logic. PHP
+   * writes only `--site-tint-*` and `--site-background`, both straight out of a
+   * document that already passed `hexColorSchema`; the blending stays in the
+   * stylesheet, where changing a ratio is a CSS edit and not a contract change.
+   *
+   * Declared on `.site-preview` rather than `:root` deliberately. A custom
+   * property is substituted against the cascade of the element that *declares* it,
+   * so at `:root` these would always resolve against the injected tints and ignore
+   * the inline ones the admin preview sets on this element while editing.
+   */
+  --site-section-navigation: color-mix(
+    in srgb,
+    var(--site-tint-navigation) 16%,
+    var(--site-background)
+  );
+  --site-section-hero: color-mix(
+    in srgb,
+    var(--site-tint-hero) 20%,
+    var(--site-background)
+  );
+  --site-section-reassurance: color-mix(
+    in srgb,
+    var(--site-tint-reassurance) 18%,
+    var(--site-background)
+  );
+  --site-section-services: color-mix(
+    in srgb,
+    var(--site-tint-services) 18%,
+    var(--site-background)
+  );
+  --site-section-process: color-mix(
+    in srgb,
+    var(--site-tint-process) 22%,
+    var(--site-background)
+  );
+  --site-section-gallery: color-mix(
+    in srgb,
+    var(--site-tint-gallery) 16%,
+    var(--site-background)
+  );
+  --site-section-about: color-mix(
+    in srgb,
+    var(--site-tint-about) 20%,
+    var(--site-background)
+  );
+  --site-section-contact: color-mix(
+    in srgb,
+    var(--site-tint-contact) 18%,
+    var(--site-background)
+  );
+  --site-section-footer: color-mix(
+    in srgb,
+    var(--site-tint-footer) 22%,
+    var(--site-background)
+  );
 }
 
 .site-preview :where(#main-content, #prestations, #parcours, #realisations, #a-propos, #contact) {

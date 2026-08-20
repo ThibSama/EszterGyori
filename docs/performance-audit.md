@@ -1,6 +1,20 @@
 # Audit performance frontend
 
+> **Audit anterieur au paquet 2.1 (ESZ-020/021).** Il decrit le frontend tel qu'il
+> etait avec un runtime Node : rendu serveur de `/`, ISR, middleware, `CONTENT_API_URL`.
+> Le frontend est desormais un export statique et PHP sert `/`. Ce document est
+> conserve comme releve date, pas comme description de l'etat actuel.
+> Voir `docs/static-frontend-and-injection.md`.
+
+
 Date: 2026-06-14
+
+> **Document historique.** Cette passe a ete executee alors que le depot contenait
+> encore le service Express `API/` et son image Docker, supprimes au paquet 1.2
+> (ESZ-015). Les commandes ci-dessous sont conservees telles qu'executees a l'epoque :
+> l'etape `docker build` n'existe plus. Les conclusions frontend restent valables, et
+> la validation Lighthouse reste a refaire sur l'hebergement final (Hetzner, et non
+> Vercel — voir `docs/hetzner-target-architecture.md`).
 
 ## Portee
 

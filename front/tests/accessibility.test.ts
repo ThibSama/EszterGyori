@@ -69,7 +69,16 @@ test("admin forms and editor messages expose live feedback", () => {
     "utf8",
   );
 
-  assert.match(loginSource, /role="alert"/);
+  // ESZ-020 replaced the login form with a static notice: there is no credential
+  // check in the export to report a failure from, so `role="alert"` — which
+  // interrupts a screen reader — would be announcing nothing. The page still has
+  // a live region, at the politeness level its content actually warrants.
+  //
+  // Package 2.2 restores the form against `/api/auth/login`, and the assertion
+  // that a rejected sign-in is announced assertively comes back with it.
+  assert.match(loginSource, /role="status"/);
+  assert.doesNotMatch(loginSource, /<(input|form)\b/);
+
   assert.match(contentEditorSource, /role="status"/);
   assert.match(contentEditorSource, /aria-live="polite"/);
   assert.match(contentEditorSource, /role="alert"/);

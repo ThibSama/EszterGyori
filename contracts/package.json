@@ -15,12 +15,18 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "generate": "tsx scripts/generate-contract-artifacts.ts",
+    "typecheck:tools": "tsc -p tsconfig.tools.json",
+    "verify:generated": "tsx --test tests/generated-artifacts.test.ts",
+    "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@types/node": "^20.19.26",
+    "tsx": "^4.21.0"
   }
 }

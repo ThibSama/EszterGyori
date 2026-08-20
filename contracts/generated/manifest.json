@@ -1,0 +1,57 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "contentSchemaVersion": 1,
+  "httpContractVersion": 1,
+  "description": "Index and integrity digests for the language-neutral contract artifacts.",
+  "consumerGuidance": [
+    "Validate structure with the *.schema.json documents (JSON Schema 2020-12).",
+    "Then enforce every rule in semantic-rules.json; JSON Schema alone is insufficient.",
+    "Prove compliance by replaying parity-corpus.json and http-contract.json."
+  ],
+  "artifacts": [
+    {
+      "file": "error-envelope.schema.json",
+      "sha256": "6bc3d3393807e7d7bb3f005647f94dd3317a2f54438147548ae080965b187736"
+    },
+    {
+      "file": "health-response.schema.json",
+      "sha256": "4f018f1db612e8cccd351d8e655b9f89c3d2649775fb579cb836a66fcab0216d"
+    },
+    {
+      "file": "http-contract.json",
+      "sha256": "7871eff02ba6d91e0766ce38c111c77c99c7c709d0ee91a2b4687517d73eb1b7"
+    },
+    {
+      "file": "parity-corpus.json",
+      "sha256": "9eb6a4c2f04222c8bf1c8733c817f42b0fa6c49b72cd901a805ea0ace2f8d27f"
+    },
+    {
+      "file": "published-content-envelope.input.schema.json",
+      "sha256": "165dbf7f257afdebb89ac064391e372a49a88e94fb8690c3fa1a84cb8d85515d"
+    },
+    {
+      "file": "published-content-envelope.output.schema.json",
+      "sha256": "7f4e358bded6007ee34f9e241bad67b48ea0fcf2fde03aabc346ad49a331670b"
+    },
+    {
+      "file": "semantic-rules.json",
+      "sha256": "953f61ab1e5aa97f9d83aaedda7cd7c674df0da2abf25b41c401cdb7655adf48"
+    },
+    {
+      "file": "server-draft-envelope.input.schema.json",
+      "sha256": "acffe1cd4bb5434b503258deff76cf961c63488f1c1866f8d849dec32647bfa4"
+    },
+    {
+      "file": "site-content-draft.input.schema.json",
+      "sha256": "85b13bee3fcc2fa1ae8c78805f8caff853289491508f9a5e323c1467a5697e93"
+    },
+    {
+      "file": "site-content.input.schema.json",
+      "sha256": "6638c3b20b77c72ac7c5fc4d14ef6e7978d75a3b4fecd737db2c3042166f92c4"
+    },
+    {
+      "file": "site-content.output.schema.json",
+      "sha256": "9c8d7277b246287682d4ce60f88fd0cfae3b84a1604e29218330ae908f8af01d"
+    }
+  ]
+}

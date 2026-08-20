@@ -19,7 +19,37 @@ import {
   siteContentSchema,
 } from "@eszter/contracts";
 
+/**
+ * Encoding-corruption signatures, checked structurally rather than against editorial
+ * copy. Asserting on specific sentences couples this suite to wording that is expected
+ * to change; the invariant that must never change is that the canonical content is
+ * well-formed, NFC-normalised UTF-8 that still carries its French diacritics.
+ */
 const mojibakePattern = /Ã|Â|â(?:€|†|€™|€œ)|�/;
+const htmlEntityPattern = /&(?:[A-Za-z][A-Za-z0-9]{1,31}|#\d{2,6}|#[Xx][0-9A-Fa-f]{2,6});/;
+const literalUnicodeEscapePattern = /\\u[0-9A-Fa-f]{4}/;
+const controlCharPattern = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/;
+const accentedLatinPattern = /[\u00C0-\u024F]/;
+
+/** Minimum diacritic density below which the content has plausibly been ASCII-flattened. */
+const minAccentedOccurrences = 40;
+const minDistinctAccentedCharacters = 5;
+/** Accents no French copy of this size can plausibly lose. */
+const requiredAccentedCharacters = ["é", "è", "à"];
+
+/** Every string in the document, keyed by JSON Pointer, so a failure names its location. */
+function collectStrings(value: unknown, pointer = "", into = new Map<string, string>()) {
+  if (typeof value === "string") {
+    into.set(pointer, value);
+  } else if (Array.isArray(value)) {
+    value.forEach((entry, index) => collectStrings(entry, `${pointer}/${index}`, into));
+  } else if (value !== null && typeof value === "object") {
+    for (const [key, entry] of Object.entries(value)) {
+      collectStrings(entry, `${pointer}/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`, into);
+    }
+  }
+  return into;
+}
 
 function legacyContent() {
   const legacy = { ...defaultSiteContent };
@@ -27,23 +57,44 @@ function legacyContent() {
   return legacy;
 }
 
-test("canonical default content contains no mojibake and keeps corrected French strings", () => {
+test("canonical default content is free of encoding corruption", () => {
+  for (const [pointer, value] of collectStrings(defaultSiteContent)) {
+    assert.equal(mojibakePattern.test(value), false, `mojibake sequence at ${pointer}: ${value}`);
+    assert.equal(value.includes("\uFFFD"), false, `replacement character at ${pointer}: ${value}`);
+    assert.equal(value.isWellFormed(), true, `lone surrogate at ${pointer}: ${value}`);
+    assert.equal(value.normalize("NFC"), value, `string is not NFC-normalised at ${pointer}: ${value}`);
+    assert.equal(controlCharPattern.test(value), false, `control character at ${pointer}: ${value}`);
+    assert.equal(htmlEntityPattern.test(value), false, `HTML entity left unescaped at ${pointer}: ${value}`);
+    assert.equal(
+      literalUnicodeEscapePattern.test(value),
+      false,
+      `literal \\uXXXX escape at ${pointer}: ${value}`,
+    );
+  }
+});
+
+test("canonical default content survives a UTF-8 and JSON round trip unchanged", () => {
   const serialized = JSON.stringify(defaultSiteContent);
 
-  assert.equal(mojibakePattern.test(serialized), false);
-  for (const expected of [
-    "Réalisations",
-    "À propos",
-    "pensé",
-    "révéler",
-    "Découvrir les prestations",
-    "Résultat naturel",
-    "Hygiène et précision",
-    "Lèvres",
-    "Échange et analyse",
-    "Tous droits réservés.",
-  ]) {
-    assert.match(serialized, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  const decoded = new TextDecoder("utf-8", { fatal: true }).decode(new TextEncoder().encode(serialized));
+  assert.equal(decoded, serialized);
+  assert.deepEqual(JSON.parse(serialized), defaultSiteContent);
+});
+
+test("canonical default content keeps its French diacritics", () => {
+  const characters = [...JSON.stringify(defaultSiteContent)];
+  const accented = characters.filter((character) => accentedLatinPattern.test(character));
+
+  assert.ok(
+    accented.length >= minAccentedOccurrences,
+    `expected at least ${minAccentedOccurrences} accented characters, found ${accented.length} — content may have been ASCII-flattened`,
+  );
+  assert.ok(
+    new Set(accented).size >= minDistinctAccentedCharacters,
+    `expected at least ${minDistinctAccentedCharacters} distinct accented characters, found ${new Set(accented).size}`,
+  );
+  for (const required of requiredAccentedCharacters) {
+    assert.ok(accented.includes(required), `expected French copy to still contain "${required}"`);
   }
 });
 

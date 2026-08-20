@@ -1,6 +1,19 @@
 # Code audit and simplification
 
+> **Audit anterieur au paquet 2.1 (ESZ-020/021/022).** Il decrit le frontend tel qu'il
+> etait avec un runtime Node : rendu serveur de `/`, ISR, middleware, `CONTENT_API_URL`.
+> Le frontend est desormais un export statique et PHP sert `/`. Ce document est
+> conserve comme releve date, pas comme description de l'etat actuel.
+> Voir `docs/static-frontend-and-injection.md`.
+
+
 Date: 2026-06-14
+
+> **Historical record.** This pass ran against a repository that still contained the
+> Express service `API/` and its Docker image. Both were deleted in Package 1.2
+> (ESZ-015). The commands and metrics below are preserved as the evidence of what was
+> actually run at the time; the `API/` paths and the `docker build` step no longer
+> exist. See `docs/contract-freeze.md`, Part 5.
 
 ## Baseline
 
@@ -23,14 +36,14 @@ The expected frontend build fallback log for `CONTENT_API_NETWORK_FAILURE` remai
 
 Audited source areas:
 
-- Frontend routes: `/`, `/admin`, `/admin/login`, `/admin/preview`, `/admin/auth/login`, `/admin/auth/logout`.
+- Frontend routes: `/`, `/admin`, `/admin/login`, `/admin/preview`. *(Audit d'origine : `/admin/auth/login` et `/admin/auth/logout` existaient alors ; ces route handlers ont ete supprimes au paquet 2.1, ESZ-020.)*
 - Frontend server flow: `app/page.tsx` loads public content server-side and renders `SitePreview`.
 - Admin flow: protected admin page renders `ContentEditor`; drafts remain browser-local; preview content is sent to protected same-origin iframe by `postMessage`.
 - Authentication flow: middleware/proxy, login/logout handlers, session cookie helpers, password hashing and redirect helpers.
 - Appearance flow: validated contract appearance values are mapped to scoped CSS variables in `SitePreview`.
 - API flow: `index.ts` loads config and starts server; `server.ts` initializes storage before listening; `app.ts` wires middleware and routes; storage reads JSON envelopes and validates persisted content.
 
-Initial metrics for `front/app`, `front/tests`, `API/src` and `API/tests`:
+Initial metrics for `front/app`, `front/tests`, `API/src` and `API/tests` (the two `API/` trees no longer exist):
 
 - Source files: 54
 - Total lines: 5752

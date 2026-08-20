@@ -1,0 +1,246 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "contentSchemaVersion": 1,
+  "description": "Validation semantics that JSON Schema cannot express. An implementation is only contract-compliant when it enforces all of these in addition to the structural schemas.",
+  "rules": [
+    {
+      "id": "envelope.isoTimestampRoundTrip",
+      "source": "content-envelopes.ts:isoTimestampSchema",
+      "lostBecause": "A `.refine` comparing Date.parse round-trip output; JSON Schema `format: date-time` is both weaker and annotation-only.",
+      "description": "Timestamps must be exactly the ISO 8601 form produced by Date#toISOString (UTC, milliseconds, trailing Z).",
+      "parityCaseIds": [
+        "envelope.isoTimestampRoundTrip.valid",
+        "envelope.isoTimestampRoundTrip.offsetRejected",
+        "envelope.isoTimestampRoundTrip.secondsPrecisionRejected",
+        "envelope.isoTimestampRoundTrip.nonDateRejected"
+      ]
+    },
+    {
+      "id": "appearance.contrastTextOnBackground",
+      "source": "appearance.ts:siteAppearanceSchema.superRefine",
+      "lostBecause": "Cross-field WCAG computation; JSON Schema has no arithmetic.",
+      "description": "palette.text must reach a 4.5:1 contrast ratio against palette.background.",
+      "parityCaseIds": [
+        "appearance.contrastTextOnBackground.invalid",
+        "appearance.contrastTextOnBackground.valid"
+      ]
+    },
+    {
+      "id": "appearance.contrastTextOnSurface",
+      "source": "appearance.ts:siteAppearanceSchema.superRefine",
+      "lostBecause": "Cross-field WCAG computation; JSON Schema has no arithmetic.",
+      "description": "palette.text must reach a 4.5:1 contrast ratio against palette.surface.",
+      "parityCaseIds": [
+        "appearance.contrastTextOnSurface.invalid"
+      ]
+    },
+    {
+      "id": "appearance.contrastMutedTextOnBackground",
+      "source": "appearance.ts:siteAppearanceSchema.superRefine",
+      "lostBecause": "Cross-field WCAG computation; JSON Schema has no arithmetic.",
+      "description": "palette.mutedText must reach a 3:1 contrast ratio against palette.background.",
+      "parityCaseIds": [
+        "appearance.contrastMutedTextOnBackground.invalid",
+        "appearance.contrastMutedTextOnBackground.valid"
+      ]
+    },
+    {
+      "id": "appearance.hexUppercaseNormalization",
+      "source": "appearance.ts:hexColorSchema.transform",
+      "lostBecause": "A `.transform`; JSON Schema describes accepted values, never rewrites them.",
+      "description": "Lowercase hex input is accepted and normalized to uppercase #RRGGBB on output.",
+      "parityCaseIds": [
+        "appearance.hexUppercaseNormalization.valid"
+      ]
+    },
+    {
+      "id": "appearance.defaultInjectionForLegacyContent",
+      "source": "site-content.ts:siteContentSchema.appearance.optional().default()",
+      "lostBecause": "JSON Schema `default` is an annotation, not an applicator; validators do not inject it.",
+      "description": "Content without `appearance` stays valid and is normalized in memory with defaultSiteAppearance.",
+      "parityCaseIds": [
+        "appearance.defaultInjectionForLegacyContent.valid"
+      ]
+    },
+    {
+      "id": "navigation.linkIdOrder",
+      "source": "site-content.ts:navigationContentSchema.links.superRefine",
+      "lostBecause": "Positional identity across an array; not expressible generically.",
+      "description": "navigation.links ids must equal navigationLinkIds, in order.",
+      "parityCaseIds": [
+        "navigation.linkIdOrder.invalid"
+      ]
+    },
+    {
+      "id": "reassurance.itemIdOrder",
+      "source": "site-content.ts:reassuranceContentSchema.items.superRefine",
+      "lostBecause": "Positional identity across an array.",
+      "description": "reassurance.items ids must equal reassuranceItemIds, in order.",
+      "parityCaseIds": [
+        "reassurance.itemIdOrder.invalid"
+      ]
+    },
+    {
+      "id": "services.itemIdOrder",
+      "source": "site-content.ts:servicesContentSchema.items.superRefine",
+      "lostBecause": "Positional identity across an array.",
+      "description": "services.items ids must equal serviceItemIds, in order. Sibling checks are keyed on the expected id for the position, not on the submitted id.",
+      "parityCaseIds": [
+        "services.itemIdOrder.invalid"
+      ]
+    },
+    {
+      "id": "services.visualKindMatchesId",
+      "source": "site-content.ts:servicesContentSchema.items.superRefine",
+      "lostBecause": "Cross-field equality inside an array element.",
+      "description": "Each service item's visualKind must equal its id.",
+      "parityCaseIds": [
+        "services.visualKindMatchesId.invalid"
+      ]
+    },
+    {
+      "id": "services.visualIdMatchesId",
+      "source": "site-content.ts:servicesContentSchema.items.superRefine",
+      "lostBecause": "Lookup against an out-of-band id map.",
+      "description": "Each service item's visual.id must be the placeholder media id bound to its item id.",
+      "parityCaseIds": [
+        "services.visualIdMatchesId.invalid"
+      ]
+    },
+    {
+      "id": "process.stepIdOrder",
+      "source": "site-content.ts:processContentSchema.steps.superRefine",
+      "lostBecause": "Positional identity across an array.",
+      "description": "process.steps ids must equal processStepIds, in order.",
+      "parityCaseIds": [
+        "process.stepIdOrder.invalid"
+      ]
+    },
+    {
+      "id": "process.stepNumberOrder",
+      "source": "site-content.ts:processContentSchema.steps.superRefine",
+      "lostBecause": "Positional identity across an array.",
+      "description": "process.steps numbers must equal processStepNumbers, in order.",
+      "parityCaseIds": [
+        "process.stepNumberOrder.invalid"
+      ]
+    },
+    {
+      "id": "gallery.itemIdOrder",
+      "source": "site-content.ts:galleryContentSchema.items.superRefine",
+      "lostBecause": "Positional identity across an array.",
+      "description": "gallery.items ids must equal galleryItemIds, in order. Sibling checks are keyed on the expected id for the position, not on the submitted id.",
+      "parityCaseIds": [
+        "gallery.itemIdOrder.invalid"
+      ]
+    },
+    {
+      "id": "gallery.visualKindMatchesId",
+      "source": "site-content.ts:galleryContentSchema.items.superRefine",
+      "lostBecause": "Lookup against an out-of-band id map.",
+      "description": "Each gallery item's visualKind must be the kind bound to its item id.",
+      "parityCaseIds": [
+        "gallery.visualKindMatchesId.invalid"
+      ]
+    },
+    {
+      "id": "gallery.visualIdMatchesId",
+      "source": "site-content.ts:galleryContentSchema.items.superRefine",
+      "lostBecause": "Lookup against an out-of-band id map.",
+      "description": "Each gallery item's visual.id must be the placeholder media id bound to its item id.",
+      "parityCaseIds": [
+        "gallery.visualIdMatchesId.invalid"
+      ]
+    },
+    {
+      "id": "gallery.featuredOnlyFirstItem",
+      "source": "site-content.ts:galleryContentSchema.items.superRefine",
+      "lostBecause": "Index-dependent presence requirement.",
+      "description": "Only the first gallery item carries `featured: true`; the others must omit the field entirely.",
+      "parityCaseIds": [
+        "gallery.featuredOnlyFirstItem.firstMissing",
+        "gallery.featuredOnlyFirstItem.extraFeatured"
+      ]
+    },
+    {
+      "id": "gallery.instagramCtaFixedId",
+      "source": "site-content.ts:galleryContentSchema.instagramCta.superRefine",
+      "lostBecause": "`.superRefine` on a reused link object schema.",
+      "description": "gallery.instagramCta.id is the fixed id `instagram-more`.",
+      "parityCaseIds": [
+        "gallery.instagramCtaFixedId.invalid"
+      ]
+    },
+    {
+      "id": "hero.fixedLinkAndMediaIds",
+      "source": "site-content.ts:heroContentSchema.superRefine",
+      "lostBecause": "`.superRefine` on an object reused elsewhere; the base object schema stays generic.",
+      "description": "hero.primaryCta.id, hero.secondaryCta.id and hero.visual.id are fixed technical ids.",
+      "parityCaseIds": [
+        "hero.fixedLinkAndMediaIds.primaryCta",
+        "hero.fixedLinkAndMediaIds.visual"
+      ]
+    },
+    {
+      "id": "about.portraitFixedId",
+      "source": "site-content.ts:aboutContentSchema.portrait.superRefine",
+      "lostBecause": "`.superRefine` on a reused media object schema.",
+      "description": "about.portrait.id is a fixed technical id.",
+      "parityCaseIds": [
+        "about.portraitFixedId.invalid"
+      ]
+    },
+    {
+      "id": "contact.fixedLinkIds",
+      "source": "site-content.ts:contactContentSchema.superRefine",
+      "lostBecause": "`.superRefine` on reused link object schemas.",
+      "description": "contact.instagramCta.id and contact.emailCta.id are fixed ids.",
+      "parityCaseIds": [
+        "contact.fixedLinkIds.email"
+      ]
+    },
+    {
+      "id": "footer.linkIdOrder",
+      "source": "site-content.ts:footerContentSchema.links.superRefine",
+      "lostBecause": "Positional identity across a heterogeneous union array.",
+      "description": "footer.links ids must be exactly ['instagram', 'contact'], in order.",
+      "parityCaseIds": [
+        "footer.linkIdOrder.invalid"
+      ]
+    },
+    {
+      "id": "links.mailtoHref",
+      "source": "site-content.ts:mailtoHrefSchema",
+      "lostBecause": "A `.refine` combining a prefix check with e-mail parsing; JSON Schema `format` is annotation-only.",
+      "description": "mailto links must start with `mailto:` and carry a parseable e-mail address.",
+      "parityCaseIds": [
+        "links.mailtoHref.missingScheme",
+        "links.mailtoHref.invalidAddress",
+        "links.mailtoHref.valid"
+      ]
+    },
+    {
+      "id": "links.instagramHttpsHost",
+      "source": "site-content.ts:instagramUrlSchema",
+      "lostBecause": "URL parsing plus protocol and hostname restriction.",
+      "description": "Instagram links must be HTTPS URLs on instagram.com or one of its subdomains.",
+      "parityCaseIds": [
+        "links.instagramHttpsHost.httpRejected",
+        "links.instagramHttpsHost.foreignHostRejected",
+        "links.instagramHttpsHost.subdomainValid"
+      ]
+    },
+    {
+      "id": "media.sourceProtocol",
+      "source": "site-content.ts:mediaSourceSchema",
+      "lostBecause": "The URL branch restricts protocol to http/https after parsing; `format: uri` does not.",
+      "description": "Media sources are a rooted public path, an http(s) URL, or null. Other protocols are rejected.",
+      "parityCaseIds": [
+        "media.sourceProtocol.javascriptRejected",
+        "media.sourceProtocol.dataRejected",
+        "media.sourceProtocol.publicPathValid",
+        "media.sourceProtocol.protocolRelativeRejected"
+      ]
+    }
+  ]
+}

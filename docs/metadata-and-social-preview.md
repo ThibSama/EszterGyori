@@ -16,7 +16,7 @@ La page publique canonique est:
 https://eszter-gyori.vercel.app/
 ```
 
-Les metadonnees ne doivent pas utiliser de domaine de preview Vercel, de `localhost` ou de domaine API d'exemple.
+Les metadonnees ne doivent pas utiliser de domaine de preview Vercel, de `localhost` ou de domaine API d'exemple. *(L'URL de preview Vercel ci-dessus est l'etat au moment de cette passe ; la cible de deploiement est desormais Hetzner — voir `docs/hetzner-target-architecture.md`.)*
 
 ## Strategie de titres
 

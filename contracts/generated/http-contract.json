@@ -1,0 +1,857 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "httpContractVersion": 1,
+  "contentSchemaVersion": 1,
+  "description": "Frozen wire behaviour of the public read-only surface. Any change here is a breaking change.",
+  "requestId": {
+    "header": "x-request-id",
+    "trustedInboundPattern": "^[A-Za-z0-9._:-]{1,80}$",
+    "generatedPrefix": "req_",
+    "note": "Untrusted inbound values are replaced, never echoed. The value is always sent back on the response and repeated in error.requestId."
+  },
+  "implementations": [
+    "php"
+  ],
+  "requestBodyLimit": "64kb",
+  "requestBodyLimitBytes": 65536,
+  "overLimitBody": {
+    "status": 400,
+    "errorCode": "INVALID_JSON",
+    "scope": "any request body, regardless of Content-Type",
+    "enforcedBefore": "routing"
+  },
+  "bootstrapFailure": {
+    "status": 500,
+    "appliesTo": "any path, including /api/health",
+    "errorCodes": {
+      "INVALID_CONFIGURATION": "Unusable configuration, or contract artifacts that are missing or fail their manifest digest.",
+      "STORAGE_FAILURE": "Content storage could not be initialised.",
+      "INTERNAL_ERROR": "Any other failure before the request could be routed."
+    },
+    "requirements": [
+      "The body is the frozen error envelope, never an HTML error page or a stack trace.",
+      "X-Request-Id is present and repeated in error.requestId, under the same trusted-inbound rules as a normal response.",
+      "The body leaks no filesystem path, storage file name or schema internal.",
+      "The response carries no published-<revision> ETag."
+    ]
+  },
+  "publicPage": {
+    "path": "/",
+    "contentType": "text/html; charset=utf-8",
+    "bootstrap": {
+      "contentElementId": "__ESZTER_CONTENT__",
+      "contentElementTag": "script",
+      "contentElementType": "application/json",
+      "appearanceElementId": "__ESZTER_APPEARANCE__",
+      "appearanceElementTag": "style",
+      "appearanceSelector": ":root",
+      "requirements": [
+        "The injected JSON is the published content envelope, already validated against published-content-envelope.output.schema.json.",
+        "Encoding must neutralise `<`, `>` and `&` inside the payload, so that no editorial string can terminate the script element or introduce markup. `'` and `\"` are additionally escaped by an encoder that can do so without touching JSON's structural delimiters; escaping them is not what makes the payload safe, and the result must remain parseable JSON either way.",
+        "The appearance block emits only CSS custom properties whose values passed hexColorSchema; nothing else from the document reaches CSS.",
+        "When the published document cannot be read or validated, the exported file is served unchanged so the page renders the baked-in canonical defaults. It must never render an error page.",
+        "When either element is absent from the exported file, the file is served unchanged and the failure is logged; a partially injected page is never sent."
+      ],
+      "appearanceCustomProperties": [
+        {
+          "name": "--site-background",
+          "source": "palette",
+          "key": "background"
+        },
+        {
+          "name": "--site-surface",
+          "source": "palette",
+          "key": "surface"
+        },
+        {
+          "name": "--site-text",
+          "source": "palette",
+          "key": "text"
+        },
+        {
+          "name": "--site-muted-text",
+          "source": "palette",
+          "key": "mutedText"
+        },
+        {
+          "name": "--site-primary",
+          "source": "palette",
+          "key": "primary"
+        },
+        {
+          "name": "--site-primary-contrast",
+          "source": "readableForeground",
+          "key": "primary"
+        },
+        {
+          "name": "--site-secondary",
+          "source": "palette",
+          "key": "secondary"
+        },
+        {
+          "name": "--site-warm-accent",
+          "source": "palette",
+          "key": "warmAccent"
+        },
+        {
+          "name": "--site-tint-navigation",
+          "source": "sectionTint",
+          "key": "navigation"
+        },
+        {
+          "name": "--site-tint-hero",
+          "source": "sectionTint",
+          "key": "hero"
+        },
+        {
+          "name": "--site-tint-reassurance",
+          "source": "sectionTint",
+          "key": "reassurance"
+        },
+        {
+          "name": "--site-tint-services",
+          "source": "sectionTint",
+          "key": "services"
+        },
+        {
+          "name": "--site-tint-process",
+          "source": "sectionTint",
+          "key": "process"
+        },
+        {
+          "name": "--site-tint-gallery",
+          "source": "sectionTint",
+          "key": "gallery"
+        },
+        {
+          "name": "--site-tint-about",
+          "source": "sectionTint",
+          "key": "about"
+        },
+        {
+          "name": "--site-tint-contact",
+          "source": "sectionTint",
+          "key": "contact"
+        },
+        {
+          "name": "--site-tint-footer",
+          "source": "sectionTint",
+          "key": "footer"
+        }
+      ]
+    },
+    "fallback": {
+      "status": 200,
+      "body": "the exported HTML with its baked-in canonical defaults",
+      "appliesTo": [
+        "storage read failure",
+        "storage validation failure",
+        "missing bootstrap elements"
+      ],
+      "requirements": [
+        "No `published-<revision>` ETag is sent.",
+        "Cache-Control is unchanged, so the next request revalidates rather than caching the fallback.",
+        "The failure is logged with its detail; the response body leaks nothing about it."
+      ]
+    }
+  },
+  "caching": {
+    "etagPattern": "^\"published-(0|[1-9][0-9]*)\"$",
+    "etagInput": "revision",
+    "cacheControl": "public, max-age=0, must-revalidate",
+    "conditionalRequests": "If-None-Match is compared after trimming comma-separated members; `*` always matches. A match returns 304 with ETag and Cache-Control and an empty body.",
+    "errorResponses": "Error responses must never carry a `published-<revision>` ETag. A framework-generated validator on an error body (Express emits a weak ETag) is tolerated and need not be reproduced."
+  },
+  "errorCodes": [
+    "NOT_FOUND",
+    "METHOD_NOT_ALLOWED",
+    "INVALID_JSON",
+    "INVALID_CONFIGURATION",
+    "STORAGE_FAILURE",
+    "INTERNAL_ERROR"
+  ],
+  "errorMessages": {
+    "NOT_FOUND": "La ressource demandée est introuvable.",
+    "METHOD_NOT_ALLOWED": "Méthode non autorisée pour cette ressource.",
+    "INVALID_JSON": "Le corps JSON est invalide.",
+    "INVALID_CONFIGURATION": "La configuration du serveur est invalide.",
+    "STORAGE_FAILURE": "Le contenu publié est momentanément indisponible.",
+    "INTERNAL_ERROR": "Une erreur interne est survenue."
+  },
+  "endpoints": [
+    {
+      "path": "/api/health",
+      "methods": [
+        "GET"
+      ],
+      "statuses": [
+        200,
+        400,
+        405
+      ],
+      "successBodySchema": "health-response.schema.json"
+    },
+    {
+      "path": "/api/content",
+      "methods": [
+        "GET"
+      ],
+      "statuses": [
+        200,
+        304,
+        400,
+        405,
+        500
+      ],
+      "successBodySchema": "published-content-envelope.output.schema.json"
+    },
+    {
+      "path": "/",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "statuses": [
+        200,
+        304,
+        400,
+        405
+      ],
+      "successBodySchema": null,
+      "successContentType": "text/html; charset=utf-8"
+    }
+  ],
+  "unknownRouteStatus": 404,
+  "errorBodySchema": "error-envelope.schema.json",
+  "cases": [
+    {
+      "id": "health.get.ok",
+      "endpoint": "/api/health",
+      "description": "GET /api/health returns the frozen health payload.",
+      "request": {
+        "method": "GET",
+        "path": "/api/health"
+      },
+      "expect": {
+        "status": 200,
+        "body": "healthResponse",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        },
+        "headerPatterns": {
+          "x-request-id": "^req_"
+        },
+        "requestId": "generated"
+      }
+    },
+    {
+      "id": "health.get.echoesSafeRequestId",
+      "endpoint": "/api/health",
+      "description": "A safe inbound X-Request-Id is preserved verbatim.",
+      "request": {
+        "method": "GET",
+        "path": "/api/health",
+        "headers": {
+          "x-request-id": "req_contract-safe.id:1"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": "healthResponse",
+        "headers": {
+          "x-request-id": "req_contract-safe.id:1"
+        },
+        "requestId": "echoesRequest"
+      }
+    },
+    {
+      "id": "health.get.replacesUnsafeRequestId",
+      "endpoint": "/api/health",
+      "description": "An unsafe inbound X-Request-Id is replaced by a generated one.",
+      "request": {
+        "method": "GET",
+        "path": "/api/health",
+        "headers": {
+          "x-request-id": "../unsafe request id"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "body": "healthResponse",
+        "headerPatterns": {
+          "x-request-id": "^req_"
+        },
+        "requestId": "generated"
+      }
+    },
+    {
+      "id": "health.post.methodNotAllowed",
+      "endpoint": "/api/health",
+      "description": "Non-GET methods on /api/health return 405 with Allow: GET.",
+      "request": {
+        "method": "POST",
+        "path": "/api/health"
+      },
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "GET",
+          "content-type": "application/json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "id": "health.delete.methodNotAllowed",
+      "endpoint": "/api/health",
+      "description": "DELETE on /api/health returns 405 with Allow: GET.",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/health"
+      },
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "GET"
+        }
+      }
+    },
+    {
+      "id": "health.post.invalidJson",
+      "endpoint": "/api/health",
+      "description": "A malformed JSON body is rejected with 400 before method handling.",
+      "request": {
+        "method": "POST",
+        "path": "/api/health",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{invalid-json"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "INVALID_JSON"
+      }
+    },
+    {
+      "id": "content.get.ok",
+      "endpoint": "/api/content",
+      "description": "GET /api/content returns the published envelope with ETag and Cache-Control.",
+      "request": {
+        "method": "GET",
+        "path": "/api/content"
+      },
+      "publishedRevision": 12,
+      "storage": "ok",
+      "expect": {
+        "status": 200,
+        "body": "publishedContentEnvelope",
+        "headers": {
+          "etag": "\"published-12\"",
+          "cache-control": "public, max-age=0, must-revalidate",
+          "content-type": "application/json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "id": "content.get.revisionZeroEtag",
+      "endpoint": "/api/content",
+      "description": "Revision 0 produces a stable ETag rather than an empty one.",
+      "request": {
+        "method": "GET",
+        "path": "/api/content"
+      },
+      "publishedRevision": 0,
+      "storage": "ok",
+      "expect": {
+        "status": 200,
+        "body": "publishedContentEnvelope",
+        "headers": {
+          "etag": "\"published-0\"",
+          "cache-control": "public, max-age=0, must-revalidate"
+        }
+      }
+    },
+    {
+      "id": "content.get.ifNoneMatch.hit",
+      "endpoint": "/api/content",
+      "description": "A matching If-None-Match yields an empty 304 that keeps caching headers.",
+      "request": {
+        "method": "GET",
+        "path": "/api/content",
+        "headers": {
+          "if-none-match": "\"published-8\""
+        }
+      },
+      "publishedRevision": 8,
+      "storage": "ok",
+      "expect": {
+        "status": 304,
+        "body": "empty",
+        "headers": {
+          "etag": "\"published-8\"",
+          "cache-control": "public, max-age=0, must-revalidate"
+        }
+      }
+    },
+    {
+      "id": "content.get.ifNoneMatch.stale",
+      "endpoint": "/api/content",
+      "description": "A stale If-None-Match revalidates with a full 200.",
+      "request": {
+        "method": "GET",
+        "path": "/api/content",
+        "headers": {
+          "if-none-match": "\"published-7\""
+        }
+      },
+      "publishedRevision": 8,
+      "storage": "ok",
+      "expect": {
+        "status": 200,
+        "body": "publishedContentEnvelope",
+        "headers": {
+          "etag": "\"published-8\""
+        }
+      }
+    },
+    {
+      "id": "content.get.ifNoneMatch.list",
+      "endpoint": "/api/content",
+      "description": "A comma-separated If-None-Match list matches on any member.",
+      "request": {
+        "method": "GET",
+        "path": "/api/content",
+        "headers": {
+          "if-none-match": "\"other\", \"published-8\""
+        }
+      },
+      "publishedRevision": 8,
+      "storage": "ok",
+      "expect": {
+        "status": 304,
+        "body": "empty"
+      }
+    },
+    {
+      "id": "content.get.ifNoneMatch.wildcard",
+      "endpoint": "/api/content",
+      "description": "If-None-Match: * always yields 304.",
+      "request": {
+        "method": "GET",
+        "path": "/api/content",
+        "headers": {
+          "if-none-match": "*"
+        }
+      },
+      "publishedRevision": 8,
+      "storage": "ok",
+      "expect": {
+        "status": 304,
+        "body": "empty"
+      }
+    },
+    {
+      "id": "content.get.ifNoneMatch.malformed",
+      "endpoint": "/api/content",
+      "description": "A malformed If-None-Match is ignored and yields 200.",
+      "request": {
+        "method": "GET",
+        "path": "/api/content",
+        "headers": {
+          "if-none-match": "not an etag"
+        }
+      },
+      "publishedRevision": 8,
+      "storage": "ok",
+      "expect": {
+        "status": 200,
+        "body": "publishedContentEnvelope"
+      }
+    },
+    {
+      "id": "content.get.storageFailure",
+      "endpoint": "/api/content",
+      "description": "A storage failure returns an opaque 500 that leaks no path or schema detail.",
+      "request": {
+        "method": "GET",
+        "path": "/api/content"
+      },
+      "storage": "failure",
+      "expect": {
+        "status": 500,
+        "body": "errorEnvelope",
+        "errorCode": "STORAGE_FAILURE",
+        "forbiddenHeaderPatterns": {
+          "etag": "^\"published-(0|[1-9][0-9]*)\"$"
+        }
+      }
+    },
+    {
+      "id": "content.get.malformedStoredEnvelope",
+      "endpoint": "/api/content",
+      "description": "A stored envelope failing schema validation is reported as the same opaque 500.",
+      "request": {
+        "method": "GET",
+        "path": "/api/content"
+      },
+      "storage": "malformed",
+      "expect": {
+        "status": 500,
+        "body": "errorEnvelope",
+        "errorCode": "STORAGE_FAILURE",
+        "forbiddenHeaderPatterns": {
+          "etag": "^\"published-(0|[1-9][0-9]*)\"$"
+        }
+      }
+    },
+    {
+      "id": "content.post.methodNotAllowed",
+      "endpoint": "/api/content",
+      "description": "Non-GET methods on /api/content return 405 with Allow: GET.",
+      "request": {
+        "method": "POST",
+        "path": "/api/content"
+      },
+      "storage": "ok",
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "GET"
+        }
+      }
+    },
+    {
+      "id": "content.put.methodNotAllowed",
+      "endpoint": "/api/content",
+      "description": "PUT on /api/content returns 405 rather than 404.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/content"
+      },
+      "storage": "ok",
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "GET"
+        }
+      }
+    },
+    {
+      "id": "unknown.get.notFound",
+      "endpoint": "unknown",
+      "description": "Unknown routes return a structured JSON 404.",
+      "request": {
+        "method": "GET",
+        "path": "/api/unknown"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "id": "page.get.ok",
+      "endpoint": "/",
+      "description": "GET / serves the exported HTML with the published content injected, under the same ETag and Cache-Control as GET /api/content.",
+      "request": {
+        "method": "GET",
+        "path": "/"
+      },
+      "publishedRevision": 12,
+      "storage": "ok",
+      "expect": {
+        "status": 200,
+        "body": "publicPageHtml",
+        "pageContent": "published",
+        "headers": {
+          "etag": "\"published-12\"",
+          "cache-control": "public, max-age=0, must-revalidate",
+          "content-type": "text/html; charset=utf-8"
+        }
+      }
+    },
+    {
+      "id": "page.get.ifNoneMatch.hit",
+      "endpoint": "/",
+      "description": "A matching If-None-Match on / yields an empty 304, exactly as on /api/content.",
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {
+          "if-none-match": "\"published-8\""
+        }
+      },
+      "publishedRevision": 8,
+      "storage": "ok",
+      "expect": {
+        "status": 304,
+        "body": "empty",
+        "headers": {
+          "etag": "\"published-8\"",
+          "cache-control": "public, max-age=0, must-revalidate"
+        }
+      }
+    },
+    {
+      "id": "page.get.ifNoneMatch.stale",
+      "endpoint": "/",
+      "description": "A stale If-None-Match on / revalidates with a full 200.",
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {
+          "if-none-match": "\"published-7\""
+        }
+      },
+      "publishedRevision": 8,
+      "storage": "ok",
+      "expect": {
+        "status": 200,
+        "body": "publicPageHtml",
+        "pageContent": "published",
+        "headers": {
+          "etag": "\"published-8\""
+        }
+      }
+    },
+    {
+      "id": "page.head.ok",
+      "endpoint": "/",
+      "description": "HEAD / answers the GET headers with no body. The page is a document a crawler or monitor will probe with HEAD, so unlike the JSON surface it does not 405.",
+      "request": {
+        "method": "HEAD",
+        "path": "/"
+      },
+      "publishedRevision": 12,
+      "storage": "ok",
+      "expect": {
+        "status": 200,
+        "body": "empty",
+        "headers": {
+          "etag": "\"published-12\"",
+          "cache-control": "public, max-age=0, must-revalidate",
+          "content-type": "text/html; charset=utf-8"
+        }
+      }
+    },
+    {
+      "id": "page.get.storageFailure",
+      "endpoint": "/",
+      "description": "A storage failure serves the exported defaults with 200 and no published ETag, never an error page.",
+      "request": {
+        "method": "GET",
+        "path": "/"
+      },
+      "storage": "failure",
+      "expect": {
+        "status": 200,
+        "body": "publicPageHtml",
+        "pageContent": "defaults",
+        "headers": {
+          "content-type": "text/html; charset=utf-8"
+        },
+        "forbiddenHeaderPatterns": {
+          "etag": "^\"published-(0|[1-9][0-9]*)\"$"
+        }
+      }
+    },
+    {
+      "id": "page.get.malformedStoredEnvelope",
+      "endpoint": "/",
+      "description": "A stored envelope failing validation degrades the page the same way a read failure does.",
+      "request": {
+        "method": "GET",
+        "path": "/"
+      },
+      "storage": "malformed",
+      "expect": {
+        "status": 200,
+        "body": "publicPageHtml",
+        "pageContent": "defaults",
+        "forbiddenHeaderPatterns": {
+          "etag": "^\"published-(0|[1-9][0-9]*)\"$"
+        }
+      }
+    },
+    {
+      "id": "page.post.methodNotAllowed",
+      "endpoint": "/",
+      "description": "Writing methods on / return 405 with Allow: GET, HEAD.",
+      "request": {
+        "method": "POST",
+        "path": "/"
+      },
+      "storage": "ok",
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "GET, HEAD",
+          "content-type": "application/json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "id": "unknown.get.unimplementedRoute.0",
+      "endpoint": "unknown",
+      "description": "/api/admin/content/draft is not implemented and must stay a 404.",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/content/draft"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND"
+      }
+    },
+    {
+      "id": "unknown.get.unimplementedRoute.1",
+      "endpoint": "unknown",
+      "description": "/api/admin/content/publish is not implemented and must stay a 404.",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/content/publish"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND"
+      }
+    },
+    {
+      "id": "unknown.get.unimplementedRoute.2",
+      "endpoint": "unknown",
+      "description": "/api/admin/content/reset is not implemented and must stay a 404.",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/content/reset"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND"
+      }
+    },
+    {
+      "id": "unknown.get.unimplementedRoute.3",
+      "endpoint": "unknown",
+      "description": "/api/admin/media is not implemented and must stay a 404.",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/media"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND"
+      }
+    },
+    {
+      "id": "unknown.get.unimplementedRoute.4",
+      "endpoint": "unknown",
+      "description": "/api/auth/login is not implemented and must stay a 404.",
+      "request": {
+        "method": "GET",
+        "path": "/api/auth/login"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND"
+      }
+    },
+    {
+      "id": "unknown.get.unimplementedRoute.5",
+      "endpoint": "unknown",
+      "description": "/api/auth/logout is not implemented and must stay a 404.",
+      "request": {
+        "method": "GET",
+        "path": "/api/auth/logout"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND"
+      }
+    },
+    {
+      "id": "unknown.get.unimplementedRoute.6",
+      "endpoint": "unknown",
+      "description": "/api/auth/session is not implemented and must stay a 404.",
+      "request": {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND"
+      }
+    }
+  ],
+  "invariants": [
+    {
+      "id": "requestId.presentOnEveryResponse",
+      "description": "Every response carries X-Request-Id, and error bodies repeat the same value in error.requestId."
+    },
+    {
+      "id": "etag.stableAcrossRequests",
+      "description": "Two reads of an unchanged revision return byte-identical ETag values."
+    },
+    {
+      "id": "etag.derivedOnlyFromRevision",
+      "description": "The ETag depends on revision alone; content changes without a revision bump are not reflected."
+    },
+    {
+      "id": "content.legacyAppearanceNormalized",
+      "description": "A stored envelope without `appearance` is served with defaultSiteAppearance applied and an unchanged ETag."
+    },
+    {
+      "id": "errors.leakNothing",
+      "description": "Error bodies never contain filesystem paths, storage file names or schema internals."
+    },
+    {
+      "id": "health.doesNotDependOnContentStorage",
+      "description": "GET /api/health answers 200 without reading, locking or validating content storage, so unreadable content cannot make the service look down."
+    },
+    {
+      "id": "body.overLimitRejected",
+      "description": "A request body over REQUEST_BODY_LIMIT is rejected with 400 INVALID_JSON before routing, whatever the path, method or Content-Type."
+    },
+    {
+      "id": "page.etagMatchesContentEndpoint",
+      "description": "For one published revision, GET / and GET /api/content mint the same ETag and send the same Cache-Control, so a publish invalidates both together."
+    },
+    {
+      "id": "page.degradesToBakedDefaults",
+      "description": "Unusable published content serves the exported file unchanged with 200 and no published ETag. The public page never renders an error."
+    },
+    {
+      "id": "page.injectionCannotBreakOutOfTheScript",
+      "description": "Editorial copy containing `</script>`, `<!--`, quotes or ampersands is encoded so that it cannot terminate the bootstrap element or introduce markup."
+    },
+    {
+      "id": "page.appearanceIsColoursOnly",
+      "description": "The injected appearance block contains only CSS custom properties whose values are validated hex colours; no other editorial value reaches CSS."
+    },
+    {
+      "id": "bootstrap.failureUsesFrozenEnvelope",
+      "description": "A failure before the request can be routed answers 500 with the frozen error envelope and a request id, never an HTML error page or a stack trace. Only observable on a per-request runtime."
+    }
+  ]
+}

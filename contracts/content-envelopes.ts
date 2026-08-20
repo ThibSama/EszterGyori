@@ -3,7 +3,7 @@ import { SITE_CONTENT_SCHEMA_VERSION, siteContentSchema } from "./site-content.j
 
 export const CONTENT_ENVELOPE_SCHEMA_VERSION = SITE_CONTENT_SCHEMA_VERSION;
 
-const isoTimestampSchema = z
+export const isoTimestampSchema = z
   .string()
   .refine((value) => {
     const timestamp = Date.parse(value);

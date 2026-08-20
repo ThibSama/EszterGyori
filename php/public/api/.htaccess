@@ -1,0 +1,18 @@
+# Route every /api/* request to the single front controller.
+#
+# Hardening that belongs to the document root as a whole (denying *.json, *.md,
+# directory indexing, PHP execution under media/, HTTPS + security headers) lives
+# in the document-root .htaccess and is ESZ-014's scope, not this file's.
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ index.php [QSA,L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always unset X-Powered-By
+    Header always set X-Content-Type-Options "nosniff"
+</IfModule>
+
+Options -Indexes
