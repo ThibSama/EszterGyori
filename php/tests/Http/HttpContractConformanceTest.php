@@ -12,6 +12,8 @@ use Eszter\Http\Response;
 use Eszter\Kernel;
 use Eszter\Storage\PublishedContentReader;
 use Eszter\Support\FrozenClock;
+use Eszter\Tests\Auth\InMemoryAccountDirectory;
+use Eszter\Tests\Auth\InMemorySessionStore;
 use Eszter\Tests\TestEnvironment;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -55,9 +57,24 @@ final class HttpContractConformanceTest extends TestCase
 
     private string $root;
 
+    /**
+     * The doubles the current case is running against, for the auth assertions.
+     *
+     * Assigned by {@see bootFor()} — or by {@see boot()} for the tests that call
+     * it directly — before anything reads them, and reset in {@see setUp()} so one
+     * case's seeded sessions cannot be visible to the next.
+     */
+    private InMemorySessionStore $sessionStore;
+    private InMemoryAccountDirectory $accounts;
+
+    /** The session id the request was made with, if the case established one. */
+    private ?string $seededSessionId = null;
+
     protected function setUp(): void
     {
         $this->root = TestEnvironment::makeTempDirectory('eszter-conformance');
+        unset($this->sessionStore, $this->accounts);
+        $this->seededSessionId = null;
     }
 
     protected function tearDown(): void
@@ -129,16 +146,22 @@ final class HttpContractConformanceTest extends TestCase
         /** @var array<string, mixed> $expected */
         $expected = $case['expect'];
 
-        $response = $this->bootFor($case)->handle(new Request(
+        $kernel = $this->bootFor($case);
+
+        $response = $kernel->handle(new Request(
             $request['method'],
             $request['path'],
-            $request['headers'] ?? [],
+            // The auth headers are merged *under* the case's own, so a case that
+            // writes an explicit `cookie` — `auth.session.get.unknownSessionIdIsAnonymous`
+            // does — keeps it.
+            ($request['headers'] ?? []) + $this->authHeaders($case),
             $request['rawBody'] ?? '',
         ));
 
         self::assertSame($expected['status'], $response->status, 'status');
 
         $this->assertHeaders($expected, $response);
+        $this->assertSessionCookie($expected, $response);
         $requestId = $this->assertRequestId($case, $expected, $response);
         $this->assertBody($case, $expected, $response, $requestId);
     }
@@ -481,10 +504,161 @@ final class HttpContractConformanceTest extends TestCase
         /** @var mixed $revision */
         $revision = $case['publishedRevision'] ?? null;
 
-        return $this->boot($this->reader(
-            \is_string($storage) ? $storage : 'ok',
-            \is_int($revision) ? $revision : 0,
-        ));
+        /** @var mixed $auth */
+        $auth = $case['auth'] ?? null;
+        /** @var array<string, mixed> $auth */
+        $auth = \is_array($auth) ? $auth : [];
+
+        // `auth.account` decides what the directory holds. `missing` is an empty
+        // directory rather than a directory with a different address in it,
+        // because "no such account" is the state the case names.
+        $this->accounts = match ($auth['account'] ?? null) {
+            'enabled' => InMemoryAccountDirectory::withAccount(true),
+            'disabled' => InMemoryAccountDirectory::withAccount(false),
+            default => InMemoryAccountDirectory::empty(),
+        };
+
+        $clock = new FrozenClock(self::NOW);
+        $this->sessionStore = new InMemorySessionStore($clock);
+
+        $kernel = $this->boot(
+            $this->reader(
+                \is_string($storage) ? $storage : 'ok',
+                \is_int($revision) ? $revision : 0,
+            ),
+        );
+
+        // `auth.session` is established by writing the row a previous request
+        // would have left, not by driving the API — the point is to control the
+        // starting state exactly, including its id and its token.
+        $session = match ($auth['session'] ?? 'none') {
+            'anonymous' => $this->sessionStore->seed(null, $clock),
+            // A case that names an authenticated session but no account —
+            // `auth.logout.post.*` do exactly that — still needs one to attach
+            // the session to, so an enabled account is created on demand.
+            'authenticated' => $this->sessionStore->seed(
+                ($this->accounts->findByEmail(InMemoryAccountDirectory::EMAIL)
+                    ?? $this->accounts->add(
+                        InMemoryAccountDirectory::EMAIL,
+                        InMemoryAccountDirectory::PASSWORD,
+                        true,
+                    ))->id,
+                $clock,
+            ),
+            default => null,
+        };
+
+        $this->seededSessionId = $session?->id;
+
+        return $kernel;
+    }
+
+    /**
+     * The cookie and CSRF headers for a case's `auth` block.
+     *
+     * `csrf: "valid"` is resolved to the token the seeded session actually holds.
+     * Writing a literal token into the artifact instead would only be possible if
+     * the check accepted a constant, which is the bug the case exists to catch.
+     *
+     * @param array<mixed> $case
+     * @return array<string, string>
+     */
+    private function authHeaders(array $case): array
+    {
+        /** @var mixed $auth */
+        $auth = $case['auth'] ?? null;
+
+        if (!\is_array($auth)) {
+            return [];
+        }
+
+        $headers = [];
+        $session = $this->seededSessionId === null
+            ? null
+            : ($this->sessionStore->sessions[$this->seededSessionId] ?? null);
+
+        if ($session !== null) {
+            $headers['cookie'] = self::sessionCookieName() . '=' . $session->id;
+        }
+
+        /** @var array<string, mixed> $csrfBlock */
+        $csrfBlock = self::contract()['auth']['csrf'];
+        /** @var string $csrfHeader */
+        $csrfHeader = $csrfBlock['header'];
+
+        $token = match ($auth['csrf'] ?? 'omitted') {
+            'valid' => $session === null ? '' : $session->csrfToken,
+            'empty' => '',
+            // Well-formed and belonging to no session: the shape is right, so a
+            // check that only validated the shape would pass this.
+            'wrong' => str_repeat('a', 64),
+            default => null,
+        };
+
+        if ($token !== null) {
+            $headers[$csrfHeader] = $token;
+        }
+
+        return $headers;
+    }
+
+    private static function sessionCookieName(): string
+    {
+        /** @var array<string, mixed> $cookie */
+        $cookie = self::contract()['auth']['sessionCookie'];
+        /** @var string $name */
+        $name = $cookie['name'];
+
+        return $name;
+    }
+
+    /**
+     * Asserts `expect.sessionCookie`.
+     *
+     * The `absent` case is the load-bearing one: it is what proves a rejected
+     * login or a refused CSRF check does not quietly hand the caller a session.
+     *
+     * @param array<string, mixed> $expected
+     */
+    private function assertSessionCookie(array $expected, Response $response): void
+    {
+        /** @var mixed $expectation */
+        $expectation = $expected['sessionCookie'] ?? null;
+
+        if ($expectation === null) {
+            return;
+        }
+
+        $setCookie = $response->header('Set-Cookie');
+
+        if ($expectation === 'absent') {
+            self::assertNull($setCookie, 'the response must not set a session cookie');
+
+            return;
+        }
+
+        self::assertIsString($setCookie, 'the response sets no session cookie');
+        self::assertStringStartsWith(self::sessionCookieName() . '=', $setCookie);
+
+        // `auth.sessionCookieCarriesItsAttributes`, checked on every cookie the
+        // contract expects rather than once in a dedicated test.
+        self::assertStringContainsString('HttpOnly', $setCookie);
+        self::assertStringContainsString('SameSite=Strict', $setCookie);
+        self::assertStringContainsString('Path=/', $setCookie);
+        self::assertStringContainsString('Secure', $setCookie);
+        self::assertStringNotContainsStringIgnoringCase('Domain=', $setCookie);
+
+        if ($expectation === 'cleared') {
+            self::assertStringContainsString('Max-Age=0', $setCookie);
+            self::assertStringContainsString(self::sessionCookieName() . '=;', $setCookie);
+
+            return;
+        }
+
+        // `rotated`: a new id, and not the one the request carried.
+        preg_match('/^' . preg_quote(self::sessionCookieName(), '/') . '=([^;]+)/', $setCookie, $match);
+        self::assertNotSame('', $match[1] ?? '');
+        self::assertNotSame($this->seededSessionId, $match[1]);
     }
 
     private function boot(?PublishedContentReader $reader = null): Kernel
@@ -496,10 +670,17 @@ final class HttpContractConformanceTest extends TestCase
         // a case that rewrites it cannot leak into the next.
         TestEnvironment::writeExportedPage($this->root, self::BAKED_MARKER);
 
+        $clock = new FrozenClock(self::NOW);
+        $this->accounts ??= InMemoryAccountDirectory::empty();
+        $this->sessionStore ??= new InMemorySessionStore($clock);
+
         return Kernel::boot(
             $configPath,
-            new FrozenClock(self::NOW),
+            $clock,
             $reader ?? $this->reader('ok', 0),
+            null,
+            $this->accounts,
+            $this->sessionStore,
         );
     }
 
@@ -617,6 +798,30 @@ final class HttpContractConformanceTest extends TestCase
 
             case 'publicPageHtml':
                 $this->assertPublicPage($case, $expected, $response);
+                break;
+
+            case 'authSessionResponse':
+                self::assertIsArray($body);
+                self::assertSame(
+                    [],
+                    $structural->validate($body, 'auth-session-response.schema.json'),
+                );
+                self::assertSame($expected['authenticated'], $body['authenticated']);
+                self::assertSame(
+                    $expected['authenticated'],
+                    $body['account'] !== null,
+                    '`account` must be present exactly when authenticated',
+                );
+
+                // `auth.responsesNeverEchoSecrets`. The schema is strict, so it
+                // already rejects an unexpected key; this catches the worse
+                // mistake of putting a secret in a key that *is* declared.
+                self::assertStringNotContainsString('passwordHash', $response->body);
+                self::assertStringNotContainsString('$2y$', $response->body);
+                self::assertStringNotContainsString('$argon2', $response->body);
+                foreach ($this->sessionStore->sessions as $seeded) {
+                    self::assertStringNotContainsString($seeded->id, $response->body);
+                }
                 break;
 
             default:

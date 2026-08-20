@@ -162,10 +162,91 @@
     "conditionalRequests": "If-None-Match is compared after trimming comma-separated members; `*` always matches. A match returns 304 with ETag and Cache-Control and an empty body.",
     "errorResponses": "Error responses must never carry a `published-<revision>` ETag. A framework-generated validator on an error body (Express emits a weak ETag) is tolerated and need not be reproduced."
   },
+  "auth": {
+    "paths": {
+      "login": "/api/auth/login",
+      "logout": "/api/auth/logout",
+      "session": "/api/auth/session"
+    },
+    "sessionCookie": {
+      "name": "__Host-eszter_session",
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Strict",
+      "path": "/",
+      "domain": null,
+      "requirements": [
+        "The id is opaque and generated from a cryptographic source; it encodes no account data.",
+        "The server-side record is authoritative. A cookie whose id has no record is treated as anonymous and the id is never adopted.",
+        "The id is rotated on every privilege change, which for this surface means on successful login.",
+        "Logout destroys the server-side record first and expires the cookie second, so a replayed cookie cannot outlive the record."
+      ]
+    },
+    "csrf": {
+      "header": "x-csrf-token",
+      "issuedBy": "/api/auth/session and /api/auth/login, in the response body",
+      "boundTo": "the session, anonymous or authenticated",
+      "requiredOn": "every state-changing request, including login and logout",
+      "exemptFrom": "GET /api/auth/session, and the read-only public surface, which change no state",
+      "comparison": "constant-time",
+      "rotation": "A fresh token is minted whenever the session id rotates, so the token a caller holds before login is useless after it.",
+      "failure": {
+        "status": 403,
+        "errorCode": "CSRF_TOKEN_INVALID"
+      },
+      "requirements": [
+        "A missing, empty, malformed or non-matching token fails identically; the response distinguishes none of them.",
+        "The token is never accepted from a query string or a form field on this surface, only from the header.",
+        "The check runs after authentication is resolved, so an unauthenticated call to a protected route reports 401 rather than leaking that its token was also wrong.",
+        "SameSite=Strict on the session cookie is required in addition, never instead."
+      ]
+    },
+    "loginFailure": {
+      "status": 401,
+      "errorCode": "INVALID_CREDENTIALS",
+      "appliesTo": [
+        "unknown email",
+        "wrong password",
+        "disabled account"
+      ],
+      "requirements": [
+        "The three causes are indistinguishable in status, code, message and headers.",
+        "A password verification is performed even when no account matched, so the response time does not reveal whether the address exists.",
+        "No session is created, and any anonymous session's CSRF token is left usable so a retry does not need a new round trip."
+      ]
+    },
+    "accessControl": {
+      "shell": "/admin is a static export; it enforces nothing and is not access control.",
+      "authority": "PHP, per request, on every non-public endpoint.",
+      "requirements": [
+        "An absent, unknown, expired or destroyed session id is anonymous, never partially authenticated.",
+        "A disabled account is rejected at every request, not only at login, so disabling takes effect on the next call rather than at the next login.",
+        "Authorization is never derived from a request header, an Origin, or anything else the caller controls."
+      ]
+    },
+    "identity": {
+      "steps": [
+        "trim surrounding whitespace",
+        "lower-case using ASCII case folding only"
+      ],
+      "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+      "maxLength": 254,
+      "note": "ASCII case folding, not locale-aware lower-casing: a Turkish locale would fold `I` to `ı` and split one identity into two.",
+      "emailPattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+      "emailMaxLength": 254,
+      "passwordMinLength": 12,
+      "passwordMaxLength": 4096,
+      "passwordHash": "password_hash() with the runtime's default algorithm, Argon2id preferred and bcrypt acceptable. The hash is never returned by any endpoint."
+    }
+  },
   "errorCodes": [
     "NOT_FOUND",
     "METHOD_NOT_ALLOWED",
     "INVALID_JSON",
+    "VALIDATION_FAILED",
+    "INVALID_CREDENTIALS",
+    "UNAUTHENTICATED",
+    "CSRF_TOKEN_INVALID",
     "INVALID_CONFIGURATION",
     "STORAGE_FAILURE",
     "INTERNAL_ERROR"
@@ -174,6 +255,10 @@
     "NOT_FOUND": "La ressource demandée est introuvable.",
     "METHOD_NOT_ALLOWED": "Méthode non autorisée pour cette ressource.",
     "INVALID_JSON": "Le corps JSON est invalide.",
+    "VALIDATION_FAILED": "Les données envoyées sont invalides.",
+    "INVALID_CREDENTIALS": "Identifiants invalides.",
+    "UNAUTHENTICATED": "Authentification requise.",
+    "CSRF_TOKEN_INVALID": "Jeton de sécurité invalide ou expiré.",
     "INVALID_CONFIGURATION": "La configuration du serveur est invalide.",
     "STORAGE_FAILURE": "Le contenu publié est momentanément indisponible.",
     "INTERNAL_ERROR": "Une erreur interne est survenue."
@@ -219,6 +304,47 @@
       ],
       "successBodySchema": null,
       "successContentType": "text/html; charset=utf-8"
+    },
+    {
+      "path": "/api/auth/session",
+      "methods": [
+        "GET"
+      ],
+      "statuses": [
+        200,
+        400,
+        405
+      ],
+      "successBodySchema": "auth-session-response.schema.json"
+    },
+    {
+      "path": "/api/auth/login",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        403,
+        405
+      ],
+      "requestBodySchema": "login-request.schema.json",
+      "successBodySchema": "auth-session-response.schema.json"
+    },
+    {
+      "path": "/api/auth/logout",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        204,
+        400,
+        401,
+        403,
+        405
+      ],
+      "successBodySchema": null
     }
   ],
   "unknownRouteStatus": 404,
@@ -706,6 +832,428 @@
       }
     },
     {
+      "id": "auth.session.get.anonymous",
+      "endpoint": "/api/auth/session",
+      "description": "GET /api/auth/session with no session answers 200, not 401: it reports state, it does not require it. The anonymous session it opens is what carries the CSRF token a login will need.",
+      "request": {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      "auth": {
+        "session": "none"
+      },
+      "expect": {
+        "status": 200,
+        "body": "authSessionResponse",
+        "authenticated": false,
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "id": "auth.session.get.authenticated",
+      "endpoint": "/api/auth/session",
+      "description": "GET /api/auth/session with a live session reports the signed-in account.",
+      "request": {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      "auth": {
+        "session": "authenticated"
+      },
+      "expect": {
+        "status": 200,
+        "body": "authSessionResponse",
+        "authenticated": true
+      }
+    },
+    {
+      "id": "auth.session.get.unknownSessionIdIsAnonymous",
+      "endpoint": "/api/auth/session",
+      "description": "A session cookie whose id has no server-side record is anonymous, and the supplied id is never adopted. This is the session-fixation floor: an attacker cannot choose the victim's id in advance.",
+      "request": {
+        "method": "GET",
+        "path": "/api/auth/session",
+        "headers": {
+          "cookie": "__Host-eszter_session=0123456789abcdef0123456789abcdef"
+        }
+      },
+      "auth": {
+        "session": "none"
+      },
+      "expect": {
+        "status": 200,
+        "body": "authSessionResponse",
+        "authenticated": false
+      }
+    },
+    {
+      "id": "auth.session.post.methodNotAllowed",
+      "endpoint": "/api/auth/session",
+      "description": "Non-GET on /api/auth/session returns 405 with Allow: GET.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/session"
+      },
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "GET",
+          "content-type": "application/json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "id": "auth.login.post.ok",
+      "endpoint": "/api/auth/login",
+      "description": "A correct credential pair with a valid CSRF token signs in, rotates the session id and returns the same body shape GET /api/auth/session returns.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"email\":\"editor@example.test\",\"password\":\"correct-horse-battery\"}"
+      },
+      "auth": {
+        "session": "anonymous",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "authSessionResponse",
+        "authenticated": true,
+        "sessionCookie": "rotated",
+        "headers": {
+          "content-type": "application/json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "id": "auth.login.post.unknownEmail",
+      "endpoint": "/api/auth/login",
+      "description": "An address with no account fails as INVALID_CREDENTIALS.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"email\":\"nobody@example.test\",\"password\":\"correct-horse-battery\"}"
+      },
+      "auth": {
+        "session": "anonymous",
+        "csrf": "valid",
+        "account": "missing"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "INVALID_CREDENTIALS",
+        "sessionCookie": "absent"
+      }
+    },
+    {
+      "id": "auth.login.post.wrongPassword",
+      "endpoint": "/api/auth/login",
+      "description": "A known address with the wrong password fails identically to an unknown one.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"email\":\"editor@example.test\",\"password\":\"not-the-password\"}"
+      },
+      "auth": {
+        "session": "anonymous",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "INVALID_CREDENTIALS",
+        "sessionCookie": "absent"
+      }
+    },
+    {
+      "id": "auth.login.post.disabledAccount",
+      "endpoint": "/api/auth/login",
+      "description": "A disabled account with the *correct* password fails identically again. Disabling is enforced here, not by hoping nobody knows the password.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"email\":\"editor@example.test\",\"password\":\"correct-horse-battery\"}"
+      },
+      "auth": {
+        "session": "anonymous",
+        "csrf": "valid",
+        "account": "disabled"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "INVALID_CREDENTIALS",
+        "sessionCookie": "absent"
+      }
+    },
+    {
+      "id": "auth.login.post.csrfOmitted",
+      "endpoint": "/api/auth/login",
+      "description": "Login without a CSRF token is refused with 403 even when the credentials are correct, which is what closes login CSRF.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"email\":\"editor@example.test\",\"password\":\"correct-horse-battery\"}"
+      },
+      "auth": {
+        "session": "anonymous",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID",
+        "sessionCookie": "absent"
+      }
+    },
+    {
+      "id": "auth.login.post.csrfWrong",
+      "endpoint": "/api/auth/login",
+      "description": "A well-formed token belonging to no session is refused the same way.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"email\":\"editor@example.test\",\"password\":\"correct-horse-battery\"}"
+      },
+      "auth": {
+        "session": "anonymous",
+        "csrf": "wrong",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID"
+      }
+    },
+    {
+      "id": "auth.login.post.csrfEmpty",
+      "endpoint": "/api/auth/login",
+      "description": "An empty token is refused, not treated as absent-and-therefore-skipped.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"email\":\"editor@example.test\",\"password\":\"correct-horse-battery\"}"
+      },
+      "auth": {
+        "session": "anonymous",
+        "csrf": "empty",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID"
+      }
+    },
+    {
+      "id": "auth.login.post.missingField",
+      "endpoint": "/api/auth/login",
+      "description": "A body missing `password` is 400 VALIDATION_FAILED, not 401.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"email\":\"editor@example.test\"}"
+      },
+      "auth": {
+        "session": "anonymous",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "auth.login.post.unknownField",
+      "endpoint": "/api/auth/login",
+      "description": "The login body is closed: an unexpected key is rejected rather than ignored.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"email\":\"editor@example.test\",\"password\":\"correct-horse-battery\",\"role\":\"admin\"}"
+      },
+      "auth": {
+        "session": "anonymous",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "auth.login.post.invalidJson",
+      "endpoint": "/api/auth/login",
+      "description": "A malformed body is still the pre-routing 400 INVALID_JSON, decided before CSRF or credentials.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/login",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{invalid-json"
+      },
+      "auth": {
+        "session": "anonymous",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "INVALID_JSON"
+      }
+    },
+    {
+      "id": "auth.login.get.methodNotAllowed",
+      "endpoint": "/api/auth/login",
+      "description": "GET /api/auth/login returns 405 with Allow: POST.",
+      "request": {
+        "method": "GET",
+        "path": "/api/auth/login"
+      },
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "POST",
+          "content-type": "application/json; charset=utf-8"
+        }
+      }
+    },
+    {
+      "id": "auth.logout.post.ok",
+      "endpoint": "/api/auth/logout",
+      "description": "Logout answers 204 with no body, destroys the server-side record and expires the cookie.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/logout"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid"
+      },
+      "expect": {
+        "status": 204,
+        "body": "empty",
+        "sessionCookie": "cleared"
+      }
+    },
+    {
+      "id": "auth.logout.post.unauthenticated",
+      "endpoint": "/api/auth/logout",
+      "description": "Logout without a session is 401 UNAUTHENTICATED. Authentication is resolved before CSRF, so a caller with neither is told the useful thing.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/logout"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "auth.logout.post.csrfOmitted",
+      "endpoint": "/api/auth/logout",
+      "description": "An authenticated logout without a CSRF token is 403 and leaves the session alive.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/logout"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID",
+        "sessionCookie": "absent"
+      }
+    },
+    {
+      "id": "auth.logout.post.csrfWrong",
+      "endpoint": "/api/auth/logout",
+      "description": "An authenticated logout with someone else's token is 403.",
+      "request": {
+        "method": "POST",
+        "path": "/api/auth/logout"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "wrong"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID"
+      }
+    },
+    {
+      "id": "auth.logout.get.methodNotAllowed",
+      "endpoint": "/api/auth/logout",
+      "description": "GET /api/auth/logout returns 405 with Allow: POST.",
+      "request": {
+        "method": "GET",
+        "path": "/api/auth/logout"
+      },
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "POST",
+          "content-type": "application/json; charset=utf-8"
+        }
+      }
+    },
+    {
       "id": "unknown.get.unimplementedRoute.0",
       "endpoint": "unknown",
       "description": "/api/admin/content/draft is not implemented and must stay a 404.",
@@ -760,48 +1308,6 @@
         "body": "errorEnvelope",
         "errorCode": "NOT_FOUND"
       }
-    },
-    {
-      "id": "unknown.get.unimplementedRoute.4",
-      "endpoint": "unknown",
-      "description": "/api/auth/login is not implemented and must stay a 404.",
-      "request": {
-        "method": "GET",
-        "path": "/api/auth/login"
-      },
-      "expect": {
-        "status": 404,
-        "body": "errorEnvelope",
-        "errorCode": "NOT_FOUND"
-      }
-    },
-    {
-      "id": "unknown.get.unimplementedRoute.5",
-      "endpoint": "unknown",
-      "description": "/api/auth/logout is not implemented and must stay a 404.",
-      "request": {
-        "method": "GET",
-        "path": "/api/auth/logout"
-      },
-      "expect": {
-        "status": 404,
-        "body": "errorEnvelope",
-        "errorCode": "NOT_FOUND"
-      }
-    },
-    {
-      "id": "unknown.get.unimplementedRoute.6",
-      "endpoint": "unknown",
-      "description": "/api/auth/session is not implemented and must stay a 404.",
-      "request": {
-        "method": "GET",
-        "path": "/api/auth/session"
-      },
-      "expect": {
-        "status": 404,
-        "body": "errorEnvelope",
-        "errorCode": "NOT_FOUND"
-      }
     }
   ],
   "invariants": [
@@ -848,6 +1354,38 @@
     {
       "id": "page.appearanceIsColoursOnly",
       "description": "The injected appearance block contains only CSS custom properties whose values are validated hex colours; no other editorial value reaches CSS."
+    },
+    {
+      "id": "auth.sessionIdRotatesOnLogin",
+      "description": "A successful login answers with a session id different from the one the request carried, and the pre-login record is destroyed rather than left usable. An id fixed before login therefore confers nothing after it."
+    },
+    {
+      "id": "auth.csrfTokenRotatesWithTheSession",
+      "description": "The CSRF token a caller held before login stops being accepted once the session id rotates, so a token captured from the anonymous session cannot be replayed against the authenticated one."
+    },
+    {
+      "id": "auth.logoutInvalidatesServerSide",
+      "description": "After logout, replaying the exact pre-logout session cookie is anonymous. Invalidation is the destruction of the server-side record, not the expiry of the cookie, so a client that ignores Set-Cookie gains nothing."
+    },
+    {
+      "id": "auth.failureModesAreIndistinguishable",
+      "description": "Unknown address, wrong password and disabled account produce byte-identical responses apart from the request id, and all three perform a password verification so their timing does not separate them either."
+    },
+    {
+      "id": "auth.disabledAccountIsRejectedOnEveryRequest",
+      "description": "Disabling a signed-in account makes its existing session anonymous on the next request; enforcement is not deferred to the next login."
+    },
+    {
+      "id": "auth.sessionCookieCarriesItsAttributes",
+      "description": "Every Set-Cookie for the session carries HttpOnly, SameSite=Strict, Path=/ and no Domain, and carries Secure whenever the environment is production."
+    },
+    {
+      "id": "auth.responsesNeverEchoSecrets",
+      "description": "No response body or log line contains a password, a password hash, a session id or a database credential."
+    },
+    {
+      "id": "csrf.readsAreExempt",
+      "description": "GET /api/auth/session and the public read-only surface answer normally with no CSRF token, so a client can always obtain one without already having one."
     },
     {
       "id": "bootstrap.failureUsesFrozenEnvelope",

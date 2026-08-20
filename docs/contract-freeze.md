@@ -17,15 +17,29 @@ Companion documents: `docs/runtime-inventory.md` (ESZ-001),
 
 ### What is frozen
 
-Only the public read-only surface exists today:
+The public read-only surface:
 
 - `GET /api/health`
 - `GET /api/content`
 - `GET | HEAD /` — the public page (added by ESZ-021)
 
+and, since ESZ-025/026, the authenticated surface:
+
+- `GET /api/auth/session` — reports authentication state and issues the CSRF token
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+
 Everything else returns a structured JSON 404, including the not-yet-implemented
-`/api/admin/*` and `/api/auth/*` routes. That 404 is itself frozen, so accidentally
-shipping a half-built admin route is a test failure rather than a surprise.
+`/api/admin/*` routes. That 404 is itself frozen, so accidentally shipping a half-built
+admin route is a test failure rather than a surprise.
+
+The auth routes entered this document **before** they existed in PHP, which is the
+ordering `docs/hetzner-target-architecture.md` §6 requires and the reason the contract
+is a source of truth rather than a description written afterwards. They brought an
+`auth` block with them — the session-cookie attributes, the CSRF lifecycle, the
+login-failure outcome and the identity normalisation rules — and PHP reads its security
+posture out of that block instead of restating it, exactly as it reads the injection
+element ids for `/`.
 
 Source of truth: `contracts/http-contract.ts`.
 Generated artifact: `contracts/generated/http-contract.json`.
@@ -42,6 +56,9 @@ running service, rather than a description that can quietly drift.
 | `/api/health` | `GET` | 200, 400, 405 |
 | `/api/content` | `GET` | 200, 304, 400, 405, 500 |
 | `/` | `GET`, `HEAD` | 200, 304, 400, 405 |
+| `/api/auth/session` | `GET` | 200, 400, 405 |
+| `/api/auth/login` | `POST` | 200, 400, 401, 403, 405 |
+| `/api/auth/logout` | `POST` | 204, 400, 401, 403, 405 |
 | anything else | any | 404 |
 
 - Non-allowed method on a known path → **405** with `Allow`, never 404.
@@ -53,6 +70,14 @@ running service, rather than a description that can quietly drift.
 - The status lists above describe a service that started. A failure *before* routing
   answers **500** with the frozen envelope on any path, including `/api/health`; see
   "Bootstrap failure" below.
+- `GET /api/auth/session` has no **401**: it reports authentication state rather than
+  requiring it, which is what lets a caller obtain a CSRF token before it has anything
+  else. `POST /api/auth/login` has no 404 for an unknown address — that is a **401**,
+  identical to a wrong password and to a disabled account, because any difference
+  between the three is an account enumeration oracle.
+- On `/api/auth/logout`, authentication is resolved **before** CSRF: a caller with
+  neither gets 401, not 403. Answering 403 first would tell an unauthenticated caller
+  that its token was the problem, which implies a session it does not have.
 
 ### Error envelope
 
@@ -64,8 +89,20 @@ Every non-2xx JSON body is exactly:
 
 The object is closed — no extra keys, at either level. Permitted codes:
 
-`NOT_FOUND`, `METHOD_NOT_ALLOWED`, `INVALID_JSON`, `INVALID_CONFIGURATION`,
-`STORAGE_FAILURE`, `INTERNAL_ERROR`.
+`NOT_FOUND`, `METHOD_NOT_ALLOWED`, `INVALID_JSON`, `VALIDATION_FAILED`,
+`INVALID_CREDENTIALS`, `UNAUTHENTICATED`, `CSRF_TOKEN_INVALID`,
+`INVALID_CONFIGURATION`, `STORAGE_FAILURE`, `INTERNAL_ERROR`.
+
+The four added by ESZ-025/026 each name a distinct thing the caller can fix, which is
+the only reason to add a code at all:
+
+- `VALIDATION_FAILED` (400) — the body parsed as JSON but is not this request's shape.
+  Distinct from `INVALID_JSON`, which means the bytes were not JSON.
+- `INVALID_CREDENTIALS` (401) — the single login failure. Unknown address, wrong
+  password and disabled account are indistinguishable by design.
+- `UNAUTHENTICATED` (401) — no live session on a route that requires one.
+- `CSRF_TOKEN_INVALID` (403) — missing, empty, malformed or non-matching token, all
+  reported identically.
 
 The French user-facing messages are part of the contract (`apiErrorMessages`) so the
 frontend and a PHP implementation cannot diverge on copy.

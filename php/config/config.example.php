@@ -45,4 +45,49 @@ return [
         // so this is the only path that is web-reachable by design.
         'public' => '../public_html',
     ],
+
+    // ── Operational database (ESZ-023) ───────────────────────────────────────
+    //
+    // MySQL owns operational state only: admin accounts and sessions. Editorial
+    // content stays in data/content/*.json and never enters SQL
+    // (`docs/hetzner-target-architecture.md` §4 and §8).
+    //
+    // Required in production. Outside production it may be omitted entirely, and
+    // the public read-only surface still works — it touches no database.
+    //
+    // Apply migrations with:  php bin/migrate.php --config=config/config.php
+    'database' => [
+        // The target host runs MySQL. utf8mb4 is not optional: the content
+        // pipeline guarantees NFC UTF-8 end to end and the database must not be
+        // the component that breaks it.
+        'dsn' => 'mysql:host=localhost;port=3306;dbname=eszter;charset=utf8mb4',
+        'username' => 'eszter',
+
+        // PLACEHOLDER. Booting in production with this value, or with an empty
+        // one, fails fast rather than connecting to something guessable.
+        'password' => 'CHANGE_ME',
+
+        // Seconds to wait for a connection before failing the request.
+        'connectTimeoutSeconds' => 5,
+    ],
+
+    // ── Admin sessions (ESZ-025) ─────────────────────────────────────────────
+    //
+    // The cookie's name and its HttpOnly/SameSite/Path attributes are NOT here.
+    // They are frozen in contracts/generated/http-contract.json under `auth`, so
+    // that no configuration file can quietly relax them. Only the timings and the
+    // one environment-dependent flag are settings.
+    'session' => [
+        // Inactivity after which the session stops being accepted. Enforced
+        // against the server-side record, never against the cookie's Max-Age.
+        'idleTimeoutMinutes' => 60,
+
+        // Ceiling on total life regardless of activity, so a continuously-used
+        // stolen session still expires.
+        'absoluteLifetimeMinutes' => 720,
+
+        // Must be true in production; booting with false there fails fast. Set it
+        // to false only on a developer's plain-HTTP localhost.
+        'cookieSecure' => true,
+    ],
 ];

@@ -1,4 +1,4 @@
-# `php/` — the PHP backend (ESZ-010 → ESZ-022)
+# `php/` — the PHP backend (ESZ-010 → ESZ-027)
 
 The backend for Hetzner shared hosting, and since Package 1.2 the **only**
 implementation of the frozen public surface. Package 1.1 built the foundation —
@@ -10,6 +10,12 @@ ESZ-002.
 Package 2.1 (ESZ-020/021/022) widened its job: with the Next server gone, PHP also
 serves **`/`**, injecting the published content into the exported HTML, and owns
 the document-root routing.
+
+Package 2.2 (ESZ-023/024/025/026/027) gave it the other thing the static host took
+away: **authorisation**. A PDO layer with ordered, repeat-safe migrations; the
+`admin_accounts` and `admin_sessions` schema; an operator-run provisioning CLI;
+server-side sessions with per-session CSRF; and production configuration that
+refuses to boot on an unsafe setting.
 
 Companion documents: `docs/contract-freeze.md` (the frozen surface and the
 contract artifacts), `docs/hetzner-target-architecture.md` (the target topology),
@@ -31,16 +37,34 @@ contract artifacts), `docs/hetzner-target-architecture.md` (the target topology)
 | `GET \| HEAD /` — the public page, with published content injected | ESZ-021, done |
 | Document-root routing, generated from a tested table | ESZ-022, done |
 | Full `http-contract.json` replay against the real kernel | ESZ-021, done — **every case, no exemptions** |
-| `/api/admin/*`, `/api/auth/*` | Not started; frozen at 404 by the contract |
-| Admin authentication and authorisation | **Package 2.2. `/admin` is currently unprotected** — see `docs/hetzner-target-architecture.md` §14, item 7 |
-| SQL, sessions, CSRF, media, booking, notifications | Later packages |
+| PDO layer, ordered repeat-safe migrations, `schema_migrations` | ESZ-023, done |
+| `admin_accounts` schema, hashing, operator provisioning CLI | ESZ-024, done |
+| `GET /api/auth/session`, `POST /api/auth/login`, `POST /api/auth/logout` | ESZ-025, done |
+| Server-side sessions: opaque id, MySQL record, rotation on login, two deadlines | ESZ-025, done |
+| Per-session CSRF token on every state-changing request | ESZ-026, done |
+| Production config boundaries and secret hygiene | ESZ-027, done |
+| `/api/admin/*` | Not started; frozen at 404 by the contract |
+| Login throttling | **Not built.** `docs/hetzner-target-architecture.md` §6 asks for it; ESZ-025 did not deliver it |
+| The `/admin` login form in the browser | Not built. The API accepts a login; no page posts one yet |
+| Media, booking, notifications | Later packages |
 
-Three routes are registered: `/api/health`, `/api/content` and `/`. Every other `/api/*` path
-answers the frozen structured JSON 404 — the contract's specified behaviour for a
-path that is not implemented yet, asserted against `http-contract.json` by
-`tests/Http/HttpFoundationTest.php`. `/api/admin/*` and `/api/auth/*` stay
-unregistered on purpose: routing one before it is contracted would be a silent
-breaking change.
+Six routes are registered: `/api/health`, `/api/content`, `/`, and the three
+`/api/auth/*`. Every other `/api/*` path answers the frozen structured JSON 404 —
+the contract's specified behaviour for a path that is not implemented yet, asserted
+against `http-contract.json` by `tests/Http/HttpFoundationTest.php`. `/api/admin/*`
+stays unregistered on purpose: routing one before it is contracted would be a silent
+breaking change, which is why the auth routes were added to
+`contracts/http-contract.ts` *first* and the artifacts regenerated before a line of
+PHP was written for them.
+
+The auth routes are registered only when a database is configured. Production cannot
+reach the state where they are missing — `Configuration` refuses to boot in production
+without a `database` block — and outside production a deployment that only serves the
+public read-only surface needs no SQL at all and opens no connection.
+
+**`/admin` enforces nothing.** It is a static file: anyone may fetch it, read it and
+call whatever it calls. Every guarantee about who may do what is made here, per
+request, and none of it is delegated to the shell.
 
 **No Node at runtime.** The backend reads the committed
 `contracts/generated/*.json` artifacts as data. Node is a build-time toolchain for
@@ -261,15 +285,51 @@ cd php
 composer install
 composer run lint              # php -l over every source file
 composer run stan              # PHPStan (max on src+bin, 6 on tests) + PSR-12
-composer run test              # PHPUnit
+composer run test              # PHPUnit — the `eszter` suite, no database needed
 composer run contracts:sync    # copy contracts/generated/ to php/contracts/
 composer run contracts:check   # fail if that copy is stale
 
 php bin/generate-htaccess.php  # re-render public/.htaccess from the routing table
 
+# Operator commands (ESZ-023 / ESZ-024). Both are safe to run twice.
+php bin/migrate.php --config=config/config.php --status
+php bin/migrate.php --config=config/config.php
+php bin/provision-admin.php --config=config/config.php --list
+php bin/provision-admin.php --config=config/config.php --email=her@example.com
+php bin/provision-admin.php --config=config/config.php --email=… --set-password
+php bin/provision-admin.php --config=config/config.php --email=… --disable
+
 cd ..
 npm run validate               # every gate, in policy order
 ```
+
+### The SQL gates need a database, and say so when they lack one
+
+```bash
+export ESZTER_TEST_DB_DSN='mysql:host=127.0.0.1;port=3306;dbname=eszter_test;charset=utf8mb4'
+export ESZTER_TEST_DB_USERNAME=eszter
+export ESZTER_TEST_DB_PASSWORD=…
+
+vendor/bin/phpunit --testsuite sql-migrations
+vendor/bin/phpunit --testsuite sql-integration
+```
+
+Without those variables both gates report NOT RUN naming the missing prerequisite,
+which per `docs/v1-quality-gates.md` is never a pass. The suites refuse any database
+whose name does not end in `_test` — they drop and truncate tables, and a naming rule
+is a cheap way to make pointing them at something real impossible rather than merely
+discouraged. MySQL specifically, not SQLite: the implicit commit around DDL is the
+property the whole migrator is designed around, and an engine with transactional DDL
+would make that design look unnecessary while going green.
+
+### Provisioning an admin
+
+No account is ever created implicitly — not by a migration, not at boot, not on a
+first request. A default account would be identical on every deployment of this
+application and would be found by the first scanner that looked. The password is read
+from the terminal with echo off, or from stdin when piped; `--password=…` is refused,
+because process arguments are visible to every user on the host through `ps` and are
+written to the operator's shell history.
 
 `public/.htaccess` and `public/media/.htaccess` are **generated**, not hand-written.
 Edit `src/Deploy/DocumentRootRouting.php` (the rules) or `src/Deploy/HtaccessRenderer.php`
@@ -289,7 +349,13 @@ npm --prefix ../front run build          # produces front/out/
 # copy php/public/.htaccess                         → public_html/.htaccess
 # copy php/public/media/.htaccess                   → public_html/media/.htaccess
 # copy php/config/config.example.php → $HOME/config/config.php, chmod 0600, edit
+
+php bin/migrate.php --config=$HOME/config/config.php    # before the swap, on the host
 ```
+
+`chmod 0600` is not advice. In production the loader reads the file's mode and refuses
+to boot if it is readable by group or others, because on shared hosting that means
+readable by the other tenants and the file holds the database password.
 
 `config.php` must set `paths.public` to the document root: `/` is served by reading
 `index.html` out of it and injecting the published content, so a deployment that ships

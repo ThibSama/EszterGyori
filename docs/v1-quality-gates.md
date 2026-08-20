@@ -69,7 +69,7 @@ The order is the specification. Each stage assumes the previous one held.
 | **4. Frontend behaviour** | `front:test` | Executable |
 | **5. Build** | contracts `dist/`, frontend production build | Executable |
 | **6. PHP validation** | composer validate, lint, static analysis, unit tests, parity-corpus replay, full `http-contract.json` replay | Executable |
-| **7. SQL** | migration tests, integration tests | **Not run** |
+| **7. SQL** | migration tests, integration tests | Executable **when `ESZTER_TEST_DB_DSN` names a disposable MySQL database**; NOT RUN otherwise |
 | **8. HTTP smoke** | live origin checks | **Not run** |
 | **9. Browser scenarios** | public, admin, booking | **Not run** |
 | **10. Security and configuration** | exposure, headers, permissions, advisories | **Not run** |
@@ -169,7 +169,7 @@ is what stops it being reintroduced by accident.
 | `php:composer-validate` | `composer validate --strict` | `composer.json` is valid and in sync with `composer.lock`. |
 | `php:lint` | `php bin/lint.php` | `php -l` over **every** PHP source file, including files no test happens to autoload — a parse error there is invisible to PHPUnit and fatal in production. |
 | `php:static-analysis` | `php bin/static-analysis.php` | PHPStan at **level max** over `src/` and `bin/`, **level 6** over `tests/`, plus PSR-12. Both levels are pinned in committed configs, so the gate cannot drift by dependency upgrade. |
-| `php:unit` | `vendor/bin/phpunit` | Configuration fail-fast, contract-artifact digest verification, atomic JSON storage (temp-write, fsync, rename, size cap, locking, idempotent seeding, no silent replacement of an invalid file), and the HTTP layer against `http-contract.json`. |
+| `php:unit` | `vendor/bin/phpunit --testsuite eszter` | Configuration fail-fast — including ESZ-027's production refusals: a missing `database` block, a placeholder or empty DB password, a non-MySQL DSN, `session.cookieSecure: false`, and a config file readable by group or others. Plus contract-artifact digest verification, atomic JSON storage (temp-write, fsync, rename, size cap, locking, idempotent seeding, no silent replacement of an invalid file), the HTTP layer against `http-contract.json`, and ESZ-025/026's auth invariants. The suite is named explicitly rather than left to the default, so this gate cannot start depending on a database server. |
 | `php:parity-corpus` | PHPUnit, contract suites | The PHP validator replays `contracts/generated/parity-corpus.json` with **identical** accept/reject outcomes and **identical** issue paths, every rule declared in `semantic-rules.json` is implemented, and structural validation is driven by the generated JSON Schema rather than a second hand-written schema. |
 | `php:http-contract` | PHPUnit, HTTP suites | The full `http-contract.json` case list against the PHP HTTP layer: statuses and `Allow` headers, the closed error envelope, request-id generation and echo, `ETag` / `If-None-Match` / 304, cache headers, opaque storage failures, the over-limit body outcome and the bootstrap-failure envelope. Since ESZ-021 this includes `/`, and the artifact's exemption set is asserted to be **empty**. |
 | `php:public-page` | PHPUnit, `PublicPageBootstrapTest` | The injector rewrites only the two bootstrap elements and leaves the rest of the export byte-identical; it locates them by `id` rather than by a remembered opening tag; a missing element raises instead of producing a half-injected page; the payload stays valid JSON that no editorial string can break out of; and the appearance block emits exactly the custom properties the contract declares, dropping any value that is not a validated hex colour. |
@@ -187,17 +187,64 @@ stub. Two details are worth stating because they are what keep it honest:
   `storage: malformed` are replayed through a `PublishedContentReader` that raises
   exactly the failure the case names. Writing a corrupt file and trusting it to
   produce that failure would test the corruption, not the contract.
-- **Exemptions are data, not skips.** `unknown.get.rootNotFound` is exempt for PHP —
-  the front controller is mounted at `/api` and owns nothing else, so on the target
-  host `/` is the static site and a 404 there would be a bug. The exemption lives in
-  `http-contract.json`, the suite asserts there is exactly one, and a skipped test can
-  therefore never be mistaken for a migration difference.
+- **Exemptions are data, not skips.** The one exemption that ever existed said `/` was
+  not this service's to answer: the front controller was mounted at `/api`, and on the
+  target host `/` was the static site. ESZ-021 made `/` a PHP endpoint, so the exemption
+  stopped being true rather than being waived, and the set has been empty since. The
+  suite asserts it is empty, so a skipped test can never be mistaken for a migration
+  difference.
+- **Auth cases run against in-memory doubles, and that is the point.** The ESZ-025/026
+  cases replay through `AccountDirectory` and `SessionStore` fixtures, so this gate
+  proves the frozen surface anywhere, with no database. The SQL implementations of both
+  interfaces are proved separately by `sql:integration` against a real MySQL server, and
+  its last three tests drive the same front controller against it — so neither half
+  rests on the other.
 
 What stage 6 does **not** yet prove, and says so rather than being silently absent:
 
 | Not covered | Why |
 | --- | --- |
-| Auth, media, content injection, notification queue | `php:unit` covers what exists. Those subjects do not exist yet; the gate widens as they arrive. |
+| Media, notification queue | `php:unit` covers what exists. Those subjects do not exist yet; the gate widens as they arrive. |
+| Login throttling | `docs/hetzner-target-architecture.md` §6 asks for rate-limited, throttled login attempts keyed by account and by source address. ESZ-025 did not build it, so there is nothing to gate. Everything else §6 asks of authentication is built and covered. |
+| The browser half of `/admin` | `/admin/login` renders no form yet, so there is no client flow to exercise. The server half is fully covered; `browser:admin` in stage 9 is where the two meet, and it stays NOT RUN. |
+
+---
+
+### Stage 7 — SQL
+
+Executable since ESZ-023, **conditionally**. The schema, the migrator and both suites
+exist; what they need is somewhere to run. Both gates read `ESZTER_TEST_DB_DSN` (with
+`ESZTER_TEST_DB_USERNAME` and `ESZTER_TEST_DB_PASSWORD`) and, when it is absent, report
+NOT RUN naming *that* as the missing prerequisite — which is a materially smaller gap
+than the one recorded here before, where the subject itself did not exist.
+
+| Gate | Command | Proves |
+| --- | --- | --- |
+| `sql:migrations` | `vendor/bin/phpunit --testsuite sql-migrations` | Every migration applies to an empty database in version order; a second run applies nothing; a half-applied migration completes on the next run; editing an already-applied migration is refused on its checksum; a database recording a migration this checkout does not contain is refused; a misnamed file is refused rather than skipped; concurrent runs serialise on an advisory lock; and `schema_migrations` ends consistent. It also asserts the shape the code relies on: `utf8mb4`, InnoDB, the byte-exact `email` collation, and the session→account foreign key cascading. |
+| `sql:integration` | `vendor/bin/phpunit --testsuite sql-integration` | The admin account and session repositories against a real MySQL instance seeded by the **real** migrations, each test isolated in a rolled-back transaction: repeat-safe provisioning, identity normalisation and the case/accent behaviour of the unique index, password hashing, both session deadlines with the absolute one un-extendable, targeted invalidation, garbage collection, and the whole login/CSRF/logout flow driven through the front controller against MySQL. |
+
+Isolation is the requirement, not a preference:
+
+- Tests run against a **disposable** database. `TestDatabase` refuses any database whose
+  name does not end in `_test`, because these suites drop and truncate tables and a
+  naming rule is a cheap way to make pointing them at something real impossible rather
+  than merely discouraged.
+- Each `sql:integration` test runs inside a transaction that is rolled back afterwards.
+  `TRUNCATE` is deliberately not used per test: on MySQL it commits implicitly and would
+  defeat the rollback it was meant to help.
+- Fixtures are explicit. No test depends on rows another test created.
+
+**MySQL, not SQLite.** The engine is what is under test: `utf8mb4` collation semantics,
+`ON DUPLICATE KEY UPDATE`, `GET_LOCK`, foreign-key enforcement, and above all the
+implicit commit around DDL that makes a migration non-atomic and forces every migration
+file to be individually idempotent. SQLite would have been far easier to arrange, would
+have gone green, and would have proved none of that — it has transactional DDL, so the
+idempotence rule that the whole migrator is built around would have looked like
+superstition.
+
+Booking, settings and notification repositories are named in the original scope of
+`sql:integration` and are **not** covered, because they do not exist. The gate widens
+when they arrive.
 
 ---
 
@@ -205,19 +252,6 @@ What stage 6 does **not** yet prove, and says so rather than being silently abse
 
 Each gate below is declared in `scripts/validate.mjs` with its reason and its intended
 assertion, so the gap is inspectable rather than absent.
-
-### Stage 7 — SQL
-
-Isolation is the requirement, not a preference:
-
-- Tests run against a **disposable** database created for the run and dropped after —
-  never a shared, never a production, never a developer's working database.
-- `sql:migrations` applies every migration to an empty database in declared order,
-  asserts re-running is a no-op, and asserts `schema_migrations` ends consistent.
-- `sql:integration` seeds from migrations and exercises the admin, booking, settings and
-  notification repositories, each test wrapped in a transaction that is rolled back, so
-  cases cannot leak into one another.
-- Fixtures are explicit and committed. No test may depend on rows another test created.
 
 ### Stage 8 — HTTP smoke
 
@@ -279,6 +313,19 @@ Local development requires only stages 1–6 — which, since Package 1.2, inclu
 full PHP conformance replay. The distinction is deliberate: contributors
 are not blocked by infrastructure that does not exist yet, and nobody can mistake that
 for the release bar.
+
+Stage 7 sits between the two since ESZ-023. It is not infrastructure that does not
+exist — the schema and both suites are committed — so a contributor touching SQL is
+expected to run it, and running it needs nothing more than a throwaway MySQL:
+
+```
+ESZTER_TEST_DB_DSN='mysql:host=127.0.0.1;port=3306;dbname=eszter_test;charset=utf8mb4' \
+ESZTER_TEST_DB_USERNAME=eszter ESZTER_TEST_DB_PASSWORD=… \
+npm run validate
+```
+
+Without those variables the two gates report NOT RUN, which is still not a pass and
+still blocks a release.
 
 ---
 

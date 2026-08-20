@@ -1,0 +1,56 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "title": "AuthSessionResponse",
+  "description": "Body of a 200 GET /api/auth/session and of a 200 POST /api/auth/login. Strict: no session id, password hash or internal account id may appear in it.",
+  "x-eszter-io": "output",
+  "x-eszter-contentSchemaVersion": 1,
+  "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "authenticated": {
+      "type": "boolean"
+    },
+    "account": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "email": {
+              "type": "string",
+              "minLength": 1
+            },
+            "lastLoginAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "email",
+            "lastLoginAt"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "csrfToken": {
+      "type": "string",
+      "minLength": 32
+    }
+  },
+  "required": [
+    "authenticated",
+    "account",
+    "csrfToken"
+  ],
+  "additionalProperties": false
+}

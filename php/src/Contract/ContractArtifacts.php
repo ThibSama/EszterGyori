@@ -156,6 +156,29 @@ final class ContractArtifacts
         return $this->load('http-contract.json');
     }
 
+    /**
+     * The `auth` block of the HTTP contract (ESZ-025 / ESZ-026).
+     *
+     * The cookie name and attributes, the CSRF header, the login-failure outcome
+     * and the identity normalisation rules all live in the generated artifact, so
+     * PHP reads its security posture from the frozen contract rather than
+     * restating it. A restatement is a place the two can disagree, and the one
+     * that would win is whichever was written last.
+     *
+     * @return array<mixed>
+     */
+    public function authContract(): array
+    {
+        /** @var mixed $auth */
+        $auth = $this->httpContract()['auth'] ?? null;
+
+        if (!\is_array($auth)) {
+            throw new ContractArtifactException('http-contract.json has no `auth` block.');
+        }
+
+        return $auth;
+    }
+
     /** @return array<mixed> */
     public function parityCorpus(): array
     {

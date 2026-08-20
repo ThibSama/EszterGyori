@@ -4,11 +4,24 @@ declare(strict_types=1);
 
 namespace Eszter;
 
+use Eszter\Admin\AccountDirectory;
+use Eszter\Admin\AdminAccountRepository;
+use Eszter\Auth\Authenticator;
+use Eszter\Auth\CsrfGuard;
+use Eszter\Auth\PdoSessionStore;
+use Eszter\Auth\SessionCookie;
+use Eszter\Auth\SessionManager;
+use Eszter\Auth\SessionStore;
 use Eszter\Config\Configuration;
 use Eszter\Config\ConfigurationException;
+use Eszter\Contract\StructuralValidator;
+use Eszter\Database\Database;
 use Eszter\Contract\ContentValidator;
 use Eszter\Contract\ContractArtifactException;
 use Eszter\Contract\ContractArtifacts;
+use Eszter\Http\Endpoint\AuthLoginEndpoint;
+use Eszter\Http\Endpoint\AuthLogoutEndpoint;
+use Eszter\Http\Endpoint\AuthSessionEndpoint;
 use Eszter\Http\Endpoint\ExportedPageReader;
 use Eszter\Http\Endpoint\HealthEndpoint;
 use Eszter\Http\Endpoint\PublicContentEndpoint;
@@ -77,6 +90,13 @@ final class Kernel
         public readonly RequestId $requestIds,
         public readonly Logger $logger,
         public readonly int $requestBodyLimitBytes,
+        /**
+         * Null when no authenticated surface is wired, which happens only outside
+         * production and only when no `database` block is configured. Production
+         * cannot reach that state: {@see Configuration} refuses to boot without
+         * one.
+         */
+        public readonly ?SessionManager $sessions = null,
     ) {
     }
 
@@ -89,12 +109,23 @@ final class Kernel
      *        HTML `GET /` injects into. Same seam, same reason: the suite asserts
      *        against a known export rather than against whatever `front/out/`
      *        happens to hold. Production passes null and reads the document root.
+     * @param AccountDirectory|null $accountDirectory Overrides where admin
+     *        accounts are read from.
+     * @param SessionStore|null $sessionStore Overrides where sessions live. The
+     *        same seam a third time, and the reason is sharpest here:
+     *        `php:http-contract` replays the whole frozen surface — the auth cases
+     *        included — and must do so without a MySQL server, while
+     *        `sql:integration` proves the SQL implementation of both against a
+     *        real one. Production passes null for both and gets
+     *        {@see AdminAccountRepository} and {@see PdoSessionStore}.
      */
     public static function boot(
         string $configPath,
         ?Clock $clock = null,
         ?PublishedContentReader $publishedContentReader = null,
         ?ExportedPageReader $exportedPageReader = null,
+        ?AccountDirectory $accountDirectory = null,
+        ?SessionStore $sessionStore = null,
     ): self {
         $clock ??= new SystemClock();
         $config = Configuration::fromFile($configPath);
@@ -118,6 +149,24 @@ final class Kernel
             $clock,
         );
 
+        // Constructing `Database` opens no connection, so a public-surface
+        // request still costs nothing. The connection happens on the first query,
+        // which only an `/api/auth/*` request makes.
+        $database = $config->database === null ? null : new Database($config->database);
+
+        $accounts = $accountDirectory
+            ?? ($database === null ? null : new AdminAccountRepository($database, $clock));
+        $sessionStore ??= $database === null ? null : new PdoSessionStore($database, $clock);
+
+        $sessions = $accounts === null || $sessionStore === null
+            ? null
+            : new SessionManager(
+                $sessionStore,
+                SessionCookie::fromArtifacts($artifacts, $config->session->cookieSecure),
+                $config->session,
+                $clock,
+            );
+
         $kernel = new self(
             $config,
             $artifacts,
@@ -128,6 +177,7 @@ final class Kernel
             $requestIds,
             $logger,
             self::parseByteSize($contract['requestBodyLimit'] ?? '64kb'),
+            $sessions,
         );
 
         $kernel->registerPublicRoutes(
@@ -135,6 +185,10 @@ final class Kernel
             $exportedPageReader ?? new ExportedPageFile($config->publicDir),
             $clock,
         );
+
+        if ($accounts !== null && $sessions !== null) {
+            $kernel->registerAuthRoutes($accounts, $sessions, $clock, $logger);
+        }
 
         // Logged after wiring, so the line reports what this request can actually
         // serve. Package 1.1 logged the storage seeding outcome here; storage is
@@ -224,9 +278,55 @@ final class Kernel
         $this->router->register('HEAD', PublicPageEndpoint::PATH, $page);
     }
 
+    /**
+     * The authenticated surface (ESZ-025 / ESZ-026).
+     *
+     * Registered separately from {@see registerPublicRoutes()} because the two
+     * have opposite invariants. The public routes must be reachable on every
+     * deployment; these must be reachable only where there is a database to keep
+     * sessions in, and `Configuration` guarantees that production is such a place.
+     *
+     * `/admin` itself is *not* registered here and never will be. It is a static
+     * file served by Apache, it enforces nothing, and every guarantee about who may
+     * do what is made by these three routes and the ones that will join them
+     * (`auth.accessControl`).
+     */
+    private function registerAuthRoutes(
+        AccountDirectory $accounts,
+        SessionManager $sessions,
+        Clock $clock,
+        Logger $logger,
+    ): void {
+        $authenticator = new Authenticator($accounts, $sessions, $clock, $logger);
+        $csrf = CsrfGuard::fromArtifacts($this->artifacts);
+
+        $this->router->register('GET', AuthSessionEndpoint::PATH, new AuthSessionEndpoint($authenticator));
+        $this->router->register(
+            'POST',
+            AuthLoginEndpoint::PATH,
+            new AuthLoginEndpoint(
+                $authenticator,
+                $sessions,
+                $csrf,
+                new StructuralValidator($this->artifacts),
+            ),
+        );
+        $this->router->register(
+            'POST',
+            AuthLogoutEndpoint::PATH,
+            new AuthLogoutEndpoint($authenticator, $sessions, $csrf),
+        );
+    }
+
     public function handle(Request $request): Response
     {
         $requestId = $this->requestIds->resolve($request->header(RequestId::HEADER));
+
+        // Before routing, so that a 403 or a 401 raised inside an endpoint still
+        // knows which session it was raised against, and so that the public
+        // surface — which never calls ensure() — pays only the cost of a cookie
+        // lookup and, at most, one indexed SELECT.
+        $this->sessions?->load($request);
 
         try {
             $this->rejectUnusableBody($request);
@@ -257,6 +357,13 @@ final class Kernel
 
             $response = $this->errorResponse(500, ErrorCatalog::INTERNAL_ERROR, $requestId);
         }
+
+        // Applied to *every* outcome, errors included. A rotated or cleared
+        // session must reach the client even when the response that carries it is
+        // a 401 — and, just as importantly, a failed login or a rejected CSRF
+        // check must not hand out a cookie, which is what
+        // `SessionManager::applyTo()` decides rather than each call site.
+        $response = $this->sessions?->applyTo($response) ?? $response;
 
         // Every response carries the id, including 304 and 500
         // (`requestId.presentOnEveryResponse`).

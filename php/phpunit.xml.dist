@@ -4,14 +4,48 @@
          bootstrap="vendor/autoload.php"
          colors="true"
          cacheDirectory=".phpunit.cache"
+         defaultTestSuite="eszter"
          failOnRisky="true"
          failOnWarning="true"
          beStrictAboutOutputDuringTests="true"
          displayDetailsOnTestsThatTriggerWarnings="true"
          displayDetailsOnTestsThatTriggerErrors="true">
   <testsuites>
+    <!--
+      The default suite: every test that runs on a bare checkout, and the one a
+      bare `phpunit` runs (see `defaultTestSuite` above — without it PHPUnit runs
+      *every* declared suite, which would drag the SQL ones in and make the
+      `php:unit` gate depend on a database server).
+
+      The directories are listed one by one rather than as `tests` with an
+      `<exclude>`, so this suite's membership is stated rather than derived by
+      subtraction. A new directory is then absent until someone adds it, which is
+      visible in a diff, instead of present until someone remembers to exclude it,
+      which is not.
+    -->
     <testsuite name="eszter">
-      <directory>tests</directory>
+      <directory>tests/Auth</directory>
+      <directory>tests/Config</directory>
+      <directory>tests/Contract</directory>
+      <directory>tests/Deploy</directory>
+      <directory>tests/Http</directory>
+      <directory>tests/Storage</directory>
+      <directory>tests/Support</directory>
+    </testsuite>
+
+    <!--
+      ESZ-023. Both suites need ESZTER_TEST_DB_DSN pointing at a disposable MySQL
+      database whose name ends in `_test`; without it every test in them skips and
+      `scripts/validate.mjs` reports the gate as NOT RUN, which is never a pass.
+      They are separate suites because they are separate gates: `sql:migrations`
+      proves the schema can be built, `sql:integration` proves the repositories
+      work against the schema it built.
+    -->
+    <testsuite name="sql-migrations">
+      <file>tests/Sql/MigrationTest.php</file>
+    </testsuite>
+    <testsuite name="sql-integration">
+      <file>tests/Sql/SqlIntegrationTest.php</file>
     </testsuite>
   </testsuites>
   <source>

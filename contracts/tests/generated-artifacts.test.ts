@@ -126,7 +126,14 @@ test("the generated HTTP contract carries every frozen case", async () => {
   );
   assert.deepEqual(
     contract.endpoints.map((endpoint) => endpoint.path).sort(),
-    ["/", "/api/content", "/api/health"],
+    [
+      "/",
+      "/api/auth/login",
+      "/api/auth/logout",
+      "/api/auth/session",
+      "/api/content",
+      "/api/health",
+    ],
   );
 
   // `/` accepts HEAD and the JSON surface does not. That difference is deliberate
@@ -139,7 +146,71 @@ test("the generated HTTP contract carries every frozen case", async () => {
   assert.deepEqual(methodsByPath["/api/content"], ["GET"]);
   assert.deepEqual(methodsByPath["/"], ["GET", "HEAD"]);
 
+  // ESZ-025. `/api/auth/session` is a GET because it reads state; the other two
+  // change it and are POST-only, so a `<img src>` or a top-level navigation
+  // cannot reach them at all before CSRF is even consulted.
+  assert.deepEqual(methodsByPath["/api/auth/session"], ["GET"]);
+  assert.deepEqual(methodsByPath["/api/auth/login"], ["POST"]);
+  assert.deepEqual(methodsByPath["/api/auth/logout"], ["POST"]);
+
   assert.ok(contract.errorCodes.includes("STORAGE_FAILURE"));
+});
+
+test("the generated HTTP contract carries the auth and CSRF boundary", async () => {
+  const contract = JSON.parse(await readGenerated("http-contract.json")) as {
+    auth?: {
+      sessionCookie: {
+        name: string;
+        httpOnly: boolean;
+        secure: boolean;
+        sameSite: string;
+        path: string;
+        domain: null;
+      };
+      csrf: { header: string; failure: { status: number; errorCode: string } };
+      loginFailure: { status: number; errorCode: string; appliesTo: string[] };
+      identity: { pattern: string; passwordMinLength: number };
+    };
+    errorCodes: string[];
+  };
+
+  // ESZ-025/026 read their whole security posture out of this block rather than
+  // agreeing with the frontend out of band, exactly as ESZ-021 does for the
+  // injection ids above.
+  const auth = contract.auth;
+  assert.ok(auth, "http-contract.json declares no auth block");
+
+  assert.equal(auth.sessionCookie.name, "__Host-eszter_session");
+  assert.equal(auth.sessionCookie.httpOnly, true);
+  assert.equal(auth.sessionCookie.secure, true);
+  assert.equal(auth.sessionCookie.sameSite, "Strict");
+  assert.equal(auth.sessionCookie.path, "/");
+  assert.equal(auth.sessionCookie.domain, null);
+
+  assert.equal(auth.csrf.header, "x-csrf-token");
+  assert.equal(auth.csrf.failure.status, 403);
+  assert.equal(auth.csrf.failure.errorCode, "CSRF_TOKEN_INVALID");
+
+  // The three login failures share one outcome. If this list ever shrinks, one of
+  // them has grown a distinguishable answer and become an enumeration oracle.
+  assert.equal(auth.loginFailure.status, 401);
+  assert.equal(auth.loginFailure.errorCode, "INVALID_CREDENTIALS");
+  assert.deepEqual(auth.loginFailure.appliesTo, [
+    "unknown email",
+    "wrong password",
+    "disabled account",
+  ]);
+
+  assert.ok(auth.identity.passwordMinLength >= 12);
+
+  for (const code of [
+    "VALIDATION_FAILED",
+    "INVALID_CREDENTIALS",
+    "UNAUTHENTICATED",
+    "CSRF_TOKEN_INVALID",
+  ]) {
+    assert.ok(contract.errorCodes.includes(code), `${code} is missing from errorCodes`);
+  }
 });
 
 test("the generated HTTP contract carries the public-page injection boundary", async () => {

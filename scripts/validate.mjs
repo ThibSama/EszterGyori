@@ -162,9 +162,11 @@ const gates = [
     id: "php:unit",
     stage: "6. PHP validation",
     cwd: "php",
-    command: ["vendor/bin/phpunit", "--no-progress"],
+    // `--testsuite eszter` explicitly, not by relying on the default: this gate
+    // must not need a database, and the SQL suites are separate gates below.
+    command: ["vendor/bin/phpunit", "--no-progress", "--testsuite", "eszter"],
     proves:
-      "Configuration fail-fast, contract-artifact digest verification, atomic JSON storage (temp-write, fsync, rename, size cap, locking, idempotent seeding, no silent replacement of invalid files), and the HTTP foundation against http-contract.json. Auth, media and the notification queue are not covered because they do not exist yet.",
+      "Configuration fail-fast including the production refusals of ESZ-027, contract-artifact digest verification, atomic JSON storage (temp-write, fsync, rename, size cap, locking, idempotent seeding, no silent replacement of invalid files), the HTTP foundation against http-contract.json, and the ESZ-025/026 auth invariants against in-memory doubles. Media and the notification queue are not covered because they do not exist yet.",
   },
   {
     id: "php:parity-corpus",
@@ -221,22 +223,37 @@ const gates = [
       "ESZ-022: /api resolves before anything can shadow it, static assets are served directly, /admin deep links survive a refresh, /reservation is reserved and ships no booking UI, `/` is never resolved as a static file, every declared rule is reachable, and the committed .htaccess is byte-identical to what the routing table renders using only directives legal in that context.",
   },
 
-  // ── Stage 7 — SQL (not available) ─────────────────────────────────────────────
+  // ── Stage 7 — SQL ─────────────────────────────────────────────────────────────
+  //
+  // ESZ-023 built the schema, the migrator and both suites, so these two gates are
+  // no longer unconditionally NOT RUN. What they still need is somewhere to run:
+  // a disposable MySQL database, named by ESZTER_TEST_DB_DSN. Without it they
+  // report NOT RUN naming the missing prerequisite rather than the missing
+  // subject, which is a different — and much smaller — gap than the one that was
+  // recorded here before.
+  //
+  // MySQL specifically, not SQLite. The engine is the thing under test: `utf8mb4`
+  // collations, `ON DUPLICATE KEY UPDATE`, `GET_LOCK`, foreign keys, and above all
+  // the implicit commit around DDL that makes a migration non-atomic and forces
+  // every migration file to be idempotent. A green SQLite run would prove none of
+  // it and would make the idempotence rule look like superstition.
   {
     id: "sql:migrations",
     stage: "7. SQL",
-    status: NOT_RUN,
-    reason: "No SQL schema, migrations or database exist yet.",
+    cwd: "php",
+    command: ["vendor/bin/phpunit", "--no-progress", "--testsuite", "sql-migrations"],
+    unavailable: sqlDatabaseUnavailable,
     proves:
-      "Every migration applies to an empty database in order, is idempotent on re-run, and leaves schema_migrations consistent. Runs against a disposable database, never a shared one.",
+      "Every migration applies to an empty database in order, is idempotent on re-run, and leaves schema_migrations consistent. A half-applied migration completes on the next run; editing an applied one, or finding a schema ahead of the code, is refused; concurrent runs serialise on an advisory lock. Runs against a disposable database, never a shared one — the suite refuses any database whose name does not end in `_test`.",
   },
   {
     id: "sql:integration",
     stage: "7. SQL",
-    status: NOT_RUN,
-    reason: "No SQL schema, migrations or database exist yet.",
+    cwd: "php",
+    command: ["vendor/bin/phpunit", "--no-progress", "--testsuite", "sql-integration"],
+    unavailable: sqlDatabaseUnavailable,
     proves:
-      "Admin, booking, settings and notification repositories against a real MySQL instance seeded from migrations, each test isolated in a rolled-back transaction.",
+      "The admin account and session repositories against a real MySQL instance seeded by the real migrations, each test isolated in a rolled-back transaction: repeat-safe provisioning, identity normalisation and the byte-exact e-mail index, password hashing, both session deadlines with the absolute one un-extendable, targeted invalidation, and the whole login/CSRF/logout flow driven through the front controller against MySQL. Booking, settings and notifications are not covered because they do not exist yet.",
   },
 
   // ── Stage 8 — HTTP smoke (not available) ──────────────────────────────────────
@@ -286,6 +303,26 @@ const gates = [
       "No secret is web-reachable, private paths return 404/403, directory indexing is off, PHP execution is disabled under media/, security headers are present, config file permissions are 0600, and no dependency has a known critical advisory.",
   },
 ];
+
+/**
+ * The prerequisite both SQL gates share.
+ *
+ * Returns a reason when the gate cannot run, null when it can. Deliberately not a
+ * connection attempt: a gate runner that talked to a database would need its own
+ * error handling, its own timeout and its own idea of what "reachable" means, and
+ * would then disagree with the suite it is about to start. Presence of the
+ * variable is the prerequisite; whether the server behind it works is the suite's
+ * problem, and the suite reports it as a FAIL rather than as an absence.
+ */
+function sqlDatabaseUnavailable() {
+  if (process.env.ESZTER_TEST_DB_DSN) return null;
+
+  return (
+    "No test database is configured. Set ESZTER_TEST_DB_DSN (plus ESZTER_TEST_DB_USERNAME " +
+    "and ESZTER_TEST_DB_PASSWORD) to a disposable MySQL database whose name ends in `_test`. " +
+    "The schema, the migrations and both suites exist; only the server is missing."
+  );
+}
 
 function parseArgs(argv) {
   return {
@@ -341,7 +378,8 @@ function main() {
 
   if (args.list) {
     for (const gate of gates) {
-      const state = gate.status === NOT_RUN ? "not run" : "executable";
+      const state =
+        gate.status === NOT_RUN || gate.unavailable?.() ? "not run" : "executable";
       process.stdout.write(`${gate.stage.padEnd(34)} ${gate.id.padEnd(30)} ${state}\n`);
     }
     return 0;
@@ -357,9 +395,16 @@ function main() {
       if (!args.json) process.stdout.write(`\n── ${currentStage} ${"─".repeat(Math.max(0, 58 - currentStage.length))}\n`);
     }
 
-    if (gate.status === NOT_RUN) {
-      report.push({ id: gate.id, stage: gate.stage, status: NOT_RUN, reason: gate.reason });
-      if (!args.json) process.stdout.write(`  ${NOT_RUN.padEnd(8)} ${gate.id.padEnd(30)} ${gate.reason}\n`);
+    // A gate is NOT RUN either because its subject does not exist (`status`) or
+    // because a prerequisite for running it is absent (`unavailable`). Both are
+    // reported identically, and neither is a pass.
+    const unavailableReason = gate.status === NOT_RUN ? gate.reason : gate.unavailable?.();
+
+    if (unavailableReason) {
+      report.push({ id: gate.id, stage: gate.stage, status: NOT_RUN, reason: unavailableReason });
+      if (!args.json) {
+        process.stdout.write(`  ${NOT_RUN.padEnd(8)} ${gate.id.padEnd(30)} ${unavailableReason}\n`);
+      }
       continue;
     }
 
@@ -402,7 +447,8 @@ function main() {
     }
     process.stdout.write(
       `\n  ${notRun} gate(s) could not execute and are NOT passes.\n` +
-        "  They become executable as SQL, a deployed origin and a browser runner arrive.\n" +
+        "  The SQL gates need ESZTER_TEST_DB_DSN to name a disposable MySQL database;\n" +
+        "  the rest become executable as a deployed origin and a browser runner arrive.\n" +
         "  Policy: docs/v1-quality-gates.md\n",
     );
   }

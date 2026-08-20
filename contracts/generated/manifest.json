@@ -10,8 +10,12 @@
   ],
   "artifacts": [
     {
+      "file": "auth-session-response.schema.json",
+      "sha256": "cdc3f3a886432ddae362fbd3ed38d1be484459134431132471adc06149dc6be9"
+    },
+    {
       "file": "error-envelope.schema.json",
-      "sha256": "6bc3d3393807e7d7bb3f005647f94dd3317a2f54438147548ae080965b187736"
+      "sha256": "3e033800dffb749cc72465f5930b4c0bc2a97f4f8fbe67fa570d870335e78ae9"
     },
     {
       "file": "health-response.schema.json",
@@ -19,7 +23,11 @@
     },
     {
       "file": "http-contract.json",
-      "sha256": "7871eff02ba6d91e0766ce38c111c77c99c7c709d0ee91a2b4687517d73eb1b7"
+      "sha256": "9ed69d34289603edd969366a1a642c098b10d902c7e7c1287019a67c37914d65"
+    },
+    {
+      "file": "login-request.schema.json",
+      "sha256": "0dddcd0fcd39d2a8da309eb800f2d319d25352088195e3dfc537d70917c3f9df"
     },
     {
       "file": "parity-corpus.json",

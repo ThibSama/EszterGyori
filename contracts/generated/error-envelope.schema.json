@@ -17,6 +17,10 @@
             "NOT_FOUND",
             "METHOD_NOT_ALLOWED",
             "INVALID_JSON",
+            "VALIDATION_FAILED",
+            "INVALID_CREDENTIALS",
+            "UNAUTHENTICATED",
+            "CSRF_TOKEN_INVALID",
             "INVALID_CONFIGURATION",
             "STORAGE_FAILURE",
             "INTERNAL_ERROR"

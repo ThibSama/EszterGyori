@@ -11,7 +11,15 @@ import {
 import { siteAppearanceCustomProperties } from "../appearance.js";
 import { defaultSiteContent } from "../default-site-content.js";
 import {
+  ADMIN_EMAIL_MAX_LENGTH,
+  ADMIN_EMAIL_PATTERN,
+  ADMIN_PASSWORD_MAX_LENGTH,
+  ADMIN_PASSWORD_MIN_LENGTH,
+  AUTH_LOGIN_PATH,
+  AUTH_LOGOUT_PATH,
+  AUTH_SESSION_PATH,
   CONTENT_CACHE_CONTROL,
+  CSRF_HEADER,
   HTTP_CONTRACT_VERSION,
   PUBLIC_PAGE_CONTENT_TYPE,
   PUBLIC_PAGE_PATH,
@@ -21,17 +29,25 @@ import {
   REQUEST_ID_HEADER,
   REQUEST_ID_PATTERN,
   REQUEST_ID_PREFIX,
+  SESSION_COOKIE_NAME,
+  adminAccessControl,
+  adminEmailNormalization,
   apiErrorCodes,
   apiErrorMessages,
+  authSessionResponseSchema,
   bootstrapFailureOutcome,
   contractImplementations,
+  csrfContract,
   errorEnvelopeSchema,
   healthResponseSchema,
   httpContractCases,
   httpContractInvariants,
+  loginFailureOutcome,
+  loginRequestSchema,
   overLimitBodyOutcome,
   publicPageBootstrap,
   publicPageFallbackOutcome,
+  sessionCookie,
 } from "../http-contract.js";
 import {
   PARITY_BASE_PUBLISHED_AT,
@@ -122,6 +138,22 @@ const schemaTargets: SchemaTarget[] = [
     title: "HealthResponse",
     description: "Body of a 200 GET /api/health.",
     schema: healthResponseSchema,
+    io: "output",
+  },
+  {
+    file: "login-request.schema.json",
+    title: "LoginRequest",
+    description:
+      "Body of POST /api/auth/login. Shape only — the password policy in adminPassword is a provisioning rule, not a login rule, so that a policy rejection cannot separate guesses that must stay indistinguishable.",
+    schema: loginRequestSchema,
+    io: "input",
+  },
+  {
+    file: "auth-session-response.schema.json",
+    title: "AuthSessionResponse",
+    description:
+      "Body of a 200 GET /api/auth/session and of a 200 POST /api/auth/login. Strict: no session id, password hash or internal account id may appear in it.",
+    schema: authSessionResponseSchema,
     io: "output",
   },
   {
@@ -236,6 +268,26 @@ function buildHttpContractDocument(): unknown {
       errorResponses:
         "Error responses must never carry a `published-<revision>` ETag. A framework-generated validator on an error body (Express emits a weak ETag) is tolerated and need not be reproduced.",
     },
+    auth: {
+      paths: {
+        login: AUTH_LOGIN_PATH,
+        logout: AUTH_LOGOUT_PATH,
+        session: AUTH_SESSION_PATH,
+      },
+      sessionCookie: { ...sessionCookie, name: SESSION_COOKIE_NAME },
+      csrf: { ...csrfContract, header: CSRF_HEADER },
+      loginFailure: loginFailureOutcome,
+      accessControl: adminAccessControl,
+      identity: {
+        ...adminEmailNormalization,
+        emailPattern: ADMIN_EMAIL_PATTERN,
+        emailMaxLength: ADMIN_EMAIL_MAX_LENGTH,
+        passwordMinLength: ADMIN_PASSWORD_MIN_LENGTH,
+        passwordMaxLength: ADMIN_PASSWORD_MAX_LENGTH,
+        passwordHash:
+          "password_hash() with the runtime's default algorithm, Argon2id preferred and bcrypt acceptable. The hash is never returned by any endpoint.",
+      },
+    },
     errorCodes: apiErrorCodes,
     errorMessages: apiErrorMessages,
     endpoints: [
@@ -259,6 +311,28 @@ function buildHttpContractDocument(): unknown {
         statuses: [200, 304, 400, 405],
         successBodySchema: null,
         successContentType: PUBLIC_PAGE_CONTENT_TYPE,
+      },
+      {
+        path: AUTH_SESSION_PATH,
+        methods: ["GET"],
+        // No 401: this endpoint reports authentication state, it does not
+        // require it, which is what lets a caller obtain a CSRF token before
+        // it has anything else.
+        statuses: [200, 400, 405],
+        successBodySchema: "auth-session-response.schema.json",
+      },
+      {
+        path: AUTH_LOGIN_PATH,
+        methods: ["POST"],
+        statuses: [200, 400, 401, 403, 405],
+        requestBodySchema: "login-request.schema.json",
+        successBodySchema: "auth-session-response.schema.json",
+      },
+      {
+        path: AUTH_LOGOUT_PATH,
+        methods: ["POST"],
+        statuses: [204, 400, 401, 403, 405],
+        successBodySchema: null,
       },
     ],
     unknownRouteStatus: 404,

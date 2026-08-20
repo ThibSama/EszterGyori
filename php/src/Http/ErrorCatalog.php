@@ -20,6 +20,10 @@ final class ErrorCatalog
     public const NOT_FOUND = 'NOT_FOUND';
     public const METHOD_NOT_ALLOWED = 'METHOD_NOT_ALLOWED';
     public const INVALID_JSON = 'INVALID_JSON';
+    public const VALIDATION_FAILED = 'VALIDATION_FAILED';
+    public const INVALID_CREDENTIALS = 'INVALID_CREDENTIALS';
+    public const UNAUTHENTICATED = 'UNAUTHENTICATED';
+    public const CSRF_TOKEN_INVALID = 'CSRF_TOKEN_INVALID';
     public const INVALID_CONFIGURATION = 'INVALID_CONFIGURATION';
     public const STORAGE_FAILURE = 'STORAGE_FAILURE';
     public const INTERNAL_ERROR = 'INTERNAL_ERROR';

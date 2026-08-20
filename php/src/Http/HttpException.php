@@ -41,4 +41,41 @@ final class HttpException extends \RuntimeException
     {
         return new self(400, ErrorCatalog::INVALID_JSON, [], $logMessage);
     }
+
+    /**
+     * A body that parsed as JSON but is not the shape the endpoint accepts.
+     *
+     * Distinct from {@see invalidJson()} because the two are distinct problems for
+     * the caller: one means "your bytes are not JSON", the other "your JSON is not
+     * this request". `$logMessage` goes to the log only — the response body is the
+     * frozen envelope, so a field name never leaks through it.
+     */
+    public static function validationFailed(string $logMessage = ''): self
+    {
+        return new self(400, ErrorCatalog::VALIDATION_FAILED, [], $logMessage);
+    }
+
+    /**
+     * The single login failure (`auth.loginFailure`).
+     *
+     * One factory, deliberately taking no argument that could vary the response.
+     * Unknown address, wrong password and disabled account all come here, and the
+     * contract requires them to be indistinguishable; the way to keep that true is
+     * to make it impossible to express the difference. The reason is logged by the
+     * caller, against the request id, and never carried on the exception.
+     */
+    public static function invalidCredentials(): self
+    {
+        return new self(401, ErrorCatalog::INVALID_CREDENTIALS);
+    }
+
+    public static function unauthenticated(): self
+    {
+        return new self(401, ErrorCatalog::UNAUTHENTICATED);
+    }
+
+    public static function csrfTokenInvalid(string $logMessage = ''): self
+    {
+        return new self(403, ErrorCatalog::CSRF_TOKEN_INVALID, [], $logMessage);
+    }
 }

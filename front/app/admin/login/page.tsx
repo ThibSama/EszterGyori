@@ -23,11 +23,23 @@ export const metadata: Metadata = {
  * the browser can see would be theatre: the check and the session would both be
  * under the caller's control.
  *
- * Package 2.2 replaces this with a form posting to `/api/auth/login`, against a
- * PHP session — opaque server-side id, `password_verify()`, per-session CSRF
- * token, throttled attempts (`docs/hetzner-target-architecture.md` §6). The page
- * says so rather than pretending, because an admin who cannot tell "not built
- * yet" from "broken" will file the wrong bug.
+ * Package 2.2 (ESZ-025/026) built the half that had to come first: `/api/auth/login`,
+ * `/api/auth/logout` and `/api/auth/session` exist, backed by a server-side PHP
+ * session with an opaque id in MySQL, `password_verify()`, a per-session CSRF
+ * token and session-id rotation on login. The contract froze all three before they
+ * were written, so the form this page will eventually hold has a surface to be
+ * written against.
+ *
+ * The form itself is still not here, and the copy below is still the truth for a
+ * visitor: nothing in this browser can sign anyone in yet. It stays a placeholder
+ * rather than becoming a half-wired form, because an admin who cannot tell "not
+ * built yet" from "broken" will file the wrong bug — and because whatever is
+ * rendered here enforces nothing either way. `/admin` is a static file; PHP is the
+ * authority on every privileged call (`auth.accessControl`).
+ *
+ * Still outstanding for the browser half: the form, and the login throttling
+ * `docs/hetzner-target-architecture.md` §6 asks for, which is not implemented on
+ * either side.
  */
 export default function AdminLoginPage() {
   return (

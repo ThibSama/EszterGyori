@@ -13,11 +13,16 @@ contract, and retired the Express service, making `php/` the only backend.
 
 Package 2.1 (ESZ-020/021/022) removed the last production Node runtime. The frontend is
 a static export, `/` is served by PHP with the published content injected into it, and
-the document-root routing is generated from a tested table. **§5 and §12 are built; §6
-is half-built** — the admin is a static shell, and the authentication that used to sit
-in front of it is gone rather than replaced, because a static file cannot enforce one.
-Package 2.2 owns that. SQL, media, backups and cron remain unbuilt. Section 1's table
-records the difference.
+the document-root routing is generated from a tested table.
+
+Package 2.2 (ESZ-023/024/025/026/027) built the authorisation §6 asks for, and the parts
+of §8 and §9 it rests on: a PDO layer with ordered, repeat-safe migrations; the
+`admin_accounts` and `admin_sessions` schema; an explicit provisioning CLI; server-side
+sessions with CSRF; and the production configuration boundaries that refuse to boot on an
+unsafe setting. **§5, §6, §9 and §12 are built. §8 is built for the admin domain only** —
+booking, settings and notifications have no tables because they have no features. Media,
+backups and cron remain unbuilt, and login throttling is the one thing §6 asks for that
+ESZ-025 did not deliver. Section 1's table records the difference.
 
 Companion documents:
 
@@ -39,7 +44,9 @@ Everything below runs today and is covered by passing gates:
 | --- | --- |
 | `contracts/` | TypeScript + Zod source of truth; generated JSON Schema, semantic rules, parity corpus and HTTP contract committed under `contracts/generated/`. |
 | `front/` | Next.js 16 app, built with `output: "export"`. Every route is `○ (Static)`; there is no middleware, no route handler and no server-only dependency. Drafts still live in browser `localStorage`. Gate `front:export` asserts all of it. |
-| `php/` | PHP 8.2+ backend, and since ESZ-015 the **only** one. Front controller, router, request ids, JSON error envelopes, file-based configuration, structured logging, contract-driven validation replaying the parity corpus 39/39, atomic `draft.json` / `published.json` storage with `flock` (shared for reads, exclusive for seeding and writes) and strict fail-fast, plus `GET /api/health`, `GET /api/content` and — since ESZ-021 — `GET|HEAD /` replaying the whole of `http-contract.json` with **no exemptions**. Every other `/api` path answers the frozen JSON 404. No SQL, no auth, no media, no cron. |
+| `php/` | PHP 8.2+ backend, and since ESZ-015 the **only** one. Front controller, router, request ids, JSON error envelopes, file-based configuration, structured logging, contract-driven validation replaying the parity corpus 39/39, atomic `draft.json` / `published.json` storage with `flock` (shared for reads, exclusive for seeding and writes) and strict fail-fast, plus `GET /api/health`, `GET /api/content` and — since ESZ-021 — `GET|HEAD /` replaying the whole of `http-contract.json` with **no exemptions**. Since ESZ-025/026 also `GET /api/auth/session`, `POST /api/auth/login` and `POST /api/auth/logout`, server-enforced. Every other `/api` path answers the frozen JSON 404. No media, no cron. |
+| SQL | `php/migrations/` — ordered, forward-only, individually idempotent files applied by `php/bin/migrate.php` and recorded in `schema_migrations` with their checksums. `admin_accounts` and `admin_sessions` only; no booking, settings or notification tables, because none of those features exists. Gates `sql:migrations` and `sql:integration` run against a disposable MySQL when `ESZTER_TEST_DB_DSN` names one, and report NOT RUN otherwise. |
+| Admin identity | `php/bin/provision-admin.php`. Accounts are created by an operator, never by a migration and never at boot: a seeded default account would be identical on every deployment. The password is read from a terminal with echo off or from stdin, never from an argument. |
 | Routing | `php/public/.htaccess` and `php/public/media/.htaccess`, **generated** from `src/Deploy/DocumentRootRouting.php` and drift-checked by `php:routing`. Not deployed, and not yet executed by a real Apache — see §14. |
 | Deployment | None. No host, no domain, no TLS, no backups, no deploy automation — `php/README.md` sketches the copy. The Docker image that used to exist was deleted with the Express service. |
 
@@ -55,10 +62,21 @@ recording what each cost:
   server; `must-revalidate` plus the published ETag replaces it, exactly as §5
   specified.
 
-What remains owed is **authorisation**, and it is now the single largest gap in this
-document: `/admin` is reachable by anyone who knows the path. It has no server API to
-read from and no secrets in it, so nothing leaks today, but that stops being true the
-moment Package 2.2 gives it endpoints to call.
+Authorisation was the largest gap in this document and is no longer open. `/admin` is
+still a static file reachable by anyone who knows the path — that is unavoidable and
+harmless, because it holds no secrets and enforces nothing. What changed is that the
+endpoints it will call are now guarded on the server: `/api/auth/*` exists, a session is
+an opaque id naming a row in MySQL, and every privileged decision is made by PHP per
+request (§6).
+
+What remains owed, in the order it matters:
+
+- **Login throttling.** §6 asks for rate-limited attempts keyed by account and by source
+  address. Not built. Everything else §6 specifies is.
+- **The browser half of `/admin`.** `/admin/login` still renders no form, so nothing in a
+  browser can sign in yet even though the API accepts it.
+- **Deployment.** Still none, so `smoke:http`, `browser:*` and `security:config` remain
+  NOT RUN and no `.htaccess` has been executed by a real Apache (§14).
 
 ---
 
@@ -287,7 +305,10 @@ disk, same host, no HTTP hop.
 
 > **Half built (ESZ-020).** The shell is static and exported. The Next middleware gate
 > is gone, and **nothing replaced it** — `/admin` is not access-controlled. Everything
-> in the "Target" column below is Package 2.2's.
+> in the "Target" column below is Package 2.2's, and — apart from the last row, which
+> belongs to a later package — it is now what is built. The "Today" column is kept as
+> the record of what was replaced, because the *reason* each replacement was necessary
+> is the most reusable thing in this section.
 
 The admin is a **static shell** under `public_html/admin/`, driven entirely by
 `/api/admin/*`. It renders no secrets at build time.
@@ -299,10 +320,10 @@ single most important correction in this document.
 | Concern | Today | Target |
 | --- | --- | --- |
 | Route protection | `front/proxy.ts` middleware | **PHP**, enforced per request on every `/api/admin/*` call. The shell may redirect for UX; the API is the authority. |
-| Session | JWT HS256 cookie signed by Next (`jose`) | PHP session: opaque random id, server-side record in MySQL, `HttpOnly`, `Secure`, `SameSite=Strict`, path-scoped. |
-| Password | scrypt via `node:crypto` | `password_hash()` / `password_verify()` (Argon2id preferred, bcrypt acceptable), constant-time by construction. |
-| CSRF | Origin + `Sec-Fetch-Site` check only | Per-session CSRF token required on every mutating request, **in addition to** the origin check. |
-| Draft storage | browser `localStorage` | `data/content/draft.json` via authenticated `/api/admin/content/draft`. |
+| Session | JWT HS256 cookie signed by Next (`jose`) | **Built (ESZ-025).** Opaque 256-bit random id, server-side record in `admin_sessions`, `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, no `Domain`, and the `__Host-` name prefix so the browser enforces the last three itself. Two deadlines: an idle timeout that slides forward, and an absolute ceiling that never does. The id rotates on login and the pre-login row is deleted; logout deletes the row **before** expiring the cookie, so a replayed cookie names nothing. |
+| Password | scrypt via `node:crypto` | **Built (ESZ-024).** `password_hash()` / `password_verify()` with `PASSWORD_DEFAULT` — Argon2id where the build has it, bcrypt otherwise — re-hashed on sign-in when the default moves. Unknown address, wrong password and disabled account answer one identical 401, and all three perform a verification so their *timing* does not separate them either. |
+| CSRF | Origin + `Sec-Fetch-Site` check only | **Built (ESZ-026).** A 256-bit per-session token, required in `X-CSRF-Token` on every state-changing request and compared with `hash_equals`. Bound to the *anonymous* session too, which is what lets `POST /api/auth/login` be protected — login CSRF, where a victim is silently signed into an attacker's account and everything they then write lands in it, is a real attack on an editing surface. The token is re-minted whenever the session id rotates. `SameSite=Strict` is required in addition, never instead: it is a browser behaviour, not a server check, it does nothing for a non-browser client, and a same-site subresource sails through it. |
+| Draft storage | browser `localStorage` | Still `localStorage`. `/api/admin/content/draft` is a later package and stays a frozen 404. |
 
 Restated from `docs/runtime-inventory.md` §6: **the frontend session must never be
 treated as authorization for a PHP endpoint.** With the middleware gone, PHP-side
@@ -310,6 +331,11 @@ enforcement is not a defence-in-depth nicety — it is the only thing standing t
 
 Additional hardening: rate-limit and throttle login attempts (counter in SQL, keyed by
 account and by source address), with a uniform failure response and no user enumeration.
+**Not built.** The uniform failure response and the absence of enumeration *are* built
+and covered (`auth.failureModesAreIndistinguishable`); the counter and the throttle are
+not, and there is no `login_attempts` table. This is the one item in this section
+Package 2.2 left open, and it is deliberately not half-built: a counter with no
+enforcement would read like a control while being none.
 
 ### API surface
 
@@ -320,9 +346,12 @@ listed as *not implemented* there — `/api/admin/content/*`, `/api/admin/media`
 first**, so the contract stays the source of truth rather than a description written
 afterwards.
 
-As of Package 1.2 the two public routes are implemented and replay the whole contract
-(gate `php:http-contract`); none of the admin or auth routes is routed, and the
-contract still freezes them at 404. The one planned change to the surface has been
+As of Package 2.2 the two public routes, `/` and the three `/api/auth/*` routes are
+implemented and replay the whole contract (gate `php:http-contract`). The auth routes
+were added to `contracts/http-contract.ts` **before** any PHP was written for them, which
+is what this paragraph asks for; the artifacts were regenerated and the drift gate
+(`contracts:verify:generated`) is what proves the committed copies match. The
+`/api/admin/*` routes are still unrouted and the contract still freezes them at 404. The one planned change to the surface has been
 applied: `/api/health` no longer carries `uptimeSeconds`, because shared-hosting PHP
 has no process to measure. See `docs/contract-freeze.md`, Part 4.
 
@@ -357,22 +386,52 @@ Rules:
 MySQL owns everything the JSON content document deliberately does not: state that is
 queried, filtered by date, or appended to over time.
 
-| Domain | Owns |
-| --- | --- |
-| Admin | accounts, password hashes, sessions, login attempts, audit log of publishes |
-| Booking | requests, status transitions, requested slots, contact details, consent record |
-| Settings | operational configuration editable at runtime (opening hours, lead times, notification recipients) — **not** secrets, **not** editorial copy |
-| Notifications | outbound queue: type, payload, channel, attempts, status, timestamps |
+Built for the Admin row only, as of ESZ-023/024/025. The other three rows are the
+target and have no tables, because a table for a feature that does not exist is a
+migration to maintain and a schema nothing exercises.
+
+| Domain | Owns | State |
+| --- | --- | --- |
+| Admin | accounts, password hashes, sessions, login attempts, audit log of publishes | **Built**, except login attempts (§6) and the publish audit log (no publish endpoint yet). |
+| Booking | requests, status transitions, requested slots, contact details, consent record | Not built — no booking feature. |
+| Settings | operational configuration editable at runtime (opening hours, lead times, notification recipients) — **not** secrets, **not** editorial copy | Not built. |
+| Notifications | outbound queue: type, payload, channel, attempts, status, timestamps | Not built. |
 
 Boundaries:
 
 - **Editorial copy never enters SQL** (§4). **Secrets never enter SQL** (§9).
 - Every schema change is a numbered, forward-only migration file, applied by a script,
   recorded in a `schema_migrations` table. No hand-edited production schema, ever.
+  Implemented as `php/migrations/NNNN_name.sql` plus `php/bin/migrate.php`. Editing a
+  file that has already been applied is refused on its recorded checksum, and a database
+  recording a version this checkout does not contain is refused as a schema that has run
+  ahead of its code.
+- **Every migration is individually idempotent, and this is enforced.** MySQL commits
+  implicitly before and after every DDL statement, so a migration is not atomic and
+  cannot be made atomic — a file with three `CREATE TABLE`s that dies on the third
+  leaves two tables behind and no row in `schema_migrations`. Wrapping it in
+  `BEGIN`/`COMMIT` would not fix that, only hide it behind syntax that looks like a
+  guarantee. So the guarantee lives in the files: `IF NOT EXISTS` and guarded `ALTER`s
+  only, checked mechanically at read time, so a non-re-runnable statement fails on a
+  developer's machine rather than half-way through a deploy.
+- Concurrent deploys serialise on a named advisory lock (`GET_LOCK`); the second one
+  waits and then finds nothing pending.
 - `utf8mb4` / `utf8mb4_unicode_ci` throughout. The frontend already asserts that the
   canonical content is well-formed NFC UTF-8; the database must not be the component
   that breaks it.
-- Prepared statements only.
+- **Two deliberate exceptions to that collation**, both on identity columns.
+  `admin_accounts.email` is `utf8mb4_bin` and `admin_sessions.id` is `ascii_bin`, because
+  `utf8mb4_unicode_ci` is accent-insensitive as well as case-insensitive: under it
+  `rene@…` and `renée@…` collide on the unique index, and one of two legitimate people
+  could not have an account. The case folding that *should* happen happens in PHP, once,
+  where the contract defines it (`auth.identity`). A session id compared
+  case-insensitively would likewise match ids that are not it.
+- Prepared statements only, with `ATTR_EMULATE_PREPARES` **off** so that is literally
+  true rather than PHP interpolating the values itself. `ERRMODE_EXCEPTION` and
+  `STRINGIFY_FETCHES=false` go with it: the defaults are silent-failure and
+  everything-is-a-string respectively, and both turn a wrong result into a plausible one.
+  The one place raw SQL is executed is the migration runner, through a method named so
+  that grepping for it finds every caller.
 - Booking rows contain personal data: define retention and deletion up front, not after
   the first request to erase.
 
@@ -388,9 +447,29 @@ Boundaries:
   `INVALID_CONFIGURATION` envelope and a detailed log entry. It must never fall back to
   defaults and serve a half-configured site. This preserves today's startup behaviour
   (`docs/runtime-inventory.md` §5) in a model that has no startup.
+- **Production refuses specific unsafe settings** (ESZ-027), each because the failure it
+  prevents is otherwise silent: no `database` block at all; a DB password that is empty
+  or is still one of the placeholders from `config.example.php`; a DSN that is not
+  `mysql:` (a `sqlite:` one would run the whole admin surface against a file the next
+  deploy replaces, with every test green); `session.cookieSecure: false`, without which
+  the session cookie can be stripped onto plain HTTP; and a configuration file readable
+  by group or others, which on shared hosting means readable by other tenants. Outside
+  production none of these applies — a developer's checkout is routinely `0644`, and
+  refusing to boot over that would only teach people to ignore the check when it fires
+  for real.
+- **Secrets never serialise.** `DatabaseSettings` redacts under `json_encode`,
+  `var_dump`/`print_r` and its own `describe()`, which yields `driver:dbname` and nothing
+  else. Driver error messages are scrubbed of credential-shaped fragments before they
+  reach even the log. `Session` redacts its id and its CSRF token the same way, and
+  `AdminAccount` redacts its hash.
+- The cookie's name and its `HttpOnly`/`SameSite`/`Path` attributes are deliberately
+  **not** configuration. They are frozen in `http-contract.json` under `auth`, so no
+  config file can quietly relax them; only the timings and `cookieSecure` are settings.
 - A committed `config/config.example.php` documents every key with placeholder values.
-- Secrets inventory: DB DSN/user/password, admin session secret, SMTP credentials, SMS
-  gateway credentials, cron shared token (§11).
+- Secrets inventory: DB DSN/user/password, SMTP credentials, SMS gateway credentials,
+  cron shared token (§11). There is deliberately **no** admin session secret: sessions
+  are opaque ids naming server-side rows, not signed tokens, so there is nothing to sign
+  and therefore no signing key to leak, rotate or forget to rotate.
 
 Node-era variables are retired: `NODE_ENV`, `HOST`, `PORT`, `CONTENT_DATA_DIR` and
 `CONTENT_API_URL` have no target counterpart (`docs/runtime-inventory.md` §5). The
@@ -555,8 +634,12 @@ Carried forward from `docs/runtime-inventory.md` §12, plus what this document a
 1. **Confirm the hosting plan's actual capabilities** — document root path and whether
    it can be symlinked, PHP version, CLI cron availability and entry count, MySQL
    version, SSH access, disk quota. Several decisions above are conditional on these.
-2. **Contract-first extension** — `/api/admin/*` and `/api/auth/*` must enter
-   `contracts/http-contract.ts` and the parity corpus **before** any PHP is written.
+2. **Contract-first extension** — `/api/admin/*` must enter `contracts/http-contract.ts`
+   **before** any PHP is written. `/api/auth/*` is **done (ESZ-025)**: the three routes,
+   their statuses, the session-cookie attributes, the CSRF lifecycle, the login-failure
+   outcome and the identity normalisation rules were all added to the contract and the
+   artifacts regenerated before the endpoints existed, and PHP reads its security posture
+   out of `http-contract.json` rather than restating it.
 3. ~~**`uptimeSeconds` semantics**~~ — **closed (ESZ-013).** No value was invented; the
    field left the contract. See `docs/contract-freeze.md`, Part 4.
 4. ~~**Fail-fast on broken storage**~~ — **closed (ESZ-013).** §9's "fail the request
@@ -564,21 +647,34 @@ Carried forward from `docs/runtime-inventory.md` §12, plus what this document a
    invalid published document is a 500 `STORAGE_FAILURE` on `GET /api/content` only.
    `/api/health` reads nothing, which is now a contract invariant.
 5. **Booking data retention** — required before the first real booking is stored.
-6. **Admin session storage** — SQL-backed sessions are specified here; confirm this
-   over PHP's default file sessions, which are harder to invalidate and audit.
-7. **`/admin` is unprotected** — opened by ESZ-020 and closed by Package 2.2. The Next
-   middleware gate was deleted rather than ported, because a static host has no
-   middleware and a browser-side check is not access control. Until PHP enforces
-   authorisation on every `/api/admin/*` call, the shell is reachable by anyone who
-   knows the path. It has no server API and no secrets, so nothing leaks *today* — the
-   risk arrives with the endpoints. If the site is deployed before 2.2 lands, the
-   generated `.htaccess` carries a commented-out Basic auth block that keeps `/admin`
-   off the open internet at the web-server layer; that is a stopgap, not the design.
+6. ~~**Admin session storage**~~ — **closed (ESZ-025).** SQL-backed, as specified. PHP's
+   own session extension was rejected for two reasons: it is global state
+   (`$_SESSION`, direct header emission) in a layer deliberately built to have none —
+   `Request` exists precisely so the HTTP layer is testable without a web server — and
+   `session_start()`, `session_id()` and `session_regenerate_id()` all refuse once
+   `headers_sent()` is true, which under the CLI SAPI is immediately, so rotation-on-login
+   and logout invalidation would have been the two properties most worth proving and the
+   two that could not be. What the extension would have provided — an opaque random id, a
+   server-side record, refusal to adopt a client-chosen id, rotation on privilege change —
+   is provided by `SessionManager` and `PdoSessionStore`, and all four are covered tests.
+7. ~~**`/admin` is unprotected**~~ — **closed (ESZ-025/026).** The shell is still a
+   static file reachable by anyone who knows the path, and always will be; what was
+   actually at risk was the endpoints it would call, and those are now enforced by PHP
+   per request. A session is an opaque id naming a server-side row, a disabled account is
+   rejected on its *next request* rather than at its next login, and every
+   state-changing call needs a per-session CSRF token in addition to `SameSite=Strict`.
+   The commented-out Basic auth block in the generated `.htaccess` was the stopgap for
+   this item and is no longer the thing standing between `/admin` and the internet.
 8. **Apache has never executed the generated rules** — `php:routing` proves the table
    and that `.htaccess` matches it, using only directives legal in that context, but
    not that `mod_rewrite` is enabled, that `AllowOverride` permits them, or that
    `DirectoryIndex disabled` behaves as assumed on this plan. First deploy must run
    `smoke:http` before anything else is trusted.
-9. **`/reservation` is reserved, not built** — it resolves to the 404 document and
+9. **Login throttling** — opened by ESZ-025. §6 asks for rate-limited attempts keyed by
+   account and by source address, with a counter in SQL. Not built, and deliberately not
+   half-built: a counter that nothing enforces reads like a control while being none.
+   The uniform failure response and the absence of user enumeration that §6 asks for in
+   the same breath *are* built and covered.
+10. **`/reservation` is reserved, not built** — it resolves to the 404 document and
    ships no booking UI. It is named in the routing table now so that it cannot be
    quietly captured by a later widening of the admin or public rule.

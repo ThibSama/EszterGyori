@@ -35,6 +35,97 @@ export const PUBLIC_PAGE_PATH = "/";
 /** Content-Type of the public page, on 200 and on 405 it is the error envelope instead. */
 export const PUBLIC_PAGE_CONTENT_TYPE = "text/html; charset=utf-8";
 
+/** Authenticated admin surface. Added in Package 2.2 (ESZ-025). */
+export const AUTH_LOGIN_PATH = "/api/auth/login";
+export const AUTH_LOGOUT_PATH = "/api/auth/logout";
+export const AUTH_SESSION_PATH = "/api/auth/session";
+
+/** Header carrying the per-session CSRF token on every state-changing request. */
+export const CSRF_HEADER = "x-csrf-token";
+
+/** Name of the session cookie. Prefixed so a non-Secure copy cannot shadow it. */
+export const SESSION_COOKIE_NAME = "__Host-eszter_session";
+
+/**
+ * Cookie attributes the session cookie must carry.
+ *
+ * `__Host-` is not decoration: the prefix makes the browser refuse the cookie
+ * unless it is `Secure`, `Path=/` and carries no `Domain`, which removes
+ * subdomain injection as a way to plant a session id. The attributes below are
+ * therefore both the policy *and* what the prefix already enforces, stated
+ * explicitly so an implementation cannot satisfy the name and not the substance.
+ *
+ * `Secure` is dropped only when the configured environment is not production, so
+ * a developer on plain HTTP can still log in; a production configuration that
+ * turns it off must fail to boot (ESZ-027) rather than serve a downgradeable
+ * cookie.
+ */
+export const sessionCookie = {
+  name: SESSION_COOKIE_NAME,
+  httpOnly: true,
+  secure: true,
+  sameSite: "Strict",
+  path: "/",
+  domain: null,
+  requirements: [
+    "The id is opaque and generated from a cryptographic source; it encodes no account data.",
+    "The server-side record is authoritative. A cookie whose id has no record is treated as anonymous and the id is never adopted.",
+    "The id is rotated on every privilege change, which for this surface means on successful login.",
+    "Logout destroys the server-side record first and expires the cookie second, so a replayed cookie cannot outlive the record.",
+  ],
+} as const;
+
+/**
+ * CSRF lifecycle (ESZ-026).
+ *
+ * SameSite=Strict is a useful second lock but not the mechanism: it is a browser
+ * behaviour, not a server check, it does not exist for non-browser clients, and
+ * it has historically been relaxed by user agents. The server therefore requires
+ * a token it issued itself on every state-changing request.
+ *
+ * The token is bound to the session — including the *anonymous* session, which is
+ * what allows `POST /api/auth/login` to be protected too. A login CSRF, where an
+ * attacker silently signs a victim into an account the attacker controls, is a
+ * real attack on an editing surface: everything the victim then writes lands in
+ * the attacker's account. The anonymous token closes it.
+ */
+export const csrfContract = {
+  header: CSRF_HEADER,
+  issuedBy: `${AUTH_SESSION_PATH} and ${AUTH_LOGIN_PATH}, in the response body`,
+  boundTo: "the session, anonymous or authenticated",
+  requiredOn: "every state-changing request, including login and logout",
+  exemptFrom: `GET ${AUTH_SESSION_PATH}, and the read-only public surface, which change no state`,
+  comparison: "constant-time",
+  rotation:
+    "A fresh token is minted whenever the session id rotates, so the token a caller holds before login is useless after it.",
+  failure: { status: 403, errorCode: "CSRF_TOKEN_INVALID" },
+  requirements: [
+    "A missing, empty, malformed or non-matching token fails identically; the response distinguishes none of them.",
+    "The token is never accepted from a query string or a form field on this surface, only from the header.",
+    "The check runs after authentication is resolved, so an unauthenticated call to a protected route reports 401 rather than leaking that its token was also wrong.",
+    "SameSite=Strict on the session cookie is required in addition, never instead.",
+  ],
+} as const;
+
+/**
+ * How a login failure is reported.
+ *
+ * One status, one code, one message, whatever actually went wrong: unknown
+ * address, wrong password, or an account that exists and is disabled. Any
+ * difference between those — a distinct code, a distinct message, or a
+ * measurably distinct response time — is an account enumeration oracle.
+ */
+export const loginFailureOutcome = {
+  status: 401,
+  errorCode: "INVALID_CREDENTIALS",
+  appliesTo: ["unknown email", "wrong password", "disabled account"],
+  requirements: [
+    "The three causes are indistinguishable in status, code, message and headers.",
+    "A password verification is performed even when no account matched, so the response time does not reveal whether the address exists.",
+    "No session is created, and any anonymous session's CSRF token is left usable so a retry does not need a new round trip.",
+  ],
+} as const;
+
 /**
  * Where the published content is injected into the exported HTML.
  *
@@ -171,6 +262,10 @@ export const apiErrorCodes = [
   "NOT_FOUND",
   "METHOD_NOT_ALLOWED",
   "INVALID_JSON",
+  "VALIDATION_FAILED",
+  "INVALID_CREDENTIALS",
+  "UNAUTHENTICATED",
+  "CSRF_TOKEN_INVALID",
   "INVALID_CONFIGURATION",
   "STORAGE_FAILURE",
   "INTERNAL_ERROR",
@@ -220,6 +315,115 @@ export const healthResponseSchema = z
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 
 /**
+ * Normalised form of an admin login identifier (ESZ-024).
+ *
+ * Identity is an email address, lower-cased and trimmed. Normalisation is part of
+ * the contract rather than an implementation detail because it decides *identity*:
+ * if PHP and the provisioning tool disagreed on it, `Eszter@…` and `eszter@…`
+ * would be two accounts on a table with a unique index, and one of them would be
+ * unreachable. The unique index is on the normalised value, so the rule below is
+ * what makes that index mean "one person".
+ *
+ * Deliberately no fuller RFC 5322 grammar: this address is never sent mail by
+ * this surface, it is only compared. A stricter pattern would reject valid
+ * addresses to no benefit.
+ */
+export const ADMIN_EMAIL_PATTERN = "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$";
+export const ADMIN_EMAIL_MAX_LENGTH = 254;
+
+export const adminEmailNormalization = {
+  steps: ["trim surrounding whitespace", "lower-case using ASCII case folding only"],
+  pattern: ADMIN_EMAIL_PATTERN,
+  maxLength: ADMIN_EMAIL_MAX_LENGTH,
+  note: "ASCII case folding, not locale-aware lower-casing: a Turkish locale would fold `I` to `ı` and split one identity into two.",
+} as const;
+
+export const adminEmailSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .max(ADMIN_EMAIL_MAX_LENGTH)
+  .regex(new RegExp(ADMIN_EMAIL_PATTERN), "Adresse e-mail invalide.");
+
+/**
+ * Password policy for admin accounts.
+ *
+ * A length floor and nothing else. Composition rules ("one digit, one symbol")
+ * measurably reduce entropy by funnelling people into predictable shapes, and the
+ * upper bound exists only because a hashing function fed an unbounded string is a
+ * denial-of-service surface.
+ */
+export const ADMIN_PASSWORD_MIN_LENGTH = 12;
+export const ADMIN_PASSWORD_MAX_LENGTH = 4096;
+
+export const adminPasswordSchema = z
+  .string()
+  .min(ADMIN_PASSWORD_MIN_LENGTH)
+  .max(ADMIN_PASSWORD_MAX_LENGTH);
+
+/**
+ * Body of `POST /api/auth/login`. Shape only, deliberately not policy.
+ *
+ * `adminEmailSchema` and `adminPasswordSchema` above govern *provisioning*. If
+ * they governed login too, a submitted password shorter than the policy floor
+ * would answer 400 while a wrong one of legal length answered 401, and the pair
+ * would tell an attacker which of their guesses were even worth making. So the
+ * wire schema asks only whether the two fields are present, are strings, and are
+ * bounded; everything else about them is decided by the lookup, whose every
+ * outcome is `loginFailureOutcome`.
+ */
+export const loginRequestSchema = z
+  .object({
+    email: z.string().min(1).max(ADMIN_EMAIL_MAX_LENGTH),
+    password: z.string().min(1).max(ADMIN_PASSWORD_MAX_LENGTH),
+  })
+  .strict();
+
+export type LoginRequest = z.infer<typeof loginRequestSchema>;
+
+/**
+ * Frozen shape of the 200 body of `GET /api/auth/session` and `POST /api/auth/login`.
+ *
+ * One shape for both, so the admin shell has exactly one function that reads the
+ * current state and exactly one place the CSRF token comes from.
+ *
+ * `account` is null when anonymous rather than absent, so a client cannot mistake
+ * a key it forgot to read for a key that was not sent. The object is strict: no
+ * password hash, no session id, no internal account id ever appears here.
+ */
+export const authSessionResponseSchema = z
+  .object({
+    authenticated: z.boolean(),
+    account: z
+      .object({ email: z.string().min(1), lastLoginAt: isoTimestampSchema.nullable() })
+      .strict()
+      .nullable(),
+    csrfToken: z.string().min(32),
+  })
+  .strict();
+
+export type AuthSessionResponse = z.infer<typeof authSessionResponseSchema>;
+
+/**
+ * Server-enforced authorization, restated because Package 2.1 removed the thing
+ * that used to enforce it.
+ *
+ * `/admin` is a static file. It can redirect for the look of the thing, and that
+ * is all it can do — anyone may fetch it, read it, and call whatever it calls. So
+ * every guarantee below is a PHP guarantee, checked per request, and none of them
+ * may be delegated to the shell.
+ */
+export const adminAccessControl = {
+  shell: "/admin is a static export; it enforces nothing and is not access control.",
+  authority: "PHP, per request, on every non-public endpoint.",
+  requirements: [
+    "An absent, unknown, expired or destroyed session id is anonymous, never partially authenticated.",
+    "A disabled account is rejected at every request, not only at login, so disabling takes effect on the next call rather than at the next login.",
+    "Authorization is never derived from a request header, an Origin, or anything else the caller controls.",
+  ],
+} as const;
+
+/**
  * The frozen French error messages. They are part of the contract because the
  * frontend and future PHP implementation must not diverge on user-facing copy.
  */
@@ -227,6 +431,10 @@ export const apiErrorMessages: Record<ApiErrorCode, string> = {
   NOT_FOUND: "La ressource demandée est introuvable.",
   METHOD_NOT_ALLOWED: "Méthode non autorisée pour cette ressource.",
   INVALID_JSON: "Le corps JSON est invalide.",
+  VALIDATION_FAILED: "Les données envoyées sont invalides.",
+  INVALID_CREDENTIALS: "Identifiants invalides.",
+  UNAUTHENTICATED: "Authentification requise.",
+  CSRF_TOKEN_INVALID: "Jeton de sécurité invalide ou expiré.",
   INVALID_CONFIGURATION: "La configuration du serveur est invalide.",
   STORAGE_FAILURE: "Le contenu publié est momentanément indisponible.",
   INTERNAL_ERROR: "Une erreur interne est survenue.",
@@ -242,6 +450,7 @@ export const contractBodyMatchers = [
   "publishedContentEnvelope",
   "errorEnvelope",
   "publicPageHtml",
+  "authSessionResponse",
   "empty",
 ] as const;
 
@@ -282,7 +491,14 @@ export interface ContractExemption {
 export interface HttpContractCase {
   /** Stable identifier, safe to reference from a PHP test suite. */
   id: string;
-  endpoint: "/api/health" | "/api/content" | "/" | "unknown";
+  endpoint:
+    | "/api/health"
+    | "/api/content"
+    | "/"
+    | "/api/auth/login"
+    | "/api/auth/logout"
+    | "/api/auth/session"
+    | "unknown";
   description: string;
   request: {
     method: string;
@@ -315,6 +531,17 @@ export interface HttpContractCase {
      * the HTML, `defaults` means the fallback of `publicPageFallbackOutcome` did.
      */
     pageContent?: "published" | "defaults";
+    /**
+     * Value `authenticated` must carry. Only meaningful when `body` is
+     * `authSessionResponse`.
+     */
+    authenticated?: boolean;
+    /**
+     * Assertions on the session cookie the response sets. `rotated` requires a
+     * `Set-Cookie` carrying an id different from the one the request sent;
+     * `cleared` requires one that expires it; `absent` requires none at all.
+     */
+    sessionCookie?: "rotated" | "cleared" | "absent";
   };
   /**
    * Published envelope revision the fixture server must serve. Omitted when
@@ -323,6 +550,25 @@ export interface HttpContractCase {
   publishedRevision?: number;
   /** Storage behaviour the fixture server must simulate. */
   storage?: "ok" | "failure" | "malformed";
+  /**
+   * Preconditions for the authenticated surface (ESZ-025/026).
+   *
+   * Stated as fixture *state* rather than as literal headers because neither a
+   * session id nor a CSRF token can be written down in advance — both are minted
+   * by the implementation under test. The runner establishes the named state,
+   * reads the values back out of the implementation, and puts them on the
+   * request. `csrf: "valid"` therefore means "the token this session actually
+   * holds", which is the only way to assert acceptance without weakening the
+   * check to a constant.
+   */
+  auth?: {
+    /** Session the request arrives with. Defaults to `none`. */
+    session?: "none" | "anonymous" | "authenticated";
+    /** What goes in the CSRF header. Defaults to `omitted`. */
+    csrf?: "valid" | "omitted" | "empty" | "wrong";
+    /** State of the account the login body addresses. */
+    account?: "enabled" | "disabled" | "missing";
+  };
   /**
    * Implementations that are not required to satisfy this case. Absent — the
    * normal state — means every implementation must.
@@ -708,15 +954,295 @@ export const httpContractCases: HttpContractCase[] = [
       headers: { allow: "GET, HEAD", ...jsonContentType },
     },
   },
+
+  // ── Authenticated surface (ESZ-025 / ESZ-026) ──────────────────────────────
+  //
+  // These paths were frozen at 404 until Package 2.2. They are contracted here
+  // *before* the PHP routes exist, which is the ordering `docs/hetzner-target-
+  // architecture.md` §6 requires: the contract is the source of truth, not a
+  // description written after the fact.
+
+  {
+    id: "auth.session.get.anonymous",
+    endpoint: AUTH_SESSION_PATH,
+    description:
+      "GET /api/auth/session with no session answers 200, not 401: it reports state, it does not require it. The anonymous session it opens is what carries the CSRF token a login will need.",
+    request: { method: "GET", path: AUTH_SESSION_PATH },
+    auth: { session: "none" },
+    expect: {
+      status: 200,
+      body: "authSessionResponse",
+      authenticated: false,
+      headers: jsonContentType,
+    },
+  },
+  {
+    id: "auth.session.get.authenticated",
+    endpoint: AUTH_SESSION_PATH,
+    description: "GET /api/auth/session with a live session reports the signed-in account.",
+    request: { method: "GET", path: AUTH_SESSION_PATH },
+    auth: { session: "authenticated" },
+    expect: { status: 200, body: "authSessionResponse", authenticated: true },
+  },
+  {
+    id: "auth.session.get.unknownSessionIdIsAnonymous",
+    endpoint: AUTH_SESSION_PATH,
+    description:
+      "A session cookie whose id has no server-side record is anonymous, and the supplied id is never adopted. This is the session-fixation floor: an attacker cannot choose the victim's id in advance.",
+    request: {
+      method: "GET",
+      path: AUTH_SESSION_PATH,
+      headers: { cookie: `${SESSION_COOKIE_NAME}=0123456789abcdef0123456789abcdef` },
+    },
+    auth: { session: "none" },
+    expect: { status: 200, body: "authSessionResponse", authenticated: false },
+  },
+  {
+    id: "auth.session.post.methodNotAllowed",
+    endpoint: AUTH_SESSION_PATH,
+    description: "Non-GET on /api/auth/session returns 405 with Allow: GET.",
+    request: { method: "POST", path: AUTH_SESSION_PATH },
+    expect: {
+      status: 405,
+      body: "errorEnvelope",
+      errorCode: "METHOD_NOT_ALLOWED",
+      headers: { allow: "GET", ...jsonContentType },
+    },
+  },
+  {
+    id: "auth.login.post.ok",
+    endpoint: AUTH_LOGIN_PATH,
+    description:
+      "A correct credential pair with a valid CSRF token signs in, rotates the session id and returns the same body shape GET /api/auth/session returns.",
+    request: {
+      method: "POST",
+      path: AUTH_LOGIN_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"email":"editor@example.test","password":"correct-horse-battery"}',
+    },
+    auth: { session: "anonymous", csrf: "valid", account: "enabled" },
+    expect: {
+      status: 200,
+      body: "authSessionResponse",
+      authenticated: true,
+      sessionCookie: "rotated",
+      headers: jsonContentType,
+    },
+  },
+  {
+    id: "auth.login.post.unknownEmail",
+    endpoint: AUTH_LOGIN_PATH,
+    description: "An address with no account fails as INVALID_CREDENTIALS.",
+    request: {
+      method: "POST",
+      path: AUTH_LOGIN_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"email":"nobody@example.test","password":"correct-horse-battery"}',
+    },
+    auth: { session: "anonymous", csrf: "valid", account: "missing" },
+    expect: {
+      status: 401,
+      body: "errorEnvelope",
+      errorCode: "INVALID_CREDENTIALS",
+      sessionCookie: "absent",
+    },
+  },
+  {
+    id: "auth.login.post.wrongPassword",
+    endpoint: AUTH_LOGIN_PATH,
+    description:
+      "A known address with the wrong password fails identically to an unknown one.",
+    request: {
+      method: "POST",
+      path: AUTH_LOGIN_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"email":"editor@example.test","password":"not-the-password"}',
+    },
+    auth: { session: "anonymous", csrf: "valid", account: "enabled" },
+    expect: {
+      status: 401,
+      body: "errorEnvelope",
+      errorCode: "INVALID_CREDENTIALS",
+      sessionCookie: "absent",
+    },
+  },
+  {
+    id: "auth.login.post.disabledAccount",
+    endpoint: AUTH_LOGIN_PATH,
+    description:
+      "A disabled account with the *correct* password fails identically again. Disabling is enforced here, not by hoping nobody knows the password.",
+    request: {
+      method: "POST",
+      path: AUTH_LOGIN_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"email":"editor@example.test","password":"correct-horse-battery"}',
+    },
+    auth: { session: "anonymous", csrf: "valid", account: "disabled" },
+    expect: {
+      status: 401,
+      body: "errorEnvelope",
+      errorCode: "INVALID_CREDENTIALS",
+      sessionCookie: "absent",
+    },
+  },
+  {
+    id: "auth.login.post.csrfOmitted",
+    endpoint: AUTH_LOGIN_PATH,
+    description:
+      "Login without a CSRF token is refused with 403 even when the credentials are correct, which is what closes login CSRF.",
+    request: {
+      method: "POST",
+      path: AUTH_LOGIN_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"email":"editor@example.test","password":"correct-horse-battery"}',
+    },
+    auth: { session: "anonymous", csrf: "omitted", account: "enabled" },
+    expect: {
+      status: 403,
+      body: "errorEnvelope",
+      errorCode: "CSRF_TOKEN_INVALID",
+      sessionCookie: "absent",
+    },
+  },
+  {
+    id: "auth.login.post.csrfWrong",
+    endpoint: AUTH_LOGIN_PATH,
+    description: "A well-formed token belonging to no session is refused the same way.",
+    request: {
+      method: "POST",
+      path: AUTH_LOGIN_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"email":"editor@example.test","password":"correct-horse-battery"}',
+    },
+    auth: { session: "anonymous", csrf: "wrong", account: "enabled" },
+    expect: { status: 403, body: "errorEnvelope", errorCode: "CSRF_TOKEN_INVALID" },
+  },
+  {
+    id: "auth.login.post.csrfEmpty",
+    endpoint: AUTH_LOGIN_PATH,
+    description: "An empty token is refused, not treated as absent-and-therefore-skipped.",
+    request: {
+      method: "POST",
+      path: AUTH_LOGIN_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"email":"editor@example.test","password":"correct-horse-battery"}',
+    },
+    auth: { session: "anonymous", csrf: "empty", account: "enabled" },
+    expect: { status: 403, body: "errorEnvelope", errorCode: "CSRF_TOKEN_INVALID" },
+  },
+  {
+    id: "auth.login.post.missingField",
+    endpoint: AUTH_LOGIN_PATH,
+    description: "A body missing `password` is 400 VALIDATION_FAILED, not 401.",
+    request: {
+      method: "POST",
+      path: AUTH_LOGIN_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"email":"editor@example.test"}',
+    },
+    auth: { session: "anonymous", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "auth.login.post.unknownField",
+    endpoint: AUTH_LOGIN_PATH,
+    description:
+      "The login body is closed: an unexpected key is rejected rather than ignored.",
+    request: {
+      method: "POST",
+      path: AUTH_LOGIN_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody:
+        '{"email":"editor@example.test","password":"correct-horse-battery","role":"admin"}',
+    },
+    auth: { session: "anonymous", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "auth.login.post.invalidJson",
+    endpoint: AUTH_LOGIN_PATH,
+    description:
+      "A malformed body is still the pre-routing 400 INVALID_JSON, decided before CSRF or credentials.",
+    request: {
+      method: "POST",
+      path: AUTH_LOGIN_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: "{invalid-json",
+    },
+    auth: { session: "anonymous", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "INVALID_JSON" },
+  },
+  {
+    id: "auth.login.get.methodNotAllowed",
+    endpoint: AUTH_LOGIN_PATH,
+    description: "GET /api/auth/login returns 405 with Allow: POST.",
+    request: { method: "GET", path: AUTH_LOGIN_PATH },
+    expect: {
+      status: 405,
+      body: "errorEnvelope",
+      errorCode: "METHOD_NOT_ALLOWED",
+      headers: { allow: "POST", ...jsonContentType },
+    },
+  },
+  {
+    id: "auth.logout.post.ok",
+    endpoint: AUTH_LOGOUT_PATH,
+    description:
+      "Logout answers 204 with no body, destroys the server-side record and expires the cookie.",
+    request: { method: "POST", path: AUTH_LOGOUT_PATH },
+    auth: { session: "authenticated", csrf: "valid" },
+    expect: { status: 204, body: "empty", sessionCookie: "cleared" },
+  },
+  {
+    id: "auth.logout.post.unauthenticated",
+    endpoint: AUTH_LOGOUT_PATH,
+    description:
+      "Logout without a session is 401 UNAUTHENTICATED. Authentication is resolved before CSRF, so a caller with neither is told the useful thing.",
+    request: { method: "POST", path: AUTH_LOGOUT_PATH },
+    auth: { session: "none", csrf: "omitted" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "auth.logout.post.csrfOmitted",
+    endpoint: AUTH_LOGOUT_PATH,
+    description:
+      "An authenticated logout without a CSRF token is 403 and leaves the session alive.",
+    request: { method: "POST", path: AUTH_LOGOUT_PATH },
+    auth: { session: "authenticated", csrf: "omitted" },
+    expect: {
+      status: 403,
+      body: "errorEnvelope",
+      errorCode: "CSRF_TOKEN_INVALID",
+      sessionCookie: "absent",
+    },
+  },
+  {
+    id: "auth.logout.post.csrfWrong",
+    endpoint: AUTH_LOGOUT_PATH,
+    description: "An authenticated logout with someone else's token is 403.",
+    request: { method: "POST", path: AUTH_LOGOUT_PATH },
+    auth: { session: "authenticated", csrf: "wrong" },
+    expect: { status: 403, body: "errorEnvelope", errorCode: "CSRF_TOKEN_INVALID" },
+  },
+  {
+    id: "auth.logout.get.methodNotAllowed",
+    endpoint: AUTH_LOGOUT_PATH,
+    description: "GET /api/auth/logout returns 405 with Allow: POST.",
+    request: { method: "GET", path: AUTH_LOGOUT_PATH },
+    expect: {
+      status: 405,
+      body: "errorEnvelope",
+      errorCode: "METHOD_NOT_ALLOWED",
+      headers: { allow: "POST", ...jsonContentType },
+    },
+  },
+
   ...(
     [
       "/api/admin/content/draft",
       "/api/admin/content/publish",
       "/api/admin/content/reset",
       "/api/admin/media",
-      "/api/auth/login",
-      "/api/auth/logout",
-      "/api/auth/session",
     ] as const
   ).map((path, index) => ({
     id: `unknown.get.unimplementedRoute.${index}`,
@@ -790,6 +1316,46 @@ export const httpContractInvariants = [
     id: "page.appearanceIsColoursOnly",
     description:
       "The injected appearance block contains only CSS custom properties whose values are validated hex colours; no other editorial value reaches CSS.",
+  },
+  {
+    id: "auth.sessionIdRotatesOnLogin",
+    description:
+      "A successful login answers with a session id different from the one the request carried, and the pre-login record is destroyed rather than left usable. An id fixed before login therefore confers nothing after it.",
+  },
+  {
+    id: "auth.csrfTokenRotatesWithTheSession",
+    description:
+      "The CSRF token a caller held before login stops being accepted once the session id rotates, so a token captured from the anonymous session cannot be replayed against the authenticated one.",
+  },
+  {
+    id: "auth.logoutInvalidatesServerSide",
+    description:
+      "After logout, replaying the exact pre-logout session cookie is anonymous. Invalidation is the destruction of the server-side record, not the expiry of the cookie, so a client that ignores Set-Cookie gains nothing.",
+  },
+  {
+    id: "auth.failureModesAreIndistinguishable",
+    description:
+      "Unknown address, wrong password and disabled account produce byte-identical responses apart from the request id, and all three perform a password verification so their timing does not separate them either.",
+  },
+  {
+    id: "auth.disabledAccountIsRejectedOnEveryRequest",
+    description:
+      "Disabling a signed-in account makes its existing session anonymous on the next request; enforcement is not deferred to the next login.",
+  },
+  {
+    id: "auth.sessionCookieCarriesItsAttributes",
+    description:
+      "Every Set-Cookie for the session carries HttpOnly, SameSite=Strict, Path=/ and no Domain, and carries Secure whenever the environment is production.",
+  },
+  {
+    id: "auth.responsesNeverEchoSecrets",
+    description:
+      "No response body or log line contains a password, a password hash, a session id or a database credential.",
+  },
+  {
+    id: "csrf.readsAreExempt",
+    description:
+      "GET /api/auth/session and the public read-only surface answer normally with no CSRF token, so a client can always obtain one without already having one.",
   },
   {
     id: "bootstrap.failureUsesFrozenEnvelope",
