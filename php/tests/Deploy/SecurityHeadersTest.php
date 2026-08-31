@@ -70,12 +70,14 @@ final class SecurityHeadersTest extends TestCase
     }
 
     /**
-     * The four directives that are worth sending even though `script-src` carries
+     * The directives that remain useful even though `script-src` carries
      * `'unsafe-inline'`.
      *
-     * Each closes something the inline allowance has nothing to do with, so the
-     * weakness of one directive is not an argument against the others — which is
-     * the reasoning that usually ends with no policy at all.
+     * `frame-ancestors` controls who may frame Eszter, while `frame-src` controls
+     * what Eszter itself may frame. The admin preview needs the latter to allow the
+     * same origin; keeping it at `none` made the browser reject `/admin/preview`
+     * even though the component and X-Frame-Options were both intentionally
+     * same-origin.
      */
     public function testTheContentSecurityPolicyClosesWhatItCan(): void
     {
@@ -85,14 +87,12 @@ final class SecurityHeadersTest extends TestCase
         self::assertStringContainsString("object-src 'none'", $policy);
         self::assertStringContainsString("base-uri 'self'", $policy);
         self::assertStringContainsString("form-action 'self'", $policy);
-        self::assertStringContainsString("frame-src 'none'", $policy);
-
-        // `'self'`, not `'none'`: ESZ-035's admin preview embeds this origin in a
-        // same-origin iframe, and `'none'` would break the editor's own preview.
         self::assertStringContainsString("frame-ancestors 'self'", $policy);
+        self::assertStringContainsString("frame-src 'self'", $policy);
+        self::assertStringNotContainsString("frame-src 'none'", $policy);
 
-        // No third-party origin anywhere. The site loads no external script,
-        // style, font or frame, and a wildcard here would quietly permit one.
+        // The preview may frame this origin and nothing else. No wildcard or named
+        // external origin is allowed anywhere in the policy.
         self::assertSame(
             0,
             preg_match('#https?://#', $policy),
