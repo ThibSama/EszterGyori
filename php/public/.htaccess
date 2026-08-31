@@ -14,9 +14,9 @@
 #      A request that names a real file or directory is served as-is: hashed
 #      _next/ assets, media, icons, robots.txt.
 #
-#   3. reserved
-#      Paths reserved for unbuilt features resolve to the 404 document rather
-#      than falling into a later rule.
+#   3. public-exported-page
+#      A declared public static page such as /reservation resolves to its
+#      exported .html file without requiring a Node runtime.
 #
 #   4. admin-page
 #      An admin path with an exported page (/admin/login -> admin/login.html)
@@ -75,9 +75,10 @@ ErrorDocument 404 /404.html
     RewriteCond %{REQUEST_FILENAME} -d
     RewriteRule ^ - [L]
 
-    # 4. Reserved paths resolve to the 404 document. Above the admin and
-    #    public rules so a reserved path cannot be captured by either.
-    RewriteRule ^(reservation)(/.*)?$ - [L,R=404]
+    # 4. Exact exported public pages omit `.html` in their URL and need
+    #    no server renderer. Subpaths are deliberately not captured.
+    RewriteCond %{DOCUMENT_ROOT}/$1.html -f
+    RewriteRule ^(reservation)$ $1.html [L]
 
     # 5. /admin/<page> -> admin/<page>.html when the export has one, so a
     #    refresh or a direct link lands on the right screen.
@@ -126,6 +127,44 @@ ErrorDocument 404 /404.html
     Header always set X-Content-Type-Options "nosniff"
     Header always set Referrer-Policy "strict-origin-when-cross-origin"
     Header always set X-Frame-Options "SAMEORIGIN"
+
+    # ESZ-084 — Content-Security-Policy.
+    #
+    # `script-src` carries 'unsafe-inline' and that is not an oversight
+    # to be tidied away later: the Next export emits eight inline
+    # hydration scripts, and ESZ-021's injector adds a ninth. A nonce
+    # cannot help — Apache serves those documents as static files with
+    # no per-request rewriting, and the one document PHP does rewrite is
+    # the page whose inline blocks are the thing being rewritten. So the
+    # script directive is weak, deliberately and visibly.
+    #
+    # It is still worth sending, because four of these directives close
+    # attacks that 'unsafe-inline' has nothing to do with:
+    #
+    #   base-uri        an injected <base> silently repoints every
+    #                   relative script URL at an attacker's host. It
+    #                   needs no inline script at all and is invisible
+    #                   in the rendered page.
+    #   object-src      <object>/<embed> execution, which nosniff and
+    #                   the script directive do not cover.
+    #   form-action     an injected form cannot post the admin's input
+    #                   anywhere but here, so an injection cannot become
+    #                   an exfiltration channel.
+    #   frame-ancestors clickjacking, enforced by browsers that ignore
+    #                   X-Frame-Options. 'self' rather than 'none':
+    #                   ESZ-035's admin preview embeds this origin in a
+    #                   same-origin iframe, and 'none' would break it.
+    #
+    # Every source is 'self'. The site loads no third-party script,
+    # style, font or frame, and the two external URLs in the export are
+    # ordinary links a person clicks rather than subresources.
+    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; frame-src 'none'"
+
+    # Powerful features this site never uses. Sent because the default
+    # for most of them is "allow", so silence is a grant — and an
+    # injected script that cannot reach a camera or a geolocation prompt
+    # has one fewer thing to do with a foothold.
+    Header always set Permissions-Policy "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=()"
 
     # Hashed build assets are immutable: the file name changes when the
     # contents do. HTML is excluded — the page carries its own

@@ -35,28 +35,11 @@ final class DocumentRootRouting
     /** An exported admin page, or the shell when the deep link has no file. */
     public const ADMIN_SHELL = 'static:admin-shell';
 
-    /** A reserved path that must resolve to nothing until it is built. */
-    public const RESERVED = 'static:404-reserved';
-
     /** The exported 404 document. */
     public const NOT_FOUND = 'static:404';
 
-    /**
-     * Paths reserved for work that does not exist yet.
-     *
-     * `/reservation` is Package 2.3's. It is listed *now*, before there is
-     * anything behind it, because the alternative is that it silently becomes
-     * something else: with no rule of its own it would fall into the catch-all
-     * today and — the moment anyone widens the admin or public rule — into one of
-     * those instead. Naming it pins it to a deterministic 404 and makes the
-     * booking flow a change to this line rather than a discovery that the path was
-     * already taken.
-     *
-     * It is deliberately not a redirect to `/#contact`. Inventing product
-     * behaviour for a feature that has not been designed is worse than an honest
-     * "not here".
-     */
-    public const RESERVED_PATHS = ['/reservation'];
+    /** Exact public pages emitted by the static export, without their `.html` suffix. */
+    public const PUBLIC_EXPORTED_PATHS = ['/reservation'];
 
     /**
      * The ordered rule table.
@@ -81,11 +64,11 @@ final class DocumentRootRouting
                 'target' => self::STATIC_FILE,
             ],
             [
-                'id' => 'reserved',
+                'id' => 'public-exported-page',
                 'description' =>
-                    'Paths reserved for unbuilt features resolve to the 404 document rather than '
-                    . 'falling into a later rule.',
-                'target' => self::RESERVED,
+                    'A declared public static page such as /reservation resolves to its exported '
+                    . '.html file without requiring a Node runtime.',
+                'target' => self::STATIC_FILE,
             ],
             [
                 'id' => 'admin-page',
@@ -139,12 +122,13 @@ final class DocumentRootRouting
             return self::outcome('existing-file', self::STATIC_FILE, $relative);
         }
 
-        // Checked before the admin rules, not after: `/reservation` must be
-        // unreachable through any other rule, and order is the only thing that
-        // guarantees it.
-        foreach (self::RESERVED_PATHS as $reserved) {
-            if ($path === $reserved || str_starts_with($path, $reserved . '/')) {
-                return self::outcome('reserved', self::RESERVED, '404.html');
+        foreach (self::PUBLIC_EXPORTED_PATHS as $publicPage) {
+            if ($path === $publicPage) {
+                $candidate = $relative . '.html';
+
+                return $fileExists($candidate)
+                    ? self::outcome('public-exported-page', self::STATIC_FILE, $candidate)
+                    : self::outcome('not-found', self::NOT_FOUND, '404.html');
             }
         }
 

@@ -108,4 +108,35 @@ final class HttpException extends \RuntimeException
     {
         return new self(409, ErrorCatalog::MEDIA_REFERENCED, $headers, $logMessage);
     }
+
+    /**
+     * The frozen throttling refusal (`rateLimitPolicy.refusal`).
+     *
+     * `Retry-After` is the only thing the response says beyond the envelope. It
+     * deliberately does not report which bucket refused, what its limit is, or
+     * how much allowance remains: those three together are a map of the limiter,
+     * and the caller who wants that map is the one it exists to stop. An operator
+     * gets all of it from the log line instead.
+     *
+     * The header value is whole seconds, per RFC 9110, and never zero — see
+     * {@see \Eszter\Security\RateLimitDecision}.
+     */
+    public static function rateLimited(
+        string $retryAfterHeader,
+        int $retryAfterSeconds,
+        string $logMessage = '',
+    ): self {
+        return new self(
+            429,
+            ErrorCatalog::RATE_LIMITED,
+            [$retryAfterHeader => (string) $retryAfterSeconds],
+            $logMessage,
+        );
+    }
+
+    /** @param array<string, string> $headers */
+    public static function slotUnavailable(array $headers = [], string $logMessage = ''): self
+    {
+        return new self(409, ErrorCatalog::SLOT_UNAVAILABLE, $headers, $logMessage);
+    }
 }

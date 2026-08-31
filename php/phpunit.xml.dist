@@ -25,11 +25,15 @@
     -->
     <testsuite name="eszter">
       <directory>tests/Auth</directory>
+      <directory>tests/Backup</directory>
+      <directory>tests/Booking</directory>
       <directory>tests/Config</directory>
       <directory>tests/Contract</directory>
       <directory>tests/Deploy</directory>
       <directory>tests/Http</directory>
       <directory>tests/Media</directory>
+      <directory>tests/Notification</directory>
+      <directory>tests/Security</directory>
       <directory>tests/Storage</directory>
       <directory>tests/Support</directory>
     </testsuite>
@@ -47,6 +51,38 @@
     </testsuite>
     <testsuite name="sql-integration">
       <file>tests/Sql/SqlIntegrationTest.php</file>
+    </testsuite>
+
+    <!--
+      ESZ-070/071/072. Its own suite for the same reason as the two above: it is
+      its own gate. The notification queue is where a claim, a lease and a retry
+      have to hold against real InnoDB row locking, and running it separately
+      means a failure names the queue rather than "SQL".
+    -->
+    <testsuite name="sql-notifications">
+      <file>tests/Sql/NotificationSqlTest.php</file>
+    </testsuite>
+
+    <!--
+      ESZ-084. Its own suite, and its own gate, because it is the only one here
+      that must NOT run inside a transaction: a rate-limit charge is deliberately
+      non-transactional, so wrapping it in one would hide the property the suite
+      exists to prove. Keeping it separate stops a future "wrap everything in a
+      transaction" change from silently defeating it.
+    -->
+    <testsuite name="sql-rate-limits">
+      <file>tests/Sql/RateLimiterSqlTest.php</file>
+    </testsuite>
+
+    <!--
+      ESZ-083. The restore proof, and its own gate because a backup that has never
+      been restored is a hypothesis. It needs two disposable databases — the source
+      and a clean target — both derived from ESZTER_TEST_DB_DSN, and like the
+      rate-limit suite it must not run inside a transaction: it runs migrations,
+      whose DDL commits implicitly on MySQL.
+    -->
+    <testsuite name="sql-backup-restore">
+      <file>tests/Sql/BackupRestoreSqlTest.php</file>
     </testsuite>
   </testsuites>
   <source>

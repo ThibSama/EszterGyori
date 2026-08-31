@@ -36,9 +36,21 @@ final class AtomicJsonFile
      * The encoding matches the reference implementation byte for byte —
      * two-space indent, unescaped slashes and UTF-8, trailing newline — so that a
      * file written by either backend is diffable against one written by the other.
+     *
+     * @param int|null $maxBytes A cap on the encoded document, checked against the
+     *        exact bytes that are about to be written and before anything is
+     *        created (ESZ-084). It exists for the one file whose size a caller can
+     *        actually grow — the media catalogue — where a cap enforced on the
+     *        next read instead would only fire once the file had already become
+     *        unreadable, taking the delete that could have shrunk it with it. See
+     *        `storageLimitReconciliation.enforcedOnWrite`.
      */
-    public function write(string $targetPath, mixed $payload, ?string $fileRole = null): void
-    {
+    public function write(
+        string $targetPath,
+        mixed $payload,
+        ?string $fileRole = null,
+        ?int $maxBytes = null,
+    ): void {
         $encoded = json_encode(
             $payload,
             JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
@@ -59,7 +71,25 @@ final class AtomicJsonFile
             $encoded,
         ) ?? $encoded;
 
-        $this->replace($targetPath, $encoded . "\n", $fileRole);
+        $document = $encoded . "\n";
+
+        if ($maxBytes !== null && \strlen($document) > $maxBytes) {
+            // Raised before `replace()`, so no temporary file is created and the
+            // existing document is left exactly as it was. The refusal has to be
+            // a non-event for the file it protects, or it is just a different way
+            // to break it.
+            throw new StorageException(
+                StorageException::FILE_TOO_LARGE,
+                \sprintf(
+                    'The document would be %d bytes, over the %d byte cap.',
+                    \strlen($document),
+                    $maxBytes,
+                ),
+                $fileRole,
+            );
+        }
+
+        $this->replace($targetPath, $document, $fileRole);
     }
 
     public function replace(string $targetPath, string $contents, ?string $fileRole = null): void

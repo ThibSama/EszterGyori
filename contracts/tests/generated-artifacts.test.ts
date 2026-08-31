@@ -9,7 +9,44 @@ import {
   serializeArtifact,
 } from "../scripts/generate-contract-artifacts.js";
 import { parityCases, semanticRules } from "../semantic-rules.js";
-import { contractRequestBodies, httpContractCases } from "../http-contract.js";
+import {
+  ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+  ADMIN_AVAILABILITY_WEEKLY_PATH,
+  ADMIN_BOOKINGS_SUMMARY_PATH,
+  BOOKING_LOCAL_TIME_PATTERN,
+  adminAvailabilityWeeklyReplaceRequestSchema,
+  CONTENT_FILE_LIMIT_BYTES,
+  MEDIA_LIBRARY_INDEX_LIMIT_BYTES,
+  REQUEST_BODY_LIMIT_BYTES,
+  availabilityAdminPolicy,
+  bookingApiPolicy,
+  contractRequestBodies,
+  httpContractCases,
+  rateLimitPolicy,
+  storageLimitReconciliation,
+} from "../http-contract.js";
+import {
+  BOOKING_SLOT_GRID_MINUTES,
+  NOTIFICATION_BASE_BACKOFF_SECONDS,
+  NOTIFICATION_LEASE_SECONDS,
+  NOTIFICATION_MAX_ATTEMPTS,
+  NOTIFICATION_MAX_BACKOFF_SECONDS,
+  NOTIFICATION_REMINDER_GRACE_MINUTES,
+  notificationChannels,
+  notificationForbiddenLogFields,
+  notificationJobTypes,
+  notificationLogFields,
+  notificationPolicy,
+  notificationStatusTransitions,
+  notificationStatuses,
+  notificationTerminalStatuses,
+  BOOKING_SLOT_MAX_HORIZON_DAYS,
+  BOOKING_SLOT_MAX_RESULTS,
+  BOOKING_TIME_ZONE,
+  bookableServiceKeys,
+  bookingStateTransitions,
+  bookingStates,
+} from "../booking.js";
 
 /**
  * Drift guard. The committed artifacts under `contracts/generated/` are what a
@@ -73,6 +110,136 @@ test("generated schemas warn that structural validation is not sufficient", asyn
   }
 });
 
+test("the generated booking domain freezes service identity, timezone and states", async () => {
+  const booking = JSON.parse(await readGenerated("booking-domain.json")) as {
+    services: { keys: string[]; source: string };
+    timezone: { iana: string; dst: { nonexistent: string; ambiguous: string } };
+    availability: {
+      generatedSlotsPersisted: boolean;
+      exceptionPrecedence: string;
+      grid: { minutes: number; alignment: string };
+      limits: { maxHorizonDays: number; maxResults: number };
+    };
+    states: {
+      values: string[];
+      initial: string;
+      transitions: Record<string, string[]>;
+      rules: string[];
+    };
+  };
+
+  assert.deepEqual(booking.services.keys, [...bookableServiceKeys]);
+  assert.equal(booking.services.source, "SiteContent.services.items[].id");
+  assert.equal(booking.timezone.iana, BOOKING_TIME_ZONE);
+  assert.match(booking.timezone.dst.nonexistent, /Reject/);
+  assert.match(booking.timezone.dst.ambiguous, /explicit numeric UTC offset/);
+  assert.equal(booking.availability.generatedSlotsPersisted, false);
+  assert.match(booking.availability.exceptionPrecedence, /replaces/);
+  assert.equal(booking.availability.grid.minutes, BOOKING_SLOT_GRID_MINUTES);
+  assert.match(booking.availability.grid.alignment, /civil midnight/);
+  assert.deepEqual(booking.availability.limits, {
+    maxHorizonDays: BOOKING_SLOT_MAX_HORIZON_DAYS,
+    maxResults: BOOKING_SLOT_MAX_RESULTS,
+  });
+  assert.deepEqual(booking.states.values, [...bookingStates]);
+  assert.equal(booking.states.initial, "confirmed");
+  assert.deepEqual(booking.states.transitions, bookingStateTransitions);
+  assert.ok(booking.states.rules.some((rule) => /never physically deletes/.test(rule)));
+});
+
+test("the generated booking domain freezes the Package 7.1 notification policy", async () => {
+  const document = JSON.parse(await readGenerated("booking-domain.json")) as {
+    version: number;
+    notifications?: typeof notificationPolicy;
+  };
+
+  // The whole block, byte for byte. PHP reads this file rather than a second
+  // copy of these constants, so anything that drifts here drifts everywhere.
+  assert.deepEqual(document.notifications, notificationPolicy);
+  assert.equal(document.version, 3, "adding a policy block is a domain version bump");
+
+  assert.deepEqual(document.notifications?.channels, notificationChannels);
+  assert.deepEqual(document.notifications?.jobTypes, notificationJobTypes);
+  assert.deepEqual(document.notifications?.statuses.transitions, notificationStatusTransitions);
+  assert.deepEqual(document.notifications?.statuses.terminal, notificationTerminalStatuses);
+
+  // Three terminal statuses, and nothing leaves any of them. A queue whose
+  // `sent` could go back to `pending` would deliver twice, which is the one
+  // outcome the whole package exists to make impossible.
+  for (const terminal of notificationTerminalStatuses) {
+    assert.deepEqual(
+      notificationStatusTransitions[terminal],
+      [],
+      `${terminal} must be terminal`,
+    );
+  }
+
+  // `processing` is reachable only from `pending`, so a job already being
+  // delivered cannot be claimed out from under its owner by a status change.
+  const claimants = Object.entries(notificationStatusTransitions)
+    .filter(([, targets]) => (targets as readonly string[]).includes("processing"))
+    .map(([from]) => from);
+  assert.deepEqual(claimants, ["pending"]);
+
+  assert.equal(document.notifications?.retry.maxAttempts, NOTIFICATION_MAX_ATTEMPTS);
+  assert.equal(
+    document.notifications?.retry.baseBackoffSeconds,
+    NOTIFICATION_BASE_BACKOFF_SECONDS,
+  );
+  assert.equal(
+    document.notifications?.retry.maxBackoffSeconds,
+    NOTIFICATION_MAX_BACKOFF_SECONDS,
+  );
+  assert.equal(document.notifications?.lease.seconds, NOTIFICATION_LEASE_SECONDS);
+  assert.equal(
+    document.notifications?.catchUp.reminderGraceMinutes,
+    NOTIFICATION_REMINDER_GRACE_MINUTES,
+  );
+
+  // The bounds have to be usable, not merely present: a backoff whose ceiling is
+  // below its floor, or a lease shorter than nothing, would freeze nonsense.
+  assert.ok(NOTIFICATION_BASE_BACKOFF_SECONDS < NOTIFICATION_MAX_BACKOFF_SECONDS);
+  assert.ok(NOTIFICATION_LEASE_SECONDS > 0);
+  assert.ok(NOTIFICATION_MAX_ATTEMPTS >= 2, "a queue with one attempt has no retry policy");
+});
+
+test("the notification diagnostics contract cannot describe customer data", async () => {
+  const codePattern = new RegExp(notificationPolicy.diagnostics.errorCodePattern);
+
+  for (const reserved of notificationPolicy.diagnostics.reservedErrorCodes) {
+    assert.ok(codePattern.test(reserved), `${reserved} is not a legal code`);
+  }
+
+  // The pattern is the guarantee. Each of these is something a provider really
+  // does put in an error string, and none of them is expressible as a code — so
+  // "the diagnostic column carries no customer data" is structural.
+  for (const leak of [
+    "cliente@example.test",
+    "smtp 550 no mailbox",
+    "+33 6 12 34 56 78",
+    "Bonjour, je voudrais",
+    "Bearer sk-live-abcdef",
+    "UPPER_CASE",
+    "",
+  ]) {
+    assert.ok(!codePattern.test(leak), `${leak} passed as an error code`);
+  }
+
+  // The allowlist and the declared forbidden list must be disjoint, or the
+  // declaration would be describing something other than what is enforced.
+  const allowed = new Set<string>(notificationLogFields);
+  for (const forbidden of notificationForbiddenLogFields) {
+    assert.ok(!allowed.has(forbidden), `${forbidden} is both allowed and forbidden`);
+  }
+
+  // The opaque reference is what a log line identifies an appointment by; no
+  // customer field is on the list at all.
+  assert.ok(allowed.has("bookingReference"));
+  for (const field of notificationLogFields) {
+    assert.ok(!/^customer/.test(field), `${field} names a customer fact`);
+  }
+});
+
 test("the published envelope schema keeps objects closed", async () => {
   const schema = JSON.parse(
     await readGenerated("published-content-envelope.input.schema.json"),
@@ -128,6 +295,13 @@ test("the generated HTTP contract carries every frozen case", async () => {
     contract.endpoints.map((endpoint) => endpoint.path).sort(),
     [
       "/",
+      "/api/admin/availability/exceptions",
+      "/api/admin/availability/query",
+      "/api/admin/availability/weekly",
+      "/api/admin/bookings",
+      "/api/admin/bookings/move-availability",
+      "/api/admin/bookings/query",
+      "/api/admin/bookings/summary",
       "/api/admin/content/draft",
       "/api/admin/content/publish",
       "/api/admin/content/reset",
@@ -135,6 +309,9 @@ test("the generated HTTP contract carries every frozen case", async () => {
       "/api/auth/login",
       "/api/auth/logout",
       "/api/auth/session",
+      "/api/booking/availability",
+      "/api/booking/services",
+      "/api/bookings",
       "/api/content",
       "/api/health",
     ],
@@ -171,9 +348,201 @@ test("the generated HTTP contract carries every frozen case", async () => {
   // the reason `mediaDeleteRequestSchema` documents.
   assert.deepEqual(methodsByPath["/api/admin/media"], ["GET", "POST", "DELETE"]);
 
+  assert.deepEqual(methodsByPath["/api/booking/availability"], ["POST"]);
+  assert.deepEqual(methodsByPath["/api/booking/services"], ["GET"]);
+  assert.deepEqual(methodsByPath["/api/bookings"], ["POST"]);
+  assert.deepEqual(methodsByPath["/api/admin/bookings/query"], ["POST"]);
+  assert.deepEqual(methodsByPath["/api/admin/bookings/move-availability"], ["POST"]);
+  assert.deepEqual(methodsByPath["/api/admin/bookings"], ["PATCH"]);
+
+  // ESZ-063/064/065. `/summary` and `/availability/query` are reads and carry
+  // their bounded window in a body, so they are POST for the same reason the
+  // booking query is: a GET whose meaning depends on a body is a route nobody
+  // can cache correctly. `/availability/weekly` is a PUT because it replaces the
+  // whole recurring schedule, and that is the shape that makes the replacement
+  // atomic rather than a sequence a client could interrupt halfway.
+  assert.deepEqual(methodsByPath["/api/admin/bookings/summary"], ["POST"]);
+  assert.deepEqual(methodsByPath["/api/admin/availability/query"], ["POST"]);
+  assert.deepEqual(methodsByPath["/api/admin/availability/weekly"], ["PUT"]);
+  assert.deepEqual(methodsByPath["/api/admin/availability/exceptions"], ["PATCH"]);
+
   assert.ok(contract.errorCodes.includes("STORAGE_FAILURE"));
   assert.ok(contract.errorCodes.includes("PAYLOAD_TOO_LARGE"));
   assert.ok(contract.errorCodes.includes("MEDIA_REFERENCED"));
+});
+
+test("the generated HTTP contract freezes booking transaction and mutation policy", async () => {
+  const contract = JSON.parse(await readGenerated("http-contract.json")) as {
+    booking?: { policy?: typeof bookingApiPolicy };
+  };
+
+  assert.deepEqual(contract.booking?.policy, bookingApiPolicy);
+  assert.match(contract.booking?.policy?.creation ?? "", /singleton primary resource row/);
+  assert.deepEqual(contract.booking?.policy?.adminMutableFields.update, [
+    "customerName",
+    "customerEmail",
+    "customerPhone",
+    "customerNote",
+  ]);
+  assert.match(contract.booking?.policy?.history ?? "", /bookings row remains authoritative/);
+});
+
+test("the generated HTTP contract freezes availability administration and the summary", async () => {
+  const contract = JSON.parse(await readGenerated("http-contract.json")) as {
+    booking?: {
+      paths?: Record<string, string>;
+      availabilityAdministration?: typeof availabilityAdminPolicy;
+    };
+    cases: Array<{ id: string; auth?: { session?: string; csrf?: string }; expect: { status: number } }>;
+    invariants: Array<{ id: string }>;
+  };
+
+  assert.deepEqual(contract.booking?.availabilityAdministration, availabilityAdminPolicy);
+  assert.equal(contract.booking?.paths?.adminAvailabilityWeekly, ADMIN_AVAILABILITY_WEEKLY_PATH);
+  assert.equal(
+    contract.booking?.paths?.adminAvailabilityExceptions,
+    ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+  );
+  assert.equal(contract.booking?.paths?.adminSummary, ADMIN_BOOKINGS_SUMMARY_PATH);
+
+  // The whole point of the PUT shape: say so in the artifact, not only in a
+  // comment the server can drift away from.
+  assert.match(
+    contract.booking?.availabilityAdministration?.weeklyReplacement ?? "",
+    /one transaction/,
+  );
+  assert.match(
+    contract.booking?.availabilityAdministration?.adoptServerState ?? "",
+    /No optimistic local schedule/,
+  );
+  assert.match(
+    contract.booking?.availabilityAdministration?.summary ?? "",
+    /never inflate a confirmed one/,
+  );
+
+  const invariantIds = contract.invariants.map((invariant) => invariant.id);
+  for (const id of [
+    "availability.weeklyReplacementIsAllOrNothing",
+    "availability.exceptionRemovalRestoresWeekly",
+    "availability.exceptionWindowsAreDstChecked",
+    "summary.cancelledNeverInflatesConfirmed",
+  ]) {
+    assert.ok(invariantIds.includes(id), `${id} is missing from the generated invariants`);
+  }
+
+  // Every one of the four new routes is proved to refuse an anonymous caller,
+  // and every state-changing one is proved to refuse a session without CSRF.
+  // Asserting this over the corpus is what stops a later case list from quietly
+  // shipping an availability route with no negative coverage at all.
+  const byId = new Map(contract.cases.map((httpCase) => [httpCase.id, httpCase]));
+  for (const id of [
+    "admin.bookings.summary.post.unauthenticated",
+    "admin.availability.query.post.unauthenticated",
+    "admin.availability.weekly.put.unauthenticated",
+    "admin.availability.exceptions.patch.unauthenticated",
+  ]) {
+    assert.equal(byId.get(id)?.expect.status, 401, `${id} must be a 401`);
+  }
+  for (const id of [
+    "admin.availability.weekly.put.csrfOmitted",
+    "admin.availability.exceptions.patch.csrfOmitted",
+  ]) {
+    assert.equal(byId.get(id)?.expect.status, 403, `${id} must be a 403`);
+  }
+
+  // And the reads are exempt from CSRF, which is only meaningful if a passing
+  // case actually omits the token rather than happening to send one.
+  for (const id of ["admin.bookings.summary.post.ok", "admin.availability.query.post.ok"]) {
+    assert.equal(byId.get(id)?.auth?.csrf, "omitted", `${id} must prove the read needs no CSRF`);
+    assert.equal(byId.get(id)?.expect.status, 200);
+  }
+});
+
+test("the wire type for civil time is the 24-hour clock, not a shape", async () => {
+  // Before this was tightened the pattern was `\\d{2}:\\d{2}`, so 25:00 satisfied
+  // every structural gate — the Zod schema, the generated JSON Schema, and the
+  // PHP validator reading that JSON Schema — and was caught only once the domain
+  // parsed it. That made the wire type weaker than the value it describes.
+
+  assert.equal(BOOKING_LOCAL_TIME_PATTERN, "^([01][0-9]|2[0-3]):[0-5][0-9]$");
+
+  const accepted = ["00:00", "00:01", "00:59", "01:00", "09:30", "10:00", "19:45", "23:00", "23:59"];
+  const rejected = [
+    "24:00", // the classic end-of-day convention; not a value this API has
+    "25:00", // what the loose pattern used to admit
+    "29:99",
+    "09:60", // the minute field is bounded too
+    "99:99",
+    "9:30", // always refused: the hour is two digits
+    "09:00:00",
+    "0:0",
+    " 09:00",
+    "09:00 ",
+    "",
+  ];
+
+  const clock = new RegExp(BOOKING_LOCAL_TIME_PATTERN);
+  for (const value of accepted) assert.ok(clock.test(value), `${value} must be accepted`);
+  for (const value of rejected) assert.ok(!clock.test(value), `${value} must be rejected`);
+
+  // The same verdicts through the schema an endpoint actually parses with, so
+  // the constant and the schema cannot drift apart.
+  const rule = (startLocal: string, endLocal: string) => ({
+    rules: [
+      {
+        weekdayIso: 2,
+        startLocal,
+        endLocal,
+        foldUtcOffset: null,
+        validFrom: null,
+        validUntil: null,
+        isActive: true,
+      },
+    ],
+  });
+
+  assert.ok(adminAvailabilityWeeklyReplaceRequestSchema.safeParse(rule("00:00", "23:59")).success);
+  for (const value of ["24:00", "25:00", "09:60"]) {
+    assert.ok(
+      !adminAvailabilityWeeklyReplaceRequestSchema.safeParse(rule("09:00", value)).success,
+      `${value} must be refused structurally, not only by the domain`,
+    );
+  }
+
+  // And through every generated schema that carries a civil time, so a new
+  // endpoint cannot reintroduce the loose spelling by hand.
+  let carriers = 0;
+  for (const fileName of artifactFileNames) {
+    if (!fileName.endsWith(".schema.json")) continue;
+    const source = await readGenerated(fileName);
+    if (!source.includes(":[0-5][0-9]$")) continue;
+    carriers += 1;
+    assert.ok(
+      !/\\\\d\{2\}:\\\\d\{2\}/.test(source),
+      `${fileName} still carries the loose civil-time pattern`,
+    );
+  }
+  assert.ok(carriers > 0, "no generated schema carries a civil time at all");
+});
+
+test("the contract case list proves the civil-time boundary end to end", async () => {
+  const contract = JSON.parse(await readGenerated("http-contract.json")) as {
+    cases: Array<{ id: string; request: { rawBody?: string }; expect: { status: number } }>;
+  };
+  const byId = new Map(contract.cases.map((httpCase) => [httpCase.id, httpCase]));
+
+  const accepted = byId.get("admin.availability.weekly.put.civilDayBoundsAccepted");
+  assert.equal(accepted?.expect.status, 200, "00:00–23:59 must still be an ordinary window");
+  assert.match(accepted?.request.rawBody ?? "", /"startLocal":"00:00"/);
+  assert.match(accepted?.request.rawBody ?? "", /"endLocal":"23:59"/);
+
+  for (const id of [
+    "admin.availability.weekly.put.hourAboveTwentyThree",
+    "admin.availability.weekly.put.minuteAboveFiftyNine",
+    "admin.availability.weekly.put.malformedTime",
+  ]) {
+    assert.equal(byId.get(id)?.expect.status, 400, `${id} must be a 400`);
+  }
 });
 
 test("the generated HTTP contract carries the auth and CSRF boundary", async () => {
@@ -534,4 +903,91 @@ test("no rejected admin content request reports the revision header", () => {
       `${httpCase.id} is a ${httpCase.expect.status} that reports a content revision`,
     );
   }
+});
+
+test("ESZ-084: the storage caps and the request limit are reconciled, not merely adjacent", async () => {
+  const contract = JSON.parse(await readGenerated("http-contract.json")) as {
+    requestBodyLimitBytes: number;
+    storageLimits: typeof storageLimitReconciliation;
+  };
+
+  assert.deepEqual(contract.storageLimits, storageLimitReconciliation);
+
+  // The invariant the block exists to state, asserted rather than described. A
+  // storage cap at or below the request limit would accept a save and then refuse
+  // to read it back, which is content loss caused by the rule meant to prevent it.
+  assert.ok(
+    CONTENT_FILE_LIMIT_BYTES > REQUEST_BODY_LIMIT_BYTES,
+    "the content file cap must stay strictly above the request body limit",
+  );
+  assert.equal(contract.storageLimits.invariant, "contentFileLimitBytes > requestBodyLimitBytes");
+  assert.equal(contract.requestBodyLimitBytes, REQUEST_BODY_LIMIT_BYTES);
+
+  // The media catalogue is the one cap a caller can actually reach, so it is the
+  // one that has to be enforced before the write rather than on the next read.
+  assert.deepEqual(contract.storageLimits.enforcedOnWrite, ["mediaLibraryIndexLimitBytes"]);
+  assert.equal(
+    contract.storageLimits.mediaLibraryIndexLimitBytes,
+    MEDIA_LIBRARY_INDEX_LIMIT_BYTES,
+  );
+  assert.equal(contract.storageLimits.overSizedMediaLibraryOutcome.status, 413);
+});
+
+test("ESZ-084: the rate-limit policy is frozen, deterministic and store-backed", async () => {
+  const contract = JSON.parse(await readGenerated("http-contract.json")) as {
+    errorCodes: string[];
+    errorMessages: Record<string, string>;
+    rateLimit: typeof rateLimitPolicy;
+  };
+
+  assert.deepEqual(contract.rateLimit, rateLimitPolicy);
+  assert.ok(contract.errorCodes.includes("RATE_LIMITED"));
+  assert.ok((contract.errorMessages.RATE_LIMITED ?? "").length > 0);
+
+  // The three properties that make the limiter enforceable on shared hosting,
+  // where every request is a fresh process. Any of them drifting turns the
+  // limiter into a counter that reaches one and stays there.
+  assert.equal(contract.rateLimit.store, "database");
+  assert.equal(contract.rateLimit.clock, "application");
+  assert.equal(contract.rateLimit.algorithm, "gcra");
+
+  // A header the caller writes must never decide which bucket they are charged
+  // to, or the limit is opt-out.
+  assert.equal(contract.rateLimit.forwardedHeadersTrusted, false);
+  assert.equal(contract.rateLimit.clientAddressSource, "REMOTE_ADDR");
+
+  assert.equal(contract.rateLimit.refusal.status, 429);
+  assert.equal(contract.rateLimit.refusal.errorCode, "RATE_LIMITED");
+  assert.equal(contract.rateLimit.refusal.retryAfterHeader, "Retry-After");
+
+  const buckets = Object.entries(contract.rateLimit.buckets);
+  assert.ok(buckets.length > 0);
+
+  for (const [key, bucket] of buckets) {
+    // The key and the scope it names must agree: the scope is what the PHP
+    // limiter hashes into the row key, and a mismatch would silently give two
+    // rules one bucket.
+    assert.equal(bucket.scope, key, `bucket ${key} disagrees with its scope`);
+    assert.ok(bucket.limit > 0, `${key} has a non-positive limit`);
+    assert.ok(bucket.periodSeconds > 0, `${key} has a non-positive period`);
+    assert.ok(bucket.burst >= 1, `${key} allows no burst at all`);
+
+    // GCRA needs a whole-millisecond emission interval to stay exactly
+    // reproducible between the contract, PHP and a test that moves the clock.
+    const emissionMs = (bucket.periodSeconds * 1000) / bucket.limit;
+    assert.equal(
+      emissionMs,
+      Math.trunc(emissionMs),
+      `${key} has a fractional emission interval and cannot be reproduced exactly`,
+    );
+  }
+
+  // The asymmetry that keeps throttling from becoming a lockout weapon: the
+  // per-identity login budget must stay wider than the per-address one, or an
+  // anonymous caller can shut the only administrator out by failing logins for
+  // them.
+  assert.ok(
+    contract.rateLimit.buckets["auth.login.identity"].limit >
+      contract.rateLimit.buckets["auth.login.address"].limit,
+  );
 });

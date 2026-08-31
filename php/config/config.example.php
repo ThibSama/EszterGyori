@@ -62,7 +62,9 @@ return [
     // Required in production. Outside production it may be omitted entirely, and
     // the public read-only surface still works — it touches no database.
     //
-    // Apply migrations with:  php bin/migrate.php --config=config/config.php
+    // Deployed command:
+    // /usr/bin/php /usr/home/<FTP_LOGIN>/eszter/app/bin/migrate.php
+    //     --config=/usr/home/<FTP_LOGIN>/eszter/config/config.php
     'database' => [
         // The target host runs MySQL. utf8mb4 is not optional: the content
         // pipeline guarantees NFC UTF-8 end to end and the database must not be
@@ -96,5 +98,29 @@ return [
         // Must be true in production; booting with false there fails fast. Set it
         // to false only on a developer's plain-HTTP localhost.
         'cookieSecure' => true,
+    ],
+
+    // ── Booking e-mail / SMTP (ESZ-073/074) ────────────────────────────────
+    // Required in production. Values are deployment-owned: no Hetzner SMTP
+    // host, port or credential is assumed by the application.
+    'notifications' => [
+        'email' => [
+            'host' => 'smtp.example.invalid',
+            'port' => 587,
+            // none | starttls | smtps
+            'encryption' => 'starttls',
+            'authenticationRequired' => true,
+            'username' => 'CHANGE_ME',
+            // Secret. Never logged or copied into an error message.
+            'password' => 'CHANGE_ME',
+            'senderAddress' => 'bonjour@example.invalid',
+            'senderName' => 'Eszter Gyori',
+            // Applies to the SMTP socket connection and reads/writes; bounded
+            // to 1–30 seconds so one provider cannot consume a whole cron tick.
+            'timeoutSeconds' => 10,
+            // Canonical customer-facing copy included in every template.
+            'customerContact' => 'Pour toute question, répondez à cet e-mail.',
+            'customerInstructions' => 'Merci de prévenir dès que possible en cas d’empêchement.',
+        ],
     ],
 ];

@@ -1067,6 +1067,8 @@ final class HttpContractConformanceTest extends TestCase
             null,
             $this->accounts,
             $this->sessionStore,
+            null,
+            new InMemoryBookingApi(),
         );
     }
 
@@ -1232,6 +1234,49 @@ final class HttpContractConformanceTest extends TestCase
                 self::assertStringNotContainsString('media-originals', $response->body);
                 self::assertStringNotContainsString('.intake', $response->body);
                 self::assertStringNotContainsString('.staging-', $response->body);
+                break;
+
+            case 'publicBookableServicesResponse':
+            case 'bookingAvailabilityResponse':
+            case 'publicBookingResponse':
+            case 'adminBookingsResponse':
+            case 'adminBookingResponse':
+            case 'adminBookingsSummaryResponse':
+            case 'adminAvailabilityResponse':
+            case 'adminAvailabilityWeeklyResponse':
+            case 'adminAvailabilityExceptionResponse':
+                self::assertIsArray($body);
+                $schema = match ($expected['body']) {
+                    'publicBookableServicesResponse' => 'public-bookable-services-response.schema.json',
+                    'bookingAvailabilityResponse' => 'booking-availability-response.schema.json',
+                    'publicBookingResponse' => 'public-booking-response.schema.json',
+                    'adminBookingsResponse' => 'admin-bookings-response.schema.json',
+                    'adminBookingResponse' => 'admin-booking-response.schema.json',
+                    'adminBookingsSummaryResponse' => 'admin-bookings-summary-response.schema.json',
+                    'adminAvailabilityResponse' => 'admin-availability-response.schema.json',
+                    'adminAvailabilityWeeklyResponse' => 'admin-availability-weekly-response.schema.json',
+                    'adminAvailabilityExceptionResponse' =>
+                        'admin-availability-exception-response.schema.json',
+                    default => throw new \LogicException('Unknown booking response matcher.'),
+                };
+                self::assertSame([], $structural->validate($body, $schema));
+                self::assertSame('no-store', $response->header('Cache-Control'));
+                if ($expected['body'] === 'publicBookingResponse') {
+                    foreach (['customerName', 'customerEmail', 'customerPhone', 'customerNote'] as $field) {
+                        self::assertStringNotContainsString($field, $response->body);
+                    }
+                }
+                if ($expected['body'] === 'adminBookingsSummaryResponse') {
+                    // `summary.cancelledNeverInflatesConfirmed`, at the transport
+                    // boundary: the listed entries are exactly the confirmed ones
+                    // the counts claim, so a cancelled booking cannot be listed
+                    // without the count disagreeing with the list.
+                    self::assertIsArray($body['today']);
+                    self::assertIsArray($body['upcoming']);
+                    self::assertIsArray($body['counts']);
+                    self::assertCount((int) $body['counts']['todayConfirmed'], $body['today']);
+                    self::assertCount((int) $body['counts']['upcomingConfirmed'], $body['upcoming']);
+                }
                 break;
 
             case 'authSessionResponse':

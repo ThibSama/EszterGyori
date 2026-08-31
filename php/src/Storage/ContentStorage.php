@@ -50,8 +50,26 @@ use Eszter\Support\Clock;
  */
 final class ContentStorage implements PublishedContentReader
 {
-    /** Ported from `MAX_CONTENT_FILE_BYTES`. */
-    public const MAX_FILE_BYTES = 1024 * 1024;
+    /**
+     * The read guard on `draft.json` and `published.json`, from
+     * `storageLimits.contentFileLimitBytes`.
+     *
+     * ESZ-084 moved this number into the contract and stated what it is for,
+     * because standing next to a 64 kB request limit it read as a contradiction.
+     * It is not one: every byte of content reaches disk through a request the
+     * smaller limit already bounds, so the largest file this application can
+     * write is around 65 kB and this cap is never the binding constraint. It
+     * exists for the file the application did *not* write — restored, hand-edited
+     * or truncated — where reading an unbounded file into memory to discover it is
+     * unusable is the failure worth preventing.
+     *
+     * The inequality is what makes the pair safe, and it only works in this
+     * direction. A storage cap *below* the request limit would accept a save,
+     * write it, and refuse it on the next read — content destroyed by the rule
+     * meant to protect it. `storageLimitReconciliation.invariant` states that, and
+     * the contract suite asserts it.
+     */
+    private readonly int $maxFileBytes;
 
     public const ROLE_DRAFT = 'draft';
     public const ROLE_PUBLISHED = 'published';
@@ -72,6 +90,13 @@ final class ContentStorage implements PublishedContentReader
     ) {
         $this->writer = new AtomicJsonFile($this->tmpDirectory);
         $this->lock = new FileLock($lockDirectory . \DIRECTORY_SEPARATOR . 'content.lock');
+        $this->maxFileBytes = $artifacts->storageLimitBytes('contentFileLimitBytes');
+    }
+
+    /** The content read guard in force, from the frozen contract. */
+    public function maxFileBytes(): int
+    {
+        return $this->maxFileBytes;
     }
 
     public function draftPath(): string
@@ -494,11 +519,10 @@ final class ContentStorage implements PublishedContentReader
 
         // Checked before reading, not after: the cap exists so a runaway file
         // cannot be pulled into memory in the first place.
-        if ($size > self::MAX_FILE_BYTES) {
+        if ($size > $this->maxFileBytes) {
             throw new StorageException(
                 StorageException::FILE_TOO_LARGE,
-                "{$role} content file is {$size} bytes, over the "
-                    . self::MAX_FILE_BYTES . " byte cap.",
+                "{$role} content file is {$size} bytes, over the {$this->maxFileBytes} byte cap.",
                 $role,
             );
         }

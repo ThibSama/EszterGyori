@@ -1,8 +1,8 @@
 {
   "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
-  "httpContractVersion": 1,
+  "httpContractVersion": 2,
   "contentSchemaVersion": 1,
-  "description": "Frozen wire behaviour of the public read-only surface. Any change here is a breaking change.",
+  "description": "Frozen wire behaviour of public content, auth, CMS/media and booking APIs. Any change here is a breaking change.",
   "requestId": {
     "header": "x-request-id",
     "trustedInboundPattern": "^[A-Za-z0-9._:-]{1,80}$",
@@ -19,6 +19,94 @@
     "errorCode": "INVALID_JSON",
     "scope": "any request body, regardless of Content-Type",
     "enforcedBefore": "routing"
+  },
+  "storageLimits": {
+    "requestBodyLimitBytes": 65536,
+    "contentFileLimitBytes": 1048576,
+    "mediaLibraryIndexLimitBytes": 1048576,
+    "exportedPageLimitBytes": 4194304,
+    "invariant": "contentFileLimitBytes > requestBodyLimitBytes",
+    "invariantReason": "A storage cap below the request limit would accept a save and then refuse to read it back, destroying content with a rule that only speaks up afterwards.",
+    "contentCapRole": "A read guard for a file the application did not write — restored, hand-edited or truncated — not a write budget. The reachable ceiling over HTTP is the request limit, which is smaller by design.",
+    "mediaLibraryCapRole": "A real write budget, because the catalogue grows with every upload and no request bounds it.",
+    "enforcedOnWrite": [
+      "mediaLibraryIndexLimitBytes"
+    ],
+    "enforcedOnWriteReason": "Reading the catalogue is how a delete finds its entry, so a cap enforced only on read would make the one operation that could shrink an over-sized catalogue the one operation that had stopped working. Refusing the upload that would cross the cap keeps every asset deletable.",
+    "overSizedMediaLibraryOutcome": {
+      "status": 413,
+      "errorCode": "PAYLOAD_TOO_LARGE",
+      "note": "The upload is refused and nothing is stored: no intake file, no original, no derivative and no catalogue entry."
+    }
+  },
+  "rateLimit": {
+    "algorithm": "gcra",
+    "algorithmNote": "Per bucket the store holds one theoretical-arrival-time. emissionInterval = periodSeconds / limit; delayTolerance = (burst - 1) * emissionInterval, so `burst` is exactly the number of requests admitted at one instant rather than one more than it. A request is admitted when tat <= now + delayTolerance, and admission sets tat = max(tat, now) + emissionInterval; a refused request writes nothing at all. Retry-After is ceil(tat - delayTolerance - now), floored at one emissionInterval.",
+    "store": "database",
+    "storeNote": "One row per bucket in rate_limit_buckets, decided by a single conditional UPDATE so two concurrent processes cannot both be admitted by the same allowance. Process-local state is never used: on shared hosting each request is its own process and would see none of it.",
+    "clock": "application",
+    "subjectKey": "sha256(scope + NUL + subject), stored as bytes; no address or identity is stored in clear.",
+    "clientAddressSource": "REMOTE_ADDR",
+    "forwardedHeadersTrusted": false,
+    "refusal": {
+      "status": 429,
+      "errorCode": "RATE_LIMITED",
+      "retryAfterHeader": "Retry-After",
+      "retryAfterUnit": "seconds",
+      "enforcedBefore": "any work the route would otherwise do: no password verification, no transaction, no row lock, no slot computation."
+    },
+    "buckets": {
+      "auth.login.address": {
+        "scope": "auth.login.address",
+        "subject": "client address",
+        "limit": 10,
+        "periodSeconds": 900,
+        "burst": 5,
+        "guards": "Password guessing from one origin."
+      },
+      "auth.login.identity": {
+        "scope": "auth.login.identity",
+        "subject": "normalised submitted e-mail address",
+        "limit": 30,
+        "periodSeconds": 900,
+        "burst": 10,
+        "guards": "Distributed guessing against one account. Deliberately wide: a narrow per-identity budget would let an anonymous caller lock the site's only administrator out."
+      },
+      "booking.create.address": {
+        "scope": "booking.create.address",
+        "subject": "client address",
+        "limit": 5,
+        "periodSeconds": 3600,
+        "burst": 3,
+        "guards": "One origin filling the calendar with junk reservations."
+      },
+      "booking.create.global": {
+        "scope": "booking.create.global",
+        "subject": "the constant `all`",
+        "limit": 60,
+        "periodSeconds": 3600,
+        "burst": 20,
+        "guards": "Distributed booking spam, which the per-address bucket cannot see. It is a ceiling on damage, not a per-user quota: a genuine caller refused here is refused because the site is under attack, and the operator sees it in the log."
+      },
+      "booking.availability.address": {
+        "scope": "booking.availability.address",
+        "subject": "client address",
+        "limit": 120,
+        "periodSeconds": 3600,
+        "burst": 30,
+        "guards": "Repeated 90-day slot recomputation. Wide enough that a person browsing the calendar never meets it."
+      }
+    },
+    "retention": "A bucket row is expired once its tat is in the past by more than its period, and is swept opportunistically. Sweeping is never on the request's critical path and losing a row only forgives allowance, never grants it.",
+    "requirements": [
+      "A refusal is decided before the route performs any work.",
+      "A throttled login is byte-identical whether or not the submitted address names an account.",
+      "The response is the frozen error envelope plus Retry-After; it names no bucket, no limit and no remaining allowance.",
+      "The limiter stores no address, e-mail or other personal datum in clear.",
+      "An inbound X-Forwarded-For, X-Real-IP or Forwarded header never changes which bucket a request is charged to.",
+      "Two concurrent processes presenting the last allowance admit exactly one of them.",
+      "A limiter failure is logged and refuses the request rather than admitting it unbounded."
+    ]
   },
   "bootstrapFailure": {
     "status": 500,
@@ -187,7 +275,7 @@
       "issuedBy": "/api/auth/session and /api/auth/login, in the response body",
       "boundTo": "the session, anonymous or authenticated",
       "requiredOn": "every state-changing request, including login and logout",
-      "exemptFrom": "GET /api/auth/session, and the read-only public surface, which change no state",
+      "exemptFrom": "GET /api/auth/session, public reads, and the authenticated reads /api/admin/bookings/query, /api/admin/bookings/summary and /api/admin/availability/query; none changes state",
       "comparison": "constant-time",
       "rotation": "A fresh token is minted whenever the session id rotates, so the token a caller holds before login is useless after it.",
       "failure": {
@@ -525,6 +613,66 @@
     "librarySchemaVersion": 1,
     "unknownAssetIdFixture": "med_ffffffffffffffffffffffffffffffff"
   },
+  "booking": {
+    "paths": {
+      "services": "/api/booking/services",
+      "availability": "/api/booking/availability",
+      "create": "/api/bookings",
+      "adminQuery": "/api/admin/bookings/query",
+      "adminMoveAvailability": "/api/admin/bookings/move-availability",
+      "adminMutate": "/api/admin/bookings",
+      "adminSummary": "/api/admin/bookings/summary",
+      "adminAvailabilityQuery": "/api/admin/availability/query",
+      "adminAvailabilityWeekly": "/api/admin/availability/weekly",
+      "adminAvailabilityExceptions": "/api/admin/availability/exceptions"
+    },
+    "publicErrors": "The frozen error envelope only; no booking, customer, SQL, lock or validation detail.",
+    "adminMutationSecurity": "authenticated session followed by CSRF, before body parsing",
+    "policy": {
+      "publicAvailability": "Only active canonical services and dates from the Paris-local today through day 90 inclusive; response order is SlotEngine order and slots are never persisted.",
+      "publicServices": "Lists only active canonical service keys with booking label and duration; editorial descriptions and media remain in SiteContent.",
+      "creation": "The client submits a returned UTC start. Inside one transaction the singleton primary resource row is locked, all inputs are re-read, SlotEngine recomputes, and insert plus created history commit together.",
+      "adminMutableFields": {
+        "update": [
+          "customerName",
+          "customerEmail",
+          "customerPhone",
+          "customerNote"
+        ],
+        "move": [
+          "startsAtUtc"
+        ],
+        "cancel": [
+          "state",
+          "cancelledAtUtc",
+          "cancellationReason"
+        ]
+      },
+      "move": "Authenticated move availability resolves the booking server-side and delegates to SlotEngine while excluding only itself. Mutation retains reference and service, requires confirmed state, and transactionally recomputes the submitted returned instant.",
+      "history": "Append-only created, moved, cancelled and customer_updated events; the bookings row remains authoritative current state."
+    },
+    "availabilityAdministration": {
+      "maxQueryRangeDays": 400,
+      "maxWeeklyRules": 100,
+      "maxExceptionWindows": 12,
+      "authority": "availability_rules and availability_exceptions are canonical. The editor reads and replaces them; it never computes, caches or schedules anything the server would then have to trust.",
+      "weeklyReplacement": "PUT carries the complete intended rule set. The server validates all of it, then deletes and reinserts inside one transaction holding a row lock, so a rejected or failed save leaves the previously stored schedule exactly as it was rather than a partial one.",
+      "weeklyRefusals": [
+        "An ISO weekday outside 1-7.",
+        "A window whose end is not strictly after its start.",
+        "Two windows on the same weekday whose validity ranges intersect and whose times overlap.",
+        "A validity end earlier than its validity start.",
+        "A fold offset that is not one of Europe/Paris's two."
+      ],
+      "clientPrevalidation": "The browser may refuse a malformed set before sending it. That is a convenience and never an authority: the same set posted directly is refused by the same server rules.",
+      "adoptServerState": "Every successful mutation returns the stored state, and the editor renders what it was returned. No optimistic local schedule survives a response.",
+      "exceptionPrecedence": "One exception per local date replaces the weekly result for that date outright. Closed yields no windows; open yields exactly its ordered window set. Weekly and exception windows are never merged.",
+      "exceptionRemoval": "Removing the exception restores the weekly behaviour for that date; it is the only way back and it deletes no booking.",
+      "exceptionDst": "Each exception window boundary is converted with the Europe/Paris IANA rules at store time: a spring-forward gap is refused and an autumn fall-back overlap requires the explicit fold offset.",
+      "destructiveConfirmation": "Closing a date and removing an exception are confirmed explicitly in the UI before they are sent.",
+      "summary": "The summary reads the same booking rows as the admin query and stores nothing of its own. Entries list confirmed bookings in ascending start order; cancelled bookings are reported in their own counts and never inflate a confirmed one."
+    }
+  },
   "errorCodes": [
     "NOT_FOUND",
     "METHOD_NOT_ALLOWED",
@@ -536,6 +684,8 @@
     "REVISION_CONFLICT",
     "PAYLOAD_TOO_LARGE",
     "MEDIA_REFERENCED",
+    "SLOT_UNAVAILABLE",
+    "RATE_LIMITED",
     "INVALID_CONFIGURATION",
     "STORAGE_FAILURE",
     "INTERNAL_ERROR"
@@ -551,6 +701,8 @@
     "REVISION_CONFLICT": "Le contenu a été modifié entre-temps. Rechargez le brouillon avant d'enregistrer.",
     "PAYLOAD_TOO_LARGE": "Le fichier envoyé dépasse la taille maximale autorisée de 8 Mo.",
     "MEDIA_REFERENCED": "Ce média est utilisé par le brouillon ou par le site publié. Retirez-le du contenu avant de le supprimer.",
+    "SLOT_UNAVAILABLE": "Ce créneau n’est plus disponible. Choisissez un autre horaire.",
+    "RATE_LIMITED": "Trop de tentatives. Merci de patienter quelques instants avant de réessayer.",
     "INVALID_CONFIGURATION": "La configuration du serveur est invalide.",
     "STORAGE_FAILURE": "Le contenu publié est momentanément indisponible.",
     "INTERNAL_ERROR": "Une erreur interne est survenue."
@@ -619,7 +771,8 @@
         400,
         401,
         403,
-        405
+        405,
+        429
       ],
       "requestBodySchema": "login-request.schema.json",
       "successBodySchema": "auth-session-response.schema.json"
@@ -712,6 +865,161 @@
       ],
       "requestBodySchema": "media-delete-request.schema.json",
       "successBodySchema": "media-library-response.schema.json"
+    },
+    {
+      "path": "/api/booking/services",
+      "methods": [
+        "GET"
+      ],
+      "statuses": [
+        200,
+        405,
+        500
+      ],
+      "successBodySchema": "public-bookable-services-response.schema.json"
+    },
+    {
+      "path": "/api/booking/availability",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        200,
+        400,
+        405,
+        429,
+        500
+      ],
+      "requestBodySchema": "booking-availability-request.schema.json",
+      "successBodySchema": "booking-availability-response.schema.json"
+    },
+    {
+      "path": "/api/bookings",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        201,
+        400,
+        405,
+        409,
+        429,
+        500
+      ],
+      "requestBodySchema": "public-booking-create-request.schema.json",
+      "successBodySchema": "public-booking-response.schema.json"
+    },
+    {
+      "path": "/api/admin/bookings/query",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        405,
+        500
+      ],
+      "requestBodySchema": "admin-bookings-query-request.schema.json",
+      "successBodySchema": "admin-bookings-response.schema.json"
+    },
+    {
+      "path": "/api/admin/bookings/move-availability",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        404,
+        405,
+        409,
+        500
+      ],
+      "requestBodySchema": "admin-booking-move-availability-request.schema.json",
+      "successBodySchema": "booking-availability-response.schema.json"
+    },
+    {
+      "path": "/api/admin/bookings",
+      "methods": [
+        "PATCH"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        405,
+        409,
+        500
+      ],
+      "requestBodySchema": "admin-booking-mutation-request.schema.json",
+      "successBodySchema": "admin-booking-response.schema.json"
+    },
+    {
+      "path": "/api/admin/bookings/summary",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        405,
+        500
+      ],
+      "requestBodySchema": "admin-bookings-summary-request.schema.json",
+      "successBodySchema": "admin-bookings-summary-response.schema.json"
+    },
+    {
+      "path": "/api/admin/availability/query",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        405,
+        500
+      ],
+      "requestBodySchema": "admin-availability-query-request.schema.json",
+      "successBodySchema": "admin-availability-response.schema.json"
+    },
+    {
+      "path": "/api/admin/availability/weekly",
+      "methods": [
+        "PUT"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        403,
+        405,
+        500
+      ],
+      "requestBodySchema": "admin-availability-weekly-replace-request.schema.json",
+      "successBodySchema": "admin-availability-weekly-response.schema.json"
+    },
+    {
+      "path": "/api/admin/availability/exceptions",
+      "methods": [
+        "PATCH"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        403,
+        405,
+        500
+      ],
+      "requestBodySchema": "admin-availability-exception-mutation-request.schema.json",
+      "successBodySchema": "admin-availability-exception-response.schema.json"
     }
   ],
   "unknownRouteStatus": 404,
@@ -2743,6 +3051,827 @@
         "contentRevision": "absent",
         "storageAfter": "unchanged"
       }
+    },
+    {
+      "id": "booking.services.get.ok",
+      "endpoint": "/api/booking/services",
+      "description": "Only active canonical booking services are exposed to the public flow.",
+      "request": {
+        "method": "GET",
+        "path": "/api/booking/services"
+      },
+      "expect": {
+        "status": 200,
+        "body": "publicBookableServicesResponse"
+      }
+    },
+    {
+      "id": "booking.services.post.methodNotAllowed",
+      "endpoint": "/api/booking/services",
+      "description": "The active service collection is read-only.",
+      "request": {
+        "method": "POST",
+        "path": "/api/booking/services"
+      },
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "GET"
+        }
+      }
+    },
+    {
+      "id": "booking.availability.post.ok",
+      "endpoint": "/api/booking/availability",
+      "description": "An active canonical service returns only bounded, ordered, computed slots.",
+      "request": {
+        "method": "POST",
+        "path": "/api/booking/availability",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"serviceKey\":\"brows\",\"fromDate\":\"2026-06-15\",\"untilDate\":\"2026-06-15\"}"
+      },
+      "expect": {
+        "status": 200,
+        "body": "bookingAvailabilityResponse"
+      }
+    },
+    {
+      "id": "booking.availability.post.invalidService",
+      "endpoint": "/api/booking/availability",
+      "description": "A service key outside SiteContent is rejected without exposing internals.",
+      "request": {
+        "method": "POST",
+        "path": "/api/booking/availability",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"serviceKey\":\"unknown\",\"fromDate\":\"2026-06-15\",\"untilDate\":\"2026-06-15\"}"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "booking.availability.post.invalidDateShape",
+      "endpoint": "/api/booking/availability",
+      "description": "Malformed local dates are rejected by the closed request schema.",
+      "request": {
+        "method": "POST",
+        "path": "/api/booking/availability",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"serviceKey\":\"brows\",\"fromDate\":\"15-06-2026\",\"untilDate\":\"2026-06-15\"}"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "booking.availability.get.methodNotAllowed",
+      "endpoint": "/api/booking/availability",
+      "description": "Availability is a JSON query with one frozen POST method.",
+      "request": {
+        "method": "GET",
+        "path": "/api/booking/availability"
+      },
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "POST"
+        }
+      }
+    },
+    {
+      "id": "booking.create.post.ok",
+      "endpoint": "/api/bookings",
+      "description": "A currently available slot creates one confirmed booking and returns no customer data.",
+      "request": {
+        "method": "POST",
+        "path": "/api/bookings",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"serviceKey\":\"brows\",\"startsAtUtc\":\"2026-06-15T07:00:00.000Z\",\"customerName\":\"Cliente Exemple\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null,\"consentAccepted\":true}"
+      },
+      "expect": {
+        "status": 201,
+        "body": "publicBookingResponse"
+      }
+    },
+    {
+      "id": "booking.create.post.staleSlot",
+      "endpoint": "/api/bookings",
+      "description": "A slot lost before transactional revalidation is a generic 409.",
+      "request": {
+        "method": "POST",
+        "path": "/api/bookings",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"serviceKey\":\"brows\",\"startsAtUtc\":\"2026-06-15T07:15:00.000Z\",\"customerName\":\"Cliente Exemple\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null,\"consentAccepted\":true}"
+      },
+      "expect": {
+        "status": 409,
+        "body": "errorEnvelope",
+        "errorCode": "SLOT_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "booking.create.post.invalidConsent",
+      "endpoint": "/api/bookings",
+      "description": "Consent must be explicitly true before customer facts reach persistence.",
+      "request": {
+        "method": "POST",
+        "path": "/api/bookings",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"serviceKey\":\"brows\",\"startsAtUtc\":\"2026-06-15T07:00:00.000Z\",\"customerName\":\"Cliente Exemple\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null,\"consentAccepted\":false}"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.bookings.query.post.ok",
+      "endpoint": "/api/admin/bookings/query",
+      "description": "An authenticated read query lists full booking records and durable history without CSRF.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/bookings/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"range\",\"fromDate\":\"2026-06-15\",\"untilDate\":\"2026-06-15\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminBookingsResponse"
+      }
+    },
+    {
+      "id": "admin.bookings.query.post.unauthenticated",
+      "endpoint": "/api/admin/bookings/query",
+      "description": "An anonymous booking query is rejected before its body is inspected.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/bookings/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"range\",\"fromDate\":\"2026-06-15\",\"untilDate\":\"2026-06-15\"}"
+      },
+      "auth": {
+        "session": "none"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.bookings.moveAvailability.post.ok",
+      "endpoint": "/api/admin/bookings/move-availability",
+      "description": "Authenticated move availability is computed by the server while excluding the booking itself.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/bookings/move-availability",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"reference\":\"bk_00000000000000000000000000000000\",\"fromDate\":\"2026-06-15\",\"untilDate\":\"2026-06-15\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "bookingAvailabilityResponse"
+      }
+    },
+    {
+      "id": "admin.bookings.moveAvailability.post.unauthenticated",
+      "endpoint": "/api/admin/bookings/move-availability",
+      "description": "Anonymous move-slot discovery is refused before body parsing.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/bookings/move-availability",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "none"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.bookings.patch.updateOk",
+      "endpoint": "/api/admin/bookings",
+      "description": "Customer corrections are an explicit authenticated CSRF-protected mutation.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/bookings",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"update\",\"reference\":\"bk_00000000000000000000000000000000\",\"customerName\":\"Cliente Corrigée\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminBookingResponse"
+      }
+    },
+    {
+      "id": "admin.bookings.patch.moveOk",
+      "endpoint": "/api/admin/bookings",
+      "description": "A move returns the same booking reference after transactional slot revalidation.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/bookings",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"move\",\"reference\":\"bk_00000000000000000000000000000000\",\"startsAtUtc\":\"2026-06-15T08:00:00.000Z\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminBookingResponse"
+      }
+    },
+    {
+      "id": "admin.bookings.patch.cancelOk",
+      "endpoint": "/api/admin/bookings",
+      "description": "Cancellation changes state and retains the booking and its history.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/bookings",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"cancel\",\"reference\":\"bk_00000000000000000000000000000000\",\"reason\":\"Indisponible\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminBookingResponse"
+      }
+    },
+    {
+      "id": "admin.bookings.patch.unauthenticated",
+      "endpoint": "/api/admin/bookings",
+      "description": "Authentication is checked before CSRF or mutation parsing.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/bookings",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.bookings.patch.csrfOmitted",
+      "endpoint": "/api/admin/bookings",
+      "description": "An authenticated booking mutation without CSRF is rejected before parsing.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/bookings",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID"
+      }
+    },
+    {
+      "id": "admin.bookings.summary.post.ok",
+      "endpoint": "/api/admin/bookings/summary",
+      "description": "The operational summary is an authenticated read: it needs a session, no CSRF, and reports confirmed and cancelled counts separately.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/bookings/summary",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"upcomingDays\":7}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminBookingsSummaryResponse"
+      }
+    },
+    {
+      "id": "admin.bookings.summary.post.unauthenticated",
+      "endpoint": "/api/admin/bookings/summary",
+      "description": "An anonymous caller learns nothing about the day's bookings, not even how many there are.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/bookings/summary",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"upcomingDays\":7}"
+      },
+      "auth": {
+        "session": "none"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.bookings.summary.post.rangeTooLarge",
+      "endpoint": "/api/admin/bookings/summary",
+      "description": "The horizon is bounded by the schema, so an unbounded scan is a 400 rather than a slow 200.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/bookings/summary",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"upcomingDays\":365}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.availability.query.post.ok",
+      "endpoint": "/api/admin/availability/query",
+      "description": "Reading the schedule needs a session and no CSRF, and returns both the weekly rules and the exceptions in the window.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/availability/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"fromDate\":\"2026-06-01\",\"untilDate\":\"2026-06-30\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminAvailabilityResponse"
+      }
+    },
+    {
+      "id": "admin.availability.query.post.unauthenticated",
+      "endpoint": "/api/admin/availability/query",
+      "description": "The opening hours an anonymous caller may see are the computed public slots, not the rules behind them.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/availability/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"fromDate\":\"2026-06-01\",\"untilDate\":\"2026-06-30\"}"
+      },
+      "auth": {
+        "session": "none"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.availability.weekly.put.ok",
+      "endpoint": "/api/admin/availability/weekly",
+      "description": "One PUT carries the complete intended week and returns the stored result, which is what the editor then renders.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/availability/weekly",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"rules\":[{\"weekdayIso\":2,\"startLocal\":\"09:00\",\"endLocal\":\"12:30\",\"foldUtcOffset\":null,\"validFrom\":null,\"validUntil\":null,\"isActive\":true},{\"weekdayIso\":2,\"startLocal\":\"14:00\",\"endLocal\":\"18:00\",\"foldUtcOffset\":null,\"validFrom\":\"2026-09-01\",\"validUntil\":\"2026-12-31\",\"isActive\":true}]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminAvailabilityWeeklyResponse"
+      }
+    },
+    {
+      "id": "admin.availability.weekly.put.emptySetIsAllowed",
+      "endpoint": "/api/admin/availability/weekly",
+      "description": "An empty rule set is a legitimate schedule — the salon takes no recurring appointments — and is not confused with a malformed one.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/availability/weekly",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"rules\":[]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminAvailabilityWeeklyResponse"
+      }
+    },
+    {
+      "id": "admin.availability.weekly.put.invertedWindow",
+      "endpoint": "/api/admin/availability/weekly",
+      "description": "A window that ends before it starts is refused by the server, whatever the browser allowed.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/availability/weekly",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"rules\":[{\"weekdayIso\":2,\"startLocal\":\"18:00\",\"endLocal\":\"09:00\",\"foldUtcOffset\":null,\"validFrom\":null,\"validUntil\":null,\"isActive\":true}]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.availability.weekly.put.overlappingWindows",
+      "endpoint": "/api/admin/availability/weekly",
+      "description": "Two windows on one weekday whose validity ranges intersect and whose times overlap are refused as a set, before anything is stored.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/availability/weekly",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"rules\":[{\"weekdayIso\":2,\"startLocal\":\"09:00\",\"endLocal\":\"12:30\",\"foldUtcOffset\":null,\"validFrom\":null,\"validUntil\":null,\"isActive\":true},{\"weekdayIso\":2,\"startLocal\":\"12:00\",\"endLocal\":\"15:00\",\"foldUtcOffset\":null,\"validFrom\":null,\"validUntil\":null,\"isActive\":true}]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.availability.weekly.put.malformedTime",
+      "endpoint": "/api/admin/availability/weekly",
+      "description": "A time that is not on a real 24-hour clock is refused structurally: `BOOKING_LOCAL_TIME_PATTERN` accepts only 00:00–23:59, so 25:00 never reaches the domain at all. The domain still refuses it independently; the structural check is necessary and, for the range, now also decisive.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/availability/weekly",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"rules\":[{\"weekdayIso\":2,\"startLocal\":\"25:00\",\"endLocal\":\"26:00\",\"foldUtcOffset\":null,\"validFrom\":null,\"validUntil\":null,\"isActive\":true}]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.availability.weekly.put.civilDayBoundsAccepted",
+      "endpoint": "/api/admin/availability/weekly",
+      "description": "The two ends of the civil day are ordinary values. A window running from 00:00 to 23:59 is accepted, so tightening the wire pattern to a real clock is proved not to have narrowed the accepted set.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/availability/weekly",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"rules\":[{\"weekdayIso\":2,\"startLocal\":\"00:00\",\"endLocal\":\"23:59\",\"foldUtcOffset\":null,\"validFrom\":null,\"validUntil\":null,\"isActive\":true}]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminAvailabilityWeeklyResponse"
+      }
+    },
+    {
+      "id": "admin.availability.weekly.put.hourAboveTwentyThree",
+      "endpoint": "/api/admin/availability/weekly",
+      "description": "24:00 is the first value above the clock and the one a lenient pattern lets through. There is no midnight-end convention here: a day ends at 23:59 and the next window starts at 00:00.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/availability/weekly",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"rules\":[{\"weekdayIso\":2,\"startLocal\":\"09:00\",\"endLocal\":\"24:00\",\"foldUtcOffset\":null,\"validFrom\":null,\"validUntil\":null,\"isActive\":true}]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.availability.weekly.put.minuteAboveFiftyNine",
+      "endpoint": "/api/admin/availability/weekly",
+      "description": "The minute field is bounded as well as the hour field. 09:60 is shaped like a time, is not one, and is refused before the domain is consulted.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/availability/weekly",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"rules\":[{\"weekdayIso\":2,\"startLocal\":\"09:60\",\"endLocal\":\"12:00\",\"foldUtcOffset\":null,\"validFrom\":null,\"validUntil\":null,\"isActive\":true}]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.availability.weekly.put.unauthenticated",
+      "endpoint": "/api/admin/availability/weekly",
+      "description": "Authentication is resolved before CSRF and before the body is parsed.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/availability/weekly",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.availability.weekly.put.csrfOmitted",
+      "endpoint": "/api/admin/availability/weekly",
+      "description": "Replacing the schedule is state-changing, so a session alone does not authorise it.",
+      "request": {
+        "method": "PUT",
+        "path": "/api/admin/availability/weekly",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID"
+      }
+    },
+    {
+      "id": "admin.availability.exceptions.patch.closeOk",
+      "endpoint": "/api/admin/availability/exceptions",
+      "description": "A closure replaces that date's weekly windows with nothing at all.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/exceptions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"close\",\"localDate\":\"2026-08-15\",\"note\":\"Jour férié\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminAvailabilityExceptionResponse"
+      }
+    },
+    {
+      "id": "admin.availability.exceptions.patch.openOk",
+      "endpoint": "/api/admin/availability/exceptions",
+      "description": "An exceptional opening carries the complete window set for that date; it is a replacement and is never merged with the weekly rules.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/exceptions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"open\",\"localDate\":\"2026-08-16\",\"windows\":[{\"startLocal\":\"10:00\",\"endLocal\":\"12:00\",\"foldUtcOffset\":null},{\"startLocal\":\"14:00\",\"endLocal\":\"16:00\",\"foldUtcOffset\":null}],\"note\":null}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminAvailabilityExceptionResponse"
+      }
+    },
+    {
+      "id": "admin.availability.exceptions.patch.removeOk",
+      "endpoint": "/api/admin/availability/exceptions",
+      "description": "Removing the exception restores the weekly behaviour and returns a null exception to say so.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/exceptions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"remove\",\"localDate\":\"2026-08-15\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminAvailabilityExceptionResponse"
+      }
+    },
+    {
+      "id": "admin.availability.exceptions.patch.emptyOpenWindowSet",
+      "endpoint": "/api/admin/availability/exceptions",
+      "description": "An open exception with no windows is refused rather than silently stored as a closure; a closure is its own explicit action.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/exceptions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"open\",\"localDate\":\"2026-08-16\",\"windows\":[],\"note\":null}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.availability.exceptions.patch.nonexistentLocalTime",
+      "endpoint": "/api/admin/availability/exceptions",
+      "description": "A window boundary inside the spring-forward gap names an instant that does not exist in Europe/Paris and is refused rather than shifted.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/exceptions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"open\",\"localDate\":\"2027-03-28\",\"windows\":[{\"startLocal\":\"02:30\",\"endLocal\":\"04:00\",\"foldUtcOffset\":null}],\"note\":null}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.availability.exceptions.patch.unauthenticated",
+      "endpoint": "/api/admin/availability/exceptions",
+      "description": "Anonymous callers cannot close the salon, and are refused before the body is read.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/exceptions",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.availability.exceptions.patch.csrfOmitted",
+      "endpoint": "/api/admin/availability/exceptions",
+      "description": "An authenticated exception mutation without CSRF is rejected before parsing.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/exceptions",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID"
+      }
     }
   ],
   "invariants": [
@@ -2913,6 +4042,34 @@
     {
       "id": "media.libraryIsTheOnlyRegistry",
       "description": "The catalogue records what exists; the content document records what is used. Selecting an asset writes a path into the working draft through the ordinary draft save, so there is one content authority and the library never becomes a second one."
+    },
+    {
+      "id": "booking.availabilityUsesTheSlotEngine",
+      "description": "Public availability delegates to the canonical SlotEngine, applies the frozen 90-day and result bounds, and never stores generated slots."
+    },
+    {
+      "id": "booking.creationRevalidatesUnderTheDatabaseLock",
+      "description": "Creation starts one SQL transaction, locks the singleton V1 resource row, re-reads service, rules, exceptions and non-cancelled bookings, recomputes the requested UTC slot, then inserts. Different services share the same lock."
+    },
+    {
+      "id": "booking.adminMutationsAreGuardedAndAudited",
+      "description": "Admin update, move and cancel require an authenticated session and CSRF. Move uses the creation lock/revalidation path; every meaningful mutation appends durable history while bookings remains the source of truth."
+    },
+    {
+      "id": "availability.weeklyReplacementIsAllOrNothing",
+      "description": "The whole submitted rule set is validated before anything is written, and the delete-then-reinsert runs inside one transaction that first locks the existing rows. A refusal or a failure mid-write leaves the previously stored schedule intact; no path can commit part of a week."
+    },
+    {
+      "id": "availability.exceptionRemovalRestoresWeekly",
+      "description": "Deleting a date's exception, and only that, makes the weekly rules apply to that date again. The exception never merged with them, so nothing has to be un-merged, and no booking is touched either way."
+    },
+    {
+      "id": "availability.exceptionWindowsAreDstChecked",
+      "description": "Every exception window boundary is converted with the Europe/Paris IANA rules before it is stored: a spring-forward gap is refused outright, and an autumn fall-back overlap is refused unless the caller states which of the two offsets it meant."
+    },
+    {
+      "id": "summary.cancelledNeverInflatesConfirmed",
+      "description": "The summary partitions the same rows the admin query returns by state. A cancelled booking appears only in a cancelled count, never in a confirmed count and never in a listed entry, so cancelling a booking always lowers the confirmed number."
     },
     {
       "id": "bootstrap.failureUsesFrozenEnvelope",

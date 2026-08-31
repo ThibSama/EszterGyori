@@ -113,7 +113,7 @@ the confusing kind.
 | 1 | `/api`, `/api/*` | the PHP front controller — **first**, so nothing can shadow an API path and answer HTML where a JSON envelope is frozen |
 | 2 | `/index.html` | 301 to `/`, so the uninjected build output is never served under its own name |
 | 3 | an existing file or directory | served directly (`_next/`, `media/`, icons, `robots.txt`) |
-| 4 | `/reservation`, `/reservation/*` | the 404 document — reserved, no booking UI |
+| 4 | `/reservation` | `reservation.html` — the exported booking selection flow |
 | 5 | `/admin/<page>` with an exported file | `admin/<page>.html` |
 | 6 | any other `/admin/*` | `admin.html`, so a refresh on a deep link loads the shell |
 | 7 | `/` | the PHP front controller (§4) |

@@ -202,6 +202,50 @@ final class ContractArtifacts
         return $admin;
     }
 
+    /**
+     * The `storageLimits` block of the HTTP contract (ESZ-084).
+     *
+     * The three on-disk caps used to be three PHP constants, which is how one of
+     * them came to be enforced in the wrong place without anything noticing: a
+     * number with no declared relationship to the request limit cannot be checked
+     * against it. They now live in the artifact next to the request limit, with
+     * the invariant that ties them together stated and asserted.
+     *
+     * @return array<mixed>
+     */
+    public function storageLimits(): array
+    {
+        /** @var mixed $limits */
+        $limits = $this->httpContract()['storageLimits'] ?? null;
+
+        if (!\is_array($limits)) {
+            throw new ContractArtifactException('http-contract.json has no `storageLimits` block.');
+        }
+
+        return $limits;
+    }
+
+    /**
+     * One cap from {@see storageLimits()}, as a positive integer.
+     *
+     * Refuses a missing or non-integer value rather than defaulting. A cap that
+     * silently falls back to a hard-coded number is a cap nobody can change, and
+     * the fallback is what would be in force on the day it mattered.
+     */
+    public function storageLimitBytes(string $key): int
+    {
+        /** @var mixed $value */
+        $value = $this->storageLimits()[$key] ?? null;
+
+        if (!\is_int($value) || $value < 1) {
+            throw new ContractArtifactException(
+                "http-contract.json storageLimits.{$key} is missing or not a positive integer.",
+            );
+        }
+
+        return $value;
+    }
+
     /** @return array<mixed> */
     public function parityCorpus(): array
     {

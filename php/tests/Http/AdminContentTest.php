@@ -266,7 +266,7 @@ final class AdminContentTest extends TestCase
 
         // The size cap is still the storage layer's, unchanged by this route.
         self::assertLessThan(
-            \Eszter\Storage\ContentStorage::MAX_FILE_BYTES,
+            $this->kernel->storage->maxFileBytes(),
             \strlen($this->rawDraft()),
         );
     }

@@ -63,16 +63,16 @@ The order is the specification. Each stage assumes the previous one held.
 
 | Stage | Gates | State |
 | --- | --- | --- |
-| **1. Static integrity** | lockfile sync (contracts, front), typecheck (contracts, contracts tools), frontend lint | Executable |
+| **1. Static integrity** | authoritative dependency audits, lockfile sync, typecheck, frontend lint | Executable |
 | **2. Contract artifacts** | `contracts:verify:generated` | Executable |
 | **3. Contract semantics** | `contracts:test` — parity corpus, rule coverage, refinement census | Executable |
 | **4. Frontend behaviour** | `front:test` | Executable |
-| **5. Build** | contracts `dist/`, frontend production build | Executable |
-| **6. PHP validation** | composer validate, lint, static analysis, unit tests, parity-corpus replay, full `http-contract.json` replay, media ingest and library, document-root routing | Executable |
-| **7. SQL** | migration tests, integration tests | Executable **when `ESZTER_TEST_DB_DSN` names a disposable MySQL database**; NOT RUN otherwise |
-| **8. HTTP smoke** | live origin checks | **Not run** |
+| **5. Build** | contracts `dist/`, frontend production export, deterministic production deployment artifact | Executable |
+| **6. PHP validation** | composer validate, lint, static analysis, unit tests, parity-corpus replay, full `http-contract.json` replay, media, booking domain, document-root routing | Executable |
+| **7. SQL** | migration, integration and notification queue tests | Executable **when `ESZTER_TEST_DB_DSN` names a disposable MySQL database**; NOT RUN otherwise |
+| **8. HTTP smoke** | local PHP server plus deployed-origin checks | Local executable; deployed origin **Not run** |
 | **9. Browser scenarios** | public, admin, booking | **Not run** |
-| **10. Security and configuration** | exposure, headers, permissions, advisories | **Not run** |
+| **10. Security and configuration** | deployed exposure, headers and permissions | **Not run** |
 
 > **Renumbered in Package 1.2 (ESZ-015).** The policy used to carry a stage 4,
 > *Implementation conformance*, whose only gate was `api:test` — the HTTP contract
@@ -101,6 +101,14 @@ Why this order:
 ## 4. Currently executable gates
 
 ### Stage 1 — Static integrity
+
+`security:dependencies` is the ESZ-084 advisory gate. It runs Composer against the
+complete lock and the exact `--no-dev` production set, and runs npm against both
+the contracts and frontend locks with and without development dependencies. It is
+online by design: a cached advisory snapshot is not authoritative. Tool versions
+and counts are printed, registry/tool failures fail closed, and any advisory or
+abandoned Composer package fails. The dated finding and remediation record is in
+`docs/security-review-v1.md`.
 
 | Gate | Command | Proves |
 | --- | --- | --- |
@@ -139,6 +147,15 @@ important gate in the policy, because JSON Schema alone cannot express these rul
 diacritics preserved — asserted structurally rather than against editorial sentences),
 appearance and contrast rules, public/admin module isolation, local-backup semantics,
 and responsive behaviour.
+
+Since ESZ-063/064/065 it also covers the availability editor: the weekly set travels as
+one body with no client-side id, reads carry no CSRF header and mutations do, browser
+prevalidation attributes every rule the server enforces to the row that broke it, an
+exception replaces rather than merges with the weekly windows and removing it restores
+them, and the editor is proved to render server-returned state, confirm destructive
+changes, and keep its `aria-invalid` / `aria-describedby` error wiring and its focus
+moves. What it does not prove is any of that in a real browser — that is `browser:admin`
+in stage 9, which stays NOT RUN.
 
 Since Package 3.2 it also covers the admin client against a stub `fetch`: what the API
 client sends (the frozen paths, the CSRF header, `expectedRevision` on every write, and
@@ -193,6 +210,30 @@ It also asserts the exported HTML already contains the copy. A blank shell fille
 JavaScript was the rejected design (`docs/hetzner-target-architecture.md` §5), and this
 is what stops it being reintroduced by accident.
 
+`front:budgets` (ESZ-085) measures the gzipped transfer weight of every route —
+the document plus every stylesheet and script it references — plus the shared CSS
+and JavaScript totals, against ceilings declared in `front/scripts/verify-budgets.mjs`.
+
+The budgets sit a few per cent above what the current build produces, which is the
+whole design: this is a **ratchet**, not an audit. It is silent today and speaks the
+moment something grows, which is the regression worth catching automatically — a
+dependency added to a shared layout, a library pulled into the admin bundle, an
+image inlined as a data URI. Each of those is invisible in review and permanent
+once shipped. A budget with room for a doubling would prove nothing, so raising one
+is a deliberate edit in the same commit as the growth.
+
+It measures gzip because that is what is transferred; raw size overstates the cost
+of minified code and understates the cost of anything already compressed. It is
+**not** a Lighthouse score and does not claim to be one — no browser is involved,
+and Stage 9 stays NOT RUN.
+
+`deployment:artifact` then stages only the export and PHP production runtime, installs
+the Composer lock with `--no-dev`, writes a file/digest/mode manifest and builds the
+archive twice to prove deterministic bytes. It rejects secrets/config, Node modules,
+tests, caches, source maps and private trees below `public_html`; it also requires
+Symfony Mailer, all migrations, the migration CLI and the explicit SMTP runner. This is
+an offline structural proof, not a claim that Apache has served the result.
+
 ### Stage 6 — PHP validation
 
 | Gate | Command | Proves |
@@ -203,10 +244,14 @@ is what stops it being reintroduced by accident.
 | `php:static-analysis` | `php bin/static-analysis.php` | PHPStan at **level max** over `src/` and `bin/`, **level 6** over `tests/`, plus PSR-12. Both levels are pinned in committed configs, so the gate cannot drift by dependency upgrade. |
 | `php:unit` | `vendor/bin/phpunit --testsuite eszter` | Configuration fail-fast — including ESZ-027's production refusals: a missing `database` block, a placeholder or empty DB password, a non-MySQL DSN, `session.cookieSecure: false`, and a config file readable by group or others. Plus contract-artifact digest verification, atomic JSON storage (temp-write, fsync, rename, size cap, locking, idempotent seeding, no silent replacement of an invalid file), the HTTP layer against `http-contract.json`, ESZ-025/026's auth invariants, and Package 3.1's admin content invariants — the shared revision sequence, publish atomicity and idempotence, ETag invalidation across `/` and `/api/content`, draft/published isolation, conflict-leaves-storage-untouched, and real two-process concurrency against one content directory. The suite is named explicitly rather than left to the default, so this gate cannot start depending on a database server. |
 | `php:parity-corpus` | PHPUnit, contract suites | The PHP validator replays `contracts/generated/parity-corpus.json` with **identical** accept/reject outcomes and **identical** issue paths, every rule declared in `semantic-rules.json` is implemented, and structural validation is driven by the generated JSON Schema rather than a second hand-written schema. |
-| `php:http-contract` | PHPUnit, HTTP suites | The full `http-contract.json` case list against the PHP HTTP layer: statuses and `Allow` headers, the closed error envelope, request-id generation and echo, `ETag` / `If-None-Match` / 304, cache headers, opaque storage failures, the over-limit body outcome and the bootstrap-failure envelope. Since ESZ-021 this includes `/`; since Package 3.1 it includes the three `/api/admin/content/*` paths, their `409 REVISION_CONFLICT` outcomes, the `x-content-revision` header and the per-case assertion that storage is byte-identical after every rejected write. The artifact's exemption set is asserted to be **empty**. |
+| `php:http-contract` | PHPUnit, HTTP suites | The full `http-contract.json` case list against the PHP HTTP layer: statuses and `Allow` headers, the closed error envelope, request-id generation and echo, `ETag` / `If-None-Match` / 304, cache headers, opaque storage failures, the over-limit body outcome and the bootstrap-failure envelope. Since ESZ-021 this includes `/`; since Package 3.1 it includes the three `/api/admin/content/*` paths, their `409 REVISION_CONFLICT` outcomes, the `x-content-revision` header and the per-case assertion that storage is byte-identical after every rejected write. The artifact's exemption set is asserted to be **empty**. Since ESZ-063/064/065 it also replays the availability administration and summary surface: all four routes refuse an anonymous caller, the two mutations refuse a session without CSRF, the two reads need no token, and an inverted window, an overlapping weekly set, an empty open exception and a spring-forward boundary are each refused with the frozen envelope. |
 | `php:public-page` | PHPUnit, `PublicPageBootstrapTest` | The injector rewrites only the two bootstrap elements and leaves the rest of the export byte-identical; it locates them by `id` rather than by a remembered opening tag; a missing element raises instead of producing a half-injected page; the payload stays valid JSON that no editorial string can break out of; and the appearance block emits exactly the custom properties the contract declares, dropping any value that is not a validated hex colour. |
 | `php:media` | PHPUnit, `MediaUploadTest\|MediaLibraryTest` | ESZ-036/037 against real image bytes generated by the suite. Every allowed format is stored under a cryptographically random server-generated name whose extension comes from the verified type, so a client filename reaches no path. A PHP script wearing JPEG magic bytes, an SVG, a GIF, a truncated JPEG, a polyglot whose two parsers disagree, and a header declaring 1.6 × 10^10 pixels are all refused — the last before any decoder runs. The served derivative is the server's own re-encode, so EXIF and a payload appended after EOI are absent from it. An over-limit upload is 413 while the 64 kB JSON limit is unchanged on every other route, and PHP's own silent `post_max_size` discard is recovered as a 413 rather than reported as a missing file. Every refusal leaves no intake file, no original, no file under `/media/` and no catalogue entry. A delete is refused with 409 while **either** the authoritative draft or the published document references the asset, and refusing removes nothing; a `$_FILES` entry naming a file the request did not upload is refused; a corrupt catalogue is never silently replaced. |
-| `php:routing` | PHPUnit, `DocumentRootRoutingTest` | `/api` resolves before anything can shadow it; static assets are served directly; `/admin` deep links survive a refresh; `/reservation` is reserved and ships no booking UI; `/` is never resolved as a static file; every declared rule is reachable; and the committed `.htaccess` is byte-identical to what the routing table renders, using only directives that are legal in that context. Since ESZ-036 it also executes `media/.htaccess`'s managed-asset whitelist through PCRE — the same engine Apache uses — against staging names, double extensions, case variants and an SVG. |
+| `php:booking` | PHPUnit, `BookingDomainTest\|AvailabilitySlotEngineTest` | ESZ-040 through ESZ-045 without SQL: stable service/state contracts, weekly windows, strict exception replacement, fixed midnight grid, buffer and occupancy boundaries, bounded dynamic generation, spring-gap omission and explicit fall-fold selection. |
+| `php:security` | PHPUnit, `RateLimitPolicyTest\|RateLimitGuardTest\|SecurityHeadersTest\|StorageLimitReconciliationTest\|MediaLibraryCapTest` | ESZ-084 without a database. The frozen rate-limit policy is **refused** rather than silently weakened when this implementation cannot honour it — a limiter that degrades quietly is indistinguishable from one that works until the day it matters. A login charges the caller's address before the submitted identity, and stops at the first refusal, so a flood from one source cannot spend the operator's budget and lock them out of their own site. A throttled login is byte-identical whether or not the address names an account, so throttling cannot become the enumeration oracle `auth.loginFailure` exists to prevent. A forwarding header never changes which bucket a request is charged to, which is the bypass the whole design closes. The generated `.htaccess` sends CSP, Permissions-Policy and the baseline headers with `always` — so they reach 404s and 500s, the responses an attacker sees most — names no external origin and carries no wildcard, and confines `'unsafe-inline'` to script and style. The content read guard is proved to stay strictly **above** the request limit, which is the inequality that stops a save being accepted, written and then refused by the very next read. And the media catalogue cap is enforced before the write, so the one cap a caller can actually reach can no longer wedge the delete that would have shrunk it. |
+| `php:backup` | PHPUnit, `TarArchiveTest\|BackupManifestTest` | ESZ-083's archive format and integrity record, offline. The archive is a hand-written ustar writer because neither `ext-phar` nor a `tar` binary can be assumed on the target host, and that trade is only reasonable while the format is proved rather than believed: entries round-trip byte for byte, GNU tar reads what it produces, and writing is deterministic so two backups of an unchanged deployment agree. A truncated archive, a corrupted header, an unsupported entry type and every path that would escape the destination are each refused. The manifest catches a missing entry, an altered one, an entry of the wrong length, an **undeclared extra** file, a rewritten digest and an unknown format version. |
+| `php:notifications` | PHPUnit, `NotificationPolicyTest\|NotificationCatchUpTest` | ESZ-070/071/072 without SQL. The frozen channel, type and status enums; a status graph whose three terminal states have no way back out and whose `processing` is reachable only from `pending`; deterministic clamped backoff and the exact attempt at which retrying stops. The diagnostic code pattern is proved unable to express an address, a phone number, a message fragment or a bearer token, which is what makes "no customer data in the stored error" structural rather than a review habit. The log allowlist and the declared forbidden-field list are proved disjoint, and a forbidden **value** is proved unable to ride in on an allowed key. The migration file is read and checked to restate every frozen set and bound and to use `ON DELETE RESTRICT` rather than `CASCADE`. Finally the catch-up rules: a reminder one minute inside its grace window is deliverable and one minute outside it is not, only time-sensitive types expire at all, a disabled channel is reported as disabled even when the window also closed, and re-enabling a channel after twenty declined windows neither backfills them nor produces a burst. |
+| `php:routing` | PHPUnit, `DocumentRootRoutingTest` | `/api` resolves before anything can shadow it; static assets are served directly; `/admin` deep links survive a refresh; `/reservation` resolves exactly to its exported HTML while unknown subpaths 404; `/` is never resolved as a static file; every declared rule is reachable; and the committed `.htaccess` is byte-identical to what the routing table renders, using only directives that are legal in that context. Since ESZ-036 it also executes `media/.htaccess`'s managed-asset whitelist through PCRE — the same engine Apache uses — against staging names, double extensions, case variants and an SVG. |
 
 `php:parity-corpus` is the gate that made the migration safe, and it is green:
 39/39 corpus cases, with the issue paths compared exactly rather than the outcomes
@@ -246,7 +291,7 @@ What stage 6 does **not** yet prove, and says so rather than being silently abse
 
 | Not covered | Why |
 | --- | --- |
-| Notification queue, booking | `php:unit` covers what exists. Those subjects do not exist yet; the gate widens as they arrive. Media arrived in Package 3.3 and has its own gate, `php:media`. |
+| Live provider acceptance and mailbox receipt | Package 7.2 proves SMTP message construction and failure classification with a no-network mailer double. It deliberately does not contact a deployment-owned SMTP account or assert delivery into a real mailbox. SMS is outside Package 7.2 and remains unimplemented. |
 | The browser editor writing to the server draft, end to end | Package 3.1 covered the `/api/admin/content/*` server surface; Package 3.2 connected the editor to it and covered the client side against a stub `fetch` (`front:test`). What neither half proves is the two running together against one origin: that is `browser:admin` in stage 9, and it needs a deployment. |
 | Login throttling | `docs/hetzner-target-architecture.md` §6 asks for rate-limited, throttled login attempts keyed by account and by source address. ESZ-025 did not build it, so there is nothing to gate. Everything else §6 asks of authentication is built and covered. |
 | A real browser exercising `/admin` | Package 3.2 built the client flow — sign-in, draft load, save, conflict, publish, reset — and `front:test` drives every branch of it as units. The gap that remains is a real browser against a real origin: cookie attributes the `__Host-` prefix only enforces in one, and the redirect after sign-in. `browser:admin` in stage 9 stays NOT RUN. |
@@ -263,8 +308,11 @@ than the one recorded here before, where the subject itself did not exist.
 
 | Gate | Command | Proves |
 | --- | --- | --- |
-| `sql:migrations` | `vendor/bin/phpunit --testsuite sql-migrations` | Every migration applies to an empty database in version order; a second run applies nothing; a half-applied migration completes on the next run; editing an already-applied migration is refused on its checksum; a database recording a migration this checkout does not contain is refused; a misnamed file is refused rather than skipped; concurrent runs serialise on an advisory lock; and `schema_migrations` ends consistent. It also asserts the shape the code relies on: `utf8mb4`, InnoDB, the byte-exact `email` collation, and the session→account foreign key cascading. |
-| `sql:integration` | `vendor/bin/phpunit --testsuite sql-integration` | The admin account and session repositories against a real MySQL instance seeded by the **real** migrations, each test isolated in a rolled-back transaction: repeat-safe provisioning, identity normalisation and the case/accent behaviour of the unique index, password hashing, both session deadlines with the absolute one un-extendable, targeted invalidation, garbage collection, and the whole login/CSRF/logout flow driven through the front controller against MySQL. |
+| `sql:migrations` | `vendor/bin/phpunit --testsuite sql-migrations` | Every migration applies repeat-safely and in order. Booking coverage proves table shape, constraints, exception-window/history foreign keys, the singleton serialization row and indexes on real MySQL, plus the deliberate absence of a generated-slot table. |
+| `sql:integration` | `vendor/bin/phpunit --testsuite sql-integration` | Admin auth and the booking backend against real MySQL, including HTTP auth/CSRF, availability, atomic create/move/cancel/history and Package 6.2 availability administration. ESZ-087 drives two independent PHP processes through the production Kernel and `POST /api/bookings` for the same valid slot: exactly one 201 confirmation, one 409 `SLOT_UNAVAILABLE`, one confirmed booking/history occurrence and one confirmation/reminder job pair. ESZ-074 additionally proves lifecycle jobs commit atomically with booking/history, duplicate-safe confirmation/cancellation identities, exact T−24h reminders, move supersession and rescheduling, terminal skips outside catch-up, cancellation retirement and rollback of all three tables when a producer fails. |
+| `sql:rate-limits` | `vendor/bin/phpunit --testsuite sql-rate-limits` | ESZ-084 against real MySQL, because every guarantee the limiter makes is a property of the **store** rather than of the algorithm — an in-memory double would satisfy all of them by construction and prove none. Allowance is spent across separate charges and survives them, which is the whole point on a runtime where each request is its own process; it is restored exactly one emission interval later and not a millisecond earlier; a refused charge writes nothing, so hammering a full bucket cannot lengthen its own penalty; two subjects and two scopes never share a row; an idle bucket recovers its whole burst but accumulates no credit beyond it; no address or e-mail is stored in clear; a row is never sweepable while it is still refusing; and two independent operating-system processes racing the last allowance admit exactly one. |
+| `sql:backup-restore` | `vendor/bin/phpunit --testsuite sql-backup-restore` | ESZ-083's restore proof, which is the deliverable — a backup that has never been restored is a hypothesis. A realistic deployment (services, availability, a booking with accented customer data, its history, its notification jobs, published *and* draft content, a real JPEG with both its original and its derivative) is backed up, then restored into a **second empty database and a second empty directory**, then interrogated for what a person would actually notice: the published headline, the customer's name through a dump and a reload, the history events, the notification queue, the availability rules, and both media files byte for byte. It also proves the exclusions by their absence — no configuration, session, rate-limit row, log, lock, temporary file or in-flight upload reaches the archive — and the four refusals: a tampered entry, a populated target without `--overwrite`, a production configuration without `--allow-production`, and a backup from a schema the target has never reached. |
+| `sql:notifications` | `vendor/bin/phpunit --testsuite sql-notifications` | ESZ-070/071/072 against real MySQL, because almost none of it is true on any other engine. A repeated enqueue resolves to the same row and does not reschedule it, while a key reused for a different booking is refused rather than silently ignored. A claim takes a durable lease, charges one attempt and is invisible to a second claim; a job not yet due, or whose channel has no transport, is never claimed. Delivery succeeds exactly once and `sent` is terminal. Transient failures retry on the frozen 60/120/240/480-second backoff and become terminal on the fifth attempt; a permanent refusal is terminal on the first; a transport throwing anything else is classified as transient and its message reaches neither storage nor the log. An abandoned lease is recovered one second after it expires and not one second before, without forgiving the attempt it charged, so a job that kills every runner exhausts its budget instead of looping. A runner whose lease expired mid-delivery cannot record a delivery it no longer owns. One run claims at most its batch. A stale reminder is retired before it can be claimed **and** re-checked after, and never delivered; a non-time-sensitive job is never retired for being old; a disabled channel produces terminal skips so a later re-enable finds nothing pending. No customer name, address, phone, note or database credential appears in any log line, and every key on every line is on the frozen allowlist. Two independent operating-system processes blocked on the same row prove exactly one claims, exactly one delivers, and the row records exactly one attempt. |
 
 Isolation is the requirement, not a preference:
 
@@ -275,6 +323,14 @@ Isolation is the requirement, not a preference:
 - Each `sql:integration` test runs inside a transaction that is rolled back afterwards.
   `TRUNCATE` is deliberately not used per test: on MySQL it commits implicitly and would
   defeat the rollback it was meant to help.
+- `sql:rate-limits` and `sql:backup-restore` are the two exceptions, and both are
+  exceptions on purpose. A rate-limit charge must **never** be transactional — the
+  routes it guards open their own transactions, and a charge folded into one would be
+  rolled back by the failure it was meant to bound, so a script could retry forever at
+  zero cost. A restore runs migrations, whose DDL commits implicitly on MySQL and would
+  silently end an enclosing transaction. Both suites truncate instead, and both are
+  separate suites so that a future "wrap everything in a transaction" change cannot
+  quietly defeat the property they exist to prove.
 - Fixtures are explicit. No test depends on rows another test created.
 
 **MySQL, not SQLite.** The engine is what is under test: `utf8mb4` collation semantics,
@@ -285,30 +341,37 @@ have gone green, and would have proved none of that — it has transactional DDL
 idempotence rule that the whole migrator is built around would have looked like
 superstition.
 
-Booking, settings and notification repositories are named in the original scope of
-`sql:integration` and are **not** covered, because they do not exist. The gate widens
-when they arrive.
+Package 4.3 widens `sql:integration` to the public/admin booking HTTP surface, durable
+history and real concurrent cross-service creation. Package 7.1 adds a third SQL gate,
+`sql:notifications`, and gives `system_settings` its first key,
+`notifications.channels`. Package 7.2 adds the booking e-mail producer and SMTP transport;
+SMS and live-provider receipt remain separate work.
 
 ---
 
-## 5. Declared but not yet executable
+## 5. Runtime smoke and deployment-owned gates
 
-Each gate below is declared in `scripts/validate.mjs` with its reason and its intended
-assertion, so the gap is inspectable rather than absent.
+Each gate below is declared in `scripts/validate.mjs`. The repository-local PHP smoke
+is executable; checks that require a deployed origin or browser remain NOT RUN with
+their reason, so the gap is inspectable rather than absent.
 
 ### Stage 8 — HTTP smoke
 
-Against a running origin, after deployment: `GET /api/health`; `GET /api/content` with
-its ETag, then a conditional request returning 304 with an empty body; an unknown
-`/api/*` path returning the **JSON** 404 envelope rather than HTML; a wrong method
-returning 405 with `Allow`; HTTP→HTTPS redirect and security headers; and `/` returning
-fully populated HTML containing the published content under a `published-<revision>`
-ETag; plus `/admin` deep links and `/reservation` resolving as the routing table says.
+`smoke:local-php` starts the documented `npm run php:serve` implementation on an
+ephemeral loopback port after the build stage. It proves that `/` returns the injected
+Eszter export, one hashed frontend asset resolves, `/api/health` crosses the production
+PHP front controller, unknown public and API routes retain their HTML and JSON 404
+contracts, and the server logs no PHP routing/bootstrap fatal. The process is always
+terminated at the end of the gate.
 
-What is still missing after Package 2.1 is narrower than it was, and worth stating
-precisely. The routing rules and the injection are now covered offline by `php:routing`
-and `php:public-page`, which run against the same table `.htaccess` is generated from.
-What no offline gate can prove is that **Apache actually applies that file** — that
+The separate `smoke:deployed-http` gate remains NOT RUN until an origin exists. It adds
+`GET /api/content` ETag revalidation, a wrong method and `Allow`, HTTP→HTTPS redirect,
+security headers, `/admin` deep links and `/reservation` under the real host.
+
+The remaining gap is now specifically the production web server. The local smoke,
+`php:routing` and `php:public-page` exercise the built-in-server adapter, routing table
+and injection. What no local gate can prove is that **Apache actually applies the
+generated `.htaccess`** — that
 `mod_rewrite` is enabled, that `AllowOverride` permits these directives, and that the
 host resolves `DirectoryIndex disabled` the way the rules assume. That is the gap this
 stage closes, and it cannot be closed before there is a host.
@@ -327,7 +390,8 @@ Critical paths only — enough to catch a broken release, few enough to stay tru
   bad credentials without enumerating users; an edit saves to the server draft; publish
   updates the public site; logout invalidates the session **server-side**.
 - **Booking**: a request submits, validates, persists, appears in admin and enqueues its
-  notifications; invalid input is rejected without losing entered data.
+  notifications; invalid input is rejected without losing entered data. Package 7.2 now
+  covers the enqueue half against MySQL; this browser scenario still proves the composed flow.
 
 ### Stage 10 — Security and configuration
 
@@ -337,10 +401,10 @@ Critical paths only — enough to catch a broken release, few enough to stay tru
 - Security headers present: HSTS, `X-Content-Type-Options`, `Referrer-Policy`, CSP.
 - `config/` files are mode `0600` and owned by the application user.
 - Admin cookies are `HttpOnly`, `Secure`, `SameSite=Strict`.
-- No dependency carries a known critical advisory (`npm audit`, `composer audit`).
 
-This stage runs against a deployed host and is the one gate that is allowed to use the
-network. It is therefore reported separately and never gates a local run.
+Dependency advisory checks moved to the executable Stage 1
+`security:dependencies` gate in the ESZ-084 closure. Stage 10 runs against a deployed
+host, so it is reported separately and never gates a local run.
 
 ---
 
@@ -352,8 +416,8 @@ A V1 release requires:
 2. Stages 7–10 are executing, not NOT RUN, and green. **NOT RUN blocks a V1 release.**
 3. A restore rehearsal has been performed and recorded (`docs/hetzner-target-architecture.md` §10).
 
-Local development requires only stages 1–6 — which, since Package 1.2, includes the
-full PHP conformance replay. The distinction is deliberate: contributors
+Local development requires the executable local gates through stage 8 — including the
+full PHP conformance replay and real built-in-server smoke. The distinction is deliberate: contributors
 are not blocked by infrastructure that does not exist yet, and nobody can mistake that
 for the release bar.
 
@@ -367,7 +431,7 @@ ESZTER_TEST_DB_USERNAME=eszter ESZTER_TEST_DB_PASSWORD=… \
 npm run validate
 ```
 
-Without those variables the two gates report NOT RUN, which is still not a pass and
+Without those variables the SQL gates report NOT RUN, which is still not a pass and
 still blocks a release.
 
 ---

@@ -17,6 +17,7 @@ use Eszter\Auth\Authenticator;
 use Eszter\Auth\CsrfGuard;
 use Eszter\Auth\SessionManager;
 use Eszter\Contract\StructuralValidator;
+use Eszter\Storage\StorageException;
 use Eszter\Support\Logger;
 
 /**
@@ -85,6 +86,31 @@ final class AdminMediaUploadEndpoint extends AdminMediaEndpoint
                 ErrorCatalog::INVALID_CONFIGURATION,
                 $this->mediaHeaders(),
                 $misconfigured->getMessage(),
+            );
+        } catch (StorageException $full) {
+            if ($full->storageCode !== StorageException::FILE_TOO_LARGE) {
+                // Every other storage failure keeps the opaque 500 the contract
+                // freezes. Only the catalogue cap is the caller's to act on.
+                throw $full;
+            }
+
+            // `storageLimits.overSizedMediaLibraryOutcome` (ESZ-084). The
+            // catalogue is full, which is a fact about this site rather than
+            // about this file — but 413 is still the honest class and the only
+            // one the caller can act on, and the action is the same: delete
+            // something. Nothing was stored: `publishAsset()` unlinks what it had
+            // placed and the ingest unlinks the intake and staging files, so the
+            // library is exactly as readable, and as deletable, as before.
+            $this->logger->error('Media upload refused: the catalogue is at its size cap.', [
+                'maxIndexBytes' => $this->library->maxIndexBytes(),
+                'detail' => $full->getMessage(),
+            ]);
+
+            throw new HttpException(
+                413,
+                ErrorCatalog::PAYLOAD_TOO_LARGE,
+                $this->mediaHeaders(),
+                $full->getMessage(),
             );
         } catch (MediaException $rejected) {
             // The detail names types, sizes and decoder outcomes. It goes to the

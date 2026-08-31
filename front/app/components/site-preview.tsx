@@ -236,6 +236,11 @@ function ServicesSection({
                     className="inline-block text-sm font-medium text-sage-600 hover:text-sage-500 transition-colors duration-300 group-hover:translate-x-1 transition-transform">
                     {item.ctaLabel}
                   </a>
+                  <a
+                    href={`/reservation?service=${item.id}`}
+                    className="ml-5 inline-block text-sm font-medium text-warm-800 underline decoration-sage-300 underline-offset-4 transition-colors hover:text-sage-600">
+                    Réserver →
+                  </a>
                 </div>
               </GlassCard>
             </Reveal>

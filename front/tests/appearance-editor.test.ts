@@ -18,7 +18,7 @@ import {
 import { cloneSiteContent } from "../app/lib/site-content-clone";
 import { parseDraft, serializeDraft } from "../app/lib/admin-draft-storage";
 
-function customContent() {
+function customContent(): typeof defaultSiteContent {
   return {
     ...defaultSiteContent,
     appearance: {

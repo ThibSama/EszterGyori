@@ -12,6 +12,9 @@ use Eszter\Auth\PdoSessionStore;
 use Eszter\Auth\SessionCookie;
 use Eszter\Auth\SessionManager;
 use Eszter\Auth\SessionStore;
+use Eszter\Booking\BookingApi;
+use Eszter\Booking\BookingDomainContract;
+use Eszter\Booking\PdoBookingApi;
 use Eszter\Config\Configuration;
 use Eszter\Config\ConfigurationException;
 use Eszter\Contract\StructuralValidator;
@@ -27,6 +30,13 @@ use Eszter\Http\Endpoint\AdminMediaListEndpoint;
 use Eszter\Http\Endpoint\AdminMediaUploadEndpoint;
 use Eszter\Http\Endpoint\AdminPublishEndpoint;
 use Eszter\Http\Endpoint\AdminResetEndpoint;
+use Eszter\Http\Endpoint\AdminBookingsMutationEndpoint;
+use Eszter\Http\Endpoint\AdminBookingsQueryEndpoint;
+use Eszter\Http\Endpoint\AdminBookingMoveAvailabilityEndpoint;
+use Eszter\Http\Endpoint\AdminBookingsSummaryEndpoint;
+use Eszter\Http\Endpoint\AdminAvailabilityQueryEndpoint;
+use Eszter\Http\Endpoint\AdminAvailabilityWeeklyEndpoint;
+use Eszter\Http\Endpoint\AdminAvailabilityExceptionsEndpoint;
 use Eszter\Http\Endpoint\AuthLoginEndpoint;
 use Eszter\Http\Endpoint\AuthLogoutEndpoint;
 use Eszter\Http\Endpoint\AuthSessionEndpoint;
@@ -34,6 +44,9 @@ use Eszter\Http\Endpoint\ExportedPageReader;
 use Eszter\Http\Endpoint\HealthEndpoint;
 use Eszter\Http\Endpoint\PublicContentEndpoint;
 use Eszter\Http\Endpoint\PublicPageEndpoint;
+use Eszter\Http\Endpoint\PublicBookingAvailabilityEndpoint;
+use Eszter\Http\Endpoint\PublicBookableServicesEndpoint;
+use Eszter\Http\Endpoint\PublicBookingCreateEndpoint;
 use Eszter\Http\EntityTag;
 use Eszter\Http\ErrorCatalog;
 use Eszter\Http\HttpException;
@@ -48,6 +61,11 @@ use Eszter\Media\MediaIngest;
 use Eszter\Media\MediaLibrary;
 use Eszter\Media\PhpUploadTransport;
 use Eszter\Media\UploadTransport;
+use Eszter\Notification\NotificationPolicy;
+use Eszter\Security\NullRateLimiter;
+use Eszter\Security\PdoRateLimiter;
+use Eszter\Security\RateLimitGuard;
+use Eszter\Security\RateLimitPolicy;
 use Eszter\Storage\ContentStorage;
 use Eszter\Storage\ExportedPageFile;
 use Eszter\Storage\PublishedContentReader;
@@ -114,6 +132,16 @@ final class Kernel
          * one.
          */
         public readonly ?SessionManager $sessions = null,
+        /**
+         * Abuse control for the three anonymous write routes (ESZ-084).
+         *
+         * Never null. Without a database it is a {@see NullRateLimiter}, which
+         * admits everything and is named so that "not throttled" is visible in a
+         * stack rather than inferred from a missing object. Production always has
+         * a database — {@see Configuration} refuses to boot without one — so it
+         * always gets the real limiter.
+         */
+        public readonly ?RateLimitGuard $rateLimits = null,
     ) {
     }
 
@@ -142,6 +170,9 @@ final class Kernel
      *        parts of the ingest worth testing all come after the move.
      *        Production passes null and gets {@see PhpUploadTransport}, keeping
      *        the real guarantee.
+     * @param BookingApi|null $bookingApi Overrides booking use cases for the
+     *        contract runner. Production passes null and gets the MySQL-backed
+     *        implementation whenever database configuration exists.
      */
     public static function boot(
         string $configPath,
@@ -151,6 +182,7 @@ final class Kernel
         ?AccountDirectory $accountDirectory = null,
         ?SessionStore $sessionStore = null,
         ?UploadTransport $uploadTransport = null,
+        ?BookingApi $bookingApi = null,
     ): self {
         $clock ??= new SystemClock();
         $config = Configuration::fromFile($configPath);
@@ -200,6 +232,26 @@ final class Kernel
         $accounts = $accountDirectory
             ?? ($database === null ? null : new AdminAccountRepository($database, $clock));
         $sessionStore ??= $database === null ? null : new PdoSessionStore($database, $clock);
+        $bookingApi ??= $database === null
+            ? null
+            : PdoBookingApi::createDefault(
+                $database,
+                $clock,
+                BookingDomainContract::fromArtifacts($artifacts),
+                NotificationPolicy::fromArtifacts($artifacts),
+            );
+
+        // Read from the artifact at boot so a malformed or unhonourable policy
+        // fails the whole request with INVALID_CONFIGURATION, rather than at the
+        // first login of the day.
+        $rateLimitPolicy = RateLimitPolicy::fromArtifacts($artifacts);
+        $rateLimits = new RateLimitGuard(
+            $database === null
+                ? new NullRateLimiter()
+                : new PdoRateLimiter($database, $rateLimitPolicy, $clock, $logger),
+            $rateLimitPolicy,
+            $logger,
+        );
 
         $sessions = $accounts === null || $sessionStore === null
             ? null
@@ -223,6 +275,7 @@ final class Kernel
             $media,
             $mediaLibrary,
             $sessions,
+            $rateLimits,
         );
 
         $kernel->registerPublicRoutes(
@@ -230,6 +283,9 @@ final class Kernel
             $exportedPageReader ?? new ExportedPageFile($config->publicDir),
             $clock,
         );
+        if ($bookingApi !== null) {
+            $kernel->registerPublicBookingRoutes($bookingApi, $structural, $logger);
+        }
 
         if ($accounts !== null && $sessions !== null) {
             $kernel->registerAuthenticatedRoutes(
@@ -239,6 +295,7 @@ final class Kernel
                 $logger,
                 $structural,
                 $uploadTransport ?? new PhpUploadTransport(),
+                $bookingApi,
             );
         }
 
@@ -350,6 +407,7 @@ final class Kernel
         Logger $logger,
         StructuralValidator $structural,
         UploadTransport $uploadTransport,
+        ?BookingApi $bookingApi,
     ): void {
         $authenticator = new Authenticator($accounts, $sessions, $clock, $logger);
         $csrf = CsrfGuard::fromArtifacts($this->artifacts);
@@ -375,6 +433,71 @@ final class Kernel
             $logger,
             $clock,
             $uploadTransport,
+        );
+        if ($bookingApi !== null) {
+            $shared = [$bookingApi, $structural, $logger, $authenticator, $sessions, $csrf];
+            $this->router->register(
+                'POST',
+                AdminBookingsQueryEndpoint::PATH,
+                new AdminBookingsQueryEndpoint(...$shared),
+            );
+            $this->router->register(
+                'POST',
+                AdminBookingMoveAvailabilityEndpoint::PATH,
+                new AdminBookingMoveAvailabilityEndpoint(...$shared),
+            );
+            $this->router->register(
+                'PATCH',
+                AdminBookingsMutationEndpoint::PATH,
+                new AdminBookingsMutationEndpoint(...$shared),
+            );
+
+            // ESZ-063/064/065. Gated on the same `$bookingApi !== null` condition
+            // as the routes above and for the same reason: without booking use
+            // cases these would only ever answer 500.
+            $this->router->register(
+                'POST',
+                AdminBookingsSummaryEndpoint::PATH,
+                new AdminBookingsSummaryEndpoint(...$shared),
+            );
+            $this->router->register(
+                'POST',
+                AdminAvailabilityQueryEndpoint::PATH,
+                new AdminAvailabilityQueryEndpoint(...$shared),
+            );
+            $this->router->register(
+                'PUT',
+                AdminAvailabilityWeeklyEndpoint::PATH,
+                new AdminAvailabilityWeeklyEndpoint(...$shared),
+            );
+            $this->router->register(
+                'PATCH',
+                AdminAvailabilityExceptionsEndpoint::PATH,
+                new AdminAvailabilityExceptionsEndpoint(...$shared),
+            );
+        }
+    }
+
+    private function registerPublicBookingRoutes(
+        BookingApi $booking,
+        StructuralValidator $structural,
+        Logger $logger,
+    ): void {
+        $dependencies = [$booking, $structural, $logger];
+        $this->router->register(
+            'GET',
+            PublicBookableServicesEndpoint::PATH,
+            new PublicBookableServicesEndpoint(...$dependencies),
+        );
+        $this->router->register(
+            'POST',
+            PublicBookingAvailabilityEndpoint::PATH,
+            new PublicBookingAvailabilityEndpoint(...$dependencies),
+        );
+        $this->router->register(
+            'POST',
+            PublicBookingCreateEndpoint::PATH,
+            new PublicBookingCreateEndpoint(...$dependencies),
         );
     }
 
@@ -531,6 +654,13 @@ final class Kernel
 
         try {
             $this->rejectUnusableBody($request);
+
+            // After the body guard and before dispatch. The order is the policy:
+            // an over-limit or unparseable body is the caller's mistake and is
+            // refused without spending an allowance, while everything the route
+            // would actually do — the password verification, the row lock, the
+            // slot computation — happens strictly after the charge.
+            $this->rateLimits?->assert($request, $requestId);
 
             $response = $this->router->dispatch($request);
         } catch (HttpException $exception) {

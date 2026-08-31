@@ -10,11 +10,12 @@
     "build": "npm run build:contracts && node --preserve-symlinks ./node_modules/next/dist/bin/next build",
     "lint": "eslint",
     "test": "node --preserve-symlinks --conditions=react-server --import tsx --test tests/**/*.test.ts",
-    "verify:export": "node scripts/verify-export.mjs"
+    "verify:export": "node scripts/verify-export.mjs",
+    "verify:budgets": "node scripts/verify-budgets.mjs"
   },
   "dependencies": {
     "@eszter/contracts": "file:../contracts",
-    "next": "16.2.9",
+    "next": "16.3.2",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "zod": "^4.4.3"
@@ -25,7 +26,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.9",
+    "eslint-config-next": "16.3.2",
     "tailwindcss": "^4",
     "tsx": "^4.22.4",
     "typescript": "^5"

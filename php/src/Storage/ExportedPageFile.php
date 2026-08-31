@@ -22,7 +22,16 @@ use Eszter\Http\Endpoint\ExportedPageReader;
  */
 final class ExportedPageFile implements ExportedPageReader
 {
-    /** A Next export of this site is ~70 kB; 4 MB is a wide margin, not a target. */
+    /**
+     * A Next export of this site is ~70 kB; 4 MB is a wide margin, not a target.
+     *
+     * Kept as a constant rather than read from the artifact the way the other two
+     * caps now are, because this class is constructed from paths alone and
+     * threading the contract into a read-only file reader would buy nothing: no
+     * request can grow this file, only a deploy can. `storageLimits` still records
+     * the number, and `StorageLimitReconciliationTest` asserts the two agree, so
+     * there is one source of truth even though there are two spellings of it.
+     */
     public const MAX_PAGE_BYTES = 4 * 1024 * 1024;
 
     public function __construct(

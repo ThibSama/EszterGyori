@@ -126,8 +126,32 @@ Cote contenu, `/admin` n'est plus local-only :
 - aucun secret de session dans le navigateur : le cookie de session est `__Host-` et
   illisible par le script, le jeton CSRF vit en memoire le temps de l'onglet.
 
-Ce qui n'est toujours pas la : l'upload media, la reservation, les notifications, et la
-limitation des tentatives de connexion.
+`/admin/availability` (paquet 6.2, ESZ-063/064) edite les disponibilites :
+
+- **horaires hebdomadaires** par jour ISO, plusieurs plages par jour, activation et bornes
+  de validite facultatives. L'enregistrement envoie **la semaine complete dans une seule
+  requete** `PUT /api/admin/availability/weekly` : c'est cette forme qui rend le
+  remplacement atomique, puisqu'il n'y a qu'une requete a echouer et qu'un refus laisse
+  l'horaire precedent en place ;
+- **prevalidation navigateur** des chevauchements, des plages vides ou inversees et des
+  periodes de validite incoherentes. Elle sert uniquement a designer la ligne fautive a
+  cote de la ligne fautive : le serveur revalide tout et fait seule autorite ;
+- **exceptions de date** via `PATCH /api/admin/availability/exceptions` (`close`, `open`,
+  `remove`). Une exception **remplace** les horaires hebdomadaires de la date, elle ne s'y
+  ajoute jamais ; supprimer l'exception restaure le comportement hebdomadaire et
+  n'annule aucun rendez-vous. Les fermetures et les suppressions sont confirmees
+  explicitement ;
+- apres chaque succes, l'editeur affiche **l'etat renvoye par le serveur** (identifiants,
+  ordre, normalisations comprises) et jamais ce qu'il vient d'envoyer.
+
+`/admin/bookings` porte en plus un **resume operationnel** (ESZ-065) : rendez-vous
+confirmes du jour et des sept prochains jours, prochain rendez-vous, et compteurs. Les
+rendez-vous annules sont comptes a part et n'apparaissent jamais dans un compteur actif
+ni dans une liste ; le partage entre confirme et annule est fait par le serveur.
+
+Ce qui n'est toujours pas la : les notifications et la limitation des tentatives de
+connexion. Le parcours public de reservation couvre maintenant selection, coordonnees,
+verification, soumission et confirmation sans stockage navigateur des donnees cliente.
 
 L'apercu admin recoit seulement du `SiteContent` valide par `postMessage` same-origin. Le contenu d'apercu n'est pas persiste. Les dimensions logiques sont fixes a 390 x 844 pour `Telephone`, 768 x 1024 pour `Tablette` et 1440 x 900 pour `Ordinateur`. Le panneau mesure l'espace disponible avec `ResizeObserver`, puis applique `scale = min(availableWidth / deviceWidth, availableHeight / deviceHeight, 1)` au viewport complet afin de conserver les vrais breakpoints dans l'iframe. Les animations reveal y sont desactivees pour que toutes les sections restent visibles dans les captures, tandis que le site public conserve ses animations normales et respecte `prefers-reduced-motion`.
 

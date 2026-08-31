@@ -34,6 +34,14 @@ const NOT_RUN = "NOT RUN";
 const gates = [
   // ── Stage 1 — Static integrity ────────────────────────────────────────────────
   {
+    id: "security:dependencies",
+    stage: "1. Static integrity",
+    cwd: ".",
+    command: ["node", "scripts/audit-dependencies.mjs"],
+    proves:
+      "ESZ-084: the locked Composer and npm dependency sets are checked against the authoritative online advisory registries, both complete and with development dependencies omitted to mirror the production artifact.",
+  },
+  {
     id: "contracts:lockfile",
     stage: "1. Static integrity",
     cwd: "contracts",
@@ -96,7 +104,7 @@ const gates = [
     cwd: "front",
     command: ["npm", "run", "-s", "test"],
     proves:
-      "Content encoding integrity, appearance/contrast rules, admin/public isolation, local-draft semantics and responsive behaviour.",
+      "Content encoding integrity, appearance/contrast rules, admin/public isolation, local-draft semantics and responsive behaviour; ESZ-050 through ESZ-055 additionally prove active-service filtering, Paris-local date bounds, authoritative slots, customer validation and consent, exact creation payloads, duplicate-submit prevention, confirmation, stale-slot recovery, preserved failure state and accessible focus movement. ESZ-063/064/065 add the availability editor: the weekly set travels as one body with no client id, reads carry no CSRF and mutations do, prevalidation attributes every server rule to the row that broke it, an exception replaces rather than merges with the weekly windows and removing it restores them, and the editor is proved to render server-returned state, confirm destructive changes and keep its error and focus states.",
   },
 
   // ── Stage 5 — Build ───────────────────────────────────────────────────────────
@@ -121,7 +129,23 @@ const gates = [
     cwd: "front",
     command: ["npm", "run", "-s", "verify:export"],
     proves:
-      "ESZ-020: out/ is deployable without Node. No dynamic route, middleware, rewrite, route handler or server-only dependency survived; every route reached out/ as a file; and out/index.html carries a parseable bootstrap payload and a colours-only appearance block for ESZ-021's PHP injection to rewrite.",
+      "ESZ-020/050: out/ is deployable without Node. No dynamic route, middleware, rewrite, route handler or server-only dependency survived; every route including reservation.html reached out/ as a file; and out/index.html carries a parseable bootstrap payload and a colours-only appearance block for ESZ-021's PHP injection to rewrite.",
+  },
+  {
+    id: "front:budgets",
+    stage: "5. Build",
+    cwd: "front",
+    command: ["npm", "run", "-s", "verify:budgets"],
+    proves:
+      "ESZ-085: every route's gzipped transfer weight, and the shared CSS and JavaScript totals, are within declared ceilings. The budgets sit just above what the current build produces, so the gate is a ratchet: a dependency added to a shared layout, a library pulled into the admin bundle or an image inlined as a data URI fails here rather than shipping. It is not a Lighthouse score and does not claim to be one — no browser is involved.",
+  },
+  {
+    id: "deployment:artifact",
+    stage: "5. Build",
+    cwd: ".",
+    command: ["node", "scripts/build-production-artifact.mjs"],
+    proves:
+      "ESZ-080/082: the static export, generated contracts, PHP runtime, migrations and production-only locked Composer dependencies form a deterministic archive; only public_html is web-facing, no secret/config or source/test/cache artifact is included, Symfony Mailer and both production operator entry points are present, and Node is build-time only.",
   },
 
   // ── Stage 6 — PHP validation ──────────────────────────────────────────────────
@@ -166,7 +190,7 @@ const gates = [
     // must not need a database, and the SQL suites are separate gates below.
     command: ["vendor/bin/phpunit", "--no-progress", "--testsuite", "eszter"],
     proves:
-      "Configuration fail-fast including the production refusals of ESZ-027, contract-artifact digest verification, atomic JSON storage (temp-write, fsync, rename, size cap, locking, idempotent seeding, no silent replacement of invalid files), the HTTP foundation against http-contract.json, and the ESZ-025/026 auth invariants against in-memory doubles. Media has its own gate below; the notification queue is not covered because it does not exist yet.",
+      "Configuration fail-fast including the production refusals of ESZ-027, contract-artifact digest verification, atomic JSON storage, the HTTP foundation against http-contract.json, ESZ-025/026 auth invariants, and Package 4.1/4.2 booking-domain rules without requiring SQL. Media, booking and notifications also have focused gates below.",
   },
   {
     id: "php:parity-corpus",
@@ -189,7 +213,7 @@ const gates = [
       "HttpContractConformanceTest|HttpFoundationTest|KernelBootTest",
     ],
     proves:
-      "The full http-contract.json case list against the PHP HTTP layer: statuses, Allow headers, ETag/If-None-Match, 304 semantics, opaque storage failures, the over-limit body outcome and the bootstrap-failure envelope. Cases PHP is exempt from are declared in the artifact and asserted to be exactly one.",
+      "The full http-contract.json case list against the PHP HTTP layer: statuses, Allow headers, ETag/If-None-Match, 304 semantics, opaque storage failures, the over-limit body outcome and the bootstrap-failure envelope. Since ESZ-063/064/065 it also replays the availability administration and summary surface: every one of the four routes refuses an anonymous caller, the two mutations refuse a session without CSRF, the two reads need no token, and an inverted window, an overlapping weekly set, an empty open exception and a spring-forward boundary are each refused with the frozen envelope. Cases PHP is exempt from are declared in the artifact and asserted to be exactly one.",
   },
 
   {
@@ -235,7 +259,67 @@ const gates = [
       "DocumentRootRoutingTest",
     ],
     proves:
-      "ESZ-022: /api resolves before anything can shadow it, static assets are served directly, /admin deep links survive a refresh, /reservation is reserved and ships no booking UI, `/` is never resolved as a static file, every declared rule is reachable, and the committed .htaccess is byte-identical to what the routing table renders using only directives legal in that context. Since ESZ-036 it also proves media/ serves managed assets and nothing else: the generated whitelist is executed against staging names, double extensions and case variants.",
+      "ESZ-022/050: /api resolves before anything can shadow it, static assets are served directly, /admin deep links survive a refresh, /reservation resolves to its static export while unknown subpaths 404, `/` is never resolved as a static file, every declared rule is reachable, and the committed .htaccess is byte-identical to what the routing table renders using only directives legal in that context. Since ESZ-036 it also proves media/ serves managed assets and nothing else: the generated whitelist is executed against staging names, double extensions and case variants.",
+  },
+  {
+    id: "php:booking",
+    stage: "6. PHP validation",
+    cwd: "php",
+    command: [
+      "vendor/bin/phpunit",
+      "--no-progress",
+      "--testsuite",
+      "eszter",
+      "--filter",
+      "BookingDomainTest|AvailabilitySlotEngineTest",
+    ],
+    proves:
+      "ESZ-040 through ESZ-045 without a database: stable service keys and state graph plus weekly windows, strict exception replacement, midnight-aligned grids, buffer/occupancy boundaries, bounded dynamic generation, spring-gap rejection and explicit fall-fold selection.",
+  },
+  {
+    id: "php:security",
+    stage: "6. PHP validation",
+    cwd: "php",
+    command: [
+      "vendor/bin/phpunit",
+      "--no-progress",
+      "--testsuite",
+      "eszter",
+      "--filter",
+      "RateLimitPolicyTest|RateLimitGuardTest|SecurityHeadersTest|StorageLimitReconciliationTest|MediaLibraryCapTest",
+    ],
+    proves:
+      "ESZ-084 without a database: the frozen rate-limit policy is refused rather than weakened when this implementation cannot honour it; a login charges the caller's address before the submitted identity and a throttled login is byte-identical whether or not the address names an account; a forwarding header never changes which bucket a request is charged to; the generated .htaccess sends CSP, Permissions-Policy and the baseline headers with `always` and names no external origin; the content read guard stays strictly above the request limit, which is what stops a save being accepted and then refused on the next read; and the media catalogue cap is enforced before the write, so an over-sized catalogue — the one cap a caller can reach — can no longer wedge the delete that would shrink it.",
+  },
+  {
+    id: "php:backup",
+    stage: "6. PHP validation",
+    cwd: "php",
+    command: [
+      "vendor/bin/phpunit",
+      "--no-progress",
+      "--testsuite",
+      "eszter",
+      "--filter",
+      "TarArchiveTest|BackupManifestTest",
+    ],
+    proves:
+      "ESZ-083's archive format and integrity record, offline. Entries round-trip byte for byte through the hand-written ustar writer, GNU tar reads what it produces, writing is deterministic so two backups of an unchanged deployment agree, and a truncated archive, a corrupted header, an unsupported entry type and any path that would escape the destination are each refused. The manifest catches a missing entry, an altered one, an entry of the wrong length, an undeclared extra file, a rewritten digest and an unknown format version.",
+  },
+  {
+    id: "php:notifications",
+    stage: "6. PHP validation",
+    cwd: "php",
+    command: [
+      "vendor/bin/phpunit",
+      "--no-progress",
+      "--testsuite",
+      "eszter",
+      "--filter",
+      "NotificationPolicyTest|NotificationCatchUpTest|BookingEmailTest",
+    ],
+    proves:
+      "ESZ-070 through ESZ-074 without a database: the frozen queue policy, terminal states, retry bounds, safe diagnostics and catch-up rules; plus every deterministic booking e-mail template in text and escaped HTML, Paris-local date/time, SMTP 4xx/5xx retry classification, secret-free errors and multipart message construction through a no-network mailer double.",
   },
 
   // ── Stage 7 — SQL ─────────────────────────────────────────────────────────────
@@ -259,7 +343,7 @@ const gates = [
     command: ["vendor/bin/phpunit", "--no-progress", "--testsuite", "sql-migrations"],
     unavailable: sqlDatabaseUnavailable,
     proves:
-      "Every migration applies to an empty database in order, is idempotent on re-run, and leaves schema_migrations consistent. A half-applied migration completes on the next run; editing an applied one, or finding a schema ahead of the code, is refused; concurrent runs serialise on an advisory lock. Runs against a disposable database, never a shared one — the suite refuses any database whose name does not end in `_test`.",
+      "Every migration applies to an empty database in order, is idempotent on re-run, and leaves schema_migrations consistent. It also proves the booking tables, constraints, foreign keys, indexes, singleton serialization row and durable history on MySQL, and proves there is no persisted slot table. ESZ-070 adds notification_jobs: its enum, identity, error-code, lease, sent-instant and attempt-ceiling CHECKs are each proved to refuse a bad row, its idempotency key is proved unique, and deleting a booking a notification refers to is proved to be refused rather than cascading. Runs only against a disposable database whose name ends in `_test`.",
   },
   {
     id: "sql:integration",
@@ -268,18 +352,53 @@ const gates = [
     command: ["vendor/bin/phpunit", "--no-progress", "--testsuite", "sql-integration"],
     unavailable: sqlDatabaseUnavailable,
     proves:
-      "The admin account and session repositories against a real MySQL instance seeded by the real migrations, each test isolated in a rolled-back transaction: repeat-safe provisioning, identity normalisation and the byte-exact e-mail index, password hashing, both session deadlines with the absolute one un-extendable, targeted invalidation, and the whole login/CSRF/logout flow driven through the front controller against MySQL. Booking, settings and notifications are not covered because they do not exist yet.",
+      "Admin auth plus the booking backend against real MySQL: availability, DST, buffers, atomic lifecycle/history, HTTP auth/CSRF and Package 6.2 availability administration. ESZ-087 drives two independent PHP processes through the production Kernel and POST /api/bookings for the same valid slot, proving exactly one 201 confirmation, one 409 SLOT_UNAVAILABLE, one booking/history occurrence and one confirmation/reminder job pair. ESZ-074 adds atomic lifecycle e-mail jobs: exact T−24h reminders, move supersession and rescheduling, cancellation retirement, terminal catch-up skips, stable identities, duplicate prevention and rollback safety across booking, history and notification tables.",
+  },
+  {
+    id: "sql:rate-limits",
+    stage: "7. SQL",
+    cwd: "php",
+    command: ["vendor/bin/phpunit", "--no-progress", "--testsuite", "sql-rate-limits"],
+    unavailable: sqlDatabaseUnavailable,
+    proves:
+      "ESZ-084 against real MySQL, because every guarantee it makes is a property of the store rather than of the algorithm. Allowance is spent across separate charges and survives them, which is the whole point on a runtime where each request is its own process; it is restored exactly one emission interval later and not a millisecond earlier; a refused charge writes nothing, so hammering a full bucket cannot lengthen the penalty; two subjects and two scopes never share a row; an idle bucket recovers its whole burst but accumulates no credit beyond it; no address or e-mail is stored in clear; a row is never sweepable while it is still refusing; and two independent operating-system processes racing the last allowance admit exactly one.",
+  },
+  {
+    id: "sql:backup-restore",
+    stage: "7. SQL",
+    cwd: "php",
+    command: ["vendor/bin/phpunit", "--no-progress", "--testsuite", "sql-backup-restore"],
+    unavailable: sqlDatabaseUnavailable,
+    proves:
+      "ESZ-083's restore proof: a realistic deployment — services, availability, a booking with accented customer data, its history, its notification jobs, published and draft content, and a real JPEG with both its original and its derivative — is backed up and restored into a second empty database and a second empty directory, then interrogated for what a person would actually notice. It also proves the exclusions by their absence (no config, session, rate-limit row, log, lock, temporary file or in-flight upload reaches the archive) and the four refusals: a tampered entry, a populated target without --overwrite, a production configuration without --allow-production, and a backup from a schema the target has never reached.",
+  },
+  {
+    id: "sql:notifications",
+    stage: "7. SQL",
+    cwd: "php",
+    command: ["vendor/bin/phpunit", "--no-progress", "--testsuite", "sql-notifications"],
+    unavailable: sqlDatabaseUnavailable,
+    proves:
+      "ESZ-070/071/072 against real MySQL, because almost none of it is true on any other engine. A repeated enqueue resolves to the same row and does not reschedule it, while a key reused for a different booking is refused rather than silently ignored. A claim takes a durable lease, charges one attempt and is invisible to a second claim; a job that is not yet due, or whose channel has no transport, is never claimed at all. Delivery succeeds exactly once and `sent` is terminal. Transient failures retry on the frozen 60/120/240/480-second backoff and become terminal on the fifth attempt; a permanent refusal is terminal on the first; a transport that throws anything else is classified as transient and its message never reaches storage or the log. An abandoned lease is recovered a second after it expires and not a second before, without forgiving the attempt it charged, so a job that kills every runner exhausts its budget instead of looping. A runner whose lease expired mid-delivery cannot record a delivery it no longer owns. One run claims at most its batch, so a backlog drains across ticks. A stale reminder is retired before it can be claimed and again after, and never delivered; a non-time-sensitive job is never retired for being old; a disabled channel produces terminal skips so a later re-enable finds nothing pending to burst. No customer name, address, phone, note or database credential appears in any log line, and every key on every line is on the frozen allowlist. Finally, two independent operating-system processes blocked on the same row prove that exactly one claims, exactly one delivers, and the job records exactly one attempt.",
   },
 
-  // ── Stage 8 — HTTP smoke (not available) ──────────────────────────────────────
+  // ── Stage 8 — Local HTTP smoke ────────────────────────────────────────────────
   {
-    id: "smoke:http",
+    id: "smoke:local-php",
+    stage: "8. HTTP smoke",
+    cwd: ".",
+    command: ["node", "scripts/smoke-local-php.mjs"],
+    proves:
+      "The documented PHP development command starts a real built-in server; / renders the injected Eszter export, a generated frontend asset resolves, /api/health crosses the production front controller, and unknown public/API routes keep their HTML/JSON 404 contracts without a PHP routing or bootstrap fatal.",
+  },
+  {
+    id: "smoke:deployed-http",
     stage: "8. HTTP smoke",
     status: NOT_RUN,
     reason:
-      "No deployed PHP origin to target. The routing rules and the injection are covered offline by `php:routing` and `php:public-page`; what is still unproven is Apache actually applying the generated .htaccess.",
+      "No deployed PHP origin to target. Local built-in-server routing is proved separately; what remains unproven here is Apache applying .htaccess plus deployment-owned TLS and headers.",
     proves:
-      "Against a running origin: GET /api/health, GET /api/content with ETag revalidation, a JSON 404 on an unknown /api path, 405 on a wrong method, HTTPS redirect and security headers, that / serves fully populated HTML with a published-<revision> ETag, and that /admin deep links and /reservation resolve as the routing table says they do.",
+      "Against a deployed origin: GET /api/content with ETag revalidation, 405 on a wrong method, HTTPS redirect and security headers, /admin deep links and /reservation under the real Apache configuration.",
   },
 
   // ── Stage 9 — Browser scenarios (not available) ───────────────────────────────
@@ -303,7 +422,7 @@ const gates = [
     id: "browser:booking",
     stage: "9. Browser scenarios",
     status: NOT_RUN,
-    reason: "No booking flow exists yet.",
+    reason: "No browser runner is configured and no origin is deployed; Packages 5.1 and 7.2 are covered offline by frontend/API/routing, notification and real-MySQL producer tests.",
     proves:
       "Booking: a request submits, validates, persists, is visible in admin, and enqueues its notifications; invalid input is rejected without data loss.",
   },
@@ -315,7 +434,7 @@ const gates = [
     status: NOT_RUN,
     reason: "No deployed host or PHP configuration to inspect.",
     proves:
-      "No secret is web-reachable, private paths return 404/403, directory indexing is off, PHP execution is disabled under media/, security headers are present, config file permissions are 0600, and no dependency has a known critical advisory.",
+      "No secret is web-reachable, private paths return 404/403, directory indexing is off, PHP execution is disabled under media/, security headers are present, and config file permissions are 0600. Dependency advisories are no longer part of this live-only gate; security:dependencies executes in Stage 1.",
   },
 ];
 
@@ -460,12 +579,13 @@ function main() {
     if (failures.length > 0) {
       process.stdout.write(`\n  Failed: ${failures.map((entry) => entry.id).join(", ")}\n`);
     }
-    process.stdout.write(
-      `\n  ${notRun} gate(s) could not execute and are NOT passes.\n` +
-        "  The SQL gates need ESZTER_TEST_DB_DSN to name a disposable MySQL database;\n" +
-        "  the rest become executable as a deployed origin and a browser runner arrive.\n" +
-        "  Policy: docs/v1-quality-gates.md\n",
-    );
+    if (notRun > 0) {
+      process.stdout.write(
+        `\n  ${notRun} gate(s) could not execute and are NOT passes.\n` +
+          "  Each NOT RUN line above names its missing prerequisite.\n",
+      );
+    }
+    process.stdout.write("  Policy: docs/v1-quality-gates.md\n");
   }
 
   return failed ? 1 : 0;

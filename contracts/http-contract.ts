@@ -1,9 +1,15 @@
 import { z } from "zod";
 import { isoTimestampSchema } from "./content-envelopes.js";
 import { SITE_CONTENT_SCHEMA_VERSION, siteContentSchema } from "./site-content.js";
+import {
+  BOOKING_DST_FOLD_OFFSETS,
+  BOOKING_TIME_ZONE,
+  bookableServiceKeys,
+  bookingStates,
+} from "./booking.js";
 
 /**
- * Frozen HTTP contract for the public read-only surface (ESZ-002).
+ * Frozen HTTP contract for the public, authentication, CMS, media and booking surfaces.
  *
  * This module is the single source of truth for the wire behaviour of
  * `GET /api/health` and `GET /api/content`. It is deliberately free of any
@@ -13,7 +19,7 @@ import { SITE_CONTENT_SCHEMA_VERSION, siteContentSchema } from "./site-content.j
  *
  * Bumping HTTP_CONTRACT_VERSION is a breaking change for every consumer.
  */
-export const HTTP_CONTRACT_VERSION = 1;
+export const HTTP_CONTRACT_VERSION = 2;
 
 export const API_SERVICE_NAME = "eszter-api";
 
@@ -47,6 +53,31 @@ export const ADMIN_CONTENT_RESET_PATH = "/api/admin/content/reset";
 
 /** Authenticated admin media surface. Added in Package 3.3 (ESZ-036/037). */
 export const ADMIN_MEDIA_PATH = "/api/admin/media";
+
+/** Booking backend surface. Added in Package 4.3 (ESZ-046/047/048). */
+export const PUBLIC_BOOKING_AVAILABILITY_PATH = "/api/booking/availability";
+export const PUBLIC_BOOKING_SERVICES_PATH = "/api/booking/services";
+export const PUBLIC_BOOKINGS_PATH = "/api/bookings";
+export const ADMIN_BOOKINGS_QUERY_PATH = "/api/admin/bookings/query";
+export const ADMIN_BOOKING_MOVE_AVAILABILITY_PATH =
+  "/api/admin/bookings/move-availability";
+export const ADMIN_BOOKINGS_PATH = "/api/admin/bookings";
+export const ADMIN_BOOKINGS_SUMMARY_PATH = "/api/admin/bookings/summary";
+
+/**
+ * The availability administration surface (ESZ-063/064).
+ *
+ * Three paths rather than one, because they are three different things and the
+ * split is what keeps the CSRF rule readable. `/query` is a read: it needs a
+ * session and nothing else. `/weekly` is a *replacement* of the entire recurring
+ * schedule, so it is a PUT on the resource it replaces. `/exceptions` is neither
+ * a read nor a whole-resource replacement — it is a closure, an exceptional
+ * opening or a removal on one local date — so it is a PATCH carrying its action.
+ */
+export const ADMIN_AVAILABILITY_QUERY_PATH = "/api/admin/availability/query";
+export const ADMIN_AVAILABILITY_WEEKLY_PATH = "/api/admin/availability/weekly";
+export const ADMIN_AVAILABILITY_EXCEPTIONS_PATH =
+  "/api/admin/availability/exceptions";
 
 /**
  * Header reporting the current head of the content revision sequence.
@@ -130,7 +161,7 @@ export const csrfContract = {
   issuedBy: `${AUTH_SESSION_PATH} and ${AUTH_LOGIN_PATH}, in the response body`,
   boundTo: "the session, anonymous or authenticated",
   requiredOn: "every state-changing request, including login and logout",
-  exemptFrom: `GET ${AUTH_SESSION_PATH}, and the read-only public surface, which change no state`,
+  exemptFrom: `GET ${AUTH_SESSION_PATH}, public reads, and the authenticated reads ${ADMIN_BOOKINGS_QUERY_PATH}, ${ADMIN_BOOKINGS_SUMMARY_PATH} and ${ADMIN_AVAILABILITY_QUERY_PATH}; none changes state`,
   comparison: "constant-time",
   rotation:
     "A fresh token is minted whenever the session id rotates, so the token a caller holds before login is useless after it.",
@@ -252,6 +283,90 @@ export const overLimitBodyOutcome = {
 } as const;
 
 /**
+ * The on-disk caps, moved into the contract by ESZ-084.
+ *
+ * They were previously three PHP constants, which is why nothing noticed that one
+ * of them was enforced in the wrong place: a number with no declared relationship
+ * to the request limit cannot be checked against it. See
+ * {@link storageLimitReconciliation} for what each one is for.
+ */
+export const CONTENT_FILE_LIMIT_BYTES = 1024 * 1024;
+export const MEDIA_LIBRARY_INDEX_LIMIT_BYTES = 1024 * 1024;
+export const EXPORTED_PAGE_LIMIT_BYTES = 4 * 1024 * 1024;
+
+/**
+ * ESZ-084 — the relationship between the request limit and the storage caps.
+ *
+ * Package 3.x left two numbers side by side with nothing stating how they
+ * related: `REQUEST_BODY_LIMIT` is 64 kB, and `ContentStorage` refuses a
+ * `draft.json` or `published.json` over 1 MB. Read as a pair they look like a
+ * contradiction, and the carried question was whether one of them was wrong.
+ *
+ * Neither is. They bound different things, and the direction of the inequality is
+ * what makes the pair safe rather than merely different.
+ *
+ * ## The request limit is the binding one, and it is the smaller one
+ *
+ * Every byte of editorial content reaches disk through `PUT /api/admin/content/draft`,
+ * whose body is `{expectedRevision, content}`. So the largest document that can
+ * ever be *saved* is 64 kB minus that envelope, and the largest file that can
+ * result is that document plus the stored envelope's own `revision` and
+ * `updatedAt` — on the order of 65 kB, against a 1 MB cap. The canonical default
+ * document is about 7.8 kB, so the reachable ceiling is already roughly eight
+ * times the real content and the storage cap is fifteen times beyond *that*.
+ *
+ * The dangerous arrangement is the mirror image of this one: a storage cap
+ * *below* the request limit, where a save is accepted, written, and then refused
+ * on the next read — content destroyed by a rule that only speaks up afterwards.
+ * That cannot happen while `storageFileLimitBytes > requestBodyLimitBytes`, and
+ * the assertion below is what keeps a later edit from quietly inverting it.
+ *
+ * ## So the storage cap is a read guard, not a write budget
+ *
+ * It exists for the file the application did not write: one restored from a
+ * backup, hand-edited on the host, or truncated by a full disk. Reading an
+ * unbounded file into memory to discover it is unusable is the failure the cap
+ * prevents, and it is deliberately generous because refusing to read a file the
+ * service *did* legitimately write would be the worse outcome of the two.
+ *
+ * ## The media catalogue is the one place the caps had to be aligned
+ *
+ * `media-library.json` is the exception that made this worth resolving rather
+ * than merely documenting. It is not bounded by any request: each upload appends
+ * an entry, so the file grows monotonically with use, and its 1 MB cap is
+ * genuinely reachable. Worse, the cap was enforced only on *read* — and delete is
+ * a read — so crossing it would have wedged the media surface into a state where
+ * the only operation that could shrink the file was the one that had stopped
+ * working.
+ *
+ * The fix is `enforcedOnWrite`: the cap is now checked before the catalogue is
+ * written, so an upload that would cross it is refused while the library is still
+ * fully readable and every asset is still deletable. A limit that can only be
+ * enforced after it has been exceeded is not a limit.
+ */
+export const storageLimitReconciliation = {
+  requestBodyLimitBytes: REQUEST_BODY_LIMIT_BYTES,
+  contentFileLimitBytes: CONTENT_FILE_LIMIT_BYTES,
+  mediaLibraryIndexLimitBytes: MEDIA_LIBRARY_INDEX_LIMIT_BYTES,
+  exportedPageLimitBytes: EXPORTED_PAGE_LIMIT_BYTES,
+  invariant: "contentFileLimitBytes > requestBodyLimitBytes",
+  invariantReason:
+    "A storage cap below the request limit would accept a save and then refuse to read it back, destroying content with a rule that only speaks up afterwards.",
+  contentCapRole:
+    "A read guard for a file the application did not write — restored, hand-edited or truncated — not a write budget. The reachable ceiling over HTTP is the request limit, which is smaller by design.",
+  mediaLibraryCapRole:
+    "A real write budget, because the catalogue grows with every upload and no request bounds it.",
+  enforcedOnWrite: ["mediaLibraryIndexLimitBytes"],
+  enforcedOnWriteReason:
+    "Reading the catalogue is how a delete finds its entry, so a cap enforced only on read would make the one operation that could shrink an over-sized catalogue the one operation that had stopped working. Refusing the upload that would cross the cap keeps every asset deletable.",
+  overSizedMediaLibraryOutcome: {
+    status: 413,
+    errorCode: "PAYLOAD_TOO_LARGE",
+    note: "The upload is refused and nothing is stored: no intake file, no original, no derivative and no catalogue entry.",
+  },
+} as const;
+
+/**
  * What a request gets when the service cannot finish starting up.
  *
  * Frozen in Package 1.2 because the target runtime made it observable. Node
@@ -322,6 +437,15 @@ export const apiErrorCodes = [
   "PAYLOAD_TOO_LARGE",
   /** A delete refused because the draft or the published site still uses the asset (ESZ-037). */
   "MEDIA_REFERENCED",
+  /** A requested booking start is no longer available after transactional revalidation. */
+  "SLOT_UNAVAILABLE",
+  /**
+   * The caller exceeded a bucket in `rateLimitPolicy` (ESZ-084). 429, and never
+   * folded into `INVALID_CREDENTIALS`: a throttled login and a wrong password are
+   * different facts, and collapsing them would leave a person locked out with a
+   * message telling them to check a password that was correct.
+   */
+  "RATE_LIMITED",
   "INVALID_CONFIGURATION",
   "STORAGE_FAILURE",
   "INTERNAL_ERROR",
@@ -459,6 +583,562 @@ export const authSessionResponseSchema = z
   .strict();
 
 export type AuthSessionResponse = z.infer<typeof authSessionResponseSchema>;
+
+export const BOOKING_REFERENCE_PATTERN = "^bk_[0-9a-f]{32}$";
+export const BOOKING_LOCAL_DATE_PATTERN = "^\\d{4}-\\d{2}-\\d{2}$";
+/**
+ * Civil time of day on a real 24-hour clock, `HH:MM` in Europe/Paris.
+ *
+ * The hour and minute alternations are the point. A looser `\d{2}:\d{2}` is
+ * shape-checking only: it admits `25:00` and `09:60`, which then travel through
+ * every structural gate and die in the domain, so the same refusal is expressed
+ * twice and the wire type means less than it looks like it means. Structurally
+ * accepting exactly `00:00`–`23:59` makes the value's own type carry the range,
+ * and leaves the domain to say the things only the domain knows: the window is
+ * increasing, the wall time exists on that date, the fold is stated.
+ *
+ * This narrows nothing that was ever valid — every accepted value is unchanged
+ * on the wire — and it does not replace {@link BookingTimePolicy}'s DST checks.
+ */
+export const BOOKING_LOCAL_TIME_PATTERN = "^([01][0-9]|2[0-3]):[0-5][0-9]$";
+
+const bookingReferenceSchema = z.string().regex(new RegExp(BOOKING_REFERENCE_PATTERN));
+const bookingLocalDateSchema = z.string().regex(new RegExp(BOOKING_LOCAL_DATE_PATTERN));
+const bookingLocalTimeSchema = z.string().regex(new RegExp(BOOKING_LOCAL_TIME_PATTERN));
+const bookableServiceKeySchema = z.enum(bookableServiceKeys);
+const bookingStateSchema = z.enum(bookingStates);
+const bookingFoldOffsetSchema = z.enum(BOOKING_DST_FOLD_OFFSETS).nullable();
+
+export const bookingAvailabilityRequestSchema = z
+  .object({
+    serviceKey: bookableServiceKeySchema,
+    fromDate: bookingLocalDateSchema,
+    untilDate: bookingLocalDateSchema,
+  })
+  .strict();
+
+export const publicBookableServiceSchema = z
+  .object({
+    key: bookableServiceKeySchema,
+    label: z.string().trim().min(1).max(160),
+    durationMinutes: z.number().int().min(5).max(480),
+  })
+  .strict();
+
+export const publicBookableServicesResponseSchema = z
+  .object({ services: z.array(publicBookableServiceSchema) })
+  .strict();
+
+export const bookingSlotSchema = z
+  .object({
+    localDate: bookingLocalDateSchema,
+    localStart: bookingLocalTimeSchema,
+    foldUtcOffset: bookingFoldOffsetSchema,
+    startsAtUtc: isoTimestampSchema,
+    endsAtUtc: isoTimestampSchema,
+  })
+  .strict();
+
+export const bookingAvailabilityResponseSchema = z
+  .object({
+    serviceKey: bookableServiceKeySchema,
+    timezone: z.literal(BOOKING_TIME_ZONE),
+    fromDate: bookingLocalDateSchema,
+    untilDate: bookingLocalDateSchema,
+    slots: z.array(bookingSlotSchema),
+  })
+  .strict();
+
+export const publicBookingCreateRequestSchema = z
+  .object({
+    serviceKey: bookableServiceKeySchema,
+    startsAtUtc: isoTimestampSchema,
+    customerName: z.string().trim().min(1).max(160),
+    customerEmail: z.string().trim().email().max(254),
+    customerPhone: z.string().trim().max(32).nullable(),
+    customerNote: z.string().trim().max(2000).nullable(),
+    consentAccepted: z.literal(true),
+  })
+  .strict();
+
+export const publicBookingResponseSchema = z
+  .object({
+    reference: bookingReferenceSchema,
+    serviceKey: bookableServiceKeySchema,
+    state: z.literal("confirmed"),
+    startsAtUtc: isoTimestampSchema,
+    endsAtUtc: isoTimestampSchema,
+  })
+  .strict();
+
+export const adminBookingsQueryRequestSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("reference"), reference: bookingReferenceSchema }).strict(),
+  z
+    .object({
+      mode: z.literal("range"),
+      fromDate: bookingLocalDateSchema,
+      untilDate: bookingLocalDateSchema,
+    })
+    .strict(),
+]);
+
+export const adminBookingMoveAvailabilityRequestSchema = z
+  .object({
+    reference: bookingReferenceSchema,
+    fromDate: bookingLocalDateSchema,
+    untilDate: bookingLocalDateSchema,
+  })
+  .strict();
+
+export const bookingHistoryEventSchema = z
+  .object({
+    type: z.enum(["created", "moved", "cancelled", "customer_updated"]),
+    actor: z.enum(["public", "admin"]),
+    occurredAt: isoTimestampSchema,
+  })
+  .strict();
+
+export const adminBookingSchema = z
+  .object({
+    reference: bookingReferenceSchema,
+    serviceKey: bookableServiceKeySchema,
+    state: bookingStateSchema,
+    startsAtUtc: isoTimestampSchema,
+    endsAtUtc: isoTimestampSchema,
+    timezone: z.literal(BOOKING_TIME_ZONE),
+    customerName: z.string().min(1).max(160),
+    customerEmail: z.string().email().max(254),
+    customerPhone: z.string().max(32).nullable(),
+    customerNote: z.string().max(2000).nullable(),
+    consentAtUtc: isoTimestampSchema,
+    cancelledAtUtc: isoTimestampSchema.nullable(),
+    cancellationReason: z.string().max(500).nullable(),
+    createdAt: isoTimestampSchema,
+    updatedAt: isoTimestampSchema,
+    history: z.array(bookingHistoryEventSchema),
+  })
+  .strict();
+
+export const adminBookingsResponseSchema = z
+  .object({ bookings: z.array(adminBookingSchema) })
+  .strict();
+
+export const adminBookingResponseSchema = z
+  .object({ booking: adminBookingSchema })
+  .strict();
+
+const adminBookingUpdateSchema = z
+  .object({
+    action: z.literal("update"),
+    reference: bookingReferenceSchema,
+    customerName: z.string().trim().min(1).max(160),
+    customerEmail: z.string().trim().email().max(254),
+    customerPhone: z.string().trim().max(32).nullable(),
+    customerNote: z.string().trim().max(2000).nullable(),
+  })
+  .strict();
+
+const adminBookingMoveSchema = z
+  .object({
+    action: z.literal("move"),
+    reference: bookingReferenceSchema,
+    startsAtUtc: isoTimestampSchema,
+  })
+  .strict();
+
+const adminBookingCancelSchema = z
+  .object({
+    action: z.literal("cancel"),
+    reference: bookingReferenceSchema,
+    reason: z.string().trim().max(500).nullable(),
+  })
+  .strict();
+
+export const adminBookingMutationRequestSchema = z.discriminatedUnion("action", [
+  adminBookingUpdateSchema,
+  adminBookingMoveSchema,
+  adminBookingCancelSchema,
+]);
+
+/**
+ * Availability administration (ESZ-063/064) and the operational summary (ESZ-065).
+ *
+ * These are frozen before any PHP or React exists for them, for the usual reason
+ * and one specific one: the weekly editor is a *replacement* surface, and a
+ * replacement surface that is not frozen tends to grow per-row create/update/
+ * delete calls, which is exactly the shape that can leave half a schedule behind
+ * when the third call fails. Freezing `rules` as one array on one PUT makes the
+ * atomicity a property of the contract rather than a property of how carefully
+ * the client sequences its requests.
+ */
+export const ADMIN_AVAILABILITY_MAX_WEEKLY_RULES = 100;
+export const ADMIN_AVAILABILITY_MAX_EXCEPTION_WINDOWS = 12;
+export const ADMIN_AVAILABILITY_MAX_RANGE_DAYS = 400;
+export const ADMIN_AVAILABILITY_NOTE_MAX_LENGTH = 255;
+export const ADMIN_SUMMARY_MIN_UPCOMING_DAYS = 1;
+export const ADMIN_SUMMARY_MAX_UPCOMING_DAYS = 90;
+export const ADMIN_SUMMARY_DEFAULT_UPCOMING_DAYS = 7;
+
+/**
+ * One local civil window. `foldUtcOffset` is null for every ordinary time and is
+ * only meaningful on the autumn fall-back date, where the same wall clock happens
+ * twice and the server refuses to guess which one was meant.
+ */
+export const availabilityWindowSchema = z
+  .object({
+    startLocal: bookingLocalTimeSchema,
+    endLocal: bookingLocalTimeSchema,
+    foldUtcOffset: bookingFoldOffsetSchema,
+  })
+  .strict();
+
+const availabilityWeeklyRuleFields = {
+  weekdayIso: z.number().int().min(1).max(7),
+  startLocal: bookingLocalTimeSchema,
+  endLocal: bookingLocalTimeSchema,
+  foldUtcOffset: bookingFoldOffsetSchema,
+  validFrom: bookingLocalDateSchema.nullable(),
+  validUntil: bookingLocalDateSchema.nullable(),
+  isActive: z.boolean(),
+};
+
+/** What an editor submits. It carries no id: the whole set is replaced. */
+export const adminAvailabilityWeeklyRuleInputSchema = z
+  .object(availabilityWeeklyRuleFields)
+  .strict();
+
+/** What the server returns. The id is assigned by the replacement, never sent. */
+export const adminAvailabilityWeeklyRuleSchema = z
+  .object({ id: z.number().int().nonnegative(), ...availabilityWeeklyRuleFields })
+  .strict();
+
+export const adminAvailabilityWeeklyReplaceRequestSchema = z
+  .object({
+    rules: z
+      .array(adminAvailabilityWeeklyRuleInputSchema)
+      .max(ADMIN_AVAILABILITY_MAX_WEEKLY_RULES),
+  })
+  .strict();
+
+export const adminAvailabilityWeeklyResponseSchema = z
+  .object({
+    timezone: z.literal(BOOKING_TIME_ZONE),
+    weeklyRules: z.array(adminAvailabilityWeeklyRuleSchema),
+  })
+  .strict();
+
+export const adminAvailabilityExceptionSchema = z
+  .object({
+    id: z.number().int().nonnegative(),
+    localDate: bookingLocalDateSchema,
+    kind: z.enum(["closed", "open"]),
+    windows: z.array(availabilityWindowSchema).max(ADMIN_AVAILABILITY_MAX_EXCEPTION_WINDOWS),
+    note: z.string().max(ADMIN_AVAILABILITY_NOTE_MAX_LENGTH).nullable(),
+  })
+  .strict();
+
+export const adminAvailabilityQueryRequestSchema = z
+  .object({
+    fromDate: bookingLocalDateSchema,
+    untilDate: bookingLocalDateSchema,
+  })
+  .strict();
+
+export const adminAvailabilityResponseSchema = z
+  .object({
+    timezone: z.literal(BOOKING_TIME_ZONE),
+    fromDate: bookingLocalDateSchema,
+    untilDate: bookingLocalDateSchema,
+    weeklyRules: z.array(adminAvailabilityWeeklyRuleSchema),
+    exceptions: z.array(adminAvailabilityExceptionSchema),
+  })
+  .strict();
+
+const adminAvailabilityCloseSchema = z
+  .object({
+    action: z.literal("close"),
+    localDate: bookingLocalDateSchema,
+    note: z.string().trim().max(ADMIN_AVAILABILITY_NOTE_MAX_LENGTH).nullable(),
+  })
+  .strict();
+
+const adminAvailabilityOpenSchema = z
+  .object({
+    action: z.literal("open"),
+    localDate: bookingLocalDateSchema,
+    windows: z
+      .array(availabilityWindowSchema)
+      .min(1)
+      .max(ADMIN_AVAILABILITY_MAX_EXCEPTION_WINDOWS),
+    note: z.string().trim().max(ADMIN_AVAILABILITY_NOTE_MAX_LENGTH).nullable(),
+  })
+  .strict();
+
+const adminAvailabilityRemoveSchema = z
+  .object({
+    action: z.literal("remove"),
+    localDate: bookingLocalDateSchema,
+  })
+  .strict();
+
+export const adminAvailabilityExceptionMutationRequestSchema = z.discriminatedUnion("action", [
+  adminAvailabilityCloseSchema,
+  adminAvailabilityOpenSchema,
+  adminAvailabilityRemoveSchema,
+]);
+
+/** `exception` is null after a removal, and only after a removal. */
+export const adminAvailabilityExceptionResponseSchema = z
+  .object({ exception: adminAvailabilityExceptionSchema.nullable() })
+  .strict();
+
+export const adminBookingSummaryEntrySchema = z
+  .object({
+    reference: bookingReferenceSchema,
+    serviceKey: bookableServiceKeySchema,
+    startsAtUtc: isoTimestampSchema,
+    endsAtUtc: isoTimestampSchema,
+    localDate: bookingLocalDateSchema,
+    localStart: bookingLocalTimeSchema,
+    customerName: z.string().min(1).max(160),
+  })
+  .strict();
+
+export const adminBookingsSummaryRequestSchema = z
+  .object({
+    upcomingDays: z
+      .number()
+      .int()
+      .min(ADMIN_SUMMARY_MIN_UPCOMING_DAYS)
+      .max(ADMIN_SUMMARY_MAX_UPCOMING_DAYS),
+  })
+  .strict();
+
+/**
+ * Cancelled bookings are counted, never listed, and never added to a confirmed
+ * count. They are reported separately because "two cancellations today" is
+ * operationally useful and silently dropping them would make the summary
+ * disagree with the calendar the operator is looking at.
+ */
+export const adminBookingsSummaryResponseSchema = z
+  .object({
+    timezone: z.literal(BOOKING_TIME_ZONE),
+    todayDate: bookingLocalDateSchema,
+    untilDate: bookingLocalDateSchema,
+    upcomingDays: z
+      .number()
+      .int()
+      .min(ADMIN_SUMMARY_MIN_UPCOMING_DAYS)
+      .max(ADMIN_SUMMARY_MAX_UPCOMING_DAYS),
+    counts: z
+      .object({
+        todayConfirmed: z.number().int().nonnegative(),
+        todayCancelled: z.number().int().nonnegative(),
+        upcomingConfirmed: z.number().int().nonnegative(),
+        upcomingCancelled: z.number().int().nonnegative(),
+      })
+      .strict(),
+    nextConfirmedStartsAtUtc: isoTimestampSchema.nullable(),
+    today: z.array(adminBookingSummaryEntrySchema),
+    upcoming: z.array(adminBookingSummaryEntrySchema),
+  })
+  .strict();
+
+export const availabilityAdminPolicy = {
+  maxQueryRangeDays: ADMIN_AVAILABILITY_MAX_RANGE_DAYS,
+  maxWeeklyRules: ADMIN_AVAILABILITY_MAX_WEEKLY_RULES,
+  maxExceptionWindows: ADMIN_AVAILABILITY_MAX_EXCEPTION_WINDOWS,
+  authority:
+    "availability_rules and availability_exceptions are canonical. The editor reads and replaces them; it never computes, caches or schedules anything the server would then have to trust.",
+  weeklyReplacement:
+    "PUT carries the complete intended rule set. The server validates all of it, then deletes and reinserts inside one transaction holding a row lock, so a rejected or failed save leaves the previously stored schedule exactly as it was rather than a partial one.",
+  weeklyRefusals: [
+    "An ISO weekday outside 1-7.",
+    "A window whose end is not strictly after its start.",
+    "Two windows on the same weekday whose validity ranges intersect and whose times overlap.",
+    "A validity end earlier than its validity start.",
+    "A fold offset that is not one of Europe/Paris's two.",
+  ],
+  clientPrevalidation:
+    "The browser may refuse a malformed set before sending it. That is a convenience and never an authority: the same set posted directly is refused by the same server rules.",
+  adoptServerState:
+    "Every successful mutation returns the stored state, and the editor renders what it was returned. No optimistic local schedule survives a response.",
+  exceptionPrecedence:
+    "One exception per local date replaces the weekly result for that date outright. Closed yields no windows; open yields exactly its ordered window set. Weekly and exception windows are never merged.",
+  exceptionRemoval:
+    "Removing the exception restores the weekly behaviour for that date; it is the only way back and it deletes no booking.",
+  exceptionDst:
+    "Each exception window boundary is converted with the Europe/Paris IANA rules at store time: a spring-forward gap is refused and an autumn fall-back overlap requires the explicit fold offset.",
+  destructiveConfirmation:
+    "Closing a date and removing an exception are confirmed explicitly in the UI before they are sent.",
+  summary:
+    "The summary reads the same booking rows as the admin query and stores nothing of its own. Entries list confirmed bookings in ascending start order; cancelled bookings are reported in their own counts and never inflate a confirmed one.",
+} as const;
+
+export const bookingApiPolicy = {
+  publicAvailability:
+    "Only active canonical services and dates from the Paris-local today through day 90 inclusive; response order is SlotEngine order and slots are never persisted.",
+  publicServices:
+    "Lists only active canonical service keys with booking label and duration; editorial descriptions and media remain in SiteContent.",
+  creation:
+    "The client submits a returned UTC start. Inside one transaction the singleton primary resource row is locked, all inputs are re-read, SlotEngine recomputes, and insert plus created history commit together.",
+  adminMutableFields: {
+    update: ["customerName", "customerEmail", "customerPhone", "customerNote"],
+    move: ["startsAtUtc"],
+    cancel: ["state", "cancelledAtUtc", "cancellationReason"],
+  },
+  move:
+    "Authenticated move availability resolves the booking server-side and delegates to SlotEngine while excluding only itself. Mutation retains reference and service, requires confirmed state, and transactionally recomputes the submitted returned instant.",
+  history:
+    "Append-only created, moved, cancelled and customer_updated events; the bookings row remains authoritative current state.",
+} as const;
+
+/**
+ * ESZ-084 — the frozen abuse-control policy.
+ *
+ * ## Why the server has to do this at all
+ *
+ * Three routes on this surface are reachable without a session and each of them
+ * costs the server something an anonymous caller can spend for free:
+ * `POST /api/auth/login` performs an Argon2 verification, `POST /api/bookings`
+ * takes a row lock on the singleton serialization row and writes three tables,
+ * and `POST /api/booking/availability` recomputes up to
+ * `BOOKING_SLOT_MAX_HORIZON_DAYS` of slots. Until Package 8.2 none of them was
+ * bounded: password guessing was limited only by network bandwidth, and one
+ * script could fill a real person's calendar in a second.
+ *
+ * ## Deterministic, and never process-local
+ *
+ * The target is Hetzner shared hosting, where every request is a *new PHP
+ * process*. Anything held in a static, an opcache entry, an APCu slot or a
+ * `$_SESSION` is therefore invisible to the next request, so a limiter built on
+ * any of them counts to one forever and enforces nothing. There is exactly one
+ * store on this host that every request can see, and it is the database the
+ * limited routes already open. `algorithm` is fixed here rather than left to the
+ * implementation because two implementations that disagree about what "5 per
+ * hour" means do not have the same contract.
+ *
+ * GCRA — the generic cell rate algorithm — rather than a fixed window, for one
+ * reason that matters and one that is convenient. It has no window boundary, so
+ * `limit` requests really is the most that can arrive in any `periodSeconds`,
+ * where a fixed window lets `2 × limit` through across a boundary. And it needs
+ * one timestamp per bucket instead of a counter plus a window start, so the whole
+ * decision is a single conditional `UPDATE` and never a read-then-write race.
+ *
+ * The clock is the *application's* injected clock, never the database's
+ * `NOW()`: a rule the tests cannot move time through is a rule nobody proves.
+ *
+ * ## What is keyed, and what is deliberately not
+ *
+ * `subjectHash` is `sha256(scope + "\0" + subject)`, stored as bytes. The
+ * limiter's table therefore holds no address, no e-mail and nothing else a
+ * `SELECT *` could turn back into a person — it is a counter store, not a log,
+ * and it is subject to the same PII rule as the log file.
+ *
+ * The client address comes from the connection (`REMOTE_ADDR`) and never from
+ * `X-Forwarded-For` or any other request header. A header the caller writes is a
+ * bypass with extra steps: the one thing an abuser would do is send a fresh
+ * `X-Forwarded-For` per request. If this application is ever put behind a proxy
+ * that rewrites the client address, that is a deliberate contract change with a
+ * declared trusted-proxy list, not a default.
+ *
+ * ## The refusals, and the enumeration rule
+ *
+ * A refusal is 429 `RATE_LIMITED` with `Retry-After` in whole seconds, and it
+ * happens **before** the route does its work — before the password verification,
+ * before the transaction. On login that ordering is also what keeps the frozen
+ * `loginFailure` guarantee intact: a throttled login answers identically whether
+ * or not the address names an account, so the limiter cannot become the
+ * enumeration oracle that `INVALID_CREDENTIALS` was written to avoid.
+ *
+ * ## The per-identity login bucket is the generous one, on purpose
+ *
+ * Two buckets guard login: one keyed by address, one by the submitted identity.
+ * They are not the same size and the asymmetry is the whole design. This site has
+ * a single operator, so a tight per-identity limit would hand any anonymous
+ * caller a reliable way to lock the only administrator out of their own site by
+ * failing logins on their behalf. The per-identity budget is therefore wide
+ * enough that reaching it means a real attack rather than a nuisance, and the
+ * narrow per-address bucket is what actually bounds guessing.
+ */
+export const RATE_LIMIT_RETRY_AFTER_HEADER = "Retry-After";
+
+export const rateLimitPolicy = {
+  algorithm: "gcra",
+  algorithmNote:
+    "Per bucket the store holds one theoretical-arrival-time. emissionInterval = periodSeconds / limit; delayTolerance = (burst - 1) * emissionInterval, so `burst` is exactly the number of requests admitted at one instant rather than one more than it. A request is admitted when tat <= now + delayTolerance, and admission sets tat = max(tat, now) + emissionInterval; a refused request writes nothing at all. Retry-After is ceil(tat - delayTolerance - now), floored at one emissionInterval.",
+  store: "database",
+  storeNote:
+    "One row per bucket in rate_limit_buckets, decided by a single conditional UPDATE so two concurrent processes cannot both be admitted by the same allowance. Process-local state is never used: on shared hosting each request is its own process and would see none of it.",
+  clock: "application",
+  subjectKey: "sha256(scope + NUL + subject), stored as bytes; no address or identity is stored in clear.",
+  clientAddressSource: "REMOTE_ADDR",
+  forwardedHeadersTrusted: false,
+  refusal: {
+    status: 429,
+    errorCode: "RATE_LIMITED",
+    retryAfterHeader: RATE_LIMIT_RETRY_AFTER_HEADER,
+    retryAfterUnit: "seconds",
+    enforcedBefore:
+      "any work the route would otherwise do: no password verification, no transaction, no row lock, no slot computation.",
+  },
+  buckets: {
+    "auth.login.address": {
+      scope: "auth.login.address",
+      subject: "client address",
+      limit: 10,
+      periodSeconds: 900,
+      burst: 5,
+      guards: "Password guessing from one origin.",
+    },
+    "auth.login.identity": {
+      scope: "auth.login.identity",
+      subject: "normalised submitted e-mail address",
+      limit: 30,
+      periodSeconds: 900,
+      burst: 10,
+      guards:
+        "Distributed guessing against one account. Deliberately wide: a narrow per-identity budget would let an anonymous caller lock the site's only administrator out.",
+    },
+    "booking.create.address": {
+      scope: "booking.create.address",
+      subject: "client address",
+      limit: 5,
+      periodSeconds: 3600,
+      burst: 3,
+      guards: "One origin filling the calendar with junk reservations.",
+    },
+    "booking.create.global": {
+      scope: "booking.create.global",
+      subject: "the constant `all`",
+      limit: 60,
+      periodSeconds: 3600,
+      burst: 20,
+      guards:
+        "Distributed booking spam, which the per-address bucket cannot see. It is a ceiling on damage, not a per-user quota: a genuine caller refused here is refused because the site is under attack, and the operator sees it in the log.",
+    },
+    "booking.availability.address": {
+      scope: "booking.availability.address",
+      subject: "client address",
+      limit: 120,
+      periodSeconds: 3600,
+      burst: 30,
+      guards:
+        "Repeated 90-day slot recomputation. Wide enough that a person browsing the calendar never meets it.",
+    },
+  },
+  retention:
+    "A bucket row is expired once its tat is in the past by more than its period, and is swept opportunistically. Sweeping is never on the request's critical path and losing a row only forgives allowance, never grants it.",
+  requirements: [
+    "A refusal is decided before the route performs any work.",
+    "A throttled login is byte-identical whether or not the submitted address names an account.",
+    "The response is the frozen error envelope plus Retry-After; it names no bucket, no limit and no remaining allowance.",
+    "The limiter stores no address, e-mail or other personal datum in clear.",
+    "An inbound X-Forwarded-For, X-Real-IP or Forwarded header never changes which bucket a request is charged to.",
+    "Two concurrent processes presenting the last allowance admit exactly one of them.",
+    "A limiter failure is logged and refuses the request rather than admitting it unbounded.",
+  ],
+} as const;
 
 /**
  * Server-enforced authorization, restated because Package 2.1 removed the thing
@@ -1225,6 +1905,10 @@ export const apiErrorMessages: Record<ApiErrorCode, string> = {
     "Le fichier envoyé dépasse la taille maximale autorisée de 8 Mo.",
   MEDIA_REFERENCED:
     "Ce média est utilisé par le brouillon ou par le site publié. Retirez-le du contenu avant de le supprimer.",
+  SLOT_UNAVAILABLE:
+    "Ce créneau n’est plus disponible. Choisissez un autre horaire.",
+  RATE_LIMITED:
+    "Trop de tentatives. Merci de patienter quelques instants avant de réessayer.",
   INVALID_CONFIGURATION: "La configuration du serveur est invalide.",
   STORAGE_FAILURE: "Le contenu publié est momentanément indisponible.",
   INTERNAL_ERROR: "Une erreur interne est survenue.",
@@ -1244,6 +1928,15 @@ export const contractBodyMatchers = [
   "authSessionResponse",
   "mediaLibraryResponse",
   "mediaUploadResponse",
+  "publicBookableServicesResponse",
+  "bookingAvailabilityResponse",
+  "publicBookingResponse",
+  "adminBookingsResponse",
+  "adminBookingResponse",
+  "adminBookingsSummaryResponse",
+  "adminAvailabilityResponse",
+  "adminAvailabilityWeeklyResponse",
+  "adminAvailabilityExceptionResponse",
   "empty",
 ] as const;
 
@@ -1363,6 +2056,16 @@ export interface HttpContractCase {
     | "/api/admin/content/publish"
     | "/api/admin/content/reset"
     | "/api/admin/media"
+    | "/api/booking/availability"
+    | "/api/booking/services"
+    | "/api/bookings"
+    | "/api/admin/bookings/query"
+    | "/api/admin/bookings/move-availability"
+    | "/api/admin/bookings"
+    | "/api/admin/bookings/summary"
+    | "/api/admin/availability/query"
+    | "/api/admin/availability/weekly"
+    | "/api/admin/availability/exceptions"
     | "unknown";
   description: string;
   request: {
@@ -2960,6 +3663,491 @@ export const httpContractCases: HttpContractCase[] = [
       storageAfter: "unchanged",
     },
   },
+
+  // ── booking backend (Packages 4.3 and 5.1) ─────────────────────────────
+  {
+    id: "booking.services.get.ok",
+    endpoint: PUBLIC_BOOKING_SERVICES_PATH,
+    description: "Only active canonical booking services are exposed to the public flow.",
+    request: { method: "GET", path: PUBLIC_BOOKING_SERVICES_PATH },
+    expect: { status: 200, body: "publicBookableServicesResponse" },
+  },
+  {
+    id: "booking.services.post.methodNotAllowed",
+    endpoint: PUBLIC_BOOKING_SERVICES_PATH,
+    description: "The active service collection is read-only.",
+    request: { method: "POST", path: PUBLIC_BOOKING_SERVICES_PATH },
+    expect: {
+      status: 405,
+      body: "errorEnvelope",
+      errorCode: "METHOD_NOT_ALLOWED",
+      headers: { allow: "GET" },
+    },
+  },
+  {
+    id: "booking.availability.post.ok",
+    endpoint: PUBLIC_BOOKING_AVAILABILITY_PATH,
+    description: "An active canonical service returns only bounded, ordered, computed slots.",
+    request: {
+      method: "POST",
+      path: PUBLIC_BOOKING_AVAILABILITY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"serviceKey":"brows","fromDate":"2026-06-15","untilDate":"2026-06-15"}',
+    },
+    expect: { status: 200, body: "bookingAvailabilityResponse" },
+  },
+  {
+    id: "booking.availability.post.invalidService",
+    endpoint: PUBLIC_BOOKING_AVAILABILITY_PATH,
+    description: "A service key outside SiteContent is rejected without exposing internals.",
+    request: {
+      method: "POST",
+      path: PUBLIC_BOOKING_AVAILABILITY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"serviceKey":"unknown","fromDate":"2026-06-15","untilDate":"2026-06-15"}',
+    },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "booking.availability.post.invalidDateShape",
+    endpoint: PUBLIC_BOOKING_AVAILABILITY_PATH,
+    description: "Malformed local dates are rejected by the closed request schema.",
+    request: {
+      method: "POST",
+      path: PUBLIC_BOOKING_AVAILABILITY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"serviceKey":"brows","fromDate":"15-06-2026","untilDate":"2026-06-15"}',
+    },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "booking.availability.get.methodNotAllowed",
+    endpoint: PUBLIC_BOOKING_AVAILABILITY_PATH,
+    description: "Availability is a JSON query with one frozen POST method.",
+    request: { method: "GET", path: PUBLIC_BOOKING_AVAILABILITY_PATH },
+    expect: {
+      status: 405,
+      body: "errorEnvelope",
+      errorCode: "METHOD_NOT_ALLOWED",
+      headers: { allow: "POST" },
+    },
+  },
+  {
+    id: "booking.create.post.ok",
+    endpoint: PUBLIC_BOOKINGS_PATH,
+    description: "A currently available slot creates one confirmed booking and returns no customer data.",
+    request: {
+      method: "POST",
+      path: PUBLIC_BOOKINGS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"serviceKey":"brows","startsAtUtc":"2026-06-15T07:00:00.000Z","customerName":"Cliente Exemple","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null,"consentAccepted":true}',
+    },
+    expect: { status: 201, body: "publicBookingResponse" },
+  },
+  {
+    id: "booking.create.post.staleSlot",
+    endpoint: PUBLIC_BOOKINGS_PATH,
+    description: "A slot lost before transactional revalidation is a generic 409.",
+    request: {
+      method: "POST",
+      path: PUBLIC_BOOKINGS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"serviceKey":"brows","startsAtUtc":"2026-06-15T07:15:00.000Z","customerName":"Cliente Exemple","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null,"consentAccepted":true}',
+    },
+    expect: { status: 409, body: "errorEnvelope", errorCode: "SLOT_UNAVAILABLE" },
+  },
+  {
+    id: "booking.create.post.invalidConsent",
+    endpoint: PUBLIC_BOOKINGS_PATH,
+    description: "Consent must be explicitly true before customer facts reach persistence.",
+    request: {
+      method: "POST",
+      path: PUBLIC_BOOKINGS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"serviceKey":"brows","startsAtUtc":"2026-06-15T07:00:00.000Z","customerName":"Cliente Exemple","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null,"consentAccepted":false}',
+    },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.bookings.query.post.ok",
+    endpoint: ADMIN_BOOKINGS_QUERY_PATH,
+    description: "An authenticated read query lists full booking records and durable history without CSRF.",
+    request: {
+      method: "POST",
+      path: ADMIN_BOOKINGS_QUERY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"range","fromDate":"2026-06-15","untilDate":"2026-06-15"}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "adminBookingsResponse" },
+  },
+  {
+    id: "admin.bookings.query.post.unauthenticated",
+    endpoint: ADMIN_BOOKINGS_QUERY_PATH,
+    description: "An anonymous booking query is rejected before its body is inspected.",
+    request: {
+      method: "POST",
+      path: ADMIN_BOOKINGS_QUERY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"range","fromDate":"2026-06-15","untilDate":"2026-06-15"}',
+    },
+    auth: { session: "none" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.bookings.moveAvailability.post.ok",
+    endpoint: ADMIN_BOOKING_MOVE_AVAILABILITY_PATH,
+    description: "Authenticated move availability is computed by the server while excluding the booking itself.",
+    request: {
+      method: "POST",
+      path: ADMIN_BOOKING_MOVE_AVAILABILITY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"reference":"bk_00000000000000000000000000000000","fromDate":"2026-06-15","untilDate":"2026-06-15"}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "bookingAvailabilityResponse" },
+  },
+  {
+    id: "admin.bookings.moveAvailability.post.unauthenticated",
+    endpoint: ADMIN_BOOKING_MOVE_AVAILABILITY_PATH,
+    description: "Anonymous move-slot discovery is refused before body parsing.",
+    request: { method: "POST", path: ADMIN_BOOKING_MOVE_AVAILABILITY_PATH, rawBody: "{invalid" },
+    auth: { session: "none" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.bookings.patch.updateOk",
+    endpoint: ADMIN_BOOKINGS_PATH,
+    description: "Customer corrections are an explicit authenticated CSRF-protected mutation.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_BOOKINGS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"update","reference":"bk_00000000000000000000000000000000","customerName":"Cliente Corrigée","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminBookingResponse" },
+  },
+  {
+    id: "admin.bookings.patch.moveOk",
+    endpoint: ADMIN_BOOKINGS_PATH,
+    description: "A move returns the same booking reference after transactional slot revalidation.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_BOOKINGS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"move","reference":"bk_00000000000000000000000000000000","startsAtUtc":"2026-06-15T08:00:00.000Z"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminBookingResponse" },
+  },
+  {
+    id: "admin.bookings.patch.cancelOk",
+    endpoint: ADMIN_BOOKINGS_PATH,
+    description: "Cancellation changes state and retains the booking and its history.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_BOOKINGS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"cancel","reference":"bk_00000000000000000000000000000000","reason":"Indisponible"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminBookingResponse" },
+  },
+  {
+    id: "admin.bookings.patch.unauthenticated",
+    endpoint: ADMIN_BOOKINGS_PATH,
+    description: "Authentication is checked before CSRF or mutation parsing.",
+    request: { method: "PATCH", path: ADMIN_BOOKINGS_PATH, rawBody: "{invalid" },
+    auth: { session: "none", csrf: "omitted" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.bookings.patch.csrfOmitted",
+    endpoint: ADMIN_BOOKINGS_PATH,
+    description: "An authenticated booking mutation without CSRF is rejected before parsing.",
+    request: { method: "PATCH", path: ADMIN_BOOKINGS_PATH, rawBody: "{invalid" },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 403, body: "errorEnvelope", errorCode: "CSRF_TOKEN_INVALID" },
+  },
+  {
+    id: "admin.bookings.summary.post.ok",
+    endpoint: ADMIN_BOOKINGS_SUMMARY_PATH,
+    description:
+      "The operational summary is an authenticated read: it needs a session, no CSRF, and reports confirmed and cancelled counts separately.",
+    request: {
+      method: "POST",
+      path: ADMIN_BOOKINGS_SUMMARY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"upcomingDays":7}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "adminBookingsSummaryResponse" },
+  },
+  {
+    id: "admin.bookings.summary.post.unauthenticated",
+    endpoint: ADMIN_BOOKINGS_SUMMARY_PATH,
+    description: "An anonymous caller learns nothing about the day's bookings, not even how many there are.",
+    request: {
+      method: "POST",
+      path: ADMIN_BOOKINGS_SUMMARY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"upcomingDays":7}',
+    },
+    auth: { session: "none" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.bookings.summary.post.rangeTooLarge",
+    endpoint: ADMIN_BOOKINGS_SUMMARY_PATH,
+    description: "The horizon is bounded by the schema, so an unbounded scan is a 400 rather than a slow 200.",
+    request: {
+      method: "POST",
+      path: ADMIN_BOOKINGS_SUMMARY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"upcomingDays":365}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.availability.query.post.ok",
+    endpoint: ADMIN_AVAILABILITY_QUERY_PATH,
+    description:
+      "Reading the schedule needs a session and no CSRF, and returns both the weekly rules and the exceptions in the window.",
+    request: {
+      method: "POST",
+      path: ADMIN_AVAILABILITY_QUERY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"fromDate":"2026-06-01","untilDate":"2026-06-30"}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "adminAvailabilityResponse" },
+  },
+  {
+    id: "admin.availability.query.post.unauthenticated",
+    endpoint: ADMIN_AVAILABILITY_QUERY_PATH,
+    description: "The opening hours an anonymous caller may see are the computed public slots, not the rules behind them.",
+    request: {
+      method: "POST",
+      path: ADMIN_AVAILABILITY_QUERY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"fromDate":"2026-06-01","untilDate":"2026-06-30"}',
+    },
+    auth: { session: "none" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.availability.weekly.put.ok",
+    endpoint: ADMIN_AVAILABILITY_WEEKLY_PATH,
+    description:
+      "One PUT carries the complete intended week and returns the stored result, which is what the editor then renders.",
+    request: {
+      method: "PUT",
+      path: ADMIN_AVAILABILITY_WEEKLY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"09:00","endLocal":"12:30","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true},{"weekdayIso":2,"startLocal":"14:00","endLocal":"18:00","foldUtcOffset":null,"validFrom":"2026-09-01","validUntil":"2026-12-31","isActive":true}]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminAvailabilityWeeklyResponse" },
+  },
+  {
+    id: "admin.availability.weekly.put.emptySetIsAllowed",
+    endpoint: ADMIN_AVAILABILITY_WEEKLY_PATH,
+    description:
+      "An empty rule set is a legitimate schedule — the salon takes no recurring appointments — and is not confused with a malformed one.",
+    request: {
+      method: "PUT",
+      path: ADMIN_AVAILABILITY_WEEKLY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"rules":[]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminAvailabilityWeeklyResponse" },
+  },
+  {
+    id: "admin.availability.weekly.put.invertedWindow",
+    endpoint: ADMIN_AVAILABILITY_WEEKLY_PATH,
+    description: "A window that ends before it starts is refused by the server, whatever the browser allowed.",
+    request: {
+      method: "PUT",
+      path: ADMIN_AVAILABILITY_WEEKLY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"18:00","endLocal":"09:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.availability.weekly.put.overlappingWindows",
+    endpoint: ADMIN_AVAILABILITY_WEEKLY_PATH,
+    description:
+      "Two windows on one weekday whose validity ranges intersect and whose times overlap are refused as a set, before anything is stored.",
+    request: {
+      method: "PUT",
+      path: ADMIN_AVAILABILITY_WEEKLY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"09:00","endLocal":"12:30","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true},{"weekdayIso":2,"startLocal":"12:00","endLocal":"15:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.availability.weekly.put.malformedTime",
+    endpoint: ADMIN_AVAILABILITY_WEEKLY_PATH,
+    description:
+      "A time that is not on a real 24-hour clock is refused structurally: `BOOKING_LOCAL_TIME_PATTERN` accepts only 00:00–23:59, so 25:00 never reaches the domain at all. The domain still refuses it independently; the structural check is necessary and, for the range, now also decisive.",
+    request: {
+      method: "PUT",
+      path: ADMIN_AVAILABILITY_WEEKLY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"25:00","endLocal":"26:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.availability.weekly.put.civilDayBoundsAccepted",
+    endpoint: ADMIN_AVAILABILITY_WEEKLY_PATH,
+    description:
+      "The two ends of the civil day are ordinary values. A window running from 00:00 to 23:59 is accepted, so tightening the wire pattern to a real clock is proved not to have narrowed the accepted set.",
+    request: {
+      method: "PUT",
+      path: ADMIN_AVAILABILITY_WEEKLY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"00:00","endLocal":"23:59","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminAvailabilityWeeklyResponse" },
+  },
+  {
+    id: "admin.availability.weekly.put.hourAboveTwentyThree",
+    endpoint: ADMIN_AVAILABILITY_WEEKLY_PATH,
+    description:
+      "24:00 is the first value above the clock and the one a lenient pattern lets through. There is no midnight-end convention here: a day ends at 23:59 and the next window starts at 00:00.",
+    request: {
+      method: "PUT",
+      path: ADMIN_AVAILABILITY_WEEKLY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"09:00","endLocal":"24:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.availability.weekly.put.minuteAboveFiftyNine",
+    endpoint: ADMIN_AVAILABILITY_WEEKLY_PATH,
+    description:
+      "The minute field is bounded as well as the hour field. 09:60 is shaped like a time, is not one, and is refused before the domain is consulted.",
+    request: {
+      method: "PUT",
+      path: ADMIN_AVAILABILITY_WEEKLY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"09:60","endLocal":"12:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.availability.weekly.put.unauthenticated",
+    endpoint: ADMIN_AVAILABILITY_WEEKLY_PATH,
+    description: "Authentication is resolved before CSRF and before the body is parsed.",
+    request: { method: "PUT", path: ADMIN_AVAILABILITY_WEEKLY_PATH, rawBody: "{invalid" },
+    auth: { session: "none", csrf: "omitted" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.availability.weekly.put.csrfOmitted",
+    endpoint: ADMIN_AVAILABILITY_WEEKLY_PATH,
+    description: "Replacing the schedule is state-changing, so a session alone does not authorise it.",
+    request: { method: "PUT", path: ADMIN_AVAILABILITY_WEEKLY_PATH, rawBody: "{invalid" },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 403, body: "errorEnvelope", errorCode: "CSRF_TOKEN_INVALID" },
+  },
+  {
+    id: "admin.availability.exceptions.patch.closeOk",
+    endpoint: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+    description: "A closure replaces that date's weekly windows with nothing at all.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"close","localDate":"2026-08-15","note":"Jour férié"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminAvailabilityExceptionResponse" },
+  },
+  {
+    id: "admin.availability.exceptions.patch.openOk",
+    endpoint: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+    description:
+      "An exceptional opening carries the complete window set for that date; it is a replacement and is never merged with the weekly rules.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"open","localDate":"2026-08-16","windows":[{"startLocal":"10:00","endLocal":"12:00","foldUtcOffset":null},{"startLocal":"14:00","endLocal":"16:00","foldUtcOffset":null}],"note":null}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminAvailabilityExceptionResponse" },
+  },
+  {
+    id: "admin.availability.exceptions.patch.removeOk",
+    endpoint: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+    description: "Removing the exception restores the weekly behaviour and returns a null exception to say so.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"remove","localDate":"2026-08-15"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminAvailabilityExceptionResponse" },
+  },
+  {
+    id: "admin.availability.exceptions.patch.emptyOpenWindowSet",
+    endpoint: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+    description:
+      "An open exception with no windows is refused rather than silently stored as a closure; a closure is its own explicit action.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"open","localDate":"2026-08-16","windows":[],"note":null}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.availability.exceptions.patch.nonexistentLocalTime",
+    endpoint: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+    description:
+      "A window boundary inside the spring-forward gap names an instant that does not exist in Europe/Paris and is refused rather than shifted.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"open","localDate":"2027-03-28","windows":[{"startLocal":"02:30","endLocal":"04:00","foldUtcOffset":null}],"note":null}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.availability.exceptions.patch.unauthenticated",
+    endpoint: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+    description: "Anonymous callers cannot close the salon, and are refused before the body is read.",
+    request: { method: "PATCH", path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH, rawBody: "{invalid" },
+    auth: { session: "none", csrf: "omitted" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.availability.exceptions.patch.csrfOmitted",
+    endpoint: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+    description: "An authenticated exception mutation without CSRF is rejected before parsing.",
+    request: { method: "PATCH", path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH, rawBody: "{invalid" },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 403, body: "errorEnvelope", errorCode: "CSRF_TOKEN_INVALID" },
+  },
 ];
 
 /**
@@ -3176,6 +4364,41 @@ export const httpContractInvariants = [
     id: "media.libraryIsTheOnlyRegistry",
     description:
       "The catalogue records what exists; the content document records what is used. Selecting an asset writes a path into the working draft through the ordinary draft save, so there is one content authority and the library never becomes a second one.",
+  },
+  {
+    id: "booking.availabilityUsesTheSlotEngine",
+    description:
+      "Public availability delegates to the canonical SlotEngine, applies the frozen 90-day and result bounds, and never stores generated slots.",
+  },
+  {
+    id: "booking.creationRevalidatesUnderTheDatabaseLock",
+    description:
+      "Creation starts one SQL transaction, locks the singleton V1 resource row, re-reads service, rules, exceptions and non-cancelled bookings, recomputes the requested UTC slot, then inserts. Different services share the same lock.",
+  },
+  {
+    id: "booking.adminMutationsAreGuardedAndAudited",
+    description:
+      "Admin update, move and cancel require an authenticated session and CSRF. Move uses the creation lock/revalidation path; every meaningful mutation appends durable history while bookings remains the source of truth.",
+  },
+  {
+    id: "availability.weeklyReplacementIsAllOrNothing",
+    description:
+      "The whole submitted rule set is validated before anything is written, and the delete-then-reinsert runs inside one transaction that first locks the existing rows. A refusal or a failure mid-write leaves the previously stored schedule intact; no path can commit part of a week.",
+  },
+  {
+    id: "availability.exceptionRemovalRestoresWeekly",
+    description:
+      "Deleting a date's exception, and only that, makes the weekly rules apply to that date again. The exception never merged with them, so nothing has to be un-merged, and no booking is touched either way.",
+  },
+  {
+    id: "availability.exceptionWindowsAreDstChecked",
+    description:
+      "Every exception window boundary is converted with the Europe/Paris IANA rules before it is stored: a spring-forward gap is refused outright, and an autumn fall-back overlap is refused unless the caller states which of the two offsets it meant.",
+  },
+  {
+    id: "summary.cancelledNeverInflatesConfirmed",
+    description:
+      "The summary partitions the same rows the admin query returns by state. A cancelled booking appears only in a cancelled count, never in a confirmed count and never in a listed entry, so cancelling a booking always lowers the confirmed number.",
   },
   {
     id: "bootstrap.failureUsesFrozenEnvelope",

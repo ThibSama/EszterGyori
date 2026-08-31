@@ -137,6 +137,60 @@ final class TestEnvironment
         return $path;
     }
 
+    /**
+     * Copies the generated contracts into $directory with `http-contract.json`
+     * rewritten by $mutate, and the manifest digest re-derived so the copy still
+     * verifies.
+     *
+     * Re-deriving the digest is the point. Without it every test that wants to
+     * ask "what does the application do when the contract says X?" would instead
+     * be testing digest verification — which has its own test — and would pass for
+     * the wrong reason. With it, the copy is a *legitimately signed* contract that
+     * simply says something different, which is the only way to prove a refusal is
+     * the application's own judgement rather than the manifest's.
+     *
+     * @param \Closure(array<string, mixed>): array<string, mixed> $mutate
+     */
+    public static function copyContractsWithHttpMutation(string $directory, \Closure $mutate): void
+    {
+        $source = self::contractsDirectory();
+
+        foreach (scandir($source) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..' || !is_file($source . '/' . $entry)) {
+                continue;
+            }
+
+            copy($source . '/' . $entry, $directory . '/' . $entry);
+        }
+
+        /** @var array<string, mixed> $contract */
+        $contract = json_decode((string) file_get_contents($directory . '/http-contract.json'), true);
+        $rewritten = json_encode(
+            $mutate($contract),
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+        );
+
+        if ($rewritten === false) {
+            throw new \RuntimeException('The mutated HTTP contract could not be encoded.');
+        }
+
+        file_put_contents($directory . '/http-contract.json', $rewritten);
+
+        /** @var array{artifacts: list<array{file: string, sha256: string}>} $manifest */
+        $manifest = json_decode((string) file_get_contents($directory . '/manifest.json'), true);
+
+        foreach ($manifest['artifacts'] as $index => $artifact) {
+            if ($artifact['file'] === 'http-contract.json') {
+                $manifest['artifacts'][$index]['sha256'] = hash('sha256', $rewritten);
+            }
+        }
+
+        file_put_contents(
+            $directory . '/manifest.json',
+            (string) json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+        );
+    }
+
     public static function removeDirectory(string $path): void
     {
         if (!is_dir($path)) {

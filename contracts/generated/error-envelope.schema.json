@@ -24,6 +24,8 @@
             "REVISION_CONFLICT",
             "PAYLOAD_TOO_LARGE",
             "MEDIA_REFERENCED",
+            "SLOT_UNAVAILABLE",
+            "RATE_LIMITED",
             "INVALID_CONFIGURATION",
             "STORAGE_FAILURE",
             "INTERNAL_ERROR"

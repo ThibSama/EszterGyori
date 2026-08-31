@@ -41,7 +41,14 @@ export default function ProtectedAdminLayout({
     <AdminSessionProvider>
       <div className="sticky top-0 z-50 border-b border-warm-200 bg-white/85 px-4 py-3 text-warm-800 shadow-sm backdrop-blur">
         <div className="mx-auto flex max-w-[1800px] flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:px-2 2xl:px-4">
-          <p className="text-sm font-medium">Administration Eszter</p>
+          <div className="flex flex-wrap items-center gap-4">
+            <p className="text-sm font-medium">Administration Eszter</p>
+            <nav aria-label="Navigation de l’administration" className="flex gap-1">
+              <Link href="/admin" className="rounded-full px-3 py-2 text-sm text-warm-700 hover:bg-warm-100 focus:outline-none focus:ring-2 focus:ring-sage-300">Contenu</Link>
+              <Link href="/admin/bookings" className="rounded-full px-3 py-2 text-sm text-warm-700 hover:bg-warm-100 focus:outline-none focus:ring-2 focus:ring-sage-300">Rendez-vous</Link>
+              <Link href="/admin/availability" className="rounded-full px-3 py-2 text-sm text-warm-700 hover:bg-warm-100 focus:outline-none focus:ring-2 focus:ring-sage-300">Disponibilités</Link>
+            </nav>
+          </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <Link
               href="/"

@@ -3,6 +3,13 @@ import {
   ADMIN_CONTENT_PUBLISH_PATH,
   ADMIN_CONTENT_RESET_PATH,
   ADMIN_MEDIA_PATH,
+  ADMIN_BOOKINGS_QUERY_PATH,
+  ADMIN_BOOKINGS_PATH,
+  ADMIN_BOOKING_MOVE_AVAILABILITY_PATH,
+  ADMIN_BOOKINGS_SUMMARY_PATH,
+  ADMIN_AVAILABILITY_QUERY_PATH,
+  ADMIN_AVAILABILITY_WEEKLY_PATH,
+  ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
   AUTH_LOGIN_PATH,
   AUTH_LOGOUT_PATH,
   AUTH_SESSION_PATH,
@@ -14,6 +21,13 @@ import {
   MEDIA_UPLOAD_LIMIT_BYTES,
   mediaLibraryResponseSchema,
   mediaUploadResponseSchema,
+  adminBookingsResponseSchema,
+  adminBookingResponseSchema,
+  bookingAvailabilityResponseSchema,
+  adminBookingsSummaryResponseSchema,
+  adminAvailabilityResponseSchema,
+  adminAvailabilityWeeklyResponseSchema,
+  adminAvailabilityExceptionResponseSchema,
   publishedContentEnvelopeV1Schema,
   serverDraftEnvelopeV1Schema,
   type ApiErrorCode,
@@ -25,6 +39,42 @@ import {
   type ServerDraftEnvelopeV1,
   type SiteContent,
 } from "@eszter/contracts";
+import { z } from "zod";
+
+export type AdminBooking = z.infer<typeof adminBookingResponseSchema>["booking"];
+export type AdminBookingsQuery =
+  | { mode: "reference"; reference: string }
+  | { mode: "range"; fromDate: string; untilDate: string };
+export type AdminBookingMutation =
+  | { action: "move"; reference: string; startsAtUtc: string }
+  | { action: "cancel"; reference: string; reason: string | null }
+  | {
+      action: "update";
+      reference: string;
+      customerName: string;
+      customerEmail: string;
+      customerPhone: string | null;
+      customerNote: string | null;
+    };
+export type AdminMoveAvailability = z.infer<typeof bookingAvailabilityResponseSchema>;
+export type AdminBookingsSummary = z.infer<typeof adminBookingsSummaryResponseSchema>;
+export type AdminAvailability = z.infer<typeof adminAvailabilityResponseSchema>;
+export type AdminWeeklyRule = AdminAvailability["weeklyRules"][number];
+export type AdminAvailabilityException = AdminAvailability["exceptions"][number];
+export type AdminAvailabilityWindow = AdminAvailabilityException["windows"][number];
+
+/** A weekly rule as it is *sent*: no id, because the whole set is replaced. */
+export type AdminWeeklyRuleInput = Omit<AdminWeeklyRule, "id">;
+
+export type AdminAvailabilityExceptionMutation =
+  | { action: "close"; localDate: string; note: string | null }
+  | {
+      action: "open";
+      localDate: string;
+      windows: AdminAvailabilityWindow[];
+      note: string | null;
+    }
+  | { action: "remove"; localDate: string };
 
 /**
  * The browser half of the admin API (ESZ-034).
@@ -113,6 +163,34 @@ export interface AdminApiClient {
     csrfToken: string,
   ): Promise<AdminApiResult<MediaAssetMetadata>>;
   deleteMedia(id: string, csrfToken: string): Promise<AdminApiResult<null>>;
+  queryBookings(input: AdminBookingsQuery): Promise<AdminApiResult<AdminBooking[]>>;
+  moveAvailability(input: {
+    reference: string;
+    fromDate: string;
+    untilDate: string;
+  }): Promise<AdminApiResult<AdminMoveAvailability>>;
+  mutateBooking(
+    input: AdminBookingMutation,
+    csrfToken: string,
+  ): Promise<AdminApiResult<AdminBooking>>;
+  bookingsSummary(input: { upcomingDays: number }): Promise<AdminApiResult<AdminBookingsSummary>>;
+  readAvailability(input: {
+    fromDate: string;
+    untilDate: string;
+  }): Promise<AdminApiResult<AdminAvailability>>;
+  /**
+   * Replaces the entire weekly schedule in one request, and resolves with what
+   * the server stored — never with what was sent. The caller renders the result.
+   */
+  replaceWeeklyAvailability(
+    input: { rules: AdminWeeklyRuleInput[] },
+    csrfToken: string,
+  ): Promise<AdminApiResult<AdminWeeklyRule[]>>;
+  /** Resolves with `null` after a removal, which is the server saying the date follows the weekly rules again. */
+  mutateAvailabilityException(
+    input: AdminAvailabilityExceptionMutation,
+    csrfToken: string,
+  ): Promise<AdminApiResult<AdminAvailabilityException | null>>;
 }
 
 /** The only reset source the contract defines. Stated once, sent from here. */
@@ -450,6 +528,76 @@ export function createAdminApiClient(
       });
       if (!response.ok) return response;
       return { ok: true, value: null };
+    },
+
+    async queryBookings(input) {
+      const response = await send(ADMIN_BOOKINGS_QUERY_PATH, {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      const bookings = parsed(adminBookingsResponseSchema, response.body);
+      return bookings.ok ? { ok: true, value: bookings.value.bookings } : bookings;
+    },
+
+    async moveAvailability(input) {
+      const response = await send(ADMIN_BOOKING_MOVE_AVAILABILITY_PATH, {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      return parsed(bookingAvailabilityResponseSchema, response.body);
+    },
+
+    async mutateBooking(input, csrfToken) {
+      const response = await send(ADMIN_BOOKINGS_PATH, {
+        method: "PATCH",
+        csrfToken,
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      const booking = parsed(adminBookingResponseSchema, response.body);
+      return booking.ok ? { ok: true, value: booking.value.booking } : booking;
+    },
+
+    async bookingsSummary(input) {
+      const response = await send(ADMIN_BOOKINGS_SUMMARY_PATH, {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      return parsed(adminBookingsSummaryResponseSchema, response.body);
+    },
+
+    async readAvailability(input) {
+      const response = await send(ADMIN_AVAILABILITY_QUERY_PATH, {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      return parsed(adminAvailabilityResponseSchema, response.body);
+    },
+
+    async replaceWeeklyAvailability(input, csrfToken) {
+      const response = await send(ADMIN_AVAILABILITY_WEEKLY_PATH, {
+        method: "PUT",
+        csrfToken,
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      const weekly = parsed(adminAvailabilityWeeklyResponseSchema, response.body);
+      return weekly.ok ? { ok: true, value: weekly.value.weeklyRules } : weekly;
+    },
+
+    async mutateAvailabilityException(input, csrfToken) {
+      const response = await send(ADMIN_AVAILABILITY_EXCEPTIONS_PATH, {
+        method: "PATCH",
+        csrfToken,
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      const mutated = parsed(adminAvailabilityExceptionResponseSchema, response.body);
+      return mutated.ok ? { ok: true, value: mutated.value.exception } : mutated;
     },
   };
 }

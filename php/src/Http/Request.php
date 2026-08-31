@@ -30,7 +30,39 @@ final class Request
          * upload as a request with no body at all.
          */
         public readonly array $uploads = [],
+        /**
+         * The peer address of the TCP connection, or null when there is none —
+         * a CLI invocation, or a test that did not supply one.
+         *
+         * This is `REMOTE_ADDR` and only ever `REMOTE_ADDR`. It is deliberately
+         * *not* derived from `X-Forwarded-For`, `X-Real-IP` or `Forwarded`, and
+         * it is not part of {@see $headers} at all, so no code can reach for the
+         * header spelling by accident.
+         *
+         * ESZ-084 made this matter: it is what the rate limiter charges against.
+         * A caller who could name their own address could pick a fresh one per
+         * request, which would turn every bucket into a formality. On the target
+         * host Apache is the origin and `REMOTE_ADDR` is the real peer; if this
+         * application is ever put behind a proxy that rewrites it, honouring a
+         * forwarding header becomes a deliberate change with a trusted-proxy
+         * list, not a default. `rateLimitPolicy.forwardedHeadersTrusted` is
+         * `false` and {@see \Eszter\Security\RateLimitPolicy} asserts it.
+         */
+        public readonly ?string $clientAddress = null,
     ) {
+    }
+
+    /**
+     * The subject the rate limiter charges an anonymous caller against.
+     *
+     * A request with no peer address — which on this runtime means it did not
+     * arrive over the network — is charged to one shared bucket rather than
+     * skipping the limiter. Skipping would make "send no address" the way past
+     * every rule, and a limiter with a documented bypass is decoration.
+     */
+    public function rateLimitAddress(): string
+    {
+        return $this->clientAddress ?? 'unknown';
     }
 
     /**
@@ -46,12 +78,19 @@ final class Request
 
         $path = parse_url($uri, PHP_URL_PATH);
 
+        /** @var mixed $remote */
+        $remote = $server['REMOTE_ADDR'] ?? null;
+
         return new self(
             strtoupper($method),
             \is_string($path) && $path !== '' ? $path : '/',
             self::headersFromServer($server),
             $rawBody,
             UploadedFile::fromPhpFiles($files),
+            // `REMOTE_ADDR` never arrives with an `HTTP_` prefix, so it cannot be
+            // set by a caller sending a header of that name — which is exactly
+            // why it is the value the limiter trusts.
+            \is_string($remote) && $remote !== '' ? $remote : null,
         );
     }
 

@@ -61,15 +61,32 @@ final class MediaLibrary
     public const INDEX_FILE = 'media-library.json';
 
     /**
-     * The catalogue's own size cap.
+     * The catalogue's own size cap, read from
+     * `storageLimits.mediaLibraryIndexLimitBytes`.
      *
-     * Same reasoning as `ContentStorage::MAX_FILE_BYTES` and the same value: a
-     * file that has grown past this is not a catalogue any more, and reading it
+     * A file that has grown past this is not a catalogue any more, and reading it
      * into memory to find that out is the failure the cap exists to prevent. One
      * entry is about 200 bytes, so this is roughly 5 000 assets — far past what a
      * five-page site will ever hold, and still bounded.
+     *
+     * ## ESZ-084: it is now enforced on the write as well as on the read
+     *
+     * Until Package 8.2 the cap was checked only when the catalogue was read.
+     * That made it a cap the application could cross and then be unable to
+     * uncross: every media operation reads the catalogue first — *including
+     * delete*, which has to read it to find the entry — so the moment the file
+     * went over, the only action that could have shrunk it stopped working, and
+     * the media surface answered 500 with no route back that did not involve
+     * editing JSON on the host by hand.
+     *
+     * It is the one storage cap a caller can actually reach, because uploads
+     * append and no request bounds the total. So it is now checked against the
+     * bytes about to be written: the upload that would cross the cap is refused
+     * with the frozen 413 while the library is still completely readable and
+     * every asset still deletable. The read check stays, for the file this
+     * application did not write.
      */
-    public const MAX_INDEX_BYTES = 1024 * 1024;
+    private readonly int $maxIndexBytes;
 
     public const INDEX_SCHEMA = 'media-library-index.schema.json';
     public const METADATA_ROLE = 'media-library';
@@ -93,6 +110,13 @@ final class MediaLibrary
     ) {
         $this->writer = new AtomicJsonFile($this->tmpDirectory);
         $this->lock = new FileLock($lockDirectory . \DIRECTORY_SEPARATOR . 'media.lock');
+        $this->maxIndexBytes = $artifacts->storageLimitBytes('mediaLibraryIndexLimitBytes');
+    }
+
+    /** The catalogue cap in force, from the frozen contract. */
+    public function maxIndexBytes(): int
+    {
+        return $this->maxIndexBytes;
     }
 
     public function indexPath(): string
@@ -325,6 +349,7 @@ final class MediaLibrary
      * catalogue permanent.
      *
      * @param callable(string): bool $isReferenced
+     * @throws MediaMissingException When the catalogue has no such asset.
      * @throws MediaReferencedException When a document still points at the asset.
      * @return array<string, mixed> The metadata of what was removed.
      */
@@ -422,10 +447,10 @@ final class MediaLibrary
             );
         }
 
-        if ($size > self::MAX_INDEX_BYTES) {
+        if ($size > $this->maxIndexBytes) {
             throw new StorageException(
                 StorageException::FILE_TOO_LARGE,
-                "The media catalogue is {$size} bytes, over the " . self::MAX_INDEX_BYTES . ' byte cap.',
+                "The media catalogue is {$size} bytes, over the {$this->maxIndexBytes} byte cap.",
                 self::METADATA_ROLE,
             );
         }
@@ -460,7 +485,15 @@ final class MediaLibrary
      */
     private function writeIndex(array $index): void
     {
-        $this->writer->write($this->indexPath(), $this->validatedIndex($index), self::METADATA_ROLE);
+        $this->writer->write(
+            $this->indexPath(),
+            $this->validatedIndex($index),
+            self::METADATA_ROLE,
+            // ESZ-084. The cap is applied here rather than only on the next read,
+            // so a catalogue that would cross it is never written and every asset
+            // it already holds stays deletable. See the note on $maxIndexBytes.
+            $this->maxIndexBytes,
+        );
     }
 
     /**

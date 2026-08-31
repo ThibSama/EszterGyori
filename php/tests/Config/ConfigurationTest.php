@@ -49,6 +49,21 @@ final class ConfigurationTest extends TestCase
                 'username' => 'eszter',
                 'password' => 'a-real-password',
             ],
+            'notifications' => [
+                'email' => [
+                    'host' => 'smtp.example.test',
+                    'port' => 587,
+                    'encryption' => 'starttls',
+                    'authenticationRequired' => true,
+                    'username' => 'mailer',
+                    'password' => 'smtp-secret',
+                    'senderAddress' => 'bonjour@example.test',
+                    'senderName' => 'Eszter Gyori',
+                    'timeoutSeconds' => 10,
+                    'customerContact' => 'Répondez à cet e-mail.',
+                    'customerInstructions' => 'Prévenez-nous en cas d’empêchement.',
+                ],
+            ],
         ];
     }
 
@@ -74,9 +89,9 @@ final class ConfigurationTest extends TestCase
             self::fail('the example loaded with its placeholder password still in it');
         } catch (ConfigurationException $exception) {
             self::assertSame(
-                ['database.password'],
+                ['database.password', 'notifications.email.password'],
                 array_column($exception->issues(), 'path'),
-                'the placeholder must be the *only* thing wrong with the example',
+                'the documented secret placeholders must be the only invalid values',
             );
         }
 
@@ -87,6 +102,14 @@ final class ConfigurationTest extends TestCase
         $database = $raw['database'];
         $database['password'] = 'a-real-password';
         $raw['database'] = $database;
+        /** @var array<string, mixed> $notifications */
+        $notifications = $raw['notifications'];
+        /** @var array<string, mixed> $email */
+        $email = $notifications['email'];
+        $email['username'] = 'mailer';
+        $email['password'] = 'smtp-secret';
+        $notifications['email'] = $email;
+        $raw['notifications'] = $notifications;
 
         $config = Configuration::fromArray($raw, $this->root . '/config');
 
@@ -96,6 +119,7 @@ final class ConfigurationTest extends TestCase
         self::assertSame('mysql', $config->requireDatabase()->driver());
         self::assertSame('eszter', $config->requireDatabase()->databaseName());
         self::assertTrue($config->session->cookieSecure);
+        self::assertSame('starttls', $config->requireSmtp()->encryption);
     }
 
     public function testTheExampleDocumentsEveryKeyTheLoaderReads(): void
@@ -106,7 +130,7 @@ final class ConfigurationTest extends TestCase
         $raw = self::example();
 
         self::assertSame(
-            ['environment', 'logLevel', 'paths', 'database', 'session'],
+            ['environment', 'logLevel', 'paths', 'database', 'session', 'notifications'],
             array_keys($raw),
         );
 
@@ -122,6 +146,18 @@ final class ConfigurationTest extends TestCase
         self::assertSame(
             ['idleTimeoutMinutes', 'absoluteLifetimeMinutes', 'cookieSecure'],
             array_keys($session),
+        );
+
+        /** @var array<string, mixed> $notifications */
+        $notifications = $raw['notifications'];
+        /** @var array<string, mixed> $email */
+        $email = $notifications['email'];
+        self::assertSame(
+            [
+                'host', 'port', 'encryption', 'authenticationRequired', 'username', 'password',
+                'senderAddress', 'senderName', 'timeoutSeconds', 'customerContact', 'customerInstructions',
+            ],
+            array_keys($email),
         );
     }
 
@@ -179,6 +215,60 @@ final class ConfigurationTest extends TestCase
                 array_column($exception->issues(), 'path'),
             );
         }
+    }
+
+    public function testProductionRequiresCompleteBoundedSmtpWithoutLeakingSecrets(): void
+    {
+        $raw = $this->valid();
+        /** @var array<string, mixed> $notifications */
+        $notifications = $raw['notifications'];
+        /** @var array<string, mixed> $email */
+        $email = $notifications['email'];
+        $email['host'] = 'smtp://bad.example.test';
+        $email['port'] = 0;
+        $email['encryption'] = 'opportunistic';
+        $email['timeoutSeconds'] = 31;
+        $email['password'] = 'CHANGE_ME';
+        $email['senderAddress'] = 'not-an-address';
+        $email['senderName'] = "Header\r\nInjection";
+        $notifications['email'] = $email;
+        $raw['notifications'] = $notifications;
+
+        try {
+            Configuration::fromArray($raw, $this->root);
+            self::fail('invalid SMTP configuration was accepted');
+        } catch (ConfigurationException $exception) {
+            self::assertSame(
+                [
+                    'notifications.email.host',
+                    'notifications.email.port',
+                    'notifications.email.encryption',
+                    'notifications.email.password',
+                    'notifications.email.senderAddress',
+                    'notifications.email.senderName',
+                    'notifications.email.timeoutSeconds',
+                ],
+                array_column($exception->issues(), 'path'),
+            );
+            self::assertStringNotContainsString('CHANGE_ME', $exception->getMessage());
+            self::assertStringNotContainsString('smtp-secret', $exception->getMessage());
+        }
+    }
+
+    public function testSmtpMayBeAbsentOnlyOutsideProduction(): void
+    {
+        $raw = $this->valid();
+        unset($raw['notifications']);
+
+        try {
+            Configuration::fromArray($raw, $this->root);
+            self::fail('production loaded without SMTP');
+        } catch (ConfigurationException $exception) {
+            self::assertContains('notifications.email', array_column($exception->issues(), 'path'));
+        }
+
+        $raw['environment'] = 'test';
+        self::assertNull(Configuration::fromArray($raw, $this->root)->smtp);
     }
 
     public function testAMissingPathsSectionIsFatalRatherThanDefaulted(): void

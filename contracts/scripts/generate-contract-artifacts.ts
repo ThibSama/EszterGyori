@@ -9,6 +9,7 @@ import {
   siteContentDraftV1Schema,
 } from "../content-envelopes.js";
 import { siteAppearanceCustomProperties } from "../appearance.js";
+import { bookingDomainContract } from "../booking.js";
 import { defaultSiteContent } from "../default-site-content.js";
 import {
   ADMIN_CONTENT_CACHE_CONTROL,
@@ -16,6 +17,13 @@ import {
   ADMIN_CONTENT_PUBLISH_PATH,
   ADMIN_CONTENT_RESET_PATH,
   ADMIN_MEDIA_PATH,
+  ADMIN_BOOKINGS_PATH,
+  ADMIN_BOOKINGS_QUERY_PATH,
+  ADMIN_BOOKING_MOVE_AVAILABILITY_PATH,
+  ADMIN_BOOKINGS_SUMMARY_PATH,
+  ADMIN_AVAILABILITY_QUERY_PATH,
+  ADMIN_AVAILABILITY_WEEKLY_PATH,
+  ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
   ADMIN_EMAIL_MAX_LENGTH,
   ADMIN_EMAIL_PATTERN,
   ADMIN_PASSWORD_MAX_LENGTH,
@@ -23,6 +31,9 @@ import {
   AUTH_LOGIN_PATH,
   AUTH_LOGOUT_PATH,
   AUTH_SESSION_PATH,
+  PUBLIC_BOOKING_AVAILABILITY_PATH,
+  PUBLIC_BOOKING_SERVICES_PATH,
+  PUBLIC_BOOKINGS_PATH,
   CONTENT_CACHE_CONTROL,
   CONTENT_REVISION_HEADER,
   CSRF_HEADER,
@@ -32,6 +43,8 @@ import {
   PUBLISHED_ETAG_PATTERN,
   REQUEST_BODY_LIMIT,
   REQUEST_BODY_LIMIT_BYTES,
+  rateLimitPolicy,
+  storageLimitReconciliation,
   REQUEST_ID_HEADER,
   REQUEST_ID_PATTERN,
   REQUEST_ID_PREFIX,
@@ -50,6 +63,23 @@ import {
   apiErrorCodes,
   apiErrorMessages,
   authSessionResponseSchema,
+  adminBookingMutationRequestSchema,
+  adminBookingResponseSchema,
+  adminBookingsQueryRequestSchema,
+  adminBookingsResponseSchema,
+  adminBookingMoveAvailabilityRequestSchema,
+  adminBookingsSummaryRequestSchema,
+  adminBookingsSummaryResponseSchema,
+  adminAvailabilityQueryRequestSchema,
+  adminAvailabilityResponseSchema,
+  adminAvailabilityWeeklyReplaceRequestSchema,
+  adminAvailabilityWeeklyResponseSchema,
+  adminAvailabilityExceptionMutationRequestSchema,
+  adminAvailabilityExceptionResponseSchema,
+  availabilityAdminPolicy,
+  bookingAvailabilityRequestSchema,
+  bookingAvailabilityResponseSchema,
+  bookingApiPolicy,
   bootstrapFailureOutcome,
   contentRevisionSemantics,
   contractImplementations,
@@ -61,6 +91,9 @@ import {
   httpContractInvariants,
   loginFailureOutcome,
   loginRequestSchema,
+  publicBookingCreateRequestSchema,
+  publicBookingResponseSchema,
+  publicBookableServicesResponseSchema,
   MEDIA_ASSET_ID_PATTERN,
   MEDIA_LIBRARY_SCHEMA_VERSION,
   MEDIA_MAX_DIMENSION,
@@ -262,6 +295,134 @@ const schemaTargets: SchemaTarget[] = [
     io: "input",
   },
   {
+    file: "public-bookable-services-response.schema.json",
+    title: "PublicBookableServicesResponse",
+    description: "Active canonical booking services without editorial duplication.",
+    schema: publicBookableServicesResponseSchema,
+    io: "output",
+  },
+  {
+    file: "booking-availability-request.schema.json",
+    title: "BookingAvailabilityRequest",
+    description: "Public bounded availability query for one canonical service.",
+    schema: bookingAvailabilityRequestSchema,
+    io: "input",
+  },
+  {
+    file: "booking-availability-response.schema.json",
+    title: "BookingAvailabilityResponse",
+    description: "Computed slots only; no customer or internal persistence data.",
+    schema: bookingAvailabilityResponseSchema,
+    io: "output",
+  },
+  {
+    file: "public-booking-create-request.schema.json",
+    title: "PublicBookingCreateRequest",
+    description: "Public booking facts and explicit consent for one returned UTC slot.",
+    schema: publicBookingCreateRequestSchema,
+    io: "input",
+  },
+  {
+    file: "public-booking-response.schema.json",
+    title: "PublicBookingResponse",
+    description: "Opaque booking confirmation without customer data.",
+    schema: publicBookingResponseSchema,
+    io: "output",
+  },
+  {
+    file: "admin-bookings-query-request.schema.json",
+    title: "AdminBookingsQueryRequest",
+    description: "Authenticated exact-reference or bounded-range booking query.",
+    schema: adminBookingsQueryRequestSchema,
+    io: "input",
+  },
+  {
+    file: "admin-bookings-response.schema.json",
+    title: "AdminBookingsResponse",
+    description: "Authenticated booking records with minimal durable history.",
+    schema: adminBookingsResponseSchema,
+    io: "output",
+  },
+  {
+    file: "admin-booking-move-availability-request.schema.json",
+    title: "AdminBookingMoveAvailabilityRequest",
+    description: "Authenticated move-slot discovery that excludes the booking itself.",
+    schema: adminBookingMoveAvailabilityRequestSchema,
+    io: "input",
+  },
+  {
+    file: "admin-booking-mutation-request.schema.json",
+    title: "AdminBookingMutationRequest",
+    description: "Closed update, move or cancellation command.",
+    schema: adminBookingMutationRequestSchema,
+    io: "input",
+  },
+  {
+    file: "admin-booking-response.schema.json",
+    title: "AdminBookingResponse",
+    description: "One authenticated booking after a mutation.",
+    schema: adminBookingResponseSchema,
+    io: "output",
+  },
+  {
+    file: "admin-bookings-summary-request.schema.json",
+    title: "AdminBookingsSummaryRequest",
+    description: "Authenticated operational summary request with a bounded upcoming horizon.",
+    schema: adminBookingsSummaryRequestSchema,
+    io: "input",
+  },
+  {
+    file: "admin-bookings-summary-response.schema.json",
+    title: "AdminBookingsSummaryResponse",
+    description:
+      "Today's and the upcoming confirmed bookings with operational counts. Cancelled bookings are counted separately and never listed.",
+    schema: adminBookingsSummaryResponseSchema,
+    io: "output",
+  },
+  {
+    file: "admin-availability-query-request.schema.json",
+    title: "AdminAvailabilityQueryRequest",
+    description: "Authenticated read of the canonical weekly rules plus the exceptions in one local date window.",
+    schema: adminAvailabilityQueryRequestSchema,
+    io: "input",
+  },
+  {
+    file: "admin-availability-response.schema.json",
+    title: "AdminAvailabilityResponse",
+    description: "The stored schedule: weekly rules and the replacing date exceptions in the requested window.",
+    schema: adminAvailabilityResponseSchema,
+    io: "output",
+  },
+  {
+    file: "admin-availability-weekly-replace-request.schema.json",
+    title: "AdminAvailabilityWeeklyReplaceRequest",
+    description:
+      "The complete intended weekly schedule. One array on one request, so the replacement is atomic by construction rather than by client sequencing.",
+    schema: adminAvailabilityWeeklyReplaceRequestSchema,
+    io: "input",
+  },
+  {
+    file: "admin-availability-weekly-response.schema.json",
+    title: "AdminAvailabilityWeeklyResponse",
+    description: "The weekly rules as stored after the replacement; this is what the editor renders.",
+    schema: adminAvailabilityWeeklyResponseSchema,
+    io: "output",
+  },
+  {
+    file: "admin-availability-exception-mutation-request.schema.json",
+    title: "AdminAvailabilityExceptionMutationRequest",
+    description: "Closed, explicit close, open or remove command for one local date.",
+    schema: adminAvailabilityExceptionMutationRequestSchema,
+    io: "input",
+  },
+  {
+    file: "admin-availability-exception-response.schema.json",
+    title: "AdminAvailabilityExceptionResponse",
+    description: "The stored exception, or null after a removal restored the weekly behaviour.",
+    schema: adminAvailabilityExceptionResponseSchema,
+    io: "output",
+  },
+  {
     file: "error-envelope.schema.json",
     title: "ApiErrorEnvelope",
     description: "Body of every non-2xx JSON response.",
@@ -343,7 +504,7 @@ function buildHttpContractDocument(): unknown {
     httpContractVersion: HTTP_CONTRACT_VERSION,
     contentSchemaVersion: SITE_CONTENT_SCHEMA_VERSION,
     description:
-      "Frozen wire behaviour of the public read-only surface. Any change here is a breaking change.",
+      "Frozen wire behaviour of public content, auth, CMS/media and booking APIs. Any change here is a breaking change.",
     requestId: {
       header: REQUEST_ID_HEADER,
       trustedInboundPattern: REQUEST_ID_PATTERN,
@@ -354,6 +515,8 @@ function buildHttpContractDocument(): unknown {
     requestBodyLimit: REQUEST_BODY_LIMIT,
     requestBodyLimitBytes: REQUEST_BODY_LIMIT_BYTES,
     overLimitBody: overLimitBodyOutcome,
+    storageLimits: storageLimitReconciliation,
+    rateLimit: rateLimitPolicy,
     bootstrapFailure: bootstrapFailureOutcome,
     publicPage: {
       path: PUBLIC_PAGE_PATH,
@@ -438,6 +601,25 @@ function buildHttpContractDocument(): unknown {
       librarySchemaVersion: MEDIA_LIBRARY_SCHEMA_VERSION,
       unknownAssetIdFixture: UNKNOWN_MEDIA_ID_FIXTURE,
     },
+    booking: {
+      paths: {
+        services: PUBLIC_BOOKING_SERVICES_PATH,
+        availability: PUBLIC_BOOKING_AVAILABILITY_PATH,
+        create: PUBLIC_BOOKINGS_PATH,
+        adminQuery: ADMIN_BOOKINGS_QUERY_PATH,
+        adminMoveAvailability: ADMIN_BOOKING_MOVE_AVAILABILITY_PATH,
+        adminMutate: ADMIN_BOOKINGS_PATH,
+        adminSummary: ADMIN_BOOKINGS_SUMMARY_PATH,
+        adminAvailabilityQuery: ADMIN_AVAILABILITY_QUERY_PATH,
+        adminAvailabilityWeekly: ADMIN_AVAILABILITY_WEEKLY_PATH,
+        adminAvailabilityExceptions: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+      },
+      publicErrors:
+        "The frozen error envelope only; no booking, customer, SQL, lock or validation detail.",
+      adminMutationSecurity: "authenticated session followed by CSRF, before body parsing",
+      policy: bookingApiPolicy,
+      availabilityAdministration: availabilityAdminPolicy,
+    },
     errorCodes: apiErrorCodes,
     errorMessages: apiErrorMessages,
     endpoints: [
@@ -474,7 +656,9 @@ function buildHttpContractDocument(): unknown {
       {
         path: AUTH_LOGIN_PATH,
         methods: ["POST"],
-        statuses: [200, 400, 401, 403, 405],
+        // 429 since ESZ-084: both login buckets of `rateLimitPolicy` refuse
+        // before the password is verified.
+        statuses: [200, 400, 401, 403, 405, 429],
         requestBodySchema: "login-request.schema.json",
         successBodySchema: "auth-session-response.schema.json",
       },
@@ -518,6 +702,75 @@ function buildHttpContractDocument(): unknown {
         requestBodySchema: "media-delete-request.schema.json",
         successBodySchema: "media-library-response.schema.json",
       },
+      {
+        path: PUBLIC_BOOKING_SERVICES_PATH,
+        methods: ["GET"],
+        statuses: [200, 405, 500],
+        successBodySchema: "public-bookable-services-response.schema.json",
+      },
+      {
+        path: PUBLIC_BOOKING_AVAILABILITY_PATH,
+        methods: ["POST"],
+        statuses: [200, 400, 405, 429, 500],
+        requestBodySchema: "booking-availability-request.schema.json",
+        successBodySchema: "booking-availability-response.schema.json",
+      },
+      {
+        path: PUBLIC_BOOKINGS_PATH,
+        methods: ["POST"],
+        statuses: [201, 400, 405, 409, 429, 500],
+        requestBodySchema: "public-booking-create-request.schema.json",
+        successBodySchema: "public-booking-response.schema.json",
+      },
+      {
+        path: ADMIN_BOOKINGS_QUERY_PATH,
+        methods: ["POST"],
+        statuses: [200, 400, 401, 405, 500],
+        requestBodySchema: "admin-bookings-query-request.schema.json",
+        successBodySchema: "admin-bookings-response.schema.json",
+      },
+      {
+        path: ADMIN_BOOKING_MOVE_AVAILABILITY_PATH,
+        methods: ["POST"],
+        statuses: [200, 400, 401, 404, 405, 409, 500],
+        requestBodySchema: "admin-booking-move-availability-request.schema.json",
+        successBodySchema: "booking-availability-response.schema.json",
+      },
+      {
+        path: ADMIN_BOOKINGS_PATH,
+        methods: ["PATCH"],
+        statuses: [200, 400, 401, 403, 404, 405, 409, 500],
+        requestBodySchema: "admin-booking-mutation-request.schema.json",
+        successBodySchema: "admin-booking-response.schema.json",
+      },
+      {
+        path: ADMIN_BOOKINGS_SUMMARY_PATH,
+        methods: ["POST"],
+        statuses: [200, 400, 401, 405, 500],
+        requestBodySchema: "admin-bookings-summary-request.schema.json",
+        successBodySchema: "admin-bookings-summary-response.schema.json",
+      },
+      {
+        path: ADMIN_AVAILABILITY_QUERY_PATH,
+        methods: ["POST"],
+        statuses: [200, 400, 401, 405, 500],
+        requestBodySchema: "admin-availability-query-request.schema.json",
+        successBodySchema: "admin-availability-response.schema.json",
+      },
+      {
+        path: ADMIN_AVAILABILITY_WEEKLY_PATH,
+        methods: ["PUT"],
+        statuses: [200, 400, 401, 403, 405, 500],
+        requestBodySchema: "admin-availability-weekly-replace-request.schema.json",
+        successBodySchema: "admin-availability-weekly-response.schema.json",
+      },
+      {
+        path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+        methods: ["PATCH"],
+        statuses: [200, 400, 401, 403, 405, 500],
+        requestBodySchema: "admin-availability-exception-mutation-request.schema.json",
+        successBodySchema: "admin-availability-exception-response.schema.json",
+      },
     ],
     unknownRouteStatus: 404,
     errorBodySchema: "error-envelope.schema.json",
@@ -553,6 +806,7 @@ export async function generateContractArtifacts(): Promise<
   await writeArtifact("semantic-rules.json", buildSemanticRulesDocument(), digests);
   await writeArtifact("parity-corpus.json", buildParityCorpusDocument(), digests);
   await writeArtifact("http-contract.json", buildHttpContractDocument(), digests);
+  await writeArtifact("booking-domain.json", bookingDomainContract, digests);
 
   const manifest = {
     $comment: BANNER,
@@ -589,6 +843,7 @@ export const artifactFileNames = [
   "semantic-rules.json",
   "parity-corpus.json",
   "http-contract.json",
+  "booking-domain.json",
 ];
 
 export function serializeArtifact(fileName: string): string {
@@ -599,6 +854,7 @@ export function serializeArtifact(fileName: string): string {
   }
   if (fileName === "parity-corpus.json") return serialize(buildParityCorpusDocument());
   if (fileName === "http-contract.json") return serialize(buildHttpContractDocument());
+  if (fileName === "booking-domain.json") return serialize(bookingDomainContract);
   throw new Error(`Unknown artifact: ${fileName}`);
 }
 

@@ -43,6 +43,8 @@ final class Configuration
          */
         public readonly ?DatabaseSettings $database,
         public readonly SessionSettings $session,
+        /** Null outside production when SMTP is deliberately not configured. */
+        public readonly ?SmtpSettings $smtp,
     ) {
     }
 
@@ -145,6 +147,7 @@ final class Configuration
         $isProduction = $environment === 'production';
         $database = self::database($raw, $isProduction, $issues);
         $session = self::session($raw, $isProduction, $issues);
+        $smtp = self::smtp($raw, $isProduction, $issues);
 
         if ($issues !== []) {
             throw ConfigurationException::invalid($issues);
@@ -162,7 +165,240 @@ final class Configuration
             $mediaOriginalsDir,
             $database,
             $session,
+            $smtp,
         );
+    }
+
+    /**
+     * Production SMTP is explicit and fail-fast. No credential value is ever
+     * copied into an issue message, including when it is a known placeholder.
+     *
+     * @param array<mixed> $raw
+     * @param list<array{path: string, message: string}> $issues
+     * @param-out list<array{path: string, message: string}> $issues
+     */
+    private static function smtp(array $raw, bool $isProduction, array &$issues): ?SmtpSettings
+    {
+        /** @var mixed $notifications */
+        $notifications = $raw['notifications'] ?? null;
+        if ($notifications === null) {
+            if ($isProduction) {
+                $issues[] = ['path' => 'notifications.email', 'message' => 'is required in production.'];
+            }
+
+            return null;
+        }
+        if (!\is_array($notifications)) {
+            $issues[] = ['path' => 'notifications', 'message' => 'must be an array.'];
+
+            return null;
+        }
+
+        /** @var mixed $email */
+        $email = $notifications['email'] ?? null;
+        if (!\is_array($email)) {
+            $issues[] = ['path' => 'notifications.email', 'message' => 'must be an array of SMTP settings.'];
+
+            return null;
+        }
+
+        $before = \count($issues);
+        $host = self::requiredString($email, 'notifications.email.host', $issues);
+        if (
+            $host !== ''
+            && (mb_strlen($host) > 253 || preg_match('/[\s\x00-\x1F\x7F:\/]/u', $host) === 1)
+        ) {
+            $issues[] = [
+                'path' => 'notifications.email.host',
+                'message' => 'must be a hostname or IP literal without a scheme, port or control characters.',
+            ];
+        }
+
+        $port = self::boundedInt($email, 'port', 'notifications.email.port', 1, 65535, 587, $issues);
+        $encryption = self::nestedEnum(
+            $email,
+            'encryption',
+            'notifications.email.encryption',
+            ['none', 'starttls', 'smtps'],
+            'starttls',
+            $issues,
+        );
+        /** @var mixed $authenticationRequired */
+        $authenticationRequired = $email['authenticationRequired'] ?? null;
+        if (!\is_bool($authenticationRequired)) {
+            $issues[] = [
+                'path' => 'notifications.email.authenticationRequired',
+                'message' => 'must be a boolean.',
+            ];
+            $authenticationRequired = true;
+        }
+
+        $username = self::optionalConfigString($email, 'username', 'notifications.email.username', $issues);
+        $password = self::optionalConfigString($email, 'password', 'notifications.email.password', $issues, false);
+        if ($authenticationRequired) {
+            if ($username === null) {
+                $issues[] = [
+                    'path' => 'notifications.email.username',
+                    'message' => 'is required when SMTP authentication is enabled.',
+                ];
+            }
+            if ($password === null) {
+                $issues[] = [
+                    'path' => 'notifications.email.password',
+                    'message' => 'is required when SMTP authentication is enabled.',
+                ];
+            } elseif (\in_array($password, ['CHANGE_ME', 'CHANGEME', 'password'], true)) {
+                $issues[] = [
+                    'path' => 'notifications.email.password',
+                    'message' => 'is still a placeholder.',
+                ];
+            }
+        } elseif ($username !== null || $password !== null) {
+            $issues[] = [
+                'path' => 'notifications.email.authenticationRequired',
+                'message' => 'must be true when SMTP credentials are configured.',
+            ];
+        }
+
+        $senderAddress = self::requiredString($email, 'notifications.email.senderAddress', $issues);
+        if ($senderAddress !== '' && filter_var($senderAddress, FILTER_VALIDATE_EMAIL) === false) {
+            $issues[] = ['path' => 'notifications.email.senderAddress', 'message' => 'must be a valid address.'];
+        }
+        $senderName = self::safeDisplayText($email, 'notifications.email.senderName', 120, $issues);
+        $customerContact = self::safeDisplayText(
+            $email,
+            'notifications.email.customerContact',
+            300,
+            $issues,
+        );
+        $customerInstructions = self::safeDisplayText(
+            $email,
+            'notifications.email.customerInstructions',
+            1000,
+            $issues,
+        );
+        $timeout = self::boundedInt(
+            $email,
+            'timeoutSeconds',
+            'notifications.email.timeoutSeconds',
+            1,
+            30,
+            10,
+            $issues,
+        );
+
+        if (\count($issues) !== $before) {
+            return null;
+        }
+
+        return new SmtpSettings(
+            $host,
+            $port,
+            $encryption,
+            $authenticationRequired,
+            $username,
+            $password,
+            $senderAddress,
+            $senderName,
+            $timeout,
+            $customerContact,
+            $customerInstructions,
+        );
+    }
+
+    /**
+     * @param array<mixed> $raw
+     * @param list<array{path: string, message: string}> $issues
+     * @param-out list<array{path: string, message: string}> $issues
+     */
+    private static function boundedInt(
+        array $raw,
+        string $key,
+        string $path,
+        int $minimum,
+        int $maximum,
+        int $default,
+        array &$issues,
+    ): int {
+        $value = $raw[$key] ?? null;
+        if (!\is_int($value) || $value < $minimum || $value > $maximum) {
+            $issues[] = ['path' => $path, 'message' => "must be an integer between {$minimum} and {$maximum}."];
+
+            return $default;
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param array<mixed> $raw
+     * @param list<string> $allowed
+     * @param list<array{path: string, message: string}> $issues
+     * @param-out list<array{path: string, message: string}> $issues
+     */
+    private static function nestedEnum(
+        array $raw,
+        string $key,
+        string $path,
+        array $allowed,
+        string $default,
+        array &$issues,
+    ): string {
+        $value = $raw[$key] ?? null;
+        if (!\is_string($value) || !\in_array($value, $allowed, true)) {
+            $issues[] = ['path' => $path, 'message' => 'must be one of: ' . implode(', ', $allowed) . '.'];
+
+            return $default;
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param array<mixed> $raw
+     * @param list<array{path: string, message: string}> $issues
+     * @param-out list<array{path: string, message: string}> $issues
+     */
+    private static function optionalConfigString(
+        array $raw,
+        string $key,
+        string $path,
+        array &$issues,
+        bool $trim = true,
+    ): ?string {
+        $value = $raw[$key] ?? null;
+        if ($value === null || $value === '') {
+            return null;
+        }
+        if (!\is_string($value)) {
+            $issues[] = ['path' => $path, 'message' => 'must be a string or null.'];
+
+            return null;
+        }
+
+        return $trim ? trim($value) : $value;
+    }
+
+    /**
+     * @param array<mixed> $raw
+     * @param list<array{path: string, message: string}> $issues
+     * @param-out list<array{path: string, message: string}> $issues
+     */
+    private static function safeDisplayText(
+        array $raw,
+        string $path,
+        int $maxLength,
+        array &$issues,
+    ): string {
+        $value = self::requiredString($raw, $path, $issues);
+        if ($value !== '' && (mb_strlen($value) > $maxLength || preg_match('/[\r\n\x00]/u', $value) === 1)) {
+            $issues[] = [
+                'path' => $path,
+                'message' => "must be at most {$maxLength} characters and contain no line breaks or NUL bytes.",
+            ];
+        }
+
+        return $value;
     }
 
     /**
@@ -375,6 +611,17 @@ final class Configuration
         }
 
         return $this->database;
+    }
+
+    public function requireSmtp(): SmtpSettings
+    {
+        if ($this->smtp === null) {
+            throw new ConfigurationException(
+                'No `notifications.email` block is configured; the SMTP runner requires one.',
+            );
+        }
+
+        return $this->smtp;
     }
 
     public function isProduction(): bool

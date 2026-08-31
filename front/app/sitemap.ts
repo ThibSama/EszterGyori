@@ -18,5 +18,10 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "monthly",
       priority: 1,
     },
+    {
+      url: new URL("reservation", SITE_URL).toString(),
+      changeFrequency: "daily",
+      priority: 0.9,
+    },
   ];
 }

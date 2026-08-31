@@ -1,8 +1,42 @@
 import type { NextConfig } from "next";
+import { createHash } from "node:crypto";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+function productionBuildId(): string {
+  const hash = createHash("sha256");
+  const inputs = [
+    "front/app",
+    "front/public",
+    "front/next.config.ts",
+    "front/package.json",
+    "front/package-lock.json",
+    "front/postcss.config.mjs",
+    "front/tsconfig.json",
+    "contracts",
+  ];
+
+  const add = (relativePath: string): void => {
+    const absolutePath = resolve(projectRoot, relativePath);
+    const stat = lstatSync(absolutePath);
+    hash.update(relativePath).update("\0");
+    if (stat.isDirectory()) {
+      for (const name of readdirSync(absolutePath).sort()) {
+        if (["dist", "node_modules", "scripts", "tests"].includes(name)) continue;
+        add(`${relativePath}/${name}`);
+      }
+      return;
+    }
+    hash.update(readFileSync(absolutePath)).update("\0");
+  };
+
+  for (const input of inputs) add(input);
+
+  return hash.digest("hex").slice(0, 24);
+}
 
 /**
  * ESZ-020 — the frontend is a static export.
@@ -20,6 +54,11 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  */
 const nextConfig: NextConfig = {
   output: "export",
+
+  // Next otherwise generates a random build id, which makes byte-identical source
+  // produce a different deployment archive. Hash only runtime build inputs: source
+  // changes still bust the build-specific path, while repeated builds stay identical.
+  generateBuildId: async () => productionBuildId(),
 
   // Fixed once here and matched by the `.htaccess` rewrite rules
   // (`docs/hetzner-target-architecture.md` §12). Disagreement between the two is

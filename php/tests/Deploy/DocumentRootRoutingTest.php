@@ -33,6 +33,7 @@ final class DocumentRootRoutingTest extends TestCase
         'admin.html',
         'admin/login.html',
         'admin/preview.html',
+        'reservation.html',
         'robots.txt',
         'sitemap.xml',
         'manifest.webmanifest',
@@ -86,11 +87,11 @@ final class DocumentRootRoutingTest extends TestCase
             '/admin/content/hero', 'admin-deep-link', $admin,
         ];
 
-        yield 'the reserved booking path' => [
-            '/reservation', 'reserved', DocumentRootRouting::RESERVED,
+        yield 'the public reservation page' => [
+            '/reservation', 'public-exported-page', $file,
         ];
-        yield 'anything under the reserved path' => [
-            '/reservation/creneaux', 'reserved', DocumentRootRouting::RESERVED,
+        yield 'an unknown reservation subpath' => [
+            '/reservation/creneaux', 'not-found', DocumentRootRouting::NOT_FOUND,
         ];
 
         yield 'an unknown document path' => [
@@ -132,26 +133,11 @@ final class DocumentRootRoutingTest extends TestCase
         self::assertSame(DocumentRootRouting::FRONT_CONTROLLER, $outcome['target']);
     }
 
-    public function testTheReservedPathCannotBeCapturedByAnyOtherRule(): void
+    public function testTheReservationPageIsAnExactStaticExportRoute(): void
     {
-        // The point of reserving it is not that it 404s — it would anyway today —
-        // but that it cannot silently become something *else* when a later rule
-        // widens. So the assertion is about which rules must never claim it, not
-        // about it winning against everything.
-        //
-        // An existing file does take precedence, deliberately: the static-asset
-        // rule has to run before the path-based rules or nothing under `_next/`
-        // would ever be served. Nothing named `reservation` is in the export, so
-        // that ordering costs the reservation nothing.
-        foreach (DocumentRootRouting::RESERVED_PATHS as $path) {
-            foreach ([$path, $path . '/creneaux', $path . '/2026-07-01'] as $candidate) {
-                $outcome = $this->resolve($candidate);
-
-                self::assertSame('reserved', $outcome['rule'], $candidate);
-                self::assertNotSame(DocumentRootRouting::ADMIN_SHELL, $outcome['target'], $candidate);
-                self::assertNotSame(DocumentRootRouting::FRONT_CONTROLLER, $outcome['target'], $candidate);
-            }
-        }
+        self::assertSame('reservation.html', $this->resolve('/reservation')['file']);
+        self::assertSame(DocumentRootRouting::STATIC_FILE, $this->resolve('/reservation')['target']);
+        self::assertSame(DocumentRootRouting::NOT_FOUND, $this->resolve('/reservation/creneaux')['target']);
     }
 
     public function testAStaticAssetOutranksEveryPathRule(): void
@@ -166,13 +152,10 @@ final class DocumentRootRoutingTest extends TestCase
         );
     }
 
-    public function testTheReservedPathShipsNoBookingInterface(): void
+    public function testTheReservationPathShipsTheBookingInterface(): void
     {
-        // Package 2.1 owns the routing boundary and nothing else: no booking UI is
-        // exported, and the reserved path must not pretend otherwise by serving a
-        // page.
-        self::assertSame(DocumentRootRouting::RESERVED, $this->resolve('/reservation')['target']);
-        self::assertFileDoesNotExist(
+        self::assertSame(DocumentRootRouting::STATIC_FILE, $this->resolve('/reservation')['target']);
+        self::assertFileExists(
             TestEnvironment::repositoryRoot() . '/front/app/reservation',
         );
     }

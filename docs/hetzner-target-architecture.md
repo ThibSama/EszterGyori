@@ -3,8 +3,9 @@
 The production topology for Eszter on **Hetzner webhosting**: a static frontend, a
 same-origin PHP API under `/api`, JSON editorial content, SQL for operational state.
 
-This document is a **target**. Nothing here is deployed. Section 1 states what is
-executable today; everything from section 2 onward describes what Phase 1 must build.
+This document is the production **target**. Nothing here is deployed. Package 8.1
+now produces and verifies the target filesystem locally; live Apache, SMTP and cron
+acceptance remain deployment-owned. Section 1 distinguishes those states.
 
 Package 1.1 (ESZ-010/011/012) built the PHP *foundation* — bootstrap, routing,
 contract-driven validation and atomic JSON storage — under `php/`. Package 1.2
@@ -19,10 +20,14 @@ Package 2.2 (ESZ-023/024/025/026/027) built the authorisation §6 asks for, and 
 of §8 and §9 it rests on: a PDO layer with ordered, repeat-safe migrations; the
 `admin_accounts` and `admin_sessions` schema; an explicit provisioning CLI; server-side
 sessions with CSRF; and the production configuration boundaries that refuse to boot on an
-unsafe setting. **§5, §6, §9 and §12 are built. §8 is built for the admin domain only** —
-booking, settings and notifications have no tables because they have no features. Media,
-backups and cron remain unbuilt, and login throttling is the one thing §6 asks for that
-ESZ-025 did not deliver. Section 1's table records the difference.
+unsafe setting. **§5, §6, §9 and §12 are built. §8 now includes Package 4.3's booking
+API domain** — booking services, weekly rules, replacing date exceptions, bounded
+dynamic slot computation, atomic public creation, guarded admin mutations and durable
+history exist. Package 5.1 adds the complete public selection, customer review,
+submission and confirmation flow. Packages 7.1/7.2 add the notification table,
+single cron runner, booking e-mail producers and production Symfony Mailer SMTP.
+Package 8.1 adds a deterministic deployment artifact and the operator runbook; backup
+automation, live-host acceptance and login throttling remain outside that package.
 
 Companion documents:
 
@@ -44,11 +49,11 @@ Everything below runs today and is covered by passing gates:
 | --- | --- |
 | `contracts/` | TypeScript + Zod source of truth; generated JSON Schema, semantic rules, parity corpus and HTTP contract committed under `contracts/generated/`. |
 | `front/` | Next.js 16 app, built with `output: "export"`. Every route is `○ (Static)`; there is no middleware, no route handler and no server-only dependency. Since Package 3.2 the editor loads and writes the **server** draft through `/api/admin/content/*`, signs in through `/api/auth/login`, and keeps `localStorage` only as an explicit backup the admin has to ask for. Gate `front:export` asserts all of it. |
-| `php/` | PHP 8.2+ backend, and since ESZ-015 the **only** one. Front controller, router, request ids, JSON error envelopes, file-based configuration, structured logging, contract-driven validation replaying the parity corpus 39/39, atomic `draft.json` / `published.json` storage with `flock` (shared for reads, exclusive for seeding and writes) and strict fail-fast, plus `GET /api/health`, `GET /api/content` and — since ESZ-021 — `GET|HEAD /` replaying the whole of `http-contract.json` with **no exemptions**. Since ESZ-025/026 also `GET /api/auth/session`, `POST /api/auth/login` and `POST /api/auth/logout`, server-enforced; since Package 3.1 the three `/api/admin/content/*` routes; and since ESZ-036/037 the media surface — bounded multipart upload verified by two independent parsers and re-encoded, a JSON catalogue, and a delete that refuses while either content document still references the asset. Every other `/api` path answers the frozen JSON 404. No cron. |
-| SQL | `php/migrations/` — ordered, forward-only, individually idempotent files applied by `php/bin/migrate.php` and recorded in `schema_migrations` with their checksums. `admin_accounts` and `admin_sessions` only; no booking, settings or notification tables, because none of those features exists. Gates `sql:migrations` and `sql:integration` run against a disposable MySQL when `ESZTER_TEST_DB_DSN` names one, and report NOT RUN otherwise. |
+| `php/` | PHP 8.2+ backend, and since ESZ-015 the **only** one. It owns the HTTP/API, content, media, booking and admin domains. Packages 7.1/7.2 add the durable notification queue, one lease-safe cron tick, typed booking templates and Symfony Mailer SMTP. Production refuses the development logging transport. |
+| SQL | `php/migrations/` — ordered, forward-only, individually idempotent files applied by `php/bin/migrate.php` and recorded in `schema_migrations` with their checksums. Package 4.1 adds `booking_services`, rule-driven availability, `bookings` and `system_settings`; there is deliberately no future-slot table. Gates `sql:migrations` and `sql:integration` run against a disposable MySQL when `ESZTER_TEST_DB_DSN` names one, and report NOT RUN otherwise. |
 | Admin identity | `php/bin/provision-admin.php`. Accounts are created by an operator, never by a migration and never at boot: a seeded default account would be identical on every deployment. The password is read from a terminal with echo off or from stdin, never from an argument. |
 | Routing | `php/public/.htaccess` and `php/public/media/.htaccess`, **generated** from `src/Deploy/DocumentRootRouting.php` and drift-checked by `php:routing`. Not deployed, and not yet executed by a real Apache — see §14. |
-| Deployment | None. No host, no domain, no TLS, no backups, no deploy automation — `php/README.md` sketches the copy. The Docker image that used to exist was deleted with the Express service. |
+| Deployment | `npm run package:production` creates a deterministic, manifest-verified archive with the exact `public_html`/private sibling layout, static export, production Composer set, generated contracts, runtime CLIs and migrations. `docs/deployment-runbook.md` is the operator procedure. No host/domain/TLS/cron/SMTP deployment or live smoke has been performed. |
 
 Both of the migrations this section used to list as owed are now done, and it is worth
 recording what each cost:
@@ -77,8 +82,9 @@ What remains owed, in the order it matters:
   `/api/auth/login`, the editor reads and writes the server draft, and publish and reset
   call their endpoints rather than re-implementing them. Still unproven *in a browser*:
   `browser:admin` needs a deployed origin and a runner (§14).
-- **Deployment.** Still none, so `smoke:http`, `browser:*` and `security:config` remain
-  NOT RUN and no `.htaccess` has been executed by a real Apache (§14).
+- **Live deployment acceptance.** The artifact and procedures are built locally, but
+  `smoke:http`, `browser:*` and the live portion of `security:config` remain NOT RUN;
+  no `.htaccess`, SMTP account or cron entry has been exercised on real hosting (§14).
 
 ---
 
@@ -102,7 +108,7 @@ What remains owed, in the order it matters:
                       media originals)   booking, settings,
                                          notifications)
                             ▲
-                            │ one cron entry ──▶ job dispatcher ──▶ SMTP / SMS gateway
+                            │ one cron entry ──▶ job dispatcher ──▶ SMTP
 ```
 
 Single origin. No CORS anywhere, no preflight, no cross-site cookie problem: the
@@ -111,6 +117,8 @@ frontend and the API are the same host and scheme.
 **Node is a build-time toolchain only.** It never runs on the Hetzner host. This is a
 hard constraint, restated from `docs/runtime-inventory.md` §8, and every decision below
 respects it.
+
+SMS is deferred post-V1 and is not a production dependency of this layout.
 
 ---
 
@@ -481,16 +489,15 @@ stay unreachable should not depend on the shape of a path someone else configure
 MySQL owns everything the JSON content document deliberately does not: state that is
 queried, filtered by date, or appended to over time.
 
-Built for the Admin row only, as of ESZ-023/024/025. The other three rows are the
-target and have no tables, because a table for a feature that does not exist is a
-migration to maintain and a schema nothing exercises.
+Admin, the booking foundation and the notification queue are built. Settings has its
+first key as of Package 7.1.
 
 | Domain | Owns | State |
 | --- | --- | --- |
 | Admin | accounts, password hashes, sessions, login attempts, audit log of publishes | **Built**, except login attempts (§6) and the publish audit log (no publish endpoint yet). |
-| Booking | requests, status transitions, requested slots, contact details, consent record | Not built — no booking feature. |
-| Settings | operational configuration editable at runtime (opening hours, lead times, notification recipients) — **not** secrets, **not** editorial copy | Not built. |
-| Notifications | outbound queue: type, payload, channel, attempts, status, timestamps | Not built. |
+| Booking | service configuration, availability rules/exceptions, appointment facts, contact details, consent and explicit state transitions | **Backend/API built (Package 4.3).** Public/admin UI remains unbuilt. |
+| Settings | operational configuration editable at runtime — **not** secrets, **not** editorial copy | Table built empty in Package 4.1; `notifications.channels` is its first key (Package 7.1). |
+| Notifications | outbound queue: booking relation, channel, type, due and next-attempt UTC instants, status, attempts, bounded diagnostic code, delivery instant, durable lease and caller-supplied idempotency key | **Built through Package 7.2.** Queue/leases/retries/catch-up plus atomic booking e-mail producers and configurable Symfony Mailer SMTP are done. SMS remains unimplemented. |
 
 Boundaries:
 
@@ -530,7 +537,164 @@ Boundaries:
 - Booking rows contain personal data: define retention and deletion up front, not after
   the first request to erase.
 
+### Package 4.1 booking policy (ESZ-040/041/042)
+
+- `contracts/generated/booking-domain.json` is the language-neutral source consumed by
+  PHP. Bookable service keys reuse the stable `SiteContent.services.items[].id` values:
+  `brows`, `eyeliner`, `lips`, `freckles`. SQL stores only booking label, duration,
+  buffers, active state and audit timestamps; editorial descriptions and media remain
+  in SiteContent. No migration or boot path seeds rows. Provisioning is an explicit,
+  repeat-safe `php/bin/provision-booking-service.php` action.
+- Availability is stored as ISO weekday plus local `DATE`/`TIME` rules and one replacing
+  exception per local date. Those wall-clock values are interpreted exclusively in the
+  IANA zone `Europe/Paris`; PHP, MySQL and host timezone defaults are irrelevant. No
+  future appointment slot is generated or persisted in Package 4.1.
+- Appointment instants are converted before persistence and stored in UTC
+  `DATETIME(3)` columns named `*_utc`; `timezone_name = Europe/Paris` records the policy.
+  A spring-forward wall time that does not exist is rejected. A fall-back wall time that
+  occurs twice requires an explicit numeric UTC offset, which must match an offset the
+  IANA database reports for that local time. The application never guesses a DST fold.
+- V1 has exactly `confirmed` and `cancelled`. The only transition is
+  `confirmed → cancelled`; `cancelled` is terminal, and same-state transitions fail.
+  Cancellation updates the row and records `cancelled_at_utc`; it never deletes it.
+  `completed` and `no_show` stay absent until their actors and semantics are designed.
+
+### Package 4.2 availability policy (ESZ-043/044/045)
+
+- Civil times travel as `HH:MM` restricted to a real 24-hour clock. The frozen wire
+  pattern `^([01][0-9]|2[0-3]):[0-5][0-9]$` accepts exactly `00:00`–`23:59`, so `24:00`
+  and `09:60` are refused structurally, by every implementation, before any domain code
+  runs. There is no midnight-end convention: a window ends at `23:59` at the latest and
+  the next one starts at `00:00`. The range living in the wire type replaces nothing in
+  the domain — increasing windows, spring-gap rejection and explicit fall-fold selection
+  are unchanged, and `AvailabilityWindow` re-checks the range rather than assuming the
+  schema ran.
+- Weekly availability supports multiple non-overlapping local windows for each ISO
+  weekday. `valid_from` and `valid_until` are nullable, inclusive bounds. Rules may
+  share a weekday only when their wall-clock windows or validity ranges do not
+  overlap; adjacent half-open windows are valid.
+- One parent exception remains unique per local date. `closed` replaces the weekly
+  result with no windows. `open` replaces it with the exception's complete ordered
+  window set; the sources are never merged. Exceptional opening and partial
+  unavailability therefore use the same unambiguous representation: persist every
+  remaining open window for that date.
+- Slots are computed in memory and never stored. Starts use a 15-minute grid aligned to
+  local civil midnight. A candidate's half-open resource interval is
+  `[start - bufferBefore, start + duration + bufferAfter)`; it must fit inside one
+  effective window and must not overlap any non-cancelled booking expanded by that
+  booking's own service buffers. Touching boundaries are allowed.
+- Queries cover at most 90 inclusive local dates and may return at most 1,000 slots;
+  excess is an explicit failure, never silent truncation. Results are ordered by local
+  date, window and grid time.
+- Every candidate is converted through `BookingTimePolicy`. Spring-gap candidates are
+  omitted because their civil times do not exist. A window touching the repeated autumn
+  hour must store `+01:00` or `+02:00`; the offset is checked against IANA data and is
+  used only to choose that fold. No PHP, MySQL or host timezone default participates.
+
+### Package 4.3 booking API policy (ESZ-046/047/048)
+
+- The contract freezes `POST /api/booking/availability`, `POST /api/bookings`,
+  authenticated `POST /api/admin/bookings/query`, and authenticated plus CSRF-protected
+  `PATCH /api/admin/bookings`. Public failures use only the opaque error envelope and
+  never expose customer, SQL, lock or validation internals.
+- Availability accepts an active canonical service and a valid Paris-local range from
+  today through the 90-day inclusive horizon. It delegates to `SlotEngine`, preserves
+  its deterministic order and never writes generated slots.
+- Creation and moves run in one SQL transaction. They lock the singleton `primary` row
+  in `booking_resource_locks` with `SELECT … FOR UPDATE`, then re-read the service,
+  weekly rules, date exception and all non-cancelled occupancy before recomputing the
+  requested instant through `SlotEngine`. The shared row serialises conflicts across
+  services and buffers; preflight availability is never trusted.
+- The admin calendar discovers move candidates through authenticated
+  `POST /api/admin/bookings/move-availability`. The server resolves the service from the
+  opaque booking reference, delegates to `SlotEngine`, and excludes only that booking;
+  the browser submits one exact returned UTC instant and never recreates availability.
+- Public creation stores explicit consent facts and returns an opaque reference without
+  customer data. Admin updates may change only name, email, phone and note; moves retain
+  reference and service and are allowed only while confirmed; cancellation uses the
+  central state transition and never deletes the booking.
+- `booking_history` appends `created`, `moved`, `cancelled` and `customer_updated`
+  events in the same transaction as their change. The booking row remains the source of
+  truth for current state.
+
+### Package 5.1 public booking flow (ESZ-050 through ESZ-055)
+
+- `/reservation` is an independently exported public page. Navigation and each service
+  card link to it; a `?service=<canonical-key>` hint may preselect a service only after
+  the server confirms that key is active.
+- `GET /api/booking/services` exposes only active canonical keys, booking labels and
+  durations. The browser intersects those keys with published `SiteContent` services,
+  preserving editorial titles and descriptions without copying them into SQL or the
+  booking contract.
+- Seven-day navigation is bounded to the API's 90-day Paris-local horizon. Dates and
+  slots become selectable only from a validated `POST /api/booking/availability`
+  response; the browser computes no availability. Service, date and range changes clear
+  every downstream choice.
+- Selection retains the complete returned slot, including its exact UTC start and fold
+  offset. Refresh revalidates against returned UTC starts and clears a disappeared slot
+  with a recoverable explanation.
+- Name, email, optional phone/note and explicit consent are reviewed with service/date/
+  slot before the browser sends the existing `POST /api/bookings` contract. The exact
+  server-returned UTC start is submitted; an immediate in-memory lock and disabled
+  controls prevent duplicate concurrent posts. Customer and consent facts are never
+  written to browser storage.
+- Only a validated successful response shows confirmation and its opaque reference. A
+  last-second 409 clears the slot, retains customer input, refreshes availability and
+  never retries or chooses a replacement. Network loss is described as uncertain
+  because the non-idempotent request may have committed before the response was lost.
+
 ---
+
+### Package 7.1 notification queue policy (ESZ-070/071/072)
+
+- `notification_jobs` is the durable queue. One row per intended notification, keyed by
+  a caller-supplied idempotency key that is unique across the whole table, so a repeated
+  enqueue resolves to the same logical job instead of creating a second one. Enums,
+  the status graph, the retry arithmetic, the lease duration, the grace window and the
+  log allowlist are frozen in `booking-domain.json` under `notifications`; the
+  migration's `CHECK` constraints restate the same sets where MySQL can enforce them.
+- Statuses are `pending`, `processing`, `sent`, `failed` and `skipped`. The last three
+  are terminal and nothing leaves them, which is what makes "delivered at most once" a
+  property of the graph rather than of the runner. `processing` is reachable only from
+  `pending`.
+- `booking_id` references `bookings` with `ON DELETE RESTRICT`. Notification history is
+  the record of what a customer was told and must not disappear with the appointment it
+  describes; V1 never deletes a booking, so this refuses loudly on the day someone adds
+  a delete path.
+- **Claiming.** A single conditional `UPDATE` from `pending` to `processing`, guarded on
+  the status and the due time, taking a durable lease (`lease_owner`,
+  `lease_expires_at_utc`) and charging one attempt. InnoDB serialises two concurrent
+  versions of that statement on the row lock and re-evaluates the predicate after the
+  wait, so exactly one runner sees a row affected. No transaction is held across a
+  transport call: the claim commits, delivery happens outside it, and the outcome is
+  written as its own statement.
+- **Recovery.** An expired lease returns to `pending` on the next tick without resetting
+  attempts, so a job that keeps killing its runner exhausts its budget and becomes
+  terminally failed instead of looping forever. Marking a job sent is guarded on the
+  lease owner, so a runner whose lease expired mid-delivery cannot record a delivery it
+  no longer owns.
+- **Retries.** Deterministic exponential backoff — 60, 120, 240, 480 seconds, clamped at
+  one hour — with a five-attempt ceiling that the schema also enforces. A transient
+  failure on the last permitted attempt is terminal; a permanent transport refusal is
+  terminal immediately.
+- **Catch-up.** A `booking_reminder` whose due instant is more than 60 minutes old
+  becomes terminally `skipped` and is never delivered. Enforced twice: swept before
+  claiming, and re-checked after claiming, because a batch can cross the boundary while
+  queued behind a slow transport. Non-time-sensitive types never expire.
+- **No backfill, no burst.** Every intended notification produces a row, always. One
+  refused because its channel is off is written immediately as terminally `skipped`, so
+  re-enabling SMS months later finds nothing pending to flush; the burst is prevented at
+  the moment each notification is declined rather than rate-limited afterwards. Channel
+  state lives in `system_settings` under `notifications.channels` and defaults to
+  email-only when the row is absent.
+- **Provider neutrality.** Delivery goes through a transport interface resolved per
+  channel before the run starts; a channel with no transport stops the run rather than
+  burning jobs. Package 7.2 registers production SMTP for e-mail. The logging transport
+  opens no socket and is restricted to development/test; no SMS transport exists.
+- **Diagnostics.** The stored error column is a code matching `^[a-z][a-z0-9_]{2,63}$`,
+  which cannot express an address, a phone number or a message fragment. Logging is an
+  allowlist rather than a redaction filter: a field nobody listed is dropped, and an
+  allowed key cannot carry an arbitrary value.
 
 ## 9. Configuration and secrets
 
@@ -616,6 +780,13 @@ Shared hosting allows only a small number of cron entries, so the design assumes
 Jobs: drain the notification queue, expire stale sessions, prune old login attempts,
 run daily backups, refresh booking reminders.
 
+As of Package 7.1 the notification job exists and runs as its own entry point,
+`php bin/run-notification-jobs.php --config=PATH`, which is already safe to overlap: it
+takes no `flock()` because it does not need one — the durable lease in the queue is
+what stops two ticks delivering the same job, and it does so across hosts rather than
+across one filesystem. When the `cron.php` dispatcher above is built, this becomes one
+of its jobs rather than a second cron entry.
+
 Every job is **idempotent** and safe to run twice — the cron may fire late, twice, or
 not at all, and correctness cannot depend on it.
 
@@ -629,9 +800,18 @@ strictly worse and is a fallback, not a plan.
   provided with the hosting, over authenticated SMTP, TLS, credentials from `config/`.
 - Mail is **queued to SQL and sent by the cron runner**, never sent inline during a web
   request. A slow or down mail server must not make a booking form hang or a booking be
-  lost after it was accepted.
+  lost after it was accepted. Package 7.2 implements this with Symfony Mailer. Host,
+  port, encryption (`none`, required STARTTLS or implicit TLS), optional authentication,
+  sender identity and a 1–30 second socket timeout are deployment configuration; no
+  Hetzner value is assumed. Provider messages and credentials never enter job errors or logs.
+- Create, move and cancel enqueue their e-mail in the same transaction as booking and
+  history. Confirmed bookings get a reminder due exactly 24 hours before their Paris
+  appointment. A move terminally supersedes only the old pending reminder and creates a
+  new occurrence-keyed reminder; cancellation retires pending reminders. Sent history is
+  never rewritten, and an already-expired catch-up window is recorded as a terminal skip.
 - A send failure retries with backoff and a bounded attempt count, then parks the row
-  for operator attention rather than retrying forever.
+  for operator attention rather than retrying forever. Implemented: five attempts,
+  60/120/240/480-second backoff clamped at one hour, then terminal `failed`.
 - SPF, DKIM and DMARC configured for the domain — otherwise confirmations land in spam,
   which for this project is indistinguishable from not sending them.
 
@@ -640,7 +820,8 @@ strictly worse and is a fallback, not a plan.
 - Outbound SMS through the **Hetzner SMS gateway**, used for operator alerts on new
   bookings.
 - Same queue, same runner, same retry policy as mail: one notification pipeline with
-  a channel discriminator, not two.
+  a channel discriminator, not two. Built that way in Package 7.1 — `channel` is a
+  column, and the only thing an SMS provider adds is a transport implementation.
 - Credentials from `config/`. The exact endpoint, authentication scheme and per-message
   cost must be confirmed against the Hetzner account before implementation — this
   document fixes the **integration boundary** (queue → cron → gateway adapter), not the
@@ -770,6 +951,6 @@ Carried forward from `docs/runtime-inventory.md` §12, plus what this document a
    half-built: a counter that nothing enforces reads like a control while being none.
    The uniform failure response and the absence of user enumeration that §6 asks for in
    the same breath *are* built and covered.
-10. **`/reservation` is reserved, not built** — it resolves to the 404 document and
-   ships no booking UI. It is named in the routing table now so that it cannot be
-   quietly captured by a later widening of the admin or public rule.
+10. **`/reservation` is a static export** — Package 5.1 resolves it explicitly to
+   `reservation.html`. It discovers active services and availability through same-origin
+   PHP APIs; no Node renderer or public-page content injection is required.

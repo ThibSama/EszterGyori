@@ -1,0 +1,211 @@
+{
+  "version": 3,
+  "scope": "Package 4.1/4.2 booking domain and dynamic slot computation; no booking HTTP API.",
+  "services": {
+    "keys": [
+      "brows",
+      "eyeliner",
+      "lips",
+      "freckles"
+    ],
+    "source": "SiteContent.services.items[].id",
+    "keyPattern": "^[a-z][a-z0-9-]{1,63}$",
+    "labelMaxLength": 160,
+    "durationMinutes": {
+      "min": 5,
+      "max": 480
+    },
+    "bufferMinutes": {
+      "min": 0,
+      "max": 240
+    },
+    "provisioning": "Explicit, repeat-safe operator action. Migrations and application boot seed no service rows."
+  },
+  "timezone": {
+    "iana": "Europe/Paris",
+    "availabilityStorage": "ISO weekday, DATE applicability bounds and TIME wall-clock values interpreted only in Europe/Paris.",
+    "appointmentStorage": "bookings.starts_at_utc and bookings.ends_at_utc are UTC DATETIME(3); timezone_name records Europe/Paris.",
+    "conversion": "Convert local wall time with IANA timezone rules before persistence; never consult the PHP, MySQL or host default timezone.",
+    "dst": {
+      "nonexistent": "Reject local wall times skipped by the spring-forward transition.",
+      "ambiguous": "Require an explicit numeric UTC offset and verify it is one of Europe/Paris's offsets for that wall time.",
+      "foldOffsets": [
+        "+01:00",
+        "+02:00"
+      ]
+    }
+  },
+  "availability": {
+    "generatedSlotsPersisted": false,
+    "weekly": "Multiple non-overlapping local windows per ISO weekday; nullable validity bounds are inclusive.",
+    "exceptionPrecedence": "At most one exception exists per local date. Closed yields no windows. Open replaces the weekly result with its complete ordered window set; weekly and exception windows are never merged.",
+    "partialUnavailability": "Represent partial unavailability by storing the complete remaining open-window set in that date's replacing open exception.",
+    "grid": {
+      "minutes": 15,
+      "alignment": "Appointment starts align to fixed increments from local civil midnight, not from each availability-window start."
+    },
+    "fit": "The half-open resource interval [start-bufferBefore, start+duration+bufferAfter) must fit within one effective window and not overlap an occupied resource interval; touching boundaries are allowed.",
+    "cancellation": "Only non-cancelled bookings occupy time.",
+    "limits": {
+      "maxHorizonDays": 90,
+      "maxResults": 1000
+    }
+  },
+  "states": {
+    "values": [
+      "confirmed",
+      "cancelled"
+    ],
+    "initial": "confirmed",
+    "transitions": {
+      "confirmed": [
+        "cancelled"
+      ],
+      "cancelled": []
+    },
+    "semantics": {
+      "confirmed": "The appointment is accepted and occupies its UTC interval until explicitly cancelled.",
+      "cancelled": "Terminal V1 state. The row and original appointment facts remain stored; cancellation never deletes it."
+    },
+    "rules": [
+      "Every state change is requested explicitly and checked by the central state machine.",
+      "A transition to the current state is invalid rather than an implicit success.",
+      "No UI value, elapsed clock time or read operation changes state.",
+      "Cancellation sets cancelled_at_utc and never physically deletes the booking."
+    ]
+  },
+  "notifications": {
+    "scope": "Package 7.1 durable notification jobs, one CLI cron runner and catch-up policy. No HTTP surface.",
+    "channels": [
+      "email",
+      "sms"
+    ],
+    "jobTypes": [
+      "booking_confirmation",
+      "booking_reminder",
+      "booking_cancellation",
+      "booking_moved"
+    ],
+    "timeSensitiveJobTypes": [
+      "booking_reminder"
+    ],
+    "statuses": {
+      "values": [
+        "pending",
+        "processing",
+        "sent",
+        "failed",
+        "skipped"
+      ],
+      "initial": "pending",
+      "terminal": [
+        "sent",
+        "failed",
+        "skipped"
+      ],
+      "transitions": {
+        "pending": [
+          "processing",
+          "skipped"
+        ],
+        "processing": [
+          "sent",
+          "pending",
+          "failed",
+          "skipped"
+        ],
+        "sent": [],
+        "failed": [],
+        "skipped": []
+      },
+      "semantics": {
+        "pending": "Due or waiting for its next attempt. The only status a runner may claim.",
+        "processing": "Claimed under a durable expiring lease. Exactly one runner owns it until the lease expires.",
+        "sent": "Delivered once. Terminal; a job is never delivered twice.",
+        "failed": "Terminal. Either the transport refused permanently, or the bounded retries were exhausted.",
+        "skipped": "Terminal, and deliberate: the notification was considered and consciously not sent. Stale reminders and disabled channels land here so the decision is recorded rather than inferred from an absence."
+      }
+    },
+    "identity": {
+      "idempotencyKeyPattern": "^[a-z0-9][a-z0-9_.:-]{7,127}$",
+      "uniqueness": "The idempotency key is unique across the whole table. A repeated enqueue resolves to the same logical job rather than creating a second one, and a key reused with different booking, channel or type facts is a caller error rather than a silent overwrite.",
+      "derivation": "Built from stable booking facts — reference, channel, type and, for recurring types, the occurrence — so the same intent produces the same key on every process."
+    },
+    "lease": {
+      "seconds": 120,
+      "ownerPattern": "^[a-z0-9][a-z0-9_.:-]{7,63}$",
+      "claim": "A conditional UPDATE from pending to processing, guarded on the status and the due time. The row lock makes the transition atomic, so of two concurrent runners exactly one sees a row affected and the other sees none.",
+      "durability": "The owner and the expiry are columns. A runner that dies mid-delivery leaves them behind, and the next run reclaims the job once the lease has expired.",
+      "recovery": "Expired leases return to pending without resetting attempts, so an abandoned job costs one attempt and cannot loop forever.",
+      "externalDelivery": "No database transaction is held while a transport is called. The claim commits, delivery happens outside it, and the outcome is written as its own statement."
+    },
+    "retry": {
+      "maxAttempts": 5,
+      "baseBackoffSeconds": 60,
+      "maxBackoffSeconds": 3600,
+      "backoff": "min(baseBackoffSeconds * 2^(attempts - 1), maxBackoffSeconds), deterministic and without jitter.",
+      "exhaustion": "A transient failure on the last permitted attempt becomes terminal `failed`; it is never retried a sixth time.",
+      "permanent": "A permanent transport refusal is terminal immediately, whatever the attempt count."
+    },
+    "catchUp": {
+      "reminderGraceMinutes": 60,
+      "staleReminder": "A time-sensitive job whose due time is older than the grace window becomes terminally skipped and is never delivered. Enforced twice: swept before claiming, and re-checked after claiming, because a queue that was drained slowly can cross the boundary between the two.",
+      "noBackfill": "Re-enabling a channel never creates jobs for windows that have already passed. An enqueue for a disabled channel is recorded immediately as skipped, so there is no backlog to flush and re-enabling changes only what happens next.",
+      "burstControl": "One run claims at most its batch size, so even a large recovered backlog is drained across ticks rather than in one burst."
+    },
+    "runner": {
+      "defaultBatchSize": 50,
+      "maxBatchSize": 200,
+      "transport": "Delivery goes through a provider-neutral transport interface resolved per channel. Package 7.1 ships no SMTP or SMS client; a channel with no registered transport stops the run before anything is claimed rather than burning jobs."
+    },
+    "diagnostics": {
+      "errorCodePattern": "^[a-z][a-z0-9_]{2,63}$",
+      "reservedErrorCodes": [
+        "lease_expired",
+        "lease_lost",
+        "reminder_window_expired",
+        "reminder_superseded",
+        "booking_cancelled",
+        "channel_disabled",
+        "transport_transient",
+        "transport_permanent",
+        "attempts_exhausted"
+      ],
+      "logFields": [
+        "jobId",
+        "bookingReference",
+        "channel",
+        "jobType",
+        "status",
+        "attempts",
+        "errorCode",
+        "leaseOwner",
+        "dueAtUtc",
+        "nextAttemptAtUtc",
+        "durationMs",
+        "batchSize",
+        "claimed",
+        "recovered",
+        "skipped"
+      ],
+      "forbiddenLogFields": [
+        "customerName",
+        "customerEmail",
+        "customerPhone",
+        "customerNote",
+        "body",
+        "subject",
+        "message",
+        "recipient",
+        "password",
+        "apiKey",
+        "token",
+        "credentials"
+      ],
+      "rule": "Notification logging is an allowlist. No customer name, address, phone number, note, message body or credential is ever written to a log line or to the stored diagnostic column."
+    },
+    "retention": {
+      "bookingRelation": "notification_jobs.booking_id references bookings with ON DELETE RESTRICT. Notification history is evidence of what was sent and must not disappear with the appointment it describes; V1 never deletes a booking anyway, and this makes that a schema guarantee rather than a convention."
+    }
+  }
+}

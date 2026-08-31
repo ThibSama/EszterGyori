@@ -65,7 +65,10 @@ final class MigrationTest extends TestCase
         sort($sorted, SORT_STRING);
         self::assertSame($sorted, $applied);
 
-        self::assertSame(['0001', '0002'], $applied);
+        self::assertSame(
+            ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '0010'],
+            $applied,
+        );
     }
 
     public function testRunningMigrationsTwiceAppliesNothingTheSecondTime(): void
@@ -224,7 +227,21 @@ final class MigrationTest extends TestCase
         // `docs/hetzner-target-architecture.md` §8: utf8mb4 throughout. The content
         // pipeline guarantees NFC UTF-8 end to end and the database must not be the
         // component that breaks it.
-        foreach (['admin_accounts', 'admin_sessions'] as $table) {
+        foreach (
+            [
+                'admin_accounts',
+                'admin_sessions',
+                'booking_services',
+                'availability_rules',
+                'availability_exceptions',
+                'availability_exception_windows',
+                'bookings',
+                'booking_resource_locks',
+                'booking_history',
+                'system_settings',
+                'notification_jobs',
+            ] as $table
+        ) {
             $create = $this->database->fetchOne(
                 'SHOW CREATE TABLE `' . $table . '`',
             );
@@ -256,12 +273,210 @@ final class MigrationTest extends TestCase
                     'id', 'account_id', 'csrf_token', 'created_at',
                     'last_seen_at', 'expires_at', 'absolute_expires_at',
                 ],
+                'booking_services' => [
+                    'service_key', 'booking_label', 'duration_minutes',
+                    'buffer_before_minutes', 'buffer_after_minutes', 'is_active',
+                    'created_at', 'updated_at',
+                ],
+                'availability_rules' => [
+                    'id', 'weekday_iso', 'start_local', 'end_local', 'valid_from',
+                    'valid_until', 'fold_utc_offset', 'is_active', 'created_at', 'updated_at',
+                ],
+                'availability_exceptions' => [
+                    'id', 'exception_date', 'exception_kind', 'start_local',
+                    'end_local', 'fold_utc_offset', 'note', 'created_at', 'updated_at',
+                ],
+                'availability_exception_windows' => [
+                    'id', 'exception_id', 'position', 'start_local', 'end_local',
+                    'fold_utc_offset',
+                ],
+                'bookings' => [
+                    'id', 'reference', 'service_key', 'state', 'starts_at_utc',
+                    'ends_at_utc', 'timezone_name', 'customer_name', 'customer_email',
+                    'customer_phone', 'customer_note', 'consent_at_utc',
+                    'cancelled_at_utc', 'cancellation_reason', 'created_at',
+                    'updated_at', 'state_changed_at',
+                ],
+                'booking_resource_locks' => ['resource_key'],
+                'booking_history' => [
+                    'id', 'booking_id', 'event_type', 'actor_type', 'details_json', 'occurred_at',
+                ],
+                'system_settings' => ['setting_key', 'value_json', 'created_at', 'updated_at'],
+                'notification_jobs' => [
+                    'id', 'idempotency_key', 'booking_id', 'channel', 'job_type',
+                    'due_at_utc', 'next_attempt_at_utc', 'status', 'attempts',
+                    'last_error_code', 'sent_at_utc', 'lease_owner',
+                    'lease_expires_at_utc', 'created_at', 'updated_at', 'status_changed_at',
+                ],
             ] as $table => $columns
         ) {
             foreach ($columns as $column) {
                 self::assertNotSame([], $this->column($table, $column), "{$table}.{$column}");
             }
         }
+    }
+
+    public function testBookingSchemaHasOnlyRuleDrivenAvailabilityAndNecessaryIndexes(): void
+    {
+        $this->migrator()->migrate();
+
+        self::assertSame([], $this->database->fetchAll("SHOW TABLES LIKE '%slot%'"));
+
+        foreach (
+            [
+                'booking_services' => ['PRIMARY', 'ix_booking_services_active_key'],
+                'availability_rules' => [
+                    'PRIMARY', 'uq_availability_rules_window', 'ix_availability_rules_lookup',
+                ],
+                'availability_exceptions' => ['PRIMARY', 'uq_availability_exceptions_date'],
+                'availability_exception_windows' => [
+                    'PRIMARY', 'uq_availability_exception_windows_position',
+                    'ix_availability_exception_windows_order',
+                ],
+                'bookings' => [
+                    'PRIMARY', 'uq_bookings_reference', 'ix_bookings_service_start',
+                    'ix_bookings_state_start',
+                ],
+                'booking_resource_locks' => ['PRIMARY'],
+                'booking_history' => ['PRIMARY', 'ix_booking_history_booking_order'],
+                'system_settings' => ['PRIMARY'],
+                'notification_jobs' => [
+                    'PRIMARY', 'uq_notification_jobs_idempotency',
+                    'ix_notification_jobs_claim', 'ix_notification_jobs_lease',
+                    'ix_notification_jobs_due', 'ix_notification_jobs_booking',
+                ],
+            ] as $table => $expected
+        ) {
+            $indexes = array_values(array_unique(array_map(
+                static fn (array $row): string => (string) $row['Key_name'],
+                $this->database->fetchAll("SHOW INDEX FROM `{$table}`"),
+            )));
+            sort($indexes);
+            sort($expected);
+            self::assertSame($expected, $indexes, $table);
+        }
+    }
+
+    public function testMySqlEnforcesBookingServiceAvailabilityAndBookingConstraints(): void
+    {
+        $this->migrator()->migrate();
+
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            'INSERT INTO booking_services'
+            . ' (service_key, booking_label, duration_minutes, buffer_before_minutes,'
+            . ' buffer_after_minutes, is_active, created_at, updated_at)'
+            . " VALUES ('brows', 'Brows', 0, 0, 0, 1, :created, :updated)",
+            ['created' => self::NOW, 'updated' => self::NOW],
+        ));
+
+        $this->database->run(
+            'INSERT INTO booking_services'
+            . ' (service_key, booking_label, duration_minutes, buffer_before_minutes,'
+            . ' buffer_after_minutes, is_active, created_at, updated_at)'
+            . " VALUES ('brows', 'Brows', 60, 0, 0, 1, :created, :updated)",
+            ['created' => self::NOW, 'updated' => self::NOW],
+        );
+
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            'INSERT INTO availability_rules'
+            . ' (weekday_iso, start_local, end_local, valid_from, valid_until, created_at, updated_at)'
+            . " VALUES (8, '09:00:00', '10:00:00', '2026-01-01', '2026-12-31', :created, :updated)",
+            ['created' => self::NOW, 'updated' => self::NOW],
+        ));
+
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            'INSERT INTO availability_rules'
+            . ' (weekday_iso, start_local, end_local, fold_utc_offset, created_at, updated_at)'
+            . " VALUES (1, '09:00:00', '10:00:00', '+03:00', :created, :updated)",
+            ['created' => self::NOW, 'updated' => self::NOW],
+        ));
+
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            'INSERT INTO availability_exceptions'
+            . ' (exception_date, exception_kind, start_local, end_local, created_at, updated_at)'
+            . " VALUES ('2026-07-14', 'closed', '09:00:00', NULL, :created, :updated)",
+            ['created' => self::NOW, 'updated' => self::NOW],
+        ));
+
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            'INSERT INTO availability_exception_windows'
+            . ' (exception_id, position, start_local, end_local)'
+            . " VALUES (999999, 2, '09:00:00', '10:00:00')",
+        ));
+
+        $this->database->run(
+            'INSERT INTO availability_exceptions'
+            . ' (exception_date, exception_kind, start_local, end_local, created_at, updated_at)'
+            . " VALUES ('2026-07-14', 'closed', NULL, NULL, :created, :updated)",
+            ['created' => self::NOW, 'updated' => self::NOW],
+        );
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            'INSERT INTO availability_exceptions'
+            . ' (exception_date, exception_kind, start_local, end_local, created_at, updated_at)'
+            . " VALUES ('2026-07-14', 'closed', NULL, NULL, :created, :updated)",
+            ['created' => self::NOW, 'updated' => self::NOW],
+        ));
+
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            'INSERT INTO bookings'
+            . ' (reference, service_key, state, starts_at_utc, ends_at_utc, timezone_name,'
+            . ' customer_name, customer_email, consent_at_utc, created_at, updated_at, state_changed_at)'
+            . " VALUES ('bk_22222222222222222222222222222222', 'lips', 'confirmed',"
+            . " '2026-01-01 10:00:00.000', '2026-01-01 11:00:00.000', 'Europe/Paris',"
+            . " 'Test', 'test@example.test', '2026-01-01 09:00:00.000', :created, :updated, :changed)",
+            ['created' => self::NOW, 'updated' => self::NOW, 'changed' => self::NOW],
+        ));
+
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            'INSERT INTO bookings'
+            . ' (reference, service_key, state, starts_at_utc, ends_at_utc, timezone_name,'
+            . ' customer_name, customer_email, consent_at_utc, created_at, updated_at, state_changed_at)'
+            . " VALUES ('bk_00000000000000000000000000000000', 'brows', 'confirmed',"
+            . " '2026-01-01 10:00:00.000', '2026-01-01 11:00:00.000', 'UTC',"
+            . " 'Test', 'test@example.test', '2026-01-01 09:00:00.000', :created, :updated, :changed)",
+            ['created' => self::NOW, 'updated' => self::NOW, 'changed' => self::NOW],
+        ));
+
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            'INSERT INTO bookings'
+            . ' (reference, service_key, state, starts_at_utc, ends_at_utc, timezone_name,'
+            . ' customer_name, customer_email, consent_at_utc, cancelled_at_utc,'
+            . ' created_at, updated_at, state_changed_at)'
+            . " VALUES ('bk_33333333333333333333333333333333', 'brows', 'confirmed',"
+            . " '2026-01-01 10:00:00.000', '2026-01-01 11:00:00.000', 'Europe/Paris',"
+            . " 'Test', 'test@example.test', '2026-01-01 09:00:00.000',"
+            . " '2026-01-01 09:30:00.000', :created, :updated, :changed)",
+            ['created' => self::NOW, 'updated' => self::NOW, 'changed' => self::NOW],
+        ));
+
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            'INSERT INTO bookings'
+            . ' (reference, service_key, state, starts_at_utc, ends_at_utc, timezone_name,'
+            . ' customer_name, customer_email, consent_at_utc, created_at, updated_at, state_changed_at)'
+            . " VALUES ('bk_11111111111111111111111111111111', 'brows', 'completed',"
+            . " '2026-01-01 10:00:00.000', '2026-01-01 11:00:00.000', 'Europe/Paris',"
+            . " 'Test', 'test@example.test', '2026-01-01 09:00:00.000', :created, :updated, :changed)",
+            ['created' => self::NOW, 'updated' => self::NOW, 'changed' => self::NOW],
+        ));
+    }
+
+    public function testBookingSerializationRowAndHistoryConstraintsExist(): void
+    {
+        $this->migrator()->migrate();
+
+        self::assertSame(
+            [['resource_key' => 'primary']],
+            $this->database->fetchAll('SELECT resource_key FROM booking_resource_locks'),
+        );
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            "INSERT INTO booking_resource_locks (resource_key) VALUES ('secondary')",
+        ));
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            'INSERT INTO booking_history'
+            . ' (booking_id, event_type, actor_type, details_json, occurred_at)'
+            . " VALUES (999999, 'created', 'public', JSON_OBJECT(), :occurred)",
+            ['occurred' => self::NOW],
+        ));
     }
 
     public function testTheSessionForeignKeyCascadesFromTheAccount(): void
@@ -301,6 +516,128 @@ final class MigrationTest extends TestCase
         self::assertSame([], $this->database->fetchAll('SELECT id FROM admin_sessions'));
     }
 
+    /**
+     * ESZ-070 — the notification queue's own constraints, on real MySQL.
+     *
+     * Every one of these is a rule the runner also enforces in PHP. Asserting
+     * them here is not duplication: the runner is one process among several and
+     * a future second writer — a backfill script, an admin action — would not go
+     * through it. The database is where "there is exactly one job per
+     * idempotency key" stops being a convention.
+     */
+    public function testMySqlEnforcesTheNotificationQueueConstraints(): void
+    {
+        $this->migrator()->migrate();
+        $bookingId = $this->seedBookingForNotifications();
+
+        // The relation is real: a job cannot point at a booking that is not there.
+        $this->expectConstraintFailure(fn () => $this->insertJob(999_999, ['key' => 'orphan.email.confirm']));
+
+        // Enum sets.
+        $this->expectConstraintFailure(
+            fn () => $this->insertJob($bookingId, ['key' => 'chan.bad.value', 'channel' => 'pigeon']),
+        );
+        $this->expectConstraintFailure(
+            fn () => $this->insertJob($bookingId, ['key' => 'type.bad.value', 'type' => 'booking_haiku']),
+        );
+        $this->expectConstraintFailure(
+            fn () => $this->insertJob($bookingId, ['key' => 'status.bad.value', 'status' => 'queued']),
+        );
+
+        // The idempotency key has a shape, so a caller cannot invent one that is
+        // unique by accident — an empty string, or a UUID with braces.
+        $this->expectConstraintFailure(fn () => $this->insertJob($bookingId, ['key' => 'short']));
+        $this->expectConstraintFailure(fn () => $this->insertJob($bookingId, ['key' => 'HAS.UPPER.CASE.HERE']));
+
+        // The diagnostic column is structurally a code. This is the constraint
+        // that makes "no customer data in the error column" a schema fact.
+        $this->expectConstraintFailure(fn () => $this->insertJob($bookingId, [
+            'key' => 'errcode.bad.value',
+            'error' => 'smtp 550 no mailbox for cliente@example.test',
+        ]));
+
+        // `sent` and `sent_at_utc` agree in both directions.
+        $this->expectConstraintFailure(fn () => $this->insertJob($bookingId, [
+            'key' => 'sent.without.instant',
+            'status' => 'sent',
+        ]));
+        $this->expectConstraintFailure(fn () => $this->insertJob($bookingId, [
+            'key' => 'pending.with.instant',
+            'sent_at' => '2026-06-13 12:00:00.000',
+        ]));
+
+        // A lease exists exactly while the job is claimed.
+        $this->expectConstraintFailure(fn () => $this->insertJob($bookingId, [
+            'key' => 'processing.without.lease',
+            'status' => 'processing',
+            'attempts' => 1,
+        ]));
+        $this->expectConstraintFailure(fn () => $this->insertJob($bookingId, [
+            'key' => 'pending.with.lease',
+            'lease_owner' => 'host.1.abcdef',
+            'lease_expires' => '2026-06-13 12:02:00.000',
+        ]));
+
+        // A claimed job has been attempted, and the attempt budget is bounded by
+        // the same number the frozen retry policy uses.
+        $this->expectConstraintFailure(fn () => $this->insertJob($bookingId, [
+            'key' => 'processing.zero.attempts',
+            'status' => 'processing',
+            'attempts' => 0,
+            'lease_owner' => 'host.1.abcdef',
+            'lease_expires' => '2026-06-13 12:02:00.000',
+        ]));
+        $this->expectConstraintFailure(fn () => $this->insertJob($bookingId, [
+            'key' => 'attempts.above.budget',
+            'attempts' => 6,
+        ]));
+
+        // And the happy row, so the refusals above are not all being produced by
+        // one unrelated mistake in the fixture.
+        $this->insertJob($bookingId, ['key' => 'good.email.confirmation']);
+
+        // Uniqueness is what makes a duplicate enqueue a reuse.
+        $this->expectConstraintFailure(fn () => $this->insertJob($bookingId, ['key' => 'good.email.confirmation']));
+
+        self::assertSame(
+            1,
+            (int) ($this->database->fetchOne('SELECT COUNT(*) AS n FROM notification_jobs')['n'] ?? 0),
+        );
+    }
+
+    /**
+     * ESZ-070 — notification history outlives nothing quietly.
+     *
+     * `ON DELETE CASCADE` would be the convenient choice and the wrong one: the
+     * row is the record that a customer was told something, and it must not
+     * vanish with the appointment. V1 never deletes a booking, so this asserts a
+     * guarantee against a future delete path rather than a current one.
+     */
+    public function testDeletingABookingIsRefusedWhileNotificationHistoryReferencesIt(): void
+    {
+        $this->migrator()->migrate();
+        $bookingId = $this->seedBookingForNotifications();
+        $this->insertJob($bookingId, [
+            'key' => 'retained.email.confirmation',
+            'status' => 'sent',
+            'sent_at' => '2026-06-13 12:00:00.000',
+        ]);
+
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            'DELETE FROM bookings WHERE id = :id',
+            ['id' => $bookingId],
+        ));
+
+        self::assertSame(
+            1,
+            (int) ($this->database->fetchOne('SELECT COUNT(*) AS n FROM notification_jobs')['n'] ?? 0),
+        );
+        self::assertSame(
+            1,
+            (int) ($this->database->fetchOne('SELECT COUNT(*) AS n FROM bookings')['n'] ?? 0),
+        );
+    }
+
     public function testConcurrentMigrationRunsDoNotCollide(): void
     {
         // The advisory lock, exercised on two real connections. Without it two
@@ -334,6 +671,85 @@ final class MigrationTest extends TestCase
         return TestDatabase::migrator($this->database, new FrozenClock(self::NOW), $directory);
     }
 
+    /** A minimal confirmed booking, so notification rows have something to reference. */
+    private function seedBookingForNotifications(): int
+    {
+        $this->database->run(
+            'INSERT INTO booking_services'
+            . ' (service_key, booking_label, duration_minutes, buffer_before_minutes,'
+            . ' buffer_after_minutes, is_active, created_at, updated_at)'
+            . " VALUES ('lips', 'Lèvres', 60, 0, 0, 1, :created, :updated)"
+            . ' ON DUPLICATE KEY UPDATE booking_label = VALUES(booking_label)',
+            ['created' => self::NOW, 'updated' => self::NOW],
+        );
+
+        $this->database->run(
+            'INSERT INTO bookings'
+            . ' (reference, service_key, state, starts_at_utc, ends_at_utc, timezone_name,'
+            . ' customer_name, customer_email, consent_at_utc, created_at, updated_at, state_changed_at)'
+            . " VALUES ('bk_33333333333333333333333333333333', 'lips', 'confirmed',"
+            . " '2026-06-15 10:00:00.000', '2026-06-15 11:00:00.000', 'Europe/Paris',"
+            . " 'Cliente', 'cliente@example.test', '2026-06-13 09:00:00.000', :created, :updated, :changed)",
+            ['created' => self::NOW, 'updated' => self::NOW, 'changed' => self::NOW],
+        );
+
+        return (int) $this->database->pdo()->lastInsertId();
+    }
+
+    /**
+     * Inserts one notification row with every column stated, so a test names only
+     * the field it is about.
+     *
+     * @param array<string, string|int|null> $overrides
+     */
+    private function insertJob(int $bookingId, array $overrides): void
+    {
+        $row = [
+            'key' => 'default.email.confirmation',
+            'channel' => 'email',
+            'type' => 'booking_confirmation',
+            'due' => '2026-06-15 08:00:00.000',
+            'next' => '2026-06-15 08:00:00.000',
+            'status' => 'pending',
+            'attempts' => 0,
+            'error' => null,
+            'sent_at' => null,
+            'lease_owner' => null,
+            'lease_expires' => null,
+        ];
+
+        foreach ($overrides as $field => $value) {
+            $row[$field] = $value;
+        }
+
+        $this->database->run(
+            'INSERT INTO notification_jobs ('
+            . ' idempotency_key, booking_id, channel, job_type, due_at_utc, next_attempt_at_utc,'
+            . ' status, attempts, last_error_code, sent_at_utc, lease_owner, lease_expires_at_utc,'
+            . ' created_at, updated_at, status_changed_at'
+            . ') VALUES ('
+            . ' :key, :booking, :channel, :type, :due, :next, :status, :attempts, :error,'
+            . ' :sentAt, :leaseOwner, :leaseExpires, :created, :updated, :changed)',
+            [
+                'key' => $row['key'],
+                'booking' => $bookingId,
+                'channel' => $row['channel'],
+                'type' => $row['type'],
+                'due' => $row['due'],
+                'next' => $row['next'],
+                'status' => $row['status'],
+                'attempts' => $row['attempts'],
+                'error' => $row['error'],
+                'sentAt' => $row['sent_at'],
+                'leaseOwner' => $row['lease_owner'],
+                'leaseExpires' => $row['lease_expires'],
+                'created' => self::NOW,
+                'updated' => self::NOW,
+                'changed' => self::NOW,
+            ],
+        );
+    }
+
     /** @return array<string, mixed> */
     private function column(string $table, string $column): array
     {
@@ -343,5 +759,92 @@ final class MigrationTest extends TestCase
             . ' WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t AND COLUMN_NAME = :c',
             ['t' => $table, 'c' => $column],
         ) ?? [];
+    }
+
+    /** @param \Closure(): mixed $operation */
+    private function expectConstraintFailure(\Closure $operation): void
+    {
+        try {
+            $operation();
+            self::fail('MySQL accepted a row that violates a Package 4.1 constraint.');
+        } catch (DatabaseException $exception) {
+            self::assertSame('A database statement failed.', $exception->getMessage());
+        }
+    }
+
+    // --- ESZ-084: rate_limit_buckets --------------------------------------
+
+    /**
+     * The limiter's table, and the two constraints that make it safe.
+     *
+     * The schema is the limiter's correctness, not a container for it: the key is
+     * a hash so the table holds nobody's address, and the expiry CHECK is what
+     * stops a row being swept while it is still refusing someone — which is the
+     * one way this table could hand out allowance it had already spent.
+     */
+    public function testTheRateLimitTableStoresAHashAndNeverAnIdentity(): void
+    {
+        $this->migrator()->migrate();
+
+        $columns = [];
+        foreach ($this->database->fetchAll('SHOW COLUMNS FROM rate_limit_buckets') as $column) {
+            $columns[(string) $column['Field']] = strtolower((string) $column['Type']);
+        }
+
+        self::assertSame(
+            ['bucket_key', 'scope', 'tat_ms', 'expires_at_ms'],
+            array_keys($columns),
+        );
+
+        // BINARY(32): a raw sha256, compared byte-exactly. Hex would double the
+        // index, and a text collation could make two different buckets share a row.
+        self::assertSame('binary(32)', $columns['bucket_key']);
+
+        // Numbers, not the VARCHAR timestamps the rest of this schema uses,
+        // because these two are compared arithmetically rather than for equality.
+        self::assertStringStartsWith('bigint', $columns['tat_ms']);
+        self::assertStringStartsWith('bigint', $columns['expires_at_ms']);
+    }
+
+    public function testARateLimitRowCannotExpireBeforeItStopsRefusing(): void
+    {
+        $this->migrator()->migrate();
+
+        $this->expectException(DatabaseException::class);
+
+        $this->database->run(
+            'INSERT INTO rate_limit_buckets (bucket_key, scope, tat_ms, expires_at_ms)'
+            . ' VALUES (:key, :scope, 2000, 1000)',
+            ['key' => hash('sha256', 'expiry', true), 'scope' => 'auth.login.address'],
+        );
+    }
+
+    public function testARateLimitRowCannotCarryAScopeOutsideTheFrozenShape(): void
+    {
+        $this->migrator()->migrate();
+
+        $this->expectException(DatabaseException::class);
+
+        // A NUL in a scope would make the hashed key ambiguous, so the CHECK
+        // constrains the shape rather than trusting the caller.
+        $this->database->run(
+            'INSERT INTO rate_limit_buckets (bucket_key, scope, tat_ms, expires_at_ms)'
+            . ' VALUES (:key, :scope, 1000, 2000)',
+            ['key' => hash('sha256', 'scope', true), 'scope' => 'Not A Valid Scope'],
+        );
+    }
+
+    public function testTheRateLimitKeyIsUniquePerBucket(): void
+    {
+        $this->migrator()->migrate();
+
+        $key = hash('sha256', 'unique', true);
+        $insert = 'INSERT INTO rate_limit_buckets (bucket_key, scope, tat_ms, expires_at_ms)'
+            . ' VALUES (:key, :scope, 1000, 2000)';
+
+        $this->database->run($insert, ['key' => $key, 'scope' => 'auth.login.address']);
+
+        $this->expectException(DatabaseException::class);
+        $this->database->run($insert, ['key' => $key, 'scope' => 'auth.login.address']);
     }
 }

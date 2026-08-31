@@ -347,6 +347,30 @@ Note that a few JSON Schema `pattern` values are ECMA-262 regexes (for example t
 public asset path pattern uses a `(?!\/)` lookahead). PCRE accepts these, but a
 consumer using a stricter regex dialect must confirm equivalence rather than assume it.
 
+### Patterns carry range when range is structural
+
+A `pattern` that only checks a *shape* pushes the real restriction into the semantic
+half, and then the same refusal is written twice in two dialects. Where the set of legal
+values is finite and expressible as a regex, the pattern spells it out.
+
+The worked example is civil time. `BOOKING_LOCAL_TIME_PATTERN` was `^\d{2}:\d{2}$`,
+which accepted `25:00` and `09:60`: both satisfied Zod, both satisfied the generated
+JSON Schema, both satisfied PHP's `StructuralValidator`, and both died in
+`AvailabilityWindow` — so `HH:MM` on the wire meant "two digits, a colon, two digits"
+and the type was weaker than the value it named. It is now
+`^([01][0-9]|2[0-3]):[0-5][0-9]$`, which accepts exactly `00:00`–`23:59`.
+
+This narrowed nothing that was ever valid; every previously accepted real time is
+unchanged on the wire. It also removed nothing from the domain. The range is the only
+thing a regex can decide; whether a window increases, whether a wall time exists on a
+given date, and which side of an autumn fold it falls on are still `BookingTimePolicy`'s
+to answer, and `AvailabilityWindow` still re-checks the range itself rather than
+trusting that a caller went through the schema.
+
+The rule generalises: put a constraint in the pattern when the pattern can express it
+completely, and leave the semantic layer the constraints that need a calendar, a
+timezone database, or the rest of the document.
+
 ---
 
 ## Part 3 — consumption status

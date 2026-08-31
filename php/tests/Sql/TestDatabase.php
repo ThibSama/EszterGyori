@@ -118,6 +118,59 @@ final class TestDatabase
         return new Database(self::settings());
     }
 
+    /**
+     * A second, equally disposable database — the clean target a restore proof
+     * needs (ESZ-083).
+     *
+     * Derived from `ESZTER_TEST_DB_DSN` by renaming the schema rather than being a
+     * variable of its own, so there is one thing to configure and no way to point
+     * the two halves of a restore test at two different servers by accident. The
+     * name keeps the `_test` suffix {@see connect()} insists on, because this is
+     * the database a restore proof empties and refills.
+     *
+     * Created on demand: a restore is only proved by restoring into somewhere that
+     * held nothing, and "nothing" has to include the schema.
+     */
+    public static function connectRestoreTarget(): Database
+    {
+        $settings = self::restoreTargetSettings();
+        $name = $settings->databaseName();
+
+        if ($name === null || !str_ends_with($name, '_test')) {
+            throw new \RuntimeException('The restore target database must also end in `_test`.');
+        }
+
+        // Created through the primary connection, which the suite has already
+        // established is disposable.
+        self::connect()->executeRaw(
+            'CREATE DATABASE IF NOT EXISTS `' . str_replace('`', '``', $name) . '`'
+            . ' CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci',
+            'create restore target',
+        );
+
+        return new Database($settings);
+    }
+
+    public static function restoreTargetSettings(): DatabaseSettings
+    {
+        $settings = self::settings();
+        $name = $settings->databaseName();
+
+        if ($name === null) {
+            throw new \RuntimeException('ESZTER_TEST_DB_DSN names no database.');
+        }
+
+        return new DatabaseSettings(
+            str_replace(
+                'dbname=' . $name,
+                'dbname=' . substr($name, 0, -\strlen('_test')) . '_restore_test',
+                $settings->dsn,
+            ),
+            $settings->username,
+            $settings->password,
+        );
+    }
+
     public static function migrationsDirectory(): string
     {
         return \dirname(__DIR__, 2) . '/migrations';
@@ -172,8 +225,23 @@ final class TestDatabase
     public static function truncateData(Database $database): void
     {
         $database->executeRaw('SET FOREIGN_KEY_CHECKS = 0', 'disable fk checks');
-        $database->executeRaw('TRUNCATE TABLE admin_sessions', 'truncate admin_sessions');
-        $database->executeRaw('TRUNCATE TABLE admin_accounts', 'truncate admin_accounts');
+        foreach (
+            [
+                'rate_limit_buckets',
+                'notification_jobs',
+                'bookings',
+                'booking_history',
+                'availability_exception_windows',
+                'availability_exceptions',
+                'availability_rules',
+                'booking_services',
+                'system_settings',
+                'admin_sessions',
+                'admin_accounts',
+            ] as $table
+        ) {
+            $database->executeRaw("TRUNCATE TABLE {$table}", "truncate {$table}");
+        }
         $database->executeRaw('SET FOREIGN_KEY_CHECKS = 1', 'enable fk checks');
     }
 

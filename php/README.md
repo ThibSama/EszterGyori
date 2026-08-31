@@ -47,14 +47,36 @@ contract artifacts), `docs/hetzner-target-architecture.md` (the target topology)
 | `GET \| POST \| DELETE /api/admin/media` | Package 3.3 (ESZ-036/037), done |
 | Login throttling | **Not built.** `docs/hetzner-target-architecture.md` §6 asks for it; ESZ-025 did not deliver it |
 | The `/admin` login form in the browser | Package 3.2 (ESZ-034), done — reads the anonymous session for CSRF, posts credentials to PHP, then enters `/admin` |
-| Booking, notifications | Later packages |
+| Booking schema/domain foundation | Package 4.1 (ESZ-040/041/042), done — no slots or HTTP/UI yet |
+| Weekly availability, replacing exceptions and dynamic slot engine | Package 4.2 (ESZ-043/044/045), done |
+| Booking availability/create/admin backend with transactional history | Package 4.3 (ESZ-046/047/048), done — no notifications |
+| Complete public booking flow at `/reservation` | Package 5.1 (ESZ-050–055), done — notifications remain separate |
+| Admin booking calendar and mutations | Package 6.1, done |
+| Weekly availability editor, date exceptions and the operational summary | Package 6.2 (ESZ-063/064/065), done — `PUT /api/admin/availability/weekly`, `PATCH …/exceptions`, `POST …/query` and `POST /api/admin/bookings/summary` |
+| Durable notification queue, cron runner and catch-up policy | Package 7.1 (ESZ-070/071/072), done — `notification_jobs`, `bin/run-notification-jobs.php`, durable leases, bounded retries and terminal stale-reminder skips |
+| Booking e-mail producers and production SMTP | Package 7.2 (ESZ-073/074), done — Symfony Mailer SMTP, typed escaped text/HTML templates, atomic create/move/cancel jobs and T−24h reminders. SMS is not implemented |
+| Deterministic production artifact, DB procedure and SMTP cron wiring | Package 8.1 (ESZ-080/081/082), done locally — see `docs/deployment-runbook.md`; live-host acceptance remains NOT RUN |
 
-Ten routes are registered: `/api/health`, `/api/content`, `/`, the three
+Twenty routes are registered: `/api/health`, `/api/content`, `/`, the three
 `/api/auth/*`, the three admin content paths (`/api/admin/content/draft` under both
 `GET` and `PUT`, plus `…/publish` and `…/reset`), and `/api/admin/media` under `GET`,
-`POST` and `DELETE`. No `/api` path is frozen at 404 any more; an unknown one still
+`POST` and `DELETE`, plus `/api/booking/services`, `/api/booking/availability`, `/api/bookings`,
+`/api/admin/bookings/query`, `/api/admin/bookings/move-availability`, `/api/admin/bookings` and —
+since Package 6.2 — `/api/admin/bookings/summary`, `/api/admin/availability/query`,
+`/api/admin/availability/weekly` and `/api/admin/availability/exceptions`. No `/api` path is
+frozen at 404 any more; an unknown one still
 answers the frozen structured JSON 404, asserted against `http-contract.json` by
 `tests/Http/HttpFoundationTest.php`.
+
+The three availability paths are split by what they *are*, not by what they touch.
+`/query` and `/summary` are reads: an authenticated session and no CSRF, because a
+token on a read only teaches callers to send one everywhere. `/weekly` is a `PUT`
+carrying the complete intended week, and that shape is the atomicity guarantee —
+there is one request to fail, so a refusal leaves the previously stored schedule
+rather than however far a sequence of per-row calls happened to get. `/exceptions`
+is a `PATCH` carrying a closed `close`/`open`/`remove` union, which is what keeps
+"closed" and "open with no windows" two different requests instead of the same one
+arrived at by accident.
 
 An unimplemented route stays unregistered on purpose: routing one before it is
 contracted would be a silent breaking change. That ordering has now been followed
@@ -83,6 +105,13 @@ request, and none of it is delegated to the shell.
 `contracts/generated/*.json` artifacts as data. Node is a build-time toolchain for
 regenerating them and nothing else.
 
+The production copy procedure is no longer an informal directory sketch. From the
+repository root, `npm run package:production` creates
+`dist/eszter-production.tar.gz`; `npm run verify:production-artifact` independently
+checks its manifest, isolation, locked production dependency set and deterministic
+archive. Database and exact Hetzner cron commands, permissions and live acceptance
+steps are in `docs/deployment-runbook.md`.
+
 ---
 
 ## Layout
@@ -94,19 +123,57 @@ php/
 ├── bin/
 │   ├── lint.php              php -l over every source file
 │   ├── static-analysis.php   PHPStan (two pins) + PSR-12
-│   └── sync-contracts.php    copy + verify contracts/generated/ for deployment
-├── config/config.example.php
-├── public/api/index.php      the ONLY web-reachable PHP file
+│   ├── sync-contracts.php    copy + verify contracts/generated/ for deployment
+│   └── run-notification-jobs.php  one notification cron tick (Package 7.1)
+├── config/
+│   ├── config.example.php       production template (copy outside the web root)
+│   └── config.development.php   non-secret repository-local public config
+├── public/
+│   ├── api/index.php            the ONLY production web-reachable PHP file
+│   └── router.php               PHP built-in-server adapter, development only
 ├── src/
 │   ├── Kernel.php            boot, handle, send
 │   ├── Config/               file-based configuration, fail-fast
 │   ├── Contract/             artifacts, structural + semantic validation, parity
 │   ├── Http/                 request, response, router, request ids, error catalog
 │   │   └── Endpoint/         GET /api/health, GET /api/content
+│   ├── Notification/         durable job queue, leases, cron runner, catch-up policy
 │   ├── Storage/              atomic JSON files, flock, content storage
 │   └── Support/              clock, canonical timestamps, JSON-lines logger
 └── tests/
 ```
+
+## Local PHP development server
+
+Prerequisites are Node/npm, PHP 8.2 or newer, and the locked Composer dependencies:
+
+```bash
+npm ci --prefix front
+composer install --working-dir=php --no-interaction
+```
+
+Then, from the repository root, run one command:
+
+```bash
+npm run php:serve
+```
+
+It rebuilds the static Next export, starts PHP's development server, and serves the
+site at <http://127.0.0.1:8080/>. The command uses the non-secret
+`config/config.development.php`; set `ESZTER_CONFIG` to another config file when local
+database-backed admin and booking routes are required.
+
+`public/router.php` is the built-in-server adapter for the production routing table.
+It exists because PHP's server does not read Apache `.htaccess`: `/` and `/api/*` are
+sent to the same `public/api/index.php` front controller used in production, existing
+files come from `front/out`, and exported/admin/404 rewrites follow
+`DocumentRootRouting`. Do not use bare `php -S … -t php/public`; that directory holds
+the PHP entry point and hardening files, not the exported site's `index.html`.
+
+The deterministic regression probe is `npm run php:smoke`. It expects an existing
+`front/out` (the complete `npm run validate` builds it first), starts the canonical
+server command on an ephemeral loopback port, exercises the public page, an asset,
+the health endpoint and both unknown-route contracts, then terminates the server.
 
 The repository layout and the Hetzner layout differ only in where the app root
 sits; `public/api/index.php` detects both, so deploying is a copy rather than a
@@ -312,6 +379,14 @@ php bin/provision-admin.php --config=config/config.php --email=her@example.com
 php bin/provision-admin.php --config=config/config.php --email=… --set-password
 php bin/provision-admin.php --config=config/config.php --email=… --disable
 
+# The notification cron tick (ESZ-071). Safe to overlap: two ticks cannot deliver
+# the same job, because the durable lease in `notification_jobs` — not a file lock —
+# is what arbitrates, and it does so across hosts.
+php bin/run-notification-jobs.php --config=config/config.php
+php bin/run-notification-jobs.php --config=config/config.php --batch=25
+# Development/test only; production refuses the no-network logging transport.
+php bin/run-notification-jobs.php --config=config/config.php --transport=logging
+
 cd ..
 npm run validate               # every gate, in policy order
 ```
@@ -325,9 +400,10 @@ export ESZTER_TEST_DB_PASSWORD=…
 
 vendor/bin/phpunit --testsuite sql-migrations
 vendor/bin/phpunit --testsuite sql-integration
+vendor/bin/phpunit --testsuite sql-notifications
 ```
 
-Without those variables both gates report NOT RUN naming the missing prerequisite,
+Without those variables all three gates report NOT RUN naming the missing prerequisite,
 which per `docs/v1-quality-gates.md` is never a pass. The suites refuse any database
 whose name does not end in `_test` — they drop and truncate tables, and a naming rule
 is a cheap way to make pointing them at something real impossible rather than merely

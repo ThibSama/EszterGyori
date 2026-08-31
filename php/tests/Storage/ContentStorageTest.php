@@ -140,7 +140,7 @@ final class ContentStorageTest extends TestCase
         $storage = $this->storage();
         $storage->initialize();
 
-        file_put_contents($storage->publishedPath(), str_repeat('x', ContentStorage::MAX_FILE_BYTES + 1));
+        file_put_contents($storage->publishedPath(), str_repeat('x', $storage->maxFileBytes() + 1));
 
         try {
             $storage->readPublished();

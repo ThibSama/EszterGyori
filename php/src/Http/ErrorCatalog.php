@@ -27,6 +27,8 @@ final class ErrorCatalog
     public const REVISION_CONFLICT = 'REVISION_CONFLICT';
     public const PAYLOAD_TOO_LARGE = 'PAYLOAD_TOO_LARGE';
     public const MEDIA_REFERENCED = 'MEDIA_REFERENCED';
+    public const SLOT_UNAVAILABLE = 'SLOT_UNAVAILABLE';
+    public const RATE_LIMITED = 'RATE_LIMITED';
     public const INVALID_CONFIGURATION = 'INVALID_CONFIGURATION';
     public const STORAGE_FAILURE = 'STORAGE_FAILURE';
     public const INTERNAL_ERROR = 'INTERNAL_ERROR';
