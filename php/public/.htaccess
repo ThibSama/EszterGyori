@@ -169,10 +169,9 @@ ErrorDocument 404 /404.html
     #                   ESZ-035's admin preview embeds this origin in a
     #                   same-origin iframe, and 'none' would break it.
     #
-    # Every source is 'self'. The site loads no third-party script,
-    # style, font or frame, and the two external URLs in the export are
-    # ordinary links a person clicks rather than subresources.
-    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; frame-src 'none'"
+    # Every subresource source remains same-origin. The sole frame the
+    # application intentionally loads is ESZ-035's own `/admin/preview`.
+    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; frame-src 'self'"
 
     # Powerful features this site never uses. Sent because the default
     # for most of them is "allow", so silence is a grant — and an
