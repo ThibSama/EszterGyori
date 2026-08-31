@@ -205,9 +205,8 @@ final class HtaccessRenderer
                 #                   ESZ-035's admin preview embeds this origin in a
                 #                   same-origin iframe, and 'none' would break it.
                 #
-                # Every source is 'self'. The site loads no third-party script,
-                # style, font or frame, and the two external URLs in the export are
-                # ordinary links a person clicks rather than subresources.
+                # Every subresource source remains same-origin. The sole frame the
+                # application intentionally loads is ESZ-035's own `/admin/preview`.
                 Header always set Content-Security-Policy "{$csp}"
 
                 # Powerful features this site never uses. Sent because the default
@@ -316,10 +315,12 @@ final class HtaccessRenderer
             "object-src 'none'",
             "base-uri 'self'",
             "form-action 'self'",
-            // 'self' rather than 'none': ESZ-035's admin preview embeds this origin
-            // in a same-origin iframe, and 'none' would break the editor's preview.
+            // Clickjacking protection concerns who may frame us. The preview needs
+            // the inverse direction too: this origin is allowed to frame itself and
+            // nothing else, so the editor can embed `/admin/preview` without opening
+            // any third-party frame source.
             "frame-ancestors 'self'",
-            "frame-src 'none'",
+            "frame-src 'self'",
         ]);
     }
 
