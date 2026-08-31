@@ -22,7 +22,7 @@ if (!Number.isInteger(port)) throw new Error("Could not reserve a local smoke-te
 let output = "";
 const child = spawn(
   "node",
-  ["scripts/serve-php.mjs", "--skip-build", `--host=${host}`, `--port=${port}`],
+  ["scripts/serve-php.mjs", "--skip-build", "--skip-bootstrap", `--host=${host}`, `--port=${port}`],
   { cwd: repoRoot, env: process.env, stdio: ["ignore", "pipe", "pipe"] },
 );
 for (const stream of [child.stdout, child.stderr]) {

@@ -14,10 +14,27 @@ const value = (name, fallback) =>
 const host = value("--host", "127.0.0.1");
 const port = value("--port", "8080");
 const skipBuild = args.has("--skip-build");
+const skipBootstrap = args.has("--skip-bootstrap");
+const developmentConfig = join(repoRoot, "php", "config", "config.development.php");
+const configuredPath = process.env.ESZTER_CONFIG ?? developmentConfig;
 
 if (!/^[A-Za-z0-9.:-]+$/.test(host) || !/^\d{1,5}$/.test(port) || Number(port) > 65535) {
   process.stderr.write("php:serve: invalid --host or --port value.\n");
   process.exit(2);
+}
+
+// The canonical development server is full-stack. An explicit ESZTER_CONFIG is
+// respected and never mutated; the project-owned development config bootstraps
+// MySQL and deterministic fixtures unless a caller deliberately opts out.
+if (!skipBootstrap && resolve(configuredPath) === resolve(developmentConfig)) {
+  process.stdout.write("php:serve: preparing the full development stack...\n");
+  const bootstrap = spawnSync("node", ["scripts/bootstrap-development.mjs", "--quiet"], {
+    cwd: repoRoot,
+    stdio: "inherit",
+    env: process.env,
+  });
+  if (bootstrap.error) throw bootstrap.error;
+  if (bootstrap.status !== 0) process.exit(bootstrap.status ?? 1);
 }
 
 if (!skipBuild) {
@@ -33,7 +50,7 @@ if (!skipBuild) {
 const required = [
   [join(repoRoot, "php", "vendor", "autoload.php"), "Composer dependencies (run `composer install --working-dir=php`)"],
   [join(repoRoot, "front", "out", "index.html"), "frontend export (run without `--skip-build`)"],
-  [join(repoRoot, "php", "config", "config.development.php"), "development configuration"],
+  [configuredPath, "application configuration"],
   [join(repoRoot, "php", "public", "router.php"), "development router"],
 ];
 
@@ -60,8 +77,7 @@ const server = spawn(
     cwd: repoRoot,
     env: {
       ...process.env,
-      ESZTER_CONFIG:
-        process.env.ESZTER_CONFIG ?? join(repoRoot, "php", "config", "config.development.php"),
+      ESZTER_CONFIG: configuredPath,
     },
     stdio: "inherit",
   },

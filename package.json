@@ -1,20 +1,19 @@
 {
-  "name": "eszter",
   "private": true,
   "scripts": {
-    "dev": "npm --prefix front run dev",
-    "build": "npm --prefix front run build",
-    "verify:export": "npm --prefix front run verify:export",
-    "lint": "npm --prefix front run lint",
-    "security:dependencies": "node scripts/audit-dependencies.mjs",
-    "acceptance:production": "node scripts/production-acceptance.mjs",
-    "validate": "node scripts/validate.mjs",
-    "package:production": "npm --prefix front run build && node scripts/build-production-artifact.mjs",
-    "verify:production-artifact": "node scripts/verify-production-artifact.mjs",
+    "build": "npm run build --prefix front",
+    "audit:dependencies": "node scripts/audit-dependencies.mjs",
+    "verify:export": "npm run verify:export --prefix front",
+    "artifact:production": "node scripts/build-production-artifact.mjs",
+    "artifact:verify": "node scripts/verify-production-artifact.mjs",
+    "dev:bootstrap": "node scripts/bootstrap-development.mjs",
+    "dev:down": "docker compose -f compose.dev.yml down",
+    "dev:reset": "node scripts/bootstrap-development.mjs --reset",
     "php:serve": "node scripts/serve-php.mjs",
     "php:smoke": "node scripts/smoke-local-php.mjs",
+    "php:smoke:full-stack": "node scripts/smoke-full-stack.mjs",
+    "acceptance:production": "node scripts/production-acceptance.mjs",
     "php:lint": "php php/bin/lint.php",
-    "php:stan": "php php/bin/static-analysis.php",
-    "php:test": "php/vendor/bin/phpunit -c php/phpunit.xml.dist"
+    "validate": "node scripts/validate.mjs"
   }
 }
