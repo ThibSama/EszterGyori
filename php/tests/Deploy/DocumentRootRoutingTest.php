@@ -19,21 +19,26 @@ use Eszter\Tests\TestEnvironment;
  * are actually likely: a rule added in the wrong position, a new path quietly
  * captured by the admin catch-all, or the API stopping being first.
  *
- * The file list mirrors a real `next build` under `trailingSlash: false`, because
+ * The path list mirrors a real `next build` under `trailingSlash: false`, because
  * the resolution of `/admin/login` depends entirely on whether the export emits
  * `admin/login.html` or `admin/login/index.html`. Getting that pairing wrong is
  * the classic static-hosting bug, and it only shows up on the host.
  */
 final class DocumentRootRoutingTest extends TestCase
 {
-    /** What `next build` puts in the document root. */
-    private const EXPORTED_FILES = [
+    /** Files and directories that `next build` puts in the document root. */
+    private const EXPORTED_PATHS = [
         'index.html',
         '404.html',
         'admin.html',
         'admin/login.html',
         'admin/preview.html',
         'reservation.html',
+        'reservation',
+        'reservation/__next.reservation.__PAGE__.txt',
+        'admin',
+        'admin/login',
+        'admin/preview',
         'robots.txt',
         'sitemap.xml',
         'manifest.webmanifest',
@@ -49,7 +54,7 @@ final class DocumentRootRoutingTest extends TestCase
     {
         return DocumentRootRouting::resolve(
             $path,
-            static fn (string $candidate): bool => \in_array($candidate, self::EXPORTED_FILES, true),
+            static fn (string $candidate): bool => \in_array($candidate, self::EXPORTED_PATHS, true),
         );
     }
 
@@ -59,6 +64,7 @@ final class DocumentRootRoutingTest extends TestCase
         $api = DocumentRootRouting::FRONT_CONTROLLER;
         $file = DocumentRootRouting::STATIC_FILE;
         $admin = DocumentRootRouting::ADMIN_SHELL;
+        $redirect = DocumentRootRouting::CANONICAL_REDIRECT;
 
         // path => [rule, target, why it matters]
         yield 'the site root is served by PHP' => ['/', 'public-page', $api];
@@ -89,6 +95,9 @@ final class DocumentRootRoutingTest extends TestCase
 
         yield 'the public reservation page' => [
             '/reservation', 'public-exported-page', $file,
+        ];
+        yield 'the implementation filename redirects to the canonical page' => [
+            '/reservation.html', 'canonical-public-page', $redirect,
         ];
         yield 'an unknown reservation subpath' => [
             '/reservation/creneaux', 'not-found', DocumentRootRouting::NOT_FOUND,
@@ -135,12 +144,19 @@ final class DocumentRootRoutingTest extends TestCase
 
     public function testTheReservationPageIsAnExactStaticExportRoute(): void
     {
+        self::assertContains('reservation', self::EXPORTED_PATHS);
+        self::assertContains('reservation.html', self::EXPORTED_PATHS);
         self::assertSame('reservation.html', $this->resolve('/reservation')['file']);
         self::assertSame(DocumentRootRouting::STATIC_FILE, $this->resolve('/reservation')['target']);
+        self::assertSame('reservation', $this->resolve('/reservation.html')['file']);
+        self::assertSame(
+            DocumentRootRouting::CANONICAL_REDIRECT,
+            $this->resolve('/reservation.html')['target'],
+        );
         self::assertSame(DocumentRootRouting::NOT_FOUND, $this->resolve('/reservation/creneaux')['target']);
     }
 
-    public function testAStaticAssetOutranksEveryPathRule(): void
+    public function testStaticAssetsRemainDirectlyAddressableAfterApplicationRoutes(): void
     {
         // The other half of the ordering above, stated so the precedence is a
         // decision on the record rather than an accident of line order.
@@ -149,6 +165,10 @@ final class DocumentRootRoutingTest extends TestCase
         self::assertSame(
             'existing-file',
             $this->resolve('/_next/static/chunks/main-abc123.js')['rule'],
+        );
+        self::assertSame(
+            'existing-file',
+            $this->resolve('/reservation/__next.reservation.__PAGE__.txt')['rule'],
         );
     }
 

@@ -104,38 +104,46 @@ final class HtaccessRenderer
                 #    rule 3 could serve the file.
                 RewriteRule ^index\\.html$ / [R=301,L]
 
-                # 3. A real file or directory is served as-is: hashed _next/ assets,
-                #    media, icons, robots.txt.
+                # 3. The `.html` spelling of a declared public page redirects to its
+                #    canonical extensionless URL. THE_REQUEST keeps the internal
+                #    rewrite in rule 4 from redirecting on a second per-directory pass.
+                RewriteCond %{THE_REQUEST} "\\s/+({$publicPages})\\.html(?:[?\\s])" [NC]
+                RewriteRule ^({$publicPages})\.html$ /$1 [R=301,L,NE]
+
+                # 4. Exact exported public pages omit `.html` in their URL and need
+                #    no server renderer. This precedes the filesystem checks because
+                #    Next also emits a same-named directory of RSC payloads.
+                RewriteCond %{DOCUMENT_ROOT}/$1.html -f
+                RewriteRule ^({$publicPages})$ $1.html [L]
+
+                # 5. /admin/<page> -> admin/<page>.html when the export has one. It
+                #    likewise precedes filesystem checks because Next emits matching
+                #    payload directories for these application routes.
+                RewriteCond %{DOCUMENT_ROOT}/\$1.html -f
+                RewriteRule ^(admin(?:/.*)?)\$ \$1.html [L]
+
+                # 6. A real file or directory is served as-is: hashed _next/ assets,
+                #    route payloads, media, icons and robots.txt.
                 #
                 #    The root is excluded explicitly. `%{REQUEST_FILENAME}` for `/`
                 #    is the document root itself, which *is* a directory, so without
                 #    this condition the rule would match and end the chain — and with
                 #    DirectoryIndex disabled the site root would 403 instead of
-                #    reaching rule 7.
+                #    reaching rule 8.
                 RewriteCond %{REQUEST_URI} !^/$
                 RewriteCond %{REQUEST_FILENAME} -f [OR]
                 RewriteCond %{REQUEST_FILENAME} -d
                 RewriteRule ^ - [L]
 
-                # 4. Exact exported public pages omit `.html` in their URL and need
-                #    no server renderer. Subpaths are deliberately not captured.
-                RewriteCond %{DOCUMENT_ROOT}/$1.html -f
-                RewriteRule ^({$publicPages})$ $1.html [L]
-
-                # 5. /admin/<page> -> admin/<page>.html when the export has one, so a
-                #    refresh or a direct link lands on the right screen.
-                RewriteCond %{DOCUMENT_ROOT}/\$1.html -f
-                RewriteRule ^(admin(?:/.*)?)\$ \$1.html [L]
-
-                # 6. Any other /admin path -> the shell, so a client-side route
+                # 7. Any other /admin path -> the shell, so a client-side route
                 #    survives a refresh instead of 404-ing.
                 RewriteRule ^admin(/.*)?\$ admin.html [L]
 
-                # 7. The site root -> the front controller, which injects the
+                # 8. The site root -> the front controller, which injects the
                 #    published content into the exported index.html (ESZ-021).
                 RewriteRule ^\$ api/index.php [QSA,L]
 
-                # 8. Anything else is the 404 document. Unknown /api paths never
+                # 9. Anything else is the 404 document. Unknown /api paths never
                 #    reach here: rule 1 already claimed them, and they answer the
                 #    frozen JSON envelope instead.
                 RewriteRule ^ - [L,R=404]

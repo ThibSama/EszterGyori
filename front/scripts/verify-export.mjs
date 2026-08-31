@@ -124,6 +124,17 @@ for (const file of expectedFiles) {
   check(`out/${file.replace(/\\/g, "/")} was exported`, existsSync(join(outDir, file)));
 }
 
+// Next 16 emits route payload directories alongside extensionless-route HTML.
+// Routing must model both entries: the directory must never shadow the page.
+const reservationPayload = join("reservation", "__next.reservation.__PAGE__.txt");
+check(
+  "out/reservation/ payload directory accompanies reservation.html",
+  existsSync(join(outDir, "reservation"))
+    && statSync(join(outDir, "reservation")).isDirectory()
+    && existsSync(join(outDir, reservationPayload)),
+  `Expected out/${reservationPayload.replace(/\\/g, "/")} from the real static export.`,
+);
+
 // ── 3. Nothing can ask for server behaviour ─────────────────────────────────
 const sourceFiles = walk(join(frontRoot, "app")).map((path) => path.replace(/\\/g, "/"));
 

@@ -51,6 +51,14 @@ if ($route['target'] === DocumentRootRouting::FRONT_CONTROLLER) {
     return true;
 }
 
+if ($route['target'] === DocumentRootRouting::CANONICAL_REDIRECT) {
+    $query = $_SERVER['QUERY_STRING'] ?? '';
+    $suffix = is_string($query) && $query !== '' ? '?' . $query : '';
+    header('Location: /' . $route['file'] . $suffix, true, 301);
+
+    return true;
+}
+
 if ($route['rule'] === 'existing-file') {
     // The server was started with front/out as its document root.
     return false;

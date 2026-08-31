@@ -32,6 +32,9 @@ final class DocumentRootRouting
     /** A file that exists on disk, served by Apache with no rewriting. */
     public const STATIC_FILE = 'static:file';
 
+    /** A non-canonical exported-page filename redirected to its public URL. */
+    public const CANONICAL_REDIRECT = 'redirect:canonical';
+
     /** An exported admin page, or the shell when the deep link has no file. */
     public const ADMIN_SHELL = 'static:admin-shell';
 
@@ -57,17 +60,17 @@ final class DocumentRootRouting
                 'target' => self::FRONT_CONTROLLER,
             ],
             [
-                'id' => 'existing-file',
+                'id' => 'canonical-public-page',
                 'description' =>
-                    'A request that names a real file or directory is served as-is: hashed _next/ '
-                    . 'assets, media, icons, robots.txt.',
-                'target' => self::STATIC_FILE,
+                    'The implementation filename for a declared public page redirects to its '
+                    . 'extensionless canonical URL.',
+                'target' => self::CANONICAL_REDIRECT,
             ],
             [
                 'id' => 'public-exported-page',
                 'description' =>
                     'A declared public static page such as /reservation resolves to its exported '
-                    . '.html file without requiring a Node runtime.',
+                    . '.html file before a same-named Next payload directory can capture it.',
                 'target' => self::STATIC_FILE,
             ],
             [
@@ -76,6 +79,13 @@ final class DocumentRootRouting
                     'An admin path with an exported page (/admin/login -> admin/login.html) serves '
                     . 'that page, so a refresh or a direct link lands on the right screen.',
                 'target' => self::ADMIN_SHELL,
+            ],
+            [
+                'id' => 'existing-file',
+                'description' =>
+                    'After exact application routes, a request that names a real file or directory '
+                    . 'is served as-is: hashed _next/ assets, RSC payloads, media and icons.',
+                'target' => self::STATIC_FILE,
             ],
             [
                 'id' => 'admin-deep-link',
@@ -118,11 +128,15 @@ final class DocumentRootRouting
 
         $relative = ltrim($path, '/');
 
-        if ($relative !== '' && $fileExists($relative)) {
-            return self::outcome('existing-file', self::STATIC_FILE, $relative);
-        }
-
         foreach (self::PUBLIC_EXPORTED_PATHS as $publicPage) {
+            if ($path === $publicPage . '.html') {
+                return self::outcome(
+                    'canonical-public-page',
+                    self::CANONICAL_REDIRECT,
+                    ltrim($publicPage, '/'),
+                );
+            }
+
             if ($path === $publicPage) {
                 $candidate = $relative . '.html';
 
@@ -138,7 +152,13 @@ final class DocumentRootRouting
             if ($fileExists($candidate)) {
                 return self::outcome('admin-page', self::ADMIN_SHELL, $candidate);
             }
+        }
 
+        if ($relative !== '' && $fileExists($relative)) {
+            return self::outcome('existing-file', self::STATIC_FILE, $relative);
+        }
+
+        if ($path === '/admin' || str_starts_with($path, '/admin/')) {
             return self::outcome('admin-deep-link', self::ADMIN_SHELL, 'admin.html');
         }
 

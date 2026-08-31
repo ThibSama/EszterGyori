@@ -4,6 +4,7 @@
   "scripts": {
     "dev": "npm --prefix front run dev",
     "build": "npm --prefix front run build",
+    "verify:export": "npm --prefix front run verify:export",
     "lint": "npm --prefix front run lint",
     "security:dependencies": "node scripts/audit-dependencies.mjs",
     "acceptance:production": "node scripts/production-acceptance.mjs",

@@ -64,6 +64,28 @@ try {
     throw new Error("GET / did not return the expected Eszter public page.");
   }
 
+  const reservation = await fetch(`${baseUrl}/reservation`);
+  const reservationBody = await reservation.text();
+  if (reservation.status !== 200) throw new Error(`GET /reservation returned ${reservation.status}.`);
+  if (
+    !reservation.headers.get("content-type")?.startsWith("text/html")
+    || !reservationBody.includes('id="reservation-main"')
+    || !reservationBody.includes("Choisissez votre prestation et votre créneau")
+  ) {
+    throw new Error("GET /reservation did not return the reservation interface.");
+  }
+
+  const canonical = await fetch(`${baseUrl}/reservation.html`, { redirect: "manual" });
+  if (canonical.status !== 301 || canonical.headers.get("location") !== "/reservation") {
+    throw new Error(`GET /reservation.html did not redirect canonically (${canonical.status}).`);
+  }
+
+  const reservationAssetPath = "/reservation/__next.reservation.__PAGE__.txt";
+  const reservationAsset = await fetch(`${baseUrl}${reservationAssetPath}`);
+  if (reservationAsset.status !== 200 || (await reservationAsset.arrayBuffer()).byteLength === 0) {
+    throw new Error(`Reservation asset ${reservationAssetPath} did not resolve successfully.`);
+  }
+
   const assetPath = /(?:src|href)="(\/_next\/static\/[^"?]+\.(?:css|js|woff2))/.exec(homeBody)?.[1];
   if (!assetPath) throw new Error("Could not find a generated frontend asset in GET /.");
   const asset = await fetch(`${baseUrl}${assetPath}`);
@@ -88,8 +110,10 @@ try {
   }
 
   process.stdout.write(
-    `php local smoke: 6 checks passed at ${baseUrl}; `
-      + `GET / 200, ${assetPath} 200, GET /api/health 200, public/API unknown routes 404, no PHP fatal.\n`,
+    `php local smoke: 9 checks passed at ${baseUrl}; `
+      + `GET / 200, GET /reservation 200, GET /reservation.html 301, `
+      + `${reservationAssetPath} 200, ${assetPath} 200, GET /api/health 200, `
+      + `public/API unknown routes 404, no PHP fatal.\n`,
   );
 } catch (error) {
   process.stderr.write(`php local smoke: FAIL: ${error.message}\n${output}\n`);
