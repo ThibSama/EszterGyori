@@ -1,0 +1,21 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "title": "AdminBookingsSummaryRequest",
+  "description": "Authenticated operational summary request with a bounded upcoming horizon.",
+  "x-eszter-io": "input",
+  "x-eszter-contentSchemaVersion": 1,
+  "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "upcomingDays": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 90
+    }
+  },
+  "required": [
+    "upcomingDays"
+  ],
+  "additionalProperties": false
+}

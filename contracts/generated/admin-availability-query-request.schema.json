@@ -1,0 +1,25 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "title": "AdminAvailabilityQueryRequest",
+  "description": "Authenticated read of the canonical weekly rules plus the exceptions in one local date window.",
+  "x-eszter-io": "input",
+  "x-eszter-contentSchemaVersion": 1,
+  "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "fromDate": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "untilDate": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    }
+  },
+  "required": [
+    "fromDate",
+    "untilDate"
+  ],
+  "additionalProperties": false
+}

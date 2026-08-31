@@ -28,7 +28,7 @@ test("public metadata uses the production canonical origin and French copy", () 
   assert.equal(siteMetadata.openGraph?.locale, "fr_FR");
   assert.equal(siteMetadata.openGraph?.url, SITE_URL);
   assert.equal(siteMetadata.openGraph?.siteName, "Eszter Gyori");
-  assert.equal(siteMetadata.twitter?.card, "summary_large_image");
+  assert.match(JSON.stringify(siteMetadata.twitter), /"card":"summary_large_image"/);
   assert.doesNotMatch(SITE_DESCRIPTION, /levres|Resultats|pres de Lille/);
 });
 
@@ -60,7 +60,7 @@ test("manifest contains the public identity and valid local icon references", ()
   );
 });
 
-test("robots and sitemap expose only the public page", () => {
+test("robots and sitemap expose only the two public pages", () => {
   const robotsResult = robots();
   const sitemapResult = sitemap();
 
@@ -72,7 +72,10 @@ test("robots and sitemap expose only the public page", () => {
     },
   ]);
   assert.equal(robotsResult.sitemap, `${SITE_URL}sitemap.xml`);
-  assert.deepEqual(sitemapResult.map((entry) => entry.url), [SITE_URL]);
+  assert.deepEqual(sitemapResult.map((entry) => entry.url), [
+    SITE_URL,
+    new URL("reservation", SITE_URL).toString(),
+  ]);
   assert.doesNotMatch(JSON.stringify(sitemapResult), /admin|api|localhost/);
 });
 

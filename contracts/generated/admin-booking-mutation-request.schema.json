@@ -1,0 +1,118 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "title": "AdminBookingMutationRequest",
+  "description": "Closed update, move or cancellation command.",
+  "x-eszter-io": "input",
+  "x-eszter-contentSchemaVersion": 1,
+  "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "update"
+        },
+        "reference": {
+          "type": "string",
+          "pattern": "^bk_[0-9a-f]{32}$"
+        },
+        "customerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "customerEmail": {
+          "type": "string",
+          "maxLength": 254,
+          "format": "email",
+          "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "customerPhone": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "customerNote": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 2000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "reference",
+        "customerName",
+        "customerEmail",
+        "customerPhone",
+        "customerNote"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "move"
+        },
+        "reference": {
+          "type": "string",
+          "pattern": "^bk_[0-9a-f]{32}$"
+        },
+        "startsAtUtc": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "reference",
+        "startsAtUtc"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "cancel"
+        },
+        "reference": {
+          "type": "string",
+          "pattern": "^bk_[0-9a-f]{32}$"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 500
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "reference",
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

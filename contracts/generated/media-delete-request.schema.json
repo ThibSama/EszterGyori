@@ -1,0 +1,20 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "title": "MediaDeleteRequest",
+  "description": "Body of DELETE /api/admin/media. The id is a closed pattern, so a path fragment or a traversal sequence is a schema failure rather than something a filesystem call has to survive.",
+  "x-eszter-io": "input",
+  "x-eszter-contentSchemaVersion": 1,
+  "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^med_[0-9a-f]{32}$"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "additionalProperties": false
+}

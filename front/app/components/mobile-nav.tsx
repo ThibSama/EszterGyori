@@ -88,27 +88,22 @@ export function MobileNav({ content }: MobileNavProps) {
               className="fixed top-20 left-4 right-4 z-40 transition-all duration-300 opacity-100 translate-y-0 pointer-events-auto">
               <div className="glass-card bg-white/80 backdrop-blur-2xl border border-white/60 rounded-2xl shadow-[0_16px_48px_rgba(0,0,0,0.12)] p-6">
                 <nav className="flex flex-col gap-1" aria-label="Navigation mobile">
-                  {content.links.map((link, index) =>
-                    index === content.links.length - 1 ? (
-                      <a
-                        key={link.id}
-                        ref={index === 0 ? firstLinkRef : undefined}
-                        href={link.href}
-                        onClick={closeAndRestoreFocus}
-                        className="mt-3 text-center text-sm font-medium px-5 py-3 bg-warm-800 text-porcelain rounded-full hover:bg-warm-700 transition-all duration-300">
-                        {link.label}
-                      </a>
-                    ) : (
-                      <a
-                        key={link.id}
-                        ref={index === 0 ? firstLinkRef : undefined}
-                        href={link.href}
-                        onClick={closeAndRestoreFocus}
-                        className="text-base text-warm-600 hover:text-warm-800 transition-colors duration-300 py-3 px-2 rounded-lg hover:bg-white/50">
-                        {link.label}
-                      </a>
-                    ),
-                  )}
+                  {content.links.map((link, index) => (
+                    <a
+                      key={link.id}
+                      ref={index === 0 ? firstLinkRef : undefined}
+                      href={link.href}
+                      onClick={closeAndRestoreFocus}
+                      className="text-base text-warm-600 hover:text-warm-800 transition-colors duration-300 py-3 px-2 rounded-lg hover:bg-white/50">
+                      {link.label}
+                    </a>
+                  ))}
+                  <a
+                    href="/reservation"
+                    onClick={closeAndRestoreFocus}
+                    className="mt-3 text-center text-sm font-medium px-5 py-3 bg-warm-800 text-porcelain rounded-full hover:bg-warm-700 transition-all duration-300">
+                    Réserver un rendez-vous
+                  </a>
                 </nav>
               </div>
             </div>

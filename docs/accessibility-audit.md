@@ -269,3 +269,101 @@ Validation runtime authentifiee de `/admin` non effectuee faute d'identifiants f
 - Pas de validation sur appareils physiques.
 - Pas d'audit complet de toutes les combinaisons de palettes personnalisees.
 - L'admin authentifie et l'iframe preview n'ont pas ete testes en runtime authentifie faute d'identifiants.
+
+---
+
+# Package 8.2 — automated coverage for the booking surfaces (ESZ-085)
+
+The audit above covers the public site and the content editor as they stood before
+Packages 5.x–7.x. Those packages added the first screens on this site that are
+**forms with server-decided errors** rather than pages of copy — the reservation
+flow, the booking calendar, the availability editor, the operations summary — and
+that is where the remaining accessibility risk now lives: a field whose error is
+announced to nobody, a step change that moves focus nowhere, a control that is a
+`<div>` with a click handler.
+
+ESZ-085 strengthens the automated coverage over those surfaces and fixes two real
+defects it surfaced. It does not redesign any accepted UI.
+
+## Two defects found and fixed
+
+**The month calendar claimed an ARIA pattern it did not implement.** It carried
+`role="grid"` with `role="columnheader"` and `role="gridcell"` children and **no
+`role="row"` between them**. That is not a grid: those roles require rows, and
+without them a screen reader is told about a structure that is not there. The grid
+role additionally promises arrow-key navigation between cells, which the component
+does not implement.
+
+Claiming a pattern and then not honouring it is worse for someone relying on it
+than claiming nothing, because they navigate as though the promise held. The roles
+are gone and the layout is unchanged: the CSS grid still lays out seven columns,
+each day is still a `<button>`, and Tab still reaches every one of them in reading
+order.
+
+What is added is the part that was actually missing. Each day button now carries an
+accessible name — the full Paris-local date and how many appointments it holds —
+instead of announcing a bare number followed by up to three truncated customer
+names. The count matters as much as the date: "how busy is the 24th?" is the
+question the month view exists to answer, and it was the one thing the visual
+layout conveyed instantly and the text conveyed not at all. Selection is
+`aria-current="date"` rather than `aria-selected`, which is not valid on a plain
+button.
+
+**A focus outline was removed with no visible replacement.** The operations
+summary's error notice is a programmatic focus target (`tabIndex={-1}`) carrying
+`focus:outline-none` and no `focus:ring-*`. Focus was moved there on failure with
+nothing on screen to show it had moved. A focus ring was added.
+
+## What the tests now assert
+
+`front/tests/accessibility.test.ts`:
+
+- **Every reservation field** is labelled with `htmlFor`, reports its own validity
+  with `aria-invalid`, and is described by its own error with `aria-describedby`. A
+  message in a paragraph below the input is an error only a sighted user has.
+- **`type` and `autoComplete`** are present and correct. These are accessibility
+  features, not conveniences: they are what gives a phone the right keyboard and
+  what lets someone with a motor impairment fill the form from stored values
+  instead of typing it.
+- **`noValidate` is deliberate and paired.** The browser's own validation bubbles
+  are unstyled, inconsistently announced, vanish on the next interaction and are in
+  the browser's language rather than the site's. Turning them off is correct *only
+  because* the fields carry `aria-invalid` and `aria-describedby` instead, so the
+  two are asserted together.
+- **A rejected submit moves focus**, and a step change moves focus. `aria-live`
+  alone leaves a keyboard or screen-reader user on the button they just pressed,
+  with the form apparently unchanged.
+- **Selection is conveyed by state, not colour** — `aria-pressed` on slot and
+  service choices — and every interactive control is a real `<button>`. A
+  `<div onClick>` is neither focusable nor operable from a keyboard, and its absence
+  is asserted across all five components.
+- **Admin editors attach server-decided errors to the row that broke**, with
+  `aria-invalid`, `aria-describedby`, `role="alert"` and a focus move. The
+  availability editor's whole value is that attribution; if it is only visual, the
+  person who most needs it does not get it.
+- **Focus rings are never removed without replacement.** For each admin component
+  the count of `focus:outline-none` must not exceed the count of `focus:ring-*`.
+- **Asynchronous views announce themselves** — `aria-busy` during the wait,
+  `role="status"` or `role="alert"` for the outcome, the difference being whether
+  the person needs to be interrupted.
+- **The calendar claims no pattern it does not implement**, asserted as the absence
+  of the four roles removed above, so the defect cannot return unnoticed.
+
+## What this proves, and what it does not
+
+These are **source assertions**, and they are exact about their limits. They prove
+the attribute is there, which is what regresses when a component is refactored.
+They do not prove a screen reader says the right thing, that the reading order is
+sensible, or that a keyboard path through the reservation flow is comfortable.
+
+Nothing in this repository can prove those. There is no browser runner and none was
+added, because a fabricated audit result is worse than an absent one.
+`docs/v1-quality-gates.md` keeps Stage 9 at NOT RUN, and NOT RUN is never a pass.
+
+## Still deployment-owned
+
+- One pass with a real screen reader (VoiceOver or NVDA) over the reservation flow
+  and the availability editor.
+- Keyboard-only completion of a booking, end to end, on a real browser.
+- Contrast verification of any custom palette an editor sets, since the appearance
+  block is editorial and the audit above covers only the canonical colours.

@@ -1,0 +1,49 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "title": "PublicBookableServicesResponse",
+  "description": "Active canonical booking services without editorial duplication.",
+  "x-eszter-io": "output",
+  "x-eszter-contentSchemaVersion": 1,
+  "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "brows",
+              "eyeliner",
+              "lips",
+              "freckles"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "durationMinutes": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 480
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "durationMinutes"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "services"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,40 @@
+# GENERATED FILE - do not edit by hand. Run: php php/bin/generate-htaccess.php
+#
+# docs/hetzner-target-architecture.md §7: an upload that lands here must
+# be inert, whatever it claims to be.
+#
+# A separate file rather than a block in the root .htaccess because
+# `<Directory>` is only legal in server config; used in .htaccess it makes
+# Apache refuse the directory outright.
+#
+# `Require all denied` rather than `php_flag engine off`: the flag needs
+# mod_php, and on a PHP-FPM host it is not merely ineffective but an
+# "Invalid command" 500. Refusing to serve the file at all is both
+# portable and stronger — it does not depend on which SAPI is running.
+
+Options -Indexes -ExecCGI
+
+# Only a managed asset is addressable here. Everything else — a
+# staging file mid-ingest, a stray copy, anything at all — is denied
+# by name rather than by extension, so the rule cannot be got past
+# by finding a spelling the deny-list forgot.
+<FilesMatch "^(?!med_[0-9a-f]{32}\.(?:jpg|png|webp)$).*$">
+    Require all denied
+</FilesMatch>
+
+<FilesMatch "\.(?i:php[0-9]?|phtml|phar|inc)$">
+    Require all denied
+</FilesMatch>
+
+RemoveHandler .php .phtml .phar
+RemoveType .php .phtml .phar
+
+<IfModule mod_headers.c>
+    # A managed asset is immutable: its name carries a random id
+    # minted once at ingest and never reused, and the ingest never
+    # rewrites a file it has already published. Replacing an image
+    # means a new id and a new URL, so these can be cached forever.
+    Header always set Cache-Control "public, max-age=31536000, immutable"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Content-Disposition "inline"
+</IfModule>

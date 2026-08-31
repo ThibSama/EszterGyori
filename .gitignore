@@ -7,10 +7,21 @@
 front/.next/
 front/out/
 
-# API build output
-API/dist/
-API/data/
+# contract package build output
 contracts/dist/
+
+# deterministic production deployment output
+/dist/
+
+# PHP backend
+php/vendor/
+php/.phpunit.cache/
+php/data/
+php/var/
+# Deploy-time copy of contracts/generated/, produced by php/bin/sync-contracts.php.
+php/contracts/
+# Real configuration, never committed (config.example.php is).
+php/config/config.php
 
 # logs
 *.log

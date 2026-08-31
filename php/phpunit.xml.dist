@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+         cacheDirectory=".phpunit.cache"
+         defaultTestSuite="eszter"
+         failOnRisky="true"
+         failOnWarning="true"
+         beStrictAboutOutputDuringTests="true"
+         displayDetailsOnTestsThatTriggerWarnings="true"
+         displayDetailsOnTestsThatTriggerErrors="true">
+  <testsuites>
+    <!--
+      The default suite: every test that runs on a bare checkout, and the one a
+      bare `phpunit` runs (see `defaultTestSuite` above — without it PHPUnit runs
+      *every* declared suite, which would drag the SQL ones in and make the
+      `php:unit` gate depend on a database server).
+
+      The directories are listed one by one rather than as `tests` with an
+      `<exclude>`, so this suite's membership is stated rather than derived by
+      subtraction. A new directory is then absent until someone adds it, which is
+      visible in a diff, instead of present until someone remembers to exclude it,
+      which is not.
+    -->
+    <testsuite name="eszter">
+      <directory>tests/Auth</directory>
+      <directory>tests/Backup</directory>
+      <directory>tests/Booking</directory>
+      <directory>tests/Config</directory>
+      <directory>tests/Contract</directory>
+      <directory>tests/Deploy</directory>
+      <directory>tests/Http</directory>
+      <directory>tests/Media</directory>
+      <directory>tests/Notification</directory>
+      <directory>tests/Security</directory>
+      <directory>tests/Storage</directory>
+      <directory>tests/Support</directory>
+    </testsuite>
+
+    <!--
+      ESZ-023. Both suites need ESZTER_TEST_DB_DSN pointing at a disposable MySQL
+      database whose name ends in `_test`; without it every test in them skips and
+      `scripts/validate.mjs` reports the gate as NOT RUN, which is never a pass.
+      They are separate suites because they are separate gates: `sql:migrations`
+      proves the schema can be built, `sql:integration` proves the repositories
+      work against the schema it built.
+    -->
+    <testsuite name="sql-migrations">
+      <file>tests/Sql/MigrationTest.php</file>
+    </testsuite>
+    <testsuite name="sql-integration">
+      <file>tests/Sql/SqlIntegrationTest.php</file>
+    </testsuite>
+
+    <!--
+      ESZ-070/071/072. Its own suite for the same reason as the two above: it is
+      its own gate. The notification queue is where a claim, a lease and a retry
+      have to hold against real InnoDB row locking, and running it separately
+      means a failure names the queue rather than "SQL".
+    -->
+    <testsuite name="sql-notifications">
+      <file>tests/Sql/NotificationSqlTest.php</file>
+    </testsuite>
+
+    <!--
+      ESZ-084. Its own suite, and its own gate, because it is the only one here
+      that must NOT run inside a transaction: a rate-limit charge is deliberately
+      non-transactional, so wrapping it in one would hide the property the suite
+      exists to prove. Keeping it separate stops a future "wrap everything in a
+      transaction" change from silently defeating it.
+    -->
+    <testsuite name="sql-rate-limits">
+      <file>tests/Sql/RateLimiterSqlTest.php</file>
+    </testsuite>
+
+    <!--
+      ESZ-083. The restore proof, and its own gate because a backup that has never
+      been restored is a hypothesis. It needs two disposable databases — the source
+      and a clean target — both derived from ESZTER_TEST_DB_DSN, and like the
+      rate-limit suite it must not run inside a transaction: it runs migrations,
+      whose DDL commits implicitly on MySQL.
+    -->
+    <testsuite name="sql-backup-restore">
+      <file>tests/Sql/BackupRestoreSqlTest.php</file>
+    </testsuite>
+  </testsuites>
+  <source>
+    <include>
+      <directory>src</directory>
+    </include>
+  </source>
+</phpunit>

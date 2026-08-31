@@ -236,6 +236,11 @@ function ServicesSection({
                     className="inline-block text-sm font-medium text-sage-600 hover:text-sage-500 transition-colors duration-300 group-hover:translate-x-1 transition-transform">
                     {item.ctaLabel}
                   </a>
+                  <a
+                    href={`/reservation?service=${item.id}`}
+                    className="ml-5 inline-block text-sm font-medium text-warm-800 underline decoration-sage-300 underline-offset-4 transition-colors hover:text-sage-600">
+                    Réserver →
+                  </a>
                 </div>
               </GlassCard>
             </Reveal>
@@ -449,17 +454,40 @@ function AtmosphericLayer() {
   );
 }
 
+/**
+ * Where the `--site-*` custom properties come from.
+ *
+ * `element` writes them as an inline style on this wrapper. That is what the
+ * admin preview needs: it re-renders on every keystroke, and the palette has to
+ * follow the editor's state immediately.
+ *
+ * `document` writes nothing, leaving the properties to the
+ * `<style id="__ESZTER_APPEARANCE__">` block in `<head>`. That is what the public
+ * page needs, and the difference is not cosmetic. PHP injects that block, so the
+ * published palette is already correct when the first pixel is painted — before
+ * React has run at all. An inline style here would override it with whatever the
+ * hydration pass believes the appearance to be, which is the *default* palette,
+ * producing exactly the flash of wrong colour the injection exists to avoid.
+ */
+export type AppearanceSource = "element" | "document";
+
 export function SitePreview({
   content,
   disableRevealAnimations = false,
+  appearanceSource = "element",
 }: {
   content: SiteContent;
   disableRevealAnimations?: boolean;
+  appearanceSource?: AppearanceSource;
 }) {
   return (
     <div
       className="site-preview flex flex-col min-h-screen relative"
-      style={createSiteAppearanceVariables(content.appearance)}>
+      style={
+        appearanceSource === "element"
+          ? createSiteAppearanceVariables(content.appearance)
+          : undefined
+      }>
       <a href="#main-content" className="skip-link">
         Aller au contenu principal
       </a>

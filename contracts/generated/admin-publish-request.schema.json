@@ -1,0 +1,21 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "title": "AdminPublishRequest",
+  "description": "Body of POST /api/admin/content/publish. Carries the precondition and no content: publish takes what is stored, not what the caller sends.",
+  "x-eszter-io": "input",
+  "x-eszter-contentSchemaVersion": 1,
+  "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "expectedRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  },
+  "required": [
+    "expectedRevision"
+  ],
+  "additionalProperties": false
+}

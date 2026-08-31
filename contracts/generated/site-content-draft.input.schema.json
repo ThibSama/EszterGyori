@@ -1,0 +1,792 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "title": "SiteContentDraftV1 (input)",
+  "description": "Browser-local admin draft envelope.",
+  "x-eszter-io": "input",
+  "x-eszter-contentSchemaVersion": 1,
+  "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "number",
+      "const": 1
+    },
+    "savedAt": {
+      "type": "string"
+    },
+    "content": {
+      "type": "object",
+      "properties": {
+        "appearance": {
+          "type": "object",
+          "properties": {
+            "palette": {
+              "type": "object",
+              "properties": {
+                "background": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "surface": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "text": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "mutedText": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "primary": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "secondary": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "warmAccent": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                }
+              },
+              "required": [
+                "background",
+                "surface",
+                "text",
+                "mutedText",
+                "primary",
+                "secondary",
+                "warmAccent"
+              ],
+              "additionalProperties": false
+            },
+            "sectionTints": {
+              "type": "object",
+              "properties": {
+                "navigation": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "hero": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "reassurance": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "services": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "process": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "gallery": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "about": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "contact": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                },
+                "footer": {
+                  "type": "string",
+                  "pattern": "^#[0-9A-Fa-f]{6}$"
+                }
+              },
+              "required": [
+                "navigation",
+                "hero",
+                "reassurance",
+                "services",
+                "process",
+                "gallery",
+                "about",
+                "contact",
+                "footer"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "palette",
+            "sectionTints"
+          ],
+          "additionalProperties": false
+        },
+        "navigation": {
+          "type": "object",
+          "properties": {
+            "brandLabel": {
+              "type": "string"
+            },
+            "links": {
+              "minItems": 5,
+              "maxItems": 5,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "href": {
+                    "type": "string",
+                    "pattern": "^#[A-Za-z0-9_-]+$"
+                  }
+                },
+                "required": [
+                  "id",
+                  "label",
+                  "href"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "menuOpenLabel": {
+              "type": "string"
+            },
+            "menuCloseLabel": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "brandLabel",
+            "links",
+            "menuOpenLabel",
+            "menuCloseLabel"
+          ],
+          "additionalProperties": false
+        },
+        "hero": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "object",
+              "properties": {
+                "prefix": {
+                  "type": "string"
+                },
+                "emphasized": {
+                  "type": "string"
+                },
+                "suffix": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "prefix",
+                "emphasized",
+                "suffix"
+              ],
+              "additionalProperties": false
+            },
+            "description": {
+              "type": "string"
+            },
+            "primaryCta": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "href": {
+                  "type": "string",
+                  "pattern": "^#[A-Za-z0-9_-]+$"
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "href"
+              ],
+              "additionalProperties": false
+            },
+            "secondaryCta": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "href": {
+                  "type": "string",
+                  "pattern": "^#[A-Za-z0-9_-]+$"
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "href"
+              ],
+              "additionalProperties": false
+            },
+            "visual": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "src": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^\\/(?!\\/)[A-Za-z0-9._~!$&'()*+,;=:@/-]+$"
+                    },
+                    {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "alt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "src",
+                "alt"
+              ],
+              "additionalProperties": false
+            },
+            "badgeLabel": {
+              "type": "string"
+            },
+            "instagramAriaLabel": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "description",
+            "primaryCta",
+            "secondaryCta",
+            "visual",
+            "badgeLabel",
+            "instagramAriaLabel"
+          ],
+          "additionalProperties": false
+        },
+        "reassurance": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "minItems": 4,
+              "maxItems": 4,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "enum": [
+                      "natural-result",
+                      "morphological-analysis",
+                      "hygiene-precision",
+                      "personal-support"
+                    ]
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "title",
+                  "description"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "items"
+          ],
+          "additionalProperties": false
+        },
+        "services": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "items": {
+              "minItems": 4,
+              "maxItems": 4,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "enum": [
+                      "brows",
+                      "eyeliner",
+                      "lips",
+                      "freckles"
+                    ]
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "ctaLabel": {
+                    "type": "string"
+                  },
+                  "visual": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "src": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^\\/(?!\\/)[A-Za-z0-9._~!$&'()*+,;=:@/-]+$"
+                          },
+                          {
+                            "type": "string",
+                            "format": "uri"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "alt": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "src",
+                      "alt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "visualKind": {
+                    "type": "string",
+                    "enum": [
+                      "brows",
+                      "eyeliner",
+                      "lips",
+                      "freckles"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "title",
+                  "description",
+                  "ctaLabel",
+                  "visual",
+                  "visualKind"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "title",
+            "items"
+          ],
+          "additionalProperties": false
+        },
+        "process": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "steps": {
+              "minItems": 4,
+              "maxItems": 4,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "enum": [
+                      "exchange-analysis",
+                      "drawing-validation",
+                      "procedure",
+                      "healing-touch-up"
+                    ]
+                  },
+                  "number": {
+                    "type": "string",
+                    "enum": [
+                      "01",
+                      "02",
+                      "03",
+                      "04"
+                    ]
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "number",
+                  "title",
+                  "description"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "title",
+            "steps"
+          ],
+          "additionalProperties": false
+        },
+        "gallery": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "items": {
+              "minItems": 5,
+              "maxItems": 5,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "enum": [
+                      "natural-brows",
+                      "healed-brows",
+                      "delicate-eyeliner",
+                      "powder-lips",
+                      "freckles"
+                    ]
+                  },
+                  "caption": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "visual": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "src": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^\\/(?!\\/)[A-Za-z0-9._~!$&'()*+,;=:@/-]+$"
+                          },
+                          {
+                            "type": "string",
+                            "format": "uri"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "alt": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "src",
+                      "alt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "visualKind": {
+                    "type": "string",
+                    "enum": [
+                      "beforeAfterBrows",
+                      "healedBrows",
+                      "eyeliner",
+                      "lips",
+                      "freckles"
+                    ]
+                  },
+                  "featured": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "caption",
+                  "label",
+                  "visual",
+                  "visualKind"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "instagramCta": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "href": {
+                  "type": "string",
+                  "format": "uri"
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "href"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "title",
+            "items",
+            "instagramCta"
+          ],
+          "additionalProperties": false
+        },
+        "about": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "paragraphs": {
+              "minItems": 3,
+              "maxItems": 3,
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "portrait": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "src": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^\\/(?!\\/)[A-Za-z0-9._~!$&'()*+,;=:@/-]+$"
+                    },
+                    {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "alt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "src",
+                "alt"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "title",
+            "paragraphs",
+            "portrait"
+          ],
+          "additionalProperties": false
+        },
+        "contact": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "instagramCta": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "href": {
+                  "type": "string",
+                  "format": "uri"
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "href"
+              ],
+              "additionalProperties": false
+            },
+            "emailCta": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "href": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "href"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "title",
+            "description",
+            "instagramCta",
+            "emailCta"
+          ],
+          "additionalProperties": false
+        },
+        "footer": {
+          "type": "object",
+          "properties": {
+            "copyrightName": {
+              "type": "string"
+            },
+            "copyrightSuffix": {
+              "type": "string"
+            },
+            "links": {
+              "minItems": 2,
+              "maxItems": 2,
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "href": {
+                        "type": "string",
+                        "format": "uri"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "label",
+                      "href"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "href": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "label",
+                      "href"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "copyrightName",
+            "copyrightSuffix",
+            "links"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "navigation",
+        "hero",
+        "reassurance",
+        "services",
+        "process",
+        "gallery",
+        "about",
+        "contact",
+        "footer"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "savedAt",
+    "content"
+  ],
+  "additionalProperties": false
+}

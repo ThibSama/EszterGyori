@@ -1,0 +1,173 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "contentSchemaVersion": 1,
+  "httpContractVersion": 2,
+  "description": "Index and integrity digests for the language-neutral contract artifacts.",
+  "consumerGuidance": [
+    "Validate structure with the *.schema.json documents (JSON Schema 2020-12).",
+    "Then enforce every rule in semantic-rules.json; JSON Schema alone is insufficient.",
+    "Prove compliance by replaying parity-corpus.json and http-contract.json."
+  ],
+  "artifacts": [
+    {
+      "file": "admin-availability-exception-mutation-request.schema.json",
+      "sha256": "6ea9270b394fbcfc986ce05ee5c6a0acc5ab33522f670a181c7f43681073aeb6"
+    },
+    {
+      "file": "admin-availability-exception-response.schema.json",
+      "sha256": "2d61a3a8e69ffe602b6c4a2f7c6ca16ceeb7d9045cf099688a1df11691ebb948"
+    },
+    {
+      "file": "admin-availability-query-request.schema.json",
+      "sha256": "199a7ca3fd2f2885088bb592263babf5af66379ac5ffb67493587d3deeb4d908"
+    },
+    {
+      "file": "admin-availability-response.schema.json",
+      "sha256": "0dc85a6c3116425b2255bfdb2106504ee0768bbde0829ec655d337d3aeb2a40a"
+    },
+    {
+      "file": "admin-availability-weekly-replace-request.schema.json",
+      "sha256": "9a36b51e137cfa5f1b7090669b619c2ddd2f56734178bd6a62ca04d445ae9ae7"
+    },
+    {
+      "file": "admin-availability-weekly-response.schema.json",
+      "sha256": "21f85c36c3008f5e163dff059d42c01d0d7a7ccdf6ed3d8e77db116cef33b483"
+    },
+    {
+      "file": "admin-booking-move-availability-request.schema.json",
+      "sha256": "bee664d7912a4eab2852b827df30f3d28bac18dd2815d098820821ae52042e04"
+    },
+    {
+      "file": "admin-booking-mutation-request.schema.json",
+      "sha256": "26c28c38ead79c562e65c372e8a249aa41ff9584f02cb1237463f44a8fd9dda2"
+    },
+    {
+      "file": "admin-booking-response.schema.json",
+      "sha256": "09a45dfea37f92b25ef74432334f54c7933747d7c02594c0b2d6f55f18979c67"
+    },
+    {
+      "file": "admin-bookings-query-request.schema.json",
+      "sha256": "3b924c806fc57b5d627ca4aae7f1465f95193d5ffbc1a79a2891046c1947a24c"
+    },
+    {
+      "file": "admin-bookings-response.schema.json",
+      "sha256": "0a4a76205ecef73cf302fe5673290f2b686f0a260c067ddf9a0c55e90be1a247"
+    },
+    {
+      "file": "admin-bookings-summary-request.schema.json",
+      "sha256": "716c5d0662cfcbe69293891f817534270dd450262edcee0c2e87ce719d86cf52"
+    },
+    {
+      "file": "admin-bookings-summary-response.schema.json",
+      "sha256": "8a093cb283524811a895c12271fe6d0de1e1315938bd8b617a294bd6aeca569b"
+    },
+    {
+      "file": "admin-draft-save-request.schema.json",
+      "sha256": "860e62aa2bc46dee2637a1ac7bb7a76fcd7fa0f07829e95b6b67429a228e753b"
+    },
+    {
+      "file": "admin-publish-request.schema.json",
+      "sha256": "74d6b7fa3afa88f75645395000ef9feea3e56a42ae409017d1aa9767183a0277"
+    },
+    {
+      "file": "admin-reset-request.schema.json",
+      "sha256": "51da22aff75d0a0c0c3138ae2996e5c8fe41fcd6807743a42445bb42565d28da"
+    },
+    {
+      "file": "auth-session-response.schema.json",
+      "sha256": "cdc3f3a886432ddae362fbd3ed38d1be484459134431132471adc06149dc6be9"
+    },
+    {
+      "file": "booking-availability-request.schema.json",
+      "sha256": "98936d4c848c0426e7a539d29ffe97f572a63c65616c78b400c48bb980fd049f"
+    },
+    {
+      "file": "booking-availability-response.schema.json",
+      "sha256": "8a1f2afba35185d806476e1c577f49d180e955df9365b319c4f873a2c54eba5d"
+    },
+    {
+      "file": "booking-domain.json",
+      "sha256": "b8613dc8cfd234192a77ae3beb7ea89fd9de6e42f63bf4ae0db2691cdeabc479"
+    },
+    {
+      "file": "error-envelope.schema.json",
+      "sha256": "0503db2fcda9d7929483841dd1ef41cb75545db46f18748e45f7c0bf7bbaae65"
+    },
+    {
+      "file": "health-response.schema.json",
+      "sha256": "4f018f1db612e8cccd351d8e655b9f89c3d2649775fb579cb836a66fcab0216d"
+    },
+    {
+      "file": "http-contract.json",
+      "sha256": "c89f9992f59bdecf5f1e4760480c42ae745e01ca5b4bc7c33fec85d32ba2fe2c"
+    },
+    {
+      "file": "login-request.schema.json",
+      "sha256": "0dddcd0fcd39d2a8da309eb800f2d319d25352088195e3dfc537d70917c3f9df"
+    },
+    {
+      "file": "media-delete-request.schema.json",
+      "sha256": "63368a41cbb54492fcc594e954f78ead918979a177edec79964bd6d5f27be459"
+    },
+    {
+      "file": "media-library-index.schema.json",
+      "sha256": "590871fd7f0f2a33a6ebbe9dc6af3d24b37360fcd7300dafef235841b960938a"
+    },
+    {
+      "file": "media-library-response.schema.json",
+      "sha256": "03b2f7d6731035015f293cb1ce0927f07a1fad60f31a0879c573beacbf451476"
+    },
+    {
+      "file": "media-upload-response.schema.json",
+      "sha256": "69e7ed5c8b821e6d3307dfbf7e5e86bda0544616ac3bc9bf3668817cd2212374"
+    },
+    {
+      "file": "parity-corpus.json",
+      "sha256": "9eb6a4c2f04222c8bf1c8733c817f42b0fa6c49b72cd901a805ea0ace2f8d27f"
+    },
+    {
+      "file": "public-bookable-services-response.schema.json",
+      "sha256": "16c70f60c00714bec614563864bcf0c3276a150262d0064eb678dd1884f12994"
+    },
+    {
+      "file": "public-booking-create-request.schema.json",
+      "sha256": "2b938e7ea3ecbd9ae8c78f0f7321d1717008acaf83eab7fcd5ec05bcac82c3cf"
+    },
+    {
+      "file": "public-booking-response.schema.json",
+      "sha256": "bbfd3edb0c4d505e82b1e92f3b1bcce090b6cb6afe8b3e4c1563c68b9dbcaf8f"
+    },
+    {
+      "file": "published-content-envelope.input.schema.json",
+      "sha256": "165dbf7f257afdebb89ac064391e372a49a88e94fb8690c3fa1a84cb8d85515d"
+    },
+    {
+      "file": "published-content-envelope.output.schema.json",
+      "sha256": "7f4e358bded6007ee34f9e241bad67b48ea0fcf2fde03aabc346ad49a331670b"
+    },
+    {
+      "file": "semantic-rules.json",
+      "sha256": "953f61ab1e5aa97f9d83aaedda7cd7c674df0da2abf25b41c401cdb7655adf48"
+    },
+    {
+      "file": "server-draft-envelope.input.schema.json",
+      "sha256": "acffe1cd4bb5434b503258deff76cf961c63488f1c1866f8d849dec32647bfa4"
+    },
+    {
+      "file": "server-draft-envelope.output.schema.json",
+      "sha256": "cd4ab7bb2e66524885367aa8809f2c244edcc7b206733a44b00d185d6d8ea9ea"
+    },
+    {
+      "file": "site-content-draft.input.schema.json",
+      "sha256": "85b13bee3fcc2fa1ae8c78805f8caff853289491508f9a5e323c1467a5697e93"
+    },
+    {
+      "file": "site-content.input.schema.json",
+      "sha256": "6638c3b20b77c72ac7c5fc4d14ef6e7978d75a3b4fecd737db2c3042166f92c4"
+    },
+    {
+      "file": "site-content.output.schema.json",
+      "sha256": "9c8d7277b246287682d4ce60f88fd0cfae3b84a1604e29218330ae908f8af01d"
+    }
+  ]
+}

@@ -9,58 +9,67 @@ function readAppFile(...segments: string[]): string {
   return readFileSync(join(appRoot, ...segments), "utf8");
 }
 
-test("admin local draft notice explains browser-only storage and public state", () => {
+test("admin notice explains server-backed drafts and the separate publish step", () => {
   const source = readAppFile("components", "admin", "content-editor.tsx");
 
-  assert.match(source, /Brouillon enregistré uniquement sur cet appareil/);
-  assert.match(source, /dans ce navigateur uniquement/);
-  assert.match(source, /Le site public n&apos;est pas modifié/);
-  assert.match(source, /exportez le fichier JSON/);
-  assert.match(source, /suppression des données du navigateur/);
-  assert.match(source, /navigation privée/);
+  assert.match(source, /Brouillon enregistré sur le serveur/);
+  assert.match(source, /conservé pour\s*\n?\s*tous les appareils/);
+  assert.match(source, /Publier est une action distincte/);
+  assert.match(source, /secours/);
+  // The pre-ESZ-034 promise that the browser was the only place a draft lived is
+  // no longer true, and leaving the sentence behind would be the worst outcome of
+  // this package: an admin trusting a warning that no longer describes anything.
+  assert.doesNotMatch(source, /Brouillon enregistré uniquement sur cet appareil/);
+  assert.doesNotMatch(source, /les brouillons sont conservés dans ce navigateur uniquement/);
 });
 
-test("admin state summary separates changes, device draft and public website", () => {
+test("admin state summary separates unsaved, server draft, public and local backup", () => {
   const source = readAppFile("components", "admin", "content-editor.tsx");
 
   assert.match(source, /Modifications/);
-  assert.match(source, /Brouillon sur cet appareil/);
+  assert.match(source, /Brouillon serveur/);
   assert.match(source, /Site public/);
-  assert.match(source, /Inchangé/);
-  assert.match(source, /Aucun brouillon enregistré sur cet appareil/);
+  assert.match(source, /Sauvegarde locale/);
+  assert.match(source, /getServerDraftState\(draft\.revision, draft\.updatedAt\)/);
+  assert.match(source, /getPublishedState\(draft\.publishedRevision, draft\.publishedAt\)/);
+  assert.match(source, /ADMIN_DRAFT_FRESHNESS_LABELS\[freshness\]/);
+  // "Site public: Inchangé" was a constant because nothing could change it. It is
+  // now a read of the published revision, and a hard-coded answer would be a lie.
   assert.doesNotMatch(source, /<span className="block font-medium text-warm-800">\s*Clé locale\s*<\/span>/);
 });
 
-test("admin action labels avoid publication wording and identify JSON backup", () => {
+test("admin action labels name the server draft, publication and the local backup apart", () => {
   const source = readAppFile("components", "admin", "content-editor.tsx");
 
-  assert.match(source, /Enregistrer sur cet appareil/);
+  assert.match(source, /Enregistrer le brouillon/);
+  assert.match(source, />\s*Publier\s*</);
+  assert.match(source, /Restaurer le contenu publié/);
+  assert.match(source, /Sauvegarder sur cet appareil/);
+  assert.match(source, /Restaurer la sauvegarde locale/);
   assert.match(source, /Exporter une sauvegarde JSON/);
   assert.match(source, /Importer un fichier JSON/);
-  assert.match(source, /Restaurer le contenu d&apos;origine/);
-  assert.match(source, /Supprimer le brouillon de cet appareil/);
+  assert.match(source, /Supprimer la sauvegarde locale/);
   assert.match(source, /Sauvegarde portable : fichier JSON/);
-  assert.doesNotMatch(source, />\s*Publier\s*</);
 });
 
-test("import, export, reset and delete messages preserve local-only semantics", () => {
-  const editorSource = readAppFile("components", "admin", "content-editor.tsx");
-  const resetSource = readAppFile("lib", "admin-content-reset.ts");
+test("import, export and backup messages keep the server draft authoritative", () => {
+  const source = readAppFile("components", "admin", "content-editor.tsx");
 
-  assert.match(editorSource, /Sauvegarde JSON exportée/);
-  assert.match(editorSource, /Enregistrez-le sur cet appareil/);
-  assert.match(editorSource, /Le site public restera inchangé/);
-  assert.match(editorSource, /Brouillon supprimé de cet appareil/);
-  assert.match(resetSource, /Le site public reste inchangé/);
+  assert.match(source, /Sauvegarde JSON exportée/);
+  assert.match(source, /Enregistrez-le sur le serveur pour le conserver/);
+  assert.match(source, /le brouillon du serveur fait foi/);
+  assert.match(source, /Le brouillon du serveur ne sera pas modifié tant que vous n’enregistrez pas/);
+  assert.match(source, /Sauvegarde locale supprimée de cet appareil/);
 });
 
-test("technical storage key remains available only in secondary details", () => {
+test("technical details name the storage key and deny storing session secrets", () => {
   const source = readAppFile("components", "admin", "content-editor.tsx");
 
   assert.match(source, /<details/);
   assert.match(source, /Informations techniques/);
   assert.match(source, /SITE_CONTENT_DRAFT_STORAGE_KEY/);
   assert.match(source, /break-all/);
+  assert.match(source, /Aucun identifiant de session ni jeton de sécurité/);
 });
 
 test("admin preview exposes phone, tablet and desktop modes", () => {

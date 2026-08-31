@@ -1,0 +1,34 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "title": "HealthResponse",
+  "description": "Body of a 200 GET /api/health.",
+  "x-eszter-io": "output",
+  "x-eszter-contentSchemaVersion": 1,
+  "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "const": "ok"
+    },
+    "service": {
+      "type": "string",
+      "const": "eszter-api"
+    },
+    "contentSchemaVersion": {
+      "type": "number",
+      "const": 1
+    },
+    "timestamp": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "status",
+    "service",
+    "contentSchemaVersion",
+    "timestamp"
+  ],
+  "additionalProperties": false
+}

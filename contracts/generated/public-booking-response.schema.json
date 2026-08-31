@@ -1,0 +1,43 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "title": "PublicBookingResponse",
+  "description": "Opaque booking confirmation without customer data.",
+  "x-eszter-io": "output",
+  "x-eszter-contentSchemaVersion": 1,
+  "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "reference": {
+      "type": "string",
+      "pattern": "^bk_[0-9a-f]{32}$"
+    },
+    "serviceKey": {
+      "type": "string",
+      "enum": [
+        "brows",
+        "eyeliner",
+        "lips",
+        "freckles"
+      ]
+    },
+    "state": {
+      "type": "string",
+      "const": "confirmed"
+    },
+    "startsAtUtc": {
+      "type": "string"
+    },
+    "endsAtUtc": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "reference",
+    "serviceKey",
+    "state",
+    "startsAtUtc",
+    "endsAtUtc"
+  ],
+  "additionalProperties": false
+}
