@@ -14,7 +14,10 @@ declare(strict_types=1);
 use Eszter\Deploy\DocumentRootRouting;
 
 $repositoryRoot = \dirname(__DIR__, 2);
-$exportRoot = $repositoryRoot . '/front/out';
+// The adapter normally serves the built export; an explicit override lets an
+// isolated proof point the same routing surface at a scratch document root
+// (ESZ-133). Unset or empty, the development default is unchanged.
+$exportRoot = getenv('ESZTER_EXPORT_ROOT') ?: $repositoryRoot . '/front/out';
 $autoload = $repositoryRoot . '/php/vendor/autoload.php';
 
 if (!is_file($autoload)) {

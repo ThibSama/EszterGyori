@@ -393,4 +393,219 @@ final class ConfigurationTest extends TestCase
 
         self::assertSame($this->root . '/data/content', $config->contentDir);
     }
+
+    /** @return array<string, mixed> */
+    private function absolutePaths(): array
+    {
+        $raw = $this->valid();
+        $raw['paths'] = [
+            'content' => $this->root . '/data/content',
+            'tmp' => $this->root . '/var/tmp',
+            'locks' => $this->root . '/data/locks',
+            'log' => $this->root . '/var/log',
+            'contracts' => '/absolute/contracts',
+            'mediaOriginals' => $this->root . '/data/media-originals',
+            'public' => $this->root . '/public_html',
+        ];
+
+        return $raw;
+    }
+
+    /**
+     * ESZ-133: every one of the five private runtime paths is refused when it
+     * is exactly the document root. The error names the offending key.
+     */
+    public function testEveryPrivatePathEqualToTheDocumentRootIsRefused(): void
+    {
+        foreach (['content', 'tmp', 'locks', 'log', 'mediaOriginals'] as $key) {
+            $raw = $this->absolutePaths();
+            $raw['paths'][$key] = $this->root . '/public_html';
+
+            try {
+                Configuration::fromArray($raw, $this->root);
+                self::fail("paths.{$key} equal to the document root was accepted");
+            } catch (ConfigurationException $exception) {
+                self::assertSame(["paths.{$key}"], array_column($exception->issues(), 'path'));
+                self::assertStringContainsString('document root', $exception->getMessage());
+            }
+        }
+    }
+
+    /** ESZ-133: a private path directly or deeply beneath public is refused. */
+    public function testPrivatePathsDirectlyOrDeeplyBeneathTheDocumentRootAreRefused(): void
+    {
+        foreach (
+            [
+                'content' => '/public_html/content',
+                'tmp' => '/public_html/var/tmp',
+                'locks' => '/public_html/data/locks',
+                'log' => '/public_html/var/log/app',
+                'mediaOriginals' => '/public_html/data/media-originals/x/y/z',
+            ] as $key => $suffix
+        ) {
+            $raw = $this->absolutePaths();
+            $raw['paths'][$key] = $this->root . $suffix;
+
+            try {
+                Configuration::fromArray($raw, $this->root);
+                self::fail("paths.{$key} beneath the document root was accepted");
+            } catch (ConfigurationException $exception) {
+                self::assertSame(["paths.{$key}"], array_column($exception->issues(), 'path'));
+            }
+        }
+    }
+
+    /**
+     * ESZ-133: relative, `.`/`..` and mixed-separator forms that resolve to a
+     * location beneath public are refused after the same canonicalization the
+     * paths themselves receive.
+     */
+    public function testRelativeDotAndSeparatorFormsResolvingBeneathPublicAreRefused(): void
+    {
+        foreach (
+            [
+                // Relative to the base directory.
+                'public_html/data/content',
+                // Explicit current-directory segments.
+                './public_html/./data/content',
+                // Traversal that still lands inside public.
+                'public_html/../public_html/data/content',
+                // Repeated and mixed separators.
+                "public_html//data///content",
+                "public_html\\data\\content",
+            ] as $form
+        ) {
+            $raw = $this->valid();
+            $raw['paths']['public'] = $this->root . '/public_html';
+            $raw['paths']['content'] = $form;
+
+            try {
+                Configuration::fromArray($raw, $this->root);
+                self::fail("content form {$form} resolving beneath public was accepted");
+            } catch (ConfigurationException $exception) {
+                self::assertSame(['paths.content'], array_column($exception->issues(), 'path'));
+            }
+        }
+    }
+
+    /** ESZ-133: containment is path-component aware, not string-prefix aware. */
+    public function testNeighbouringPrefixesRemainValid(): void
+    {
+        foreach (
+            [
+                'content' => '/public_html2/content',
+                'tmp' => '/public-html/tmp',
+                'log' => '/srv/public-old/log',
+                'mediaOriginals' => '/public_html_extra/media-originals',
+            ] as $key => $suffix
+        ) {
+            $raw = $this->absolutePaths();
+            $raw['paths'][$key] = $this->root . $suffix;
+
+            $config = Configuration::fromArray($raw, $this->root);
+
+            self::assertSame($this->root . $suffix, $config->{$this->propertyFor($key)});
+        }
+    }
+
+    /** ESZ-133: an existing symlink alias into the real document root is refused. */
+    public function testASymlinkAliasIntoTheRealDocumentRootIsRefused(): void
+    {
+        if (!function_exists('symlink')) {
+            self::markTestSkipped('symlink() is not available on this platform.');
+        }
+
+        mkdir($this->root . '/public_html', 0o700, true);
+        mkdir($this->root . '/public_html/data', 0o700, true);
+        symlink($this->root . '/public_html', $this->root . '/alias-to-public');
+
+        $raw = $this->absolutePaths();
+        $raw['paths']['content'] = $this->root . '/alias-to-public/data';
+
+        try {
+            Configuration::fromArray($raw, $this->root);
+            self::fail('a symlink alias into the document root was accepted');
+        } catch (ConfigurationException $exception) {
+            self::assertSame(['paths.content'], array_column($exception->issues(), 'path'));
+            self::assertStringContainsString('real path', $exception->getMessage());
+        }
+    }
+
+    /** ESZ-133: the standard sibling layout beside the document root stays valid. */
+    public function testPrivateSiblingsBesideTheDocumentRootRemainValid(): void
+    {
+        $config = Configuration::fromArray($this->absolutePaths(), $this->root);
+
+        self::assertSame($this->root . '/data/content', $config->contentDir);
+        self::assertSame($this->root . '/var/tmp', $config->tmpDir);
+        self::assertSame($this->root . '/data/locks', $config->lockDir);
+        self::assertSame($this->root . '/var/log', $config->logDir);
+        self::assertSame($this->root . '/data/media-originals', $config->mediaOriginalsDir);
+        self::assertSame($this->root . '/public_html', $config->publicDir);
+    }
+
+    /** ESZ-133: the committed development topology remains valid. */
+    public function testTheDevelopmentTopologyRemainsValid(): void
+    {
+        $path = TestEnvironment::repositoryRoot() . '/php/config/config.development.php';
+        /** @var array<string, mixed> $raw */
+        $raw = require $path;
+
+        $config = Configuration::fromArray($raw, \dirname($path));
+
+        self::assertSame('development', $config->environment);
+        self::assertStringEndsWith('/data/content', $config->contentDir);
+        self::assertStringEndsWith('/var/log', $config->logDir);
+        self::assertStringEndsWith('/front/out', $config->publicDir);
+    }
+
+    /**
+     * ESZ-133: the managed-media area stays `<public>/media` — the one
+     * web-reachable exception — and is not a private path. A *private* path
+     * pointing at it is still refused, because the exception belongs to the
+     * media pipeline, not to any private key.
+     */
+    public function testMediaPublicDirStaysTheOnlyWebReachableException(): void
+    {
+        $config = Configuration::fromArray($this->absolutePaths(), $this->root);
+
+        self::assertSame($this->root . '/public_html/media', $config->mediaPublicDir());
+
+        $raw = $this->absolutePaths();
+        $raw['paths']['log'] = $this->root . '/public_html/media';
+
+        try {
+            Configuration::fromArray($raw, $this->root);
+            self::fail('a private path inside the managed-media area was accepted');
+        } catch (ConfigurationException $exception) {
+            self::assertSame(['paths.log'], array_column($exception->issues(), 'path'));
+        }
+    }
+
+    /**
+     * ESZ-133: `contracts` is deliberately not part of the private-path list —
+     * its artifacts are build inputs copied into the deployment — so it may sit
+     * under the document root without tripping the topology refusal.
+     */
+    public function testContractsBeneathTheDocumentRootRemainsAcceptedByDesign(): void
+    {
+        $raw = $this->absolutePaths();
+        $raw['paths']['contracts'] = $this->root . '/public_html/contracts';
+
+        $config = Configuration::fromArray($raw, $this->root);
+
+        self::assertSame($this->root . '/public_html/contracts', $config->contractsDir);
+    }
+
+    private function propertyFor(string $key): string
+    {
+        return match ($key) {
+            'content' => 'contentDir',
+            'tmp' => 'tmpDir',
+            'locks' => 'lockDir',
+            'log' => 'logDir',
+            'mediaOriginals' => 'mediaOriginalsDir',
+            default => throw new \LogicException("no property for {$key}"),
+        };
+    }
 }

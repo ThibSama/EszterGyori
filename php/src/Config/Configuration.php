@@ -144,6 +144,25 @@ final class Configuration
         // find out by serving an original rather than by failing to boot.
         $mediaOriginalsDir = self::path($paths, 'mediaOriginals', $baseDir, $issues);
 
+        // ESZ-133. The five private runtime locations are refused when they are
+        // equal to or contained beneath the document root, lexically and (when
+        // the directories exist) by resolved real path. Reported alongside the
+        // other problems so one deploy attempt still surfaces everything.
+        foreach (
+            self::privatePathIssues(
+                [
+                    'paths.content' => $contentDir,
+                    'paths.tmp' => $tmpDir,
+                    'paths.locks' => $lockDir,
+                    'paths.log' => $logDir,
+                    'paths.mediaOriginals' => $mediaOriginalsDir,
+                ],
+                $publicDir,
+            ) as $issue
+        ) {
+            $issues[] = $issue;
+        }
+
         $isProduction = $environment === 'production';
         $database = self::database($raw, $isProduction, $issues);
         $session = self::session($raw, $isProduction, $issues);
@@ -747,5 +766,81 @@ final class Configuration
         }
 
         return $prefix . implode('/', $segments);
+    }
+
+    /**
+     * ESZ-133. The private runtime directories must never be equal to or
+     * contained beneath the document root: everything under `paths.public` is
+     * directly web-reachable by construction, and no deny rule in `.htaccess`
+     * is a substitute for refusing the topology at boot. `contracts` is
+     * deliberately absent from this list — its generated artifacts are copied
+     * into the deployment and the repository is their source of truth.
+     *
+     * Two checks are applied, and both are reported per key:
+     *
+     * 1. Lexical, component-aware containment over the same canonicalized
+     *    paths {@see path()} resolves. `/srv/publicity` and `/srv/public-old`
+     *    are not children of `/srv/public`: the boundary is the path
+     *    component, not the string prefix.
+     * 2. Resolved-path containment whenever both directories exist on disk.
+     *    `realpath()` folds symlinks in every component, so an alias pointing
+     *    into the real document root is refused even when the lexical forms
+     *    are unrelated siblings. Paths that do not exist yet are not required
+     *    to exist for validation; for them only the lexical check applies.
+     *
+     * @param array<string, string> $private Resolved private paths, keyed by
+     *        their `paths.<name>` identifier.
+     * @return list<array{path: string, message: string}>
+     */
+    private static function privatePathIssues(array $private, string $public): array
+    {
+        if ($public === '') {
+            // `paths.public` itself is invalid; that is already reported.
+            return [];
+        }
+
+        $issues = [];
+        $realPublic = realpath($public);
+
+        foreach ($private as $key => $candidate) {
+            if ($candidate === '') {
+                // The directory itself is missing or blank; already reported.
+                continue;
+            }
+
+            if (self::isEqualOrInside($candidate, $public)) {
+                $issues[] = [
+                    'path' => $key,
+                    'message' => 'must not be equal to or contained beneath paths.public '
+                        . '(the document root): files there would be directly web-reachable.',
+                ];
+
+                continue;
+            }
+
+            if ($realPublic !== false) {
+                $realCandidate = realpath($candidate);
+
+                if ($realCandidate !== false && self::isEqualOrInside($realCandidate, $realPublic)) {
+                    $issues[] = [
+                        'path' => $key,
+                        'message' => 'resolves (via its real path) to a location equal to or '
+                            . 'inside paths.public (the document root): files there would be '
+                            . 'directly web-reachable.',
+                    ];
+                }
+            }
+        }
+
+        return $issues;
+    }
+
+    /**
+     * Component-aware containment: true when `$candidate` is `$root` itself or
+     * a descendant of it. Both paths must already be lexically normalized.
+     */
+    private static function isEqualOrInside(string $candidate, string $root): bool
+    {
+        return $candidate === $root || str_starts_with($candidate, rtrim($root, '/') . '/');
     }
 }
