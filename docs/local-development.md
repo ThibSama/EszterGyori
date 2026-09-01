@@ -54,6 +54,8 @@ This is intentionally stronger than `npm run php:smoke`.
 - `php:smoke:full-stack` bootstraps MySQL, builds the real export, starts an isolated PHP server, then proves the composed product:
   - public page;
   - reservation page;
+  - a generated frontend asset;
+  - exported public and JSON API `404` contracts;
   - `GET /api/booking/services`;
   - real availability from MySQL fixtures;
   - atomic booking creation;
@@ -61,7 +63,8 @@ This is intentionally stronger than `npm run php:smoke`.
   - admin login and rotated CSRF token;
   - visibility of the created booking in the authenticated admin API;
   - booking cancellation cleanup;
-  - server-side logout enforcement.
+  - server-side logout enforcement;
+  - confirmed PHP server shutdown.
 
 A failure in any step is a failed smoke, not a `NOT RUN` or a page-level success.
 

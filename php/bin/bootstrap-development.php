@@ -225,7 +225,13 @@ function bootstrapDevelopmentServices(): array
         ['key' => 'brows', 'label' => 'Sourcils', 'duration' => 90, 'bufferBefore' => 15, 'bufferAfter' => 15],
         ['key' => 'eyeliner', 'label' => 'Eyeliner', 'duration' => 120, 'bufferBefore' => 15, 'bufferAfter' => 15],
         ['key' => 'lips', 'label' => 'Lèvres', 'duration' => 120, 'bufferBefore' => 15, 'bufferAfter' => 15],
-        ['key' => 'freckles', 'label' => 'Taches de rousseur', 'duration' => 60, 'bufferBefore' => 15, 'bufferAfter' => 15],
+        [
+            'key' => 'freckles',
+            'label' => 'Taches de rousseur',
+            'duration' => 60,
+            'bufferBefore' => 15,
+            'bufferAfter' => 15,
+        ],
     ];
 }
 

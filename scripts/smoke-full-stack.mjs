@@ -12,6 +12,7 @@ const baseUrl = `http://${host}:${port}`;
 const credentialsFile = join(repoRoot, "php", "var", "development", "development-admin.json");
 const cookies = new Map();
 let server;
+let serverExit;
 let bookingReference = null;
 let authenticatedCsrf = null;
 
@@ -112,14 +113,29 @@ async function cleanupBooking() {
 }
 
 async function stopServer() {
-  if (!server || server.exitCode !== null) return;
+  if (!server || !serverExit) return;
+  if (server.exitCode !== null || server.signalCode !== null) {
+    await serverExit;
+    return;
+  }
+
   server.kill("SIGTERM");
-  await Promise.race([
-    new Promise((resolvePromise) => server.once("exit", resolvePromise)),
-    new Promise((resolvePromise) => setTimeout(resolvePromise, 3000)),
+  const stoppedAfterTerm = await Promise.race([
+    serverExit.then(() => true),
+    new Promise((resolvePromise) => setTimeout(() => resolvePromise(false), 3000)),
   ]);
-  if (server.exitCode === null) server.kill("SIGKILL");
+  if (stoppedAfterTerm) return;
+
+  server.kill("SIGKILL");
+  const stoppedAfterKill = await Promise.race([
+    serverExit.then(() => true),
+    new Promise((resolvePromise) => setTimeout(() => resolvePromise(false), 3000)),
+  ]);
+  if (!stoppedAfterKill) throw new Error("PHP server termination could not be confirmed.");
 }
+
+let smokeFailure = null;
+let shutdownFailure = null;
 
 try {
   process.stdout.write("full-stack smoke: bootstrapping deterministic local dependencies...\n");
@@ -133,6 +149,7 @@ try {
     ["scripts/serve-php.mjs", `--host=${host}`, `--port=${port}`, "--skip-build", "--skip-bootstrap"],
     { cwd: repoRoot, env: process.env, stdio: ["ignore", "inherit", "inherit"] },
   );
+  serverExit = new Promise((resolveExit) => server.once("exit", resolveExit));
   server.once("error", (error) => {
     process.stderr.write(`full-stack smoke: PHP launcher error: ${error.message}\n`);
   });
@@ -141,10 +158,28 @@ try {
   const home = await request("/");
   assert(home.response.status === 200 && home.text.includes("__ESZTER_CONTENT__"), "GET / did not return the public HTML.");
 
+  const assetPath = /(?:src|href)="(\/_next\/static\/[^"?]+\.(?:css|js|woff2))/.exec(home.text)?.[1];
+  assert(assetPath, "Could not find a generated frontend asset in GET /.");
+  const asset = await fetch(`${baseUrl}${assetPath}`);
+  const assetBytes = await asset.arrayBuffer();
+  assert(asset.status === 200 && assetBytes.byteLength > 0, `Frontend asset ${assetPath} did not resolve successfully.`);
+
   const reservation = await request("/reservation");
   assert(
     reservation.response.status === 200 && reservation.text.includes("reservation-main"),
     "GET /reservation did not return the reservation application.",
+  );
+
+  const unknownPage = await request("/route-that-does-not-exist");
+  assert(
+    unknownPage.response.status === 404 && unknownPage.text.includes("404"),
+    `Unknown public route returned ${unknownPage.response.status} without the exported 404 page.`,
+  );
+
+  const unknownApi = await request("/api/route-that-does-not-exist", { headers: { accept: "application/json" } });
+  assert(
+    unknownApi.response.status === 404 && unknownApi.body?.error?.code === "NOT_FOUND",
+    `Unknown API route violated the JSON 404 contract: ${unknownApi.response.status}.`,
   );
 
   const services = await request("/api/booking/services", { headers: { accept: "application/json" } });
@@ -229,11 +264,32 @@ try {
   );
   assert(protectedAfterLogout.response.status === 401, "Admin API remained accessible after logout.");
 
-  process.stdout.write("full-stack smoke: PASS — public, booking, MySQL, auth and admin compose correctly.\n");
 } catch (error) {
   await cleanupBooking();
-  process.stderr.write(`full-stack smoke: FAIL — ${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
+  smokeFailure = error;
 } finally {
-  await stopServer();
+  try {
+    await stopServer();
+  } catch (error) {
+    shutdownFailure = error;
+  }
+}
+
+if (smokeFailure !== null) {
+  process.stderr.write(`full-stack smoke: FAIL — ${smokeFailure instanceof Error ? smokeFailure.message : String(smokeFailure)}\n`);
+  if (shutdownFailure !== null) {
+    process.stderr.write(
+      `full-stack smoke: shutdown also failed — ${shutdownFailure instanceof Error ? shutdownFailure.message : String(shutdownFailure)}\n`,
+    );
+  }
+  process.exitCode = 1;
+} else if (shutdownFailure !== null) {
+  process.stderr.write(
+    `full-stack smoke: FAIL — ${shutdownFailure instanceof Error ? shutdownFailure.message : String(shutdownFailure)}\n`,
+  );
+  process.exitCode = 1;
+} else {
+  process.stdout.write(
+    "full-stack smoke: PASS — public, assets, routing, booking, MySQL, auth, admin and shutdown compose correctly.\n",
+  );
 }
