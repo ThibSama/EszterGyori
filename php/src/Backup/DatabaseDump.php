@@ -108,11 +108,12 @@ final class DatabaseDump
      * set with a broken reference in it — which is exactly what a restore is
      * supposed to find out, loudly, rather than absorb.
      *
+     * @param list<string> $skipTables
      * @return int Statements applied.
      */
-    public static function import(Database $database, string $sql): int
+    public static function import(Database $database, string $sql, array $skipTables = []): int
     {
-        $statements = self::statements($sql);
+        $statements = self::statements($sql, $skipTables);
 
         return $database->transactional(static function (Database $connection) use ($statements): int {
             foreach ($statements as $statement) {
@@ -121,6 +122,18 @@ final class DatabaseDump
 
             return \count($statements);
         });
+    }
+
+    /**
+     * Parses the complete hostile dump without executing it.
+     *
+     * @param list<string> $skipTables Tables that remain valid backup members but
+     *        whose rows belong to the target (currently `schema_migrations`).
+     * @return int Number of statements that would be executed.
+     */
+    public static function validate(string $sql, array $skipTables = []): int
+    {
+        return \count(self::statements($sql, $skipTables));
     }
 
     /**
@@ -136,11 +149,16 @@ final class DatabaseDump
      * Values never contain a newline unescaped: PDO's quoting emits `\n` inside
      * the literal, so a line is always a whole statement.
      *
+     * @param list<string> $skipTables
      * @return list<string>
      */
-    private static function statements(string $sql): array
+    private static function statements(string $sql, array $skipTables = []): array
     {
         $statements = [];
+
+        foreach ($skipTables as $table) {
+            self::assertKnownTable($table);
+        }
 
         foreach (explode("\n", $sql) as $number => $line) {
             $line = trim($line);
@@ -149,17 +167,86 @@ final class DatabaseDump
                 continue;
             }
 
-            if (!str_starts_with($line, 'INSERT INTO `')) {
+            $match = [];
+            if (
+                preg_match(
+                    '/\AINSERT INTO `([a-z0-9_]+)` \((`[A-Za-z0-9_]+`(?:, `[A-Za-z0-9_]+`)*)\) '
+                    . 'VALUES \((.*)\);\z/D',
+                    $line,
+                    $match,
+                ) !== 1
+            ) {
                 throw new BackupException(
-                    'The database dump contains a statement that is not a row insert on line '
+                    'The database dump contains a malformed or non-insert statement on line '
                     . ($number + 1) . '; refusing to execute it.',
                 );
             }
 
-            $statements[] = rtrim($line, ';');
+            $table = $match[1];
+            self::assertKnownTable($table);
+            $valueCount = self::assertValueList($match[3], $number + 1);
+            $columnCount = substr_count($match[2], ', ') + 1;
+            if ($valueCount !== $columnCount) {
+                throw new BackupException(
+                    'The database dump has different column and value counts on line '
+                    . ($number + 1) . '; refusing to execute it.',
+                );
+            }
+
+            if (!\in_array($table, $skipTables, true)) {
+                // Keep the one required terminator. PDO receives exactly the
+                // single statement the parser proved, never a trimmed prefix.
+                $statements[] = $line;
+            }
         }
 
         return $statements;
+    }
+
+    /** Proves that the VALUES clause consists only of exporter literals. */
+    private static function assertValueList(string $values, int $line): int
+    {
+        $offset = 0;
+        $length = \strlen($values);
+        $count = 0;
+
+        while ($offset < $length) {
+            $literal = [];
+            if (
+                preg_match(
+                    "/\\G(?:NULL|X'[0-9A-Fa-f]*'|'(?:''|\\\\[\\s\\S]|[^'\\\\])*'|"
+                    . '-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)/',
+                    $values,
+                    $literal,
+                    0,
+                    $offset,
+                ) !== 1
+            ) {
+                throw new BackupException(
+                    "The database dump contains an invalid value literal on line {$line}; refusing to execute it.",
+                );
+            }
+
+            $offset += \strlen($literal[0]);
+            ++$count;
+
+            if ($offset === $length) {
+                break;
+            }
+
+            if (substr($values, $offset, 2) !== ', ') {
+                throw new BackupException(
+                    "The database dump contains an invalid value separator on line {$line}; refusing to execute it.",
+                );
+            }
+            $offset += 2;
+        }
+
+        if ($count === 0) {
+            throw new BackupException("The database dump has an empty VALUES list on line {$line}.");
+        }
+
+        return $count;
     }
 
     /** @param array<string, mixed> $row */

@@ -59,6 +59,33 @@ final class TarArchive
      */
     public static function write(string $path, array $entries, int $modifiedAt): void
     {
+        if (\count($entries) > BackupSet::MAX_ARCHIVE_ENTRIES) {
+            throw new BackupException(\sprintf(
+                'The backup contains more than the %d entry ceiling.',
+                BackupSet::MAX_ARCHIVE_ENTRIES,
+            ));
+        }
+
+        $totalBytes = 0;
+        foreach ($entries as $entryPath => $contents) {
+            self::assertWritablePath($entryPath);
+            $bytes = \strlen($contents);
+            if ($bytes > BackupSet::MAX_ENTRY_BYTES) {
+                throw new BackupException(\sprintf(
+                    'Backup entry %s is over the %d byte per-entry ceiling.',
+                    $entryPath,
+                    BackupSet::MAX_ENTRY_BYTES,
+                ));
+            }
+            if ($bytes > BackupSet::MAX_TOTAL_BYTES - $totalBytes) {
+                throw new BackupException(\sprintf(
+                    'The backup is over the %d byte cumulative ceiling.',
+                    BackupSet::MAX_TOTAL_BYTES,
+                ));
+            }
+            $totalBytes += $bytes;
+        }
+
         $handle = @gzopen($path, 'wb9');
 
         if ($handle === false) {
@@ -67,8 +94,6 @@ final class TarArchive
 
         try {
             foreach ($entries as $entryPath => $contents) {
-                self::assertWritablePath($entryPath);
-
                 self::put($handle, self::header($entryPath, \strlen($contents), self::TYPE_FILE, $modifiedAt));
                 self::put($handle, $contents);
 
@@ -103,8 +128,19 @@ final class TarArchive
      *
      * @return array<string, string> Relative path => file contents, in archive order.
      */
-    public static function read(string $path): array
-    {
+    public static function read(
+        string $path,
+        int $maxEntryBytes = BackupSet::MAX_ENTRY_BYTES,
+        int $maxTotalBytes = BackupSet::MAX_TOTAL_BYTES,
+        int $maxEntries = BackupSet::MAX_ARCHIVE_ENTRIES,
+    ): array {
+        if ($maxEntryBytes < 1 || $maxTotalBytes < 1 || $maxEntries < 1) {
+            throw new \InvalidArgumentException('Archive read ceilings must be positive.');
+        }
+        if ($maxEntries > \intdiv(PHP_INT_MAX - $maxTotalBytes - (2 * self::BLOCK), 2 * self::BLOCK)) {
+            throw new \InvalidArgumentException('Archive read ceilings overflow the expanded-byte counter.');
+        }
+        $maximumExpanded = $maxTotalBytes + (((2 * $maxEntries) + 2) * self::BLOCK);
         $handle = @gzopen($path, 'rb');
 
         if ($handle === false) {
@@ -112,10 +148,18 @@ final class TarArchive
         }
 
         $entries = [];
+        $entryCount = 0;
+        $totalBytes = 0;
+        $expandedBytes = 0;
 
         try {
             while (true) {
-                $header = self::take($handle, self::BLOCK);
+                $header = self::take(
+                    $handle,
+                    self::BLOCK,
+                    $expandedBytes,
+                    $maximumExpanded,
+                );
 
                 if ($header === null || trim($header, "\0") === '') {
                     // A zero block is the terminator; a short read is the end of a
@@ -128,7 +172,37 @@ final class TarArchive
 
                 [$entryPath, $size, $type] = self::parseHeader($header);
 
-                $contents = $size === 0 ? '' : self::take($handle, $size);
+                ++$entryCount;
+                if ($entryCount > $maxEntries) {
+                    throw new BackupException(\sprintf(
+                        'The archive contains more than the %d entry ceiling.',
+                        $maxEntries,
+                    ));
+                }
+
+                if ($size > $maxEntryBytes) {
+                    throw new BackupException(\sprintf(
+                        'Archive entry %s declares %d bytes, over the %d byte per-entry ceiling.',
+                        $entryPath,
+                        $size,
+                        $maxEntryBytes,
+                    ));
+                }
+
+                if ($size > $maxTotalBytes - $totalBytes) {
+                    throw new BackupException(\sprintf(
+                        'The archive declares more than the %d byte cumulative ceiling.',
+                        $maxTotalBytes,
+                    ));
+                }
+                $totalBytes += $size;
+
+                $contents = $size === 0 ? '' : self::take(
+                    $handle,
+                    $size,
+                    $expandedBytes,
+                    $maximumExpanded,
+                );
 
                 if ($contents === null) {
                     throw new BackupException("The archive ends inside {$entryPath}; it is truncated.");
@@ -137,10 +211,22 @@ final class TarArchive
                 $remainder = $size % self::BLOCK;
 
                 if ($remainder !== 0) {
-                    self::take($handle, self::BLOCK - $remainder);
+                    if (
+                        self::take(
+                            $handle,
+                            self::BLOCK - $remainder,
+                            $expandedBytes,
+                            $maximumExpanded,
+                        ) === null
+                    ) {
+                        throw new BackupException("The archive ends inside {$entryPath}; it is truncated.");
+                    }
                 }
 
                 if ($type === self::TYPE_FILE) {
+                    if (isset($entries[$entryPath])) {
+                        throw new BackupException("The archive contains duplicate entry {$entryPath}.");
+                    }
                     $entries[$entryPath] = $contents;
                 }
             }
@@ -167,12 +253,12 @@ final class TarArchive
             $actual += \ord($blanked[$i]);
         }
 
-        if ($checksum === '' || octdec($checksum) !== $actual) {
+        if (preg_match('/^[0-7]{1,6}$/D', $checksum) !== 1 || octdec($checksum) !== $actual) {
             throw new BackupException('The archive contains a header whose checksum does not match.');
         }
 
         $name = rtrim(substr($header, 0, 100), "\0");
-        $sizeField = trim(substr($header, 124, 12), "\0 ");
+        $sizeField = substr($header, 124, 12);
         $type = substr($header, 156, 1);
 
         if ($type === "\0") {
@@ -191,7 +277,32 @@ final class TarArchive
 
         self::assertReadablePath($name);
 
-        return [$name, (int) octdec($sizeField === '' ? '0' : $sizeField), $type];
+        return [$name, self::parseSize($sizeField), $type];
+    }
+
+    /**
+     * Parses the POSIX octal size without `octdec()`, whose float fallback and
+     * permissive prefix parsing can turn a malformed or overflowing field into a
+     * believable allocation size.
+     */
+    private static function parseSize(string $field): int
+    {
+        if (preg_match('/^[0-7]{1,11}(?:\0| )*$/D', $field) !== 1) {
+            throw new BackupException('The archive contains a malformed or overflowing size header.');
+        }
+
+        $digits = rtrim($field, "\0 ");
+        $size = 0;
+
+        foreach (str_split($digits) as $digit) {
+            $value = \ord($digit) - \ord('0');
+            if ($size > \intdiv(PHP_INT_MAX - $value, 8)) {
+                throw new BackupException('The archive contains a malformed or overflowing size header.');
+            }
+            $size = ($size * 8) + $value;
+        }
+
+        return $size;
     }
 
     private static function header(string $path, int $size, string $type, int $modifiedAt): string
@@ -272,15 +383,26 @@ final class TarArchive
      * @param resource $handle
      * @return string|null Null when the stream ended before $length bytes.
      */
-    private static function take(mixed $handle, int $length): ?string
-    {
+    private static function take(
+        mixed $handle,
+        int $length,
+        ?int &$expandedBytes = null,
+        ?int $maximumExpanded = null,
+    ): ?string {
         $buffer = '';
 
         while (\strlen($buffer) < $length) {
-            $chunk = gzread($handle, $length - \strlen($buffer));
+            $chunk = gzread($handle, min(64 * 1024, $length - \strlen($buffer)));
 
             if ($chunk === false || $chunk === '') {
                 return null;
+            }
+
+            if ($expandedBytes !== null) {
+                $expandedBytes += \strlen($chunk);
+                if ($maximumExpanded !== null && $expandedBytes > $maximumExpanded) {
+                    throw new BackupException('The archive exceeds the cumulative uncompressed ceiling.');
+                }
             }
 
             $buffer .= $chunk;

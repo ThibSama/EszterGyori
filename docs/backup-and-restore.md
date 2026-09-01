@@ -1,4 +1,4 @@
-# Backup and restore (Phase 9, ESZ-083 / ESZ-097)
+# Backup and restore (Phase 9, ESZ-083 / ESZ-097 / ESZ-098)
 
 This is the operator procedure for taking a backup of a live deployment and for
 putting one back. It also states, explicitly, which parts of "not losing the data"
@@ -134,17 +134,39 @@ cd /usr/home/<FTP_LOGIN>/eszter
 
 ### Order of operations
 
-1. Read the archive and parse its manifest.
-2. Check **every** entry against its recorded sha256, in both directions: nothing
-   declared may be missing or altered, and nothing undeclared may be present.
-3. Run migrations, so the target is on a schema this application built.
-4. Check the safety refusals.
-5. Only now: empty the declared tables and load the dump, in one transaction; then
-   write the content and media files, each through a temporary name and a rename.
+1. Authorize production explicitly, then read the archive under its entry-count,
+   per-entry and cumulative uncompressed limits.
+2. Parse the manifest and check **every** entry against its sha256 in both
+   directions: nothing declared may be missing or altered, and nothing undeclared
+   may be present.
+3. Fully parse the SQL as hostile input. Every executable line must be exactly one
+   `INSERT` into a table in `BackupSet::TABLES`, with exporter-shaped columns and
+   literals, one terminator and no trailing statement. The target migration rows
+   are retained rather than imported.
+4. Validate schema direction, overwrite safety, content envelopes, media catalogue,
+   catalogue/file agreement, media types, dimensions and storage ceilings. This is
+   also a read-only check for pending migrations. A populated target with any
+   pending migration is refused; restore never applies DDL to it.
+5. Write and sync every restored file into private staging directories beside its
+   destination. No live file has changed yet. An empty target may now run pending
+   migrations.
+6. Begin the database replacement transaction. Move each existing restore-owned
+   file to a private rollback directory, install staged files, and move stale owned
+   files absent from the archive aside. Commit SQL only after file installation is
+   complete. Any throwable before that commit rolls SQL back and moves every old
+   file back before reporting failure.
 
-Nothing in the target changes until steps 1–4 have all passed. A restore that
-discovered corruption in the last file would already have replaced the database
-with the first, which is how a bad backup becomes a lost site.
+This is explicit cross-store compensation, not global atomic rename: individual
+renames are atomic only for their own paths. Deterministic failure injection proves
+failures before DB replacement, after row replacement and during installation all
+return the database, draft/published JSON, media catalogue, originals and
+derivatives to the complete old state.
+
+An uncatchable process or host failure during the short live-file installation
+window can leave the private rollback material on disk and requires operator
+recovery; MySQL and POSIX filesystems do not provide one transaction across both
+stores. The application does not mislabel per-file rename as global atomicity, and
+does not require provider snapshots to make ordinary restore failures safe.
 
 ### The two refusals
 
@@ -163,6 +185,26 @@ column arrives with its declared default. A backup from a *newer* schema than th
 target is refused instead: it may carry columns this code has nowhere to put, and
 dropping them silently would be data loss reported as success. Restore it with the
 release it was taken from.
+
+### Restore ownership and overwrite reconciliation
+
+Restore owns only the three declared content names and flat media files whose names
+match the frozen media asset-id and extension contract. On overwrite, owned files
+that are absent from the verified archive are removed through the same reversible
+installation transaction. This removes stale catalogue files, originals and
+derivatives without walking or replacing the rest of the deployment. Other names,
+subdirectories, transient intake/staging files and symlinks are not claimed;
+unrelated files are preserved, and a symlink collision at an owned target is a
+refusal.
+
+### Archive expansion bounds
+
+Tar size headers must be canonical POSIX octal and fit a PHP integer. They are
+validated before body allocation. A member is limited to 128 MiB, retained member
+bytes to 512 MiB in total, and an archive to 10,000 entries; decompressed header and
+padding bytes are bounded too. Duplicate paths, overflow or malformed sizes,
+unsupported types, truncated padding, oversized members and cumulative expansion
+are all fail-closed refusals.
 
 ### After a restore
 

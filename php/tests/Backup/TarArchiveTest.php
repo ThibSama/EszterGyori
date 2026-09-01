@@ -154,6 +154,63 @@ final class TarArchiveTest extends TestCase
         TarArchive::read($path);
     }
 
+    public function testAMalformedSizeHeaderIsRefusedBeforeReadingTheBody(): void
+    {
+        $path = $this->root . '/archive.tar.gz';
+        TarArchive::write($path, ['content/draft.json' => 'x'], 1_700_000_000);
+
+        $raw = (string) gzdecode((string) file_get_contents($path));
+        $raw = substr_replace($raw, "00000000008\0", 124, 12);
+        $raw = $this->repairFirstHeaderChecksum($raw);
+        file_put_contents($path, (string) gzencode($raw));
+
+        $this->expectException(BackupException::class);
+        $this->expectExceptionMessageMatches('/malformed or overflowing size/');
+
+        TarArchive::read($path);
+    }
+
+    public function testAnOversizedEntryIsRefusedFromItsHeader(): void
+    {
+        $path = $this->root . '/archive.tar.gz';
+        TarArchive::write($path, ['content/draft.json' => 'x'], 1_700_000_000);
+
+        $raw = (string) gzdecode((string) file_get_contents($path));
+        $raw = substr_replace($raw, \sprintf('%011o', 1_025) . "\0", 124, 12);
+        $raw = $this->repairFirstHeaderChecksum($raw);
+        file_put_contents($path, (string) gzencode($raw));
+
+        $this->expectException(BackupException::class);
+        $this->expectExceptionMessageMatches('/per-entry ceiling/');
+
+        TarArchive::read($path, maxEntryBytes: 1_024, maxTotalBytes: 2_048);
+    }
+
+    public function testCumulativeExpansionIsBoundedBeforeTheNextBodyIsAllocated(): void
+    {
+        $path = $this->root . '/archive.tar.gz';
+        TarArchive::write($path, [
+            'one.bin' => str_repeat('A', 700),
+            'two.bin' => str_repeat('B', 700),
+        ], 1_700_000_000);
+
+        $this->expectException(BackupException::class);
+        $this->expectExceptionMessageMatches('/cumulative ceiling/');
+
+        TarArchive::read($path, maxEntryBytes: 800, maxTotalBytes: 1_000);
+    }
+
+    public function testEntryCountBoundsEmptyFileCompressionBombs(): void
+    {
+        $path = $this->root . '/archive.tar.gz';
+        TarArchive::write($path, ['one' => '', 'two' => '', 'three' => ''], 1_700_000_000);
+
+        $this->expectException(BackupException::class);
+        $this->expectExceptionMessageMatches('/entry ceiling/');
+
+        TarArchive::read($path, maxEntries: 2);
+    }
+
     /**
      * An entry that is not a regular file or a directory is refused rather than
      * skipped: a symlink in an archive is a way to describe something other than a
@@ -204,5 +261,17 @@ final class TarArchiveTest extends TestCase
         self::assertStringContainsString('media/a.jpg', $listing);
         self::assertStringNotContainsString('Unexpected EOF', $listing);
         self::assertStringNotContainsString('checksum error', $listing);
+    }
+
+    private function repairFirstHeaderChecksum(string $raw): string
+    {
+        $header = substr($raw, 0, 512);
+        $blanked = substr_replace($header, str_repeat(' ', 8), 148, 8);
+        $sum = 0;
+        for ($i = 0; $i < 512; ++$i) {
+            $sum += \ord($blanked[$i]);
+        }
+
+        return substr_replace($raw, \sprintf('%06o', $sum) . "\0 ", 148, 8);
     }
 }

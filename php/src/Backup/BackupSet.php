@@ -120,6 +120,19 @@ final class BackupSet
      */
     public const MAX_TOTAL_BYTES = 512 * 1024 * 1024;
 
+    /**
+     * No single member may consume most of the restore process by itself.
+     * Checked from the tar header before the reader asks zlib for the body.
+     */
+    public const MAX_ENTRY_BYTES = 128 * 1024 * 1024;
+
+    /**
+     * Bounds header/padding-only gzip expansion as well as retained file bytes.
+     * A normal archive has fewer than a few hundred members; 10 000 leaves ample
+     * headroom while making an endless stream of empty tar entries impossible.
+     */
+    public const MAX_ARCHIVE_ENTRIES = 10_000;
+
     /** Files inside the media directories that are never part of a backup. */
     public static function isTransient(string $fileName): bool
     {

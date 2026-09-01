@@ -7,11 +7,10 @@
  *
  * ## Order of operations
  *
- * Read the archive, parse its manifest, check every entry against its recorded
- * sha256, migrate the target's schema, check the safety refusals — and only then
- * write. Nothing in the target changes until all of that has passed, so a
- * corrupted or mismatched archive leaves the deployment exactly as it was rather
- * than half-replaced.
+ * Read the bounded archive; verify its manifest; fully parse the row-only SQL;
+ * validate schema direction, safety refusals and content/media contracts; stage
+ * every file; then replace SQL and files with rollback compensation. A populated
+ * target with pending migrations is refused rather than migrated as a side effect.
  *
  * ## The two refusals
  *

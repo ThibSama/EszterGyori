@@ -136,6 +136,45 @@ final class Migrator
     }
 
     /**
+     * Reads schema compatibility without creating the registry table or applying
+     * DDL. Restore preflight uses this so a refusal cannot migrate the target as a
+     * side effect.
+     *
+     * @return array{applied: list<string>, pending: list<string>, registryExists: bool}
+     */
+    public function inspect(): array
+    {
+        $available = $this->available();
+        $row = $this->database->fetchOne(
+            'SELECT COUNT(*) AS total FROM information_schema.tables'
+                . ' WHERE table_schema = DATABASE() AND table_name = :table',
+            ['table' => self::TABLE],
+        );
+        $total = $row['total'] ?? null;
+        if (!\is_int($total) && !(\is_string($total) && ctype_digit($total))) {
+            throw DatabaseException::invariant('Could not determine whether the migration registry exists.');
+        }
+        $registryExists = (int) $total === 1;
+        $applied = $registryExists ? $this->appliedRows() : [];
+
+        $this->assertNoAppliedMigrationWasEdited($available, $applied);
+        $this->assertNoUnknownMigrationWasApplied($available, $applied);
+
+        $pending = [];
+        foreach ($available as $migration) {
+            if (self::checksumOf($applied, $migration['version']) === null) {
+                $pending[] = $migration['version'];
+            }
+        }
+
+        return [
+            'applied' => array_column($applied, 'version'),
+            'pending' => $pending,
+            'registryExists' => $registryExists,
+        ];
+    }
+
+    /**
      * The migration files, ordered by version.
      *
      * A list carrying an explicit `version` rather than a map keyed by it. PHP

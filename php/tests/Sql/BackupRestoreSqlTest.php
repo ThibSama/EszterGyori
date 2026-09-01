@@ -20,6 +20,7 @@ use Eszter\Storage\ApplicationSnapshotLock;
 use Eszter\Support\FrozenClock;
 use Eszter\Tests\Media\MediaFixtures;
 use Eszter\Tests\TestEnvironment;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -353,6 +354,156 @@ final class BackupRestoreSqlTest extends TestCase
 
         self::assertGreaterThan(0, $result['statements']);
         self::assertSame(1, $this->rowCount($this->target, 'bookings'));
+    }
+
+    #[DataProvider('restoreFailurePhases')]
+    public function testInjectedRestoreFailuresLeaveAWholeOldOrNewState(string $phase): void
+    {
+        $this->seedRealisticSource();
+        $archive = $this->writeBackup();
+        $this->restoreIntoTarget($archive);
+        $this->makeTargetDistinctlyOld();
+        $old = $this->targetState();
+
+        $restore = new BackupRestore(
+            $this->targetConfig,
+            $this->target,
+            TestDatabase::migrator($this->target, $this->clock),
+            static function (string $reached) use ($phase): void {
+                if ($reached === $phase) {
+                    throw new \RuntimeException("injected restore failure at {$phase}");
+                }
+            },
+        );
+
+        try {
+            $restore->restore($archive, overwrite: true, allowProduction: false);
+            self::fail("restore passed injected phase {$phase}");
+        } catch (\RuntimeException $failure) {
+            self::assertSame("injected restore failure at {$phase}", $failure->getMessage());
+        }
+
+        $afterFailure = $this->targetState();
+        self::assertSame($old, $afterFailure, "{$phase} left a hybrid instead of complete OLD state");
+
+        $this->restoreIntoTarget($archive, overwrite: true);
+        $new = $this->targetState();
+        self::assertNotSame($old, $new);
+        self::assertTrue(
+            $afterFailure === $old || $afterFailure === $new,
+            "{$phase} was neither wholly OLD nor wholly NEW",
+        );
+    }
+
+    /** @return iterable<string, array{0: string}> */
+    public static function restoreFailurePhases(): iterable
+    {
+        yield 'before DB replacement' => ['before_database_replacement'];
+        yield 'after DB replacement before files' => ['after_database_replacement'];
+        yield 'during file installation and stale reconciliation' => ['during_filesystem_installation'];
+    }
+
+    public function testOverwriteRemovesOnlyStaleRestoreOwnedMedia(): void
+    {
+        $this->seedRealisticSource();
+        $archive = $this->writeBackup();
+        $this->restoreIntoTarget($archive);
+
+        $media = $this->targetConfig->mediaPublicDir();
+        $existing = glob($media . '/med_*.jpg') ?: [];
+        self::assertNotSame([], $existing);
+        $stale = $media . '/med_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.jpg';
+        $unrelated = $media . '/operator-note.txt';
+        file_put_contents($stale, (string) file_get_contents($existing[0]));
+        file_put_contents($unrelated, 'preserve me');
+
+        $this->restoreIntoTarget($archive, overwrite: true);
+
+        self::assertFileDoesNotExist($stale);
+        self::assertSame('preserve me', file_get_contents($unrelated));
+    }
+
+    public function testPopulatedTargetWithPendingMigrationIsRefusedWithoutApplyingIt(): void
+    {
+        $this->seedRealisticSource();
+        $archive = $this->writeBackup();
+        $this->restoreIntoTarget($archive);
+
+        $migrations = TestEnvironment::makeTempDirectory('eszter-pending-migration');
+        foreach (glob(TestDatabase::migrationsDirectory() . '/*.sql') ?: [] as $source) {
+            copy($source, $migrations . '/' . basename($source));
+        }
+        file_put_contents(
+            $migrations . '/9998_restore_pending_probe.sql',
+            "CREATE TABLE IF NOT EXISTS restore_pending_probe (id INT NOT NULL PRIMARY KEY);\n",
+        );
+
+        $restore = new BackupRestore(
+            $this->targetConfig,
+            $this->target,
+            TestDatabase::migrator($this->target, $this->clock, $migrations),
+        );
+
+        try {
+            $restore->restore($archive, overwrite: true, allowProduction: false);
+            self::fail('a populated target was migrated during restore preflight');
+        } catch (BackupException $refusal) {
+            self::assertStringContainsString('9998', $refusal->getMessage());
+        } finally {
+            TestEnvironment::removeDirectory($migrations);
+        }
+
+        self::assertFalse($this->tableExists($this->target, 'restore_pending_probe'));
+        self::assertSame(0, (int) ($this->target->fetchOne(
+            'SELECT COUNT(*) AS total FROM schema_migrations WHERE version = :version',
+            ['version' => '9998'],
+        )['total'] ?? 0));
+    }
+
+    public function testHostileSqlIsRefusedBeforeAnyTargetMutation(): void
+    {
+        $this->seedRealisticSource();
+        $archive = $this->writeBackup();
+        TestDatabase::migrator($this->target, $this->clock)->migrate();
+        $before = $this->targetState();
+
+        foreach (
+            [
+            "INSERT INTO `admin_sessions` (`id`) VALUES ('forbidden');\n",
+            "DROP TABLE `bookings`;\n",
+            "INSERT INTO `bookings` (`id`) VALUES (1); DELETE FROM `bookings`;\n",
+            ] as $hostile
+        ) {
+            $candidate = $this->archiveWithReplacement($archive, BackupSet::DATABASE_FILE, $hostile);
+            try {
+                $this->restoreIntoTarget($candidate);
+                self::fail('hostile SQL passed restore preflight');
+            } catch (BackupException) {
+                self::assertSame($before, $this->targetState());
+            }
+        }
+    }
+
+    public function testInvalidRestoredContentIsRefusedBeforeAnyTargetMutation(): void
+    {
+        $this->seedRealisticSource();
+        $archive = $this->writeBackup();
+        TestDatabase::migrator($this->target, $this->clock)->migrate();
+        $before = $this->targetState();
+        $invalid = $this->archiveWithReplacement(
+            $archive,
+            BackupSet::CONTENT_PREFIX . 'draft.json',
+            '{"revision":99}',
+        );
+
+        try {
+            $this->restoreIntoTarget($invalid);
+            self::fail('invalid content passed restore preflight');
+        } catch (BackupException $refusal) {
+            self::assertStringContainsString('product validation', $refusal->getMessage());
+        }
+
+        self::assertSame($before, $this->targetState());
     }
 
     /**
@@ -800,7 +951,7 @@ final class BackupRestoreSqlTest extends TestCase
             (string) json_encode([
                 'schemaVersion' => TestEnvironment::artifacts()->contentSchemaVersion(),
                 'revision' => $revision,
-                'updatedAt' => self::NOW,
+                $file === 'published.json' ? 'publishedAt' : 'updatedAt' => self::NOW,
                 'content' => $content,
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
         );
@@ -889,6 +1040,114 @@ final class BackupRestoreSqlTest extends TestCase
         $decoded = json_decode((string) file_get_contents($path), true);
 
         return $decoded;
+    }
+
+    private function makeTargetDistinctlyOld(): void
+    {
+        $this->target->run(
+            'UPDATE bookings SET customer_name = :name',
+            ['name' => 'OLD RESTORE STATE'],
+        );
+
+        foreach (['draft.json', 'published.json'] as $file) {
+            $path = $this->targetConfig->contentDir . '/' . $file;
+            file_put_contents(
+                $path,
+                str_replace(self::HEADLINE, 'OLD RESTORE STATE', (string) file_get_contents($path)),
+            );
+        }
+
+        $cataloguePath = $this->targetConfig->contentDir . '/' . MediaLibrary::INDEX_FILE;
+        /** @var array{schemaVersion: int, assets: list<array<string, mixed>>} $catalogue */
+        $catalogue = json_decode((string) file_get_contents($cataloguePath), true, 512, JSON_THROW_ON_ERROR);
+        $oldAsset = $catalogue['assets'][0];
+        $oldId = 'med_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+        $oldAsset['id'] = $oldId;
+        $extension = pathinfo((string) $oldAsset['path'], PATHINFO_EXTENSION);
+        $oldAsset['path'] = '/media/' . $oldId . '.' . $extension;
+        $catalogue['assets'][] = $oldAsset;
+        file_put_contents(
+            $cataloguePath,
+            (string) json_encode($catalogue, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+        );
+
+        $newName = basename((string) $catalogue['assets'][0]['path']);
+        $oldName = basename((string) $oldAsset['path']);
+        copy(
+            $this->targetConfig->mediaOriginalsDir . '/' . $newName,
+            $this->targetConfig->mediaOriginalsDir . '/' . $oldName,
+        );
+        copy(
+            $this->targetConfig->mediaPublicDir() . '/' . $newName,
+            $this->targetConfig->mediaPublicDir() . '/' . $oldName,
+        );
+    }
+
+    /** @return array{database: string, files: array<string, string>} */
+    private function targetState(): array
+    {
+        $files = [];
+        foreach (
+            [
+            'content' => $this->targetConfig->contentDir,
+            'originals' => $this->targetConfig->mediaOriginalsDir,
+            'derivatives' => $this->targetConfig->mediaPublicDir(),
+            ] as $role => $directory
+        ) {
+            if (!is_dir($directory)) {
+                continue;
+            }
+            foreach (scandir($directory) ?: [] as $name) {
+                $path = $directory . '/' . $name;
+                if ($name !== '.' && $name !== '..' && is_file($path) && !is_link($path)) {
+                    $files[$role . '/' . $name] = (string) hash_file('sha256', $path);
+                }
+            }
+        }
+        ksort($files);
+
+        return [
+            'database' => DatabaseDump::export($this->target, BackupSet::TABLES)['sql'],
+            'files' => $files,
+        ];
+    }
+
+    private function archiveWithReplacement(string $archive, string $path, string $contents): string
+    {
+        $entries = TarArchive::read($archive);
+        $entries[$path] = $contents;
+        /** @var array<string, mixed> $manifest */
+        $manifest = json_decode(
+            $entries[BackupSet::MANIFEST_FILE],
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        /** @var array<string, array{bytes: int, sha256: string}> $manifestEntries */
+        $manifestEntries = $manifest['entries'];
+        $manifestEntries[$path] = ['bytes' => \strlen($contents), 'sha256' => hash('sha256', $contents)];
+        $manifest['entries'] = $manifestEntries;
+        $manifest['entriesDigest'] = $this->digestOf($manifestEntries);
+        $entries[BackupSet::MANIFEST_FILE] = (string) json_encode(
+            $manifest,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
+        );
+
+        $candidate = $this->backupsRoot . '/candidate-' . bin2hex(random_bytes(6)) . '.tar.gz';
+        TarArchive::write($candidate, $entries, 1_700_000_000);
+
+        return $candidate;
+    }
+
+    private function tableExists(Database $database, string $table): bool
+    {
+        $row = $database->fetchOne(
+            'SELECT COUNT(*) AS total FROM information_schema.tables'
+                . ' WHERE table_schema = DATABASE() AND table_name = :table',
+            ['table' => $table],
+        );
+
+        return (int) ($row['total'] ?? 0) === 1;
     }
 
     private function rowCount(Database $database, string $table): int
