@@ -9,14 +9,16 @@ use Eszter\Contract\ContractArtifacts;
 use Eszter\Database\Database;
 use Eszter\Database\Migrator;
 use Eszter\Support\Clock;
+use Eszter\Storage\ApplicationSnapshotLock;
 
 /**
  * Assembles one backup archive from a live deployment (ESZ-083).
  *
  * ## Read-only, and it has to be
  *
- * Nothing here creates, seeds, repairs or touches a single byte of the deployment.
- * A backup tool that seeded a missing `media-library.json` would be a backup tool
+ * Nothing here creates, seeds or repairs durable application data. The only
+ * deployment-side write is the excluded advisory snapshot lock itself. A backup
+ * tool that seeded a missing `media-library.json` would be a backup tool
  * that changed the thing it was measuring, and the first person to notice would be
  * someone comparing two backups and finding a file that had appeared without
  * anybody editing anything. A file that is absent is recorded as absent.
@@ -38,6 +40,8 @@ final class BackupWriter
         private readonly ContractArtifacts $artifacts,
         private readonly Migrator $migrator,
         private readonly Clock $clock,
+        private readonly ?\Closure $afterDatabaseExport = null,
+        private readonly ?\Closure $beforePublish = null,
     ) {
     }
 
@@ -50,9 +54,21 @@ final class BackupWriter
     {
         $this->assertDestination($destinationDirectory);
 
+        $barrier = new ApplicationSnapshotLock($this->config->lockDir);
+
+        return $barrier->withExclusive(fn (): array => $this->writeSnapshot($destinationDirectory));
+    }
+
+    /** @return array{path: string, manifest: BackupManifest, bytes: int} */
+    private function writeSnapshot(string $destinationDirectory): array
+    {
         $entries = [];
         $dump = DatabaseDump::export($this->database, BackupSet::TABLES);
         $entries[BackupSet::DATABASE_FILE] = $dump['sql'];
+
+        if ($this->afterDatabaseExport !== null) {
+            ($this->afterDatabaseExport)();
+        }
 
         foreach ($this->contentEntries() as $path => $contents) {
             $entries[$path] = $contents;
@@ -81,6 +97,17 @@ final class BackupWriter
         $path = rtrim($destinationDirectory, '/\\') . \DIRECTORY_SEPARATOR . $this->fileName();
         $temporary = $path . '.partial';
 
+        $empty = @fopen($temporary, 'x');
+        if ($empty === false) {
+            throw new BackupException("Could not reserve the partial archive: {$temporary}");
+        }
+        fclose($empty);
+
+        if (!@chmod($temporary, 0o600)) {
+            @unlink($temporary);
+            throw new BackupException("Could not restrict the partial archive to mode 0600: {$temporary}");
+        }
+
         TarArchive::write($temporary, $archive, $this->clock->now()->getTimestamp());
 
         // 0600 before the rename, not after: the archive holds every booking and
@@ -88,6 +115,10 @@ final class BackupWriter
         // "restricted" is a window in which another account on a shared host can
         // read all of it.
         @chmod($temporary, 0o600);
+
+        if ($this->beforePublish !== null) {
+            ($this->beforePublish)();
+        }
 
         if (!@rename($temporary, $path)) {
             @unlink($temporary);

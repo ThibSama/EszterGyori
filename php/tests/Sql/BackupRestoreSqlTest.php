@@ -8,6 +8,7 @@ use Eszter\Backup\BackupException;
 use Eszter\Backup\BackupRestore;
 use Eszter\Backup\BackupSet;
 use Eszter\Backup\BackupWriter;
+use Eszter\Backup\DatabaseDump;
 use Eszter\Backup\TarArchive;
 use Eszter\Booking\BookingDomainContract;
 use Eszter\Booking\BookingRepository;
@@ -15,6 +16,7 @@ use Eszter\Config\Configuration;
 use Eszter\Database\Database;
 use Eszter\Media\MediaLibrary;
 use Eszter\Notification\NotificationPolicy;
+use Eszter\Storage\ApplicationSnapshotLock;
 use Eszter\Support\FrozenClock;
 use Eszter\Tests\Media\MediaFixtures;
 use Eszter\Tests\TestEnvironment;
@@ -438,6 +440,182 @@ final class BackupRestoreSqlTest extends TestCase
         self::assertSame($first, $second);
     }
 
+    public function testEveryDumpedTableAndRowCountComesFromOneMysqlSnapshot(): void
+    {
+        $this->source->run(
+            'INSERT INTO system_settings (setting_key, value_json, created_at, updated_at)'
+            . ' VALUES (:key, :value, :created, :updated)',
+            [
+                'key' => 'snapshot.proof',
+                'value' => '{"state":"PRE"}',
+                'created' => self::NOW,
+                'updated' => self::NOW,
+            ],
+        );
+        $this->source->run(
+            'INSERT INTO booking_services'
+            . ' (service_key, booking_label, duration_minutes, buffer_before_minutes,'
+            . ' buffer_after_minutes, is_active, created_at, updated_at)'
+            . ' VALUES (:key, :label, 30, 0, 0, 1, :created, :updated)',
+            [
+                'key' => 'snapshot-proof',
+                'label' => 'PRE',
+                'created' => self::NOW,
+                'updated' => self::NOW,
+            ],
+        );
+
+        $mutated = false;
+        $dump = DatabaseDump::export(
+            $this->source,
+            ['system_settings', 'booking_services'],
+            function (string $table) use (&$mutated): void {
+                if ($table !== 'system_settings') {
+                    return;
+                }
+
+                $writer = TestDatabase::connectSeparately();
+                $writer->transactional(static function (Database $database): void {
+                    $database->run(
+                        'UPDATE system_settings SET value_json = :value WHERE setting_key = :key',
+                        ['value' => '{"state":"POST"}', 'key' => 'snapshot.proof'],
+                    );
+                    $database->run(
+                        'UPDATE booking_services SET booking_label = :label WHERE service_key = :key',
+                        ['label' => 'POST', 'key' => 'snapshot-proof'],
+                    );
+                });
+                $mutated = true;
+            },
+        );
+
+        self::assertTrue($mutated);
+        self::assertSame(['system_settings' => 1, 'booking_services' => 1], $dump['rowCounts']);
+        self::assertStringContainsString('PRE', $dump['sql']);
+        self::assertStringNotContainsString('POST', $dump['sql']);
+        self::assertSame(
+            ['state' => 'POST'],
+            json_decode((string) ($this->source->fetchOne(
+                'SELECT value_json FROM system_settings WHERE setting_key = :key',
+                ['key' => 'snapshot.proof'],
+            )['value_json'] ?? ''), true, 512, JSON_THROW_ON_ERROR),
+        );
+        self::assertSame(
+            'POST',
+            $this->source->fetchOne(
+                'SELECT booking_label FROM booking_services WHERE service_key = :key',
+                ['key' => 'snapshot-proof'],
+            )['booking_label'] ?? null,
+        );
+    }
+
+    public function testPausedBackupExcludesACorrelatedDatabaseAndContentMutation(): void
+    {
+        $this->seedRealisticSource();
+        $marker = 'POST-SNAPSHOT-CORRELATED-MARKER';
+
+        $backupPipes = [];
+        $backup = proc_open(
+            [PHP_BINARY, __DIR__ . '/BackupSnapshotWorker.php', $this->sourceRoot . '/config.php', $this->backupsRoot],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $backupPipes,
+        );
+        self::assertIsResource($backup);
+        stream_set_timeout($backupPipes[1], 5);
+        self::assertSame("PAUSED\n", fgets($backupPipes[1]), 'backup never reached the controlled boundary');
+
+        $mutationPipes = [];
+        $mutation = proc_open(
+            [PHP_BINARY, __DIR__ . '/SnapshotMutationWorker.php', $this->sourceRoot . '/config.php', $marker],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $mutationPipes,
+        );
+        self::assertIsResource($mutation);
+        fclose($mutationPipes[0]);
+        stream_set_timeout($mutationPipes[1], 5);
+        self::assertSame("ATTEMPTING\n", fgets($mutationPipes[1]), 'mutation never reached the barrier');
+
+        // The mutation announced itself while the backup is paused, yet neither
+        // half can land until the backup releases its exclusive barrier.
+        self::assertNull($this->source->fetchOne(
+            'SELECT value_json FROM system_settings WHERE setting_key = :key',
+            ['key' => 'snapshot.marker'],
+        ));
+        self::assertStringNotContainsString(
+            $marker,
+            (string) file_get_contents($this->sourceConfig->contentDir . '/draft.json'),
+        );
+
+        fwrite($backupPipes[0], "continue\n");
+        fclose($backupPipes[0]);
+        $backupOutput = trim((string) stream_get_contents($backupPipes[1]));
+        $backupError = trim((string) stream_get_contents($backupPipes[2]));
+        fclose($backupPipes[1]);
+        fclose($backupPipes[2]);
+        self::assertSame(0, proc_close($backup), $backupError);
+        self::assertStringStartsWith('ARCHIVE ', $backupOutput);
+        $archive = substr($backupOutput, \strlen('ARCHIVE '));
+
+        $mutationOutput = trim((string) stream_get_contents($mutationPipes[1]));
+        $mutationError = trim((string) stream_get_contents($mutationPipes[2]));
+        fclose($mutationPipes[1]);
+        fclose($mutationPipes[2]);
+        self::assertSame(0, proc_close($mutation), $mutationError);
+        self::assertSame('MUTATED', $mutationOutput);
+
+        $entries = TarArchive::read($archive);
+        $archivedDraft = $entries[BackupSet::CONTENT_PREFIX . 'draft.json'] ?? '';
+        $archivedDump = $entries[BackupSet::DATABASE_FILE] ?? '';
+
+        self::assertStringNotContainsString($marker, $archivedDraft);
+        self::assertStringNotContainsString($marker, $archivedDump);
+        self::assertStringContainsString($marker, (string) file_get_contents(
+            $this->sourceConfig->contentDir . '/draft.json',
+        ));
+        self::assertStringContainsString(
+            $marker,
+            (string) ($this->source->fetchOne(
+                'SELECT value_json FROM system_settings WHERE setting_key = :key',
+                ['key' => 'snapshot.marker'],
+            )['value_json'] ?? ''),
+        );
+    }
+
+    public function testFailedPublicationLeavesOnlyARestrictedPartialAndReleasesEverything(): void
+    {
+        $this->seedRealisticSource();
+        $writer = new BackupWriter(
+            $this->sourceConfig,
+            $this->source,
+            TestEnvironment::artifacts(),
+            TestDatabase::migrator($this->source, $this->clock),
+            $this->clock,
+            afterDatabaseExport: null,
+            beforePublish: static function (): never {
+                throw new \RuntimeException('controlled publication failure');
+            },
+        );
+
+        try {
+            $writer->write($this->backupsRoot);
+            self::fail('the controlled backup failure published an archive');
+        } catch (\RuntimeException $failure) {
+            self::assertSame('controlled publication failure', $failure->getMessage());
+        }
+
+        self::assertSame([], glob($this->backupsRoot . '/*.tar.gz') ?: []);
+        $partials = glob($this->backupsRoot . '/*.partial') ?: [];
+        self::assertCount(1, $partials);
+        self::assertSame(0o600, fileperms($partials[0]) & 0o777);
+        self::assertFalse($this->source->inTransaction());
+        self::assertSame(
+            'released',
+            (new ApplicationSnapshotLock($this->sourceConfig->lockDir))->withShared(
+                static fn (): string => 'released',
+            ),
+        );
+    }
+
     // --- fixture ------------------------------------------------------------
 
     /**
@@ -611,7 +789,10 @@ final class BackupRestoreSqlTest extends TestCase
         $content['hero'] = \is_array($content['hero'] ?? null) ? $content['hero'] : [];
         /** @var array<string, mixed> $hero */
         $hero = $content['hero'];
-        $hero['title'] = $headline;
+        /** @var array<string, mixed> $title */
+        $title = $hero['title'];
+        $title['prefix'] = $headline;
+        $hero['title'] = $title;
         $content['hero'] = $hero;
 
         file_put_contents(

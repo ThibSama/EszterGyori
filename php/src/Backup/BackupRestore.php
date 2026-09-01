@@ -7,6 +7,7 @@ namespace Eszter\Backup;
 use Eszter\Config\Configuration;
 use Eszter\Database\Database;
 use Eszter\Database\Migrator;
+use Eszter\Storage\ApplicationSnapshotLock;
 
 /**
  * Applies one backup archive to a deployment (ESZ-083).
@@ -65,6 +66,19 @@ final class BackupRestore
      */
     public function restore(string $archivePath, bool $overwrite, bool $allowProduction): array
     {
+        $barrier = new ApplicationSnapshotLock($this->config->lockDir);
+
+        return $barrier->withExclusive(
+            fn (): array => $this->restoreWithSnapshotBarrier($archivePath, $overwrite, $allowProduction),
+        );
+    }
+
+    /** @return array{manifest: BackupManifest, statements: int, files: int, migrations: list<string>} */
+    private function restoreWithSnapshotBarrier(
+        string $archivePath,
+        bool $overwrite,
+        bool $allowProduction,
+    ): array {
         if ($this->config->isProduction() && !$allowProduction) {
             throw new BackupException(
                 'This configuration names a production environment. Restoring would replace live '

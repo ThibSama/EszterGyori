@@ -104,7 +104,7 @@ function notificationRunnerMain(array $arguments): int
         }
 
         $clock = new SystemClock();
-        $database = new Database($config->requireDatabase());
+        $database = new Database($config->requireDatabase(), $config->lockDir);
         $logger = new Logger(
             rtrim($config->logDir, '/') . '/notifications.log',
             $config->logLevel,

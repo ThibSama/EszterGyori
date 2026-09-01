@@ -94,7 +94,7 @@ function main(array $argv): int
     try {
         $config = Configuration::fromFile($configPath);
         $clock = new SystemClock();
-        $database = new Database($config->requireDatabase());
+        $database = new Database($config->requireDatabase(), $config->lockDir);
 
         $artifacts = new ContractArtifacts($config->contractsDir);
         $artifacts->verifyAll();

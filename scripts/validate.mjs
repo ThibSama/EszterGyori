@@ -370,7 +370,7 @@ const gates = [
     command: ["vendor/bin/phpunit", "--no-progress", "--testsuite", "sql-backup-restore"],
     unavailable: sqlDatabaseUnavailable,
     proves:
-      "ESZ-083's restore proof: a realistic deployment — services, availability, a booking with accented customer data, its history, its notification jobs, published and draft content, and a real JPEG with both its original and its derivative — is backed up and restored into a second empty database and a second empty directory, then interrogated for what a person would actually notice. It also proves the exclusions by their absence (no config, session, rate-limit row, log, lock, temporary file or in-flight upload reaches the archive) and the four refusals: a tampered entry, a populated target without --overwrite, a production configuration without --allow-production, and a backup from a schema the target has never reached.",
+      "ESZ-083's clean restore proof plus ESZ-097's coherence proof: all dumped tables and row counts come from one explicit MySQL consistent snapshot, and a backup paused after SQL export excludes a correlated SQL + content mutation in a second PHP process so the archive is wholly pre-mutation and the live state wholly post-mutation. The realistic clean restore, byte integrity, exclusions, size/security rules and restore refusals remain covered.",
   },
   {
     id: "sql:notifications",

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Eszter\Database;
 
 use Eszter\Config\DatabaseSettings;
+use Eszter\Storage\ApplicationSnapshotLock;
 
 /**
  * The one door onto SQL (ESZ-023).
@@ -45,8 +46,11 @@ final class Database
     /** Depth of nested {@see transactional()} calls; only the outermost commits. */
     private int $transactionDepth = 0;
 
-    public function __construct(private readonly DatabaseSettings $settings)
+    private readonly ?ApplicationSnapshotLock $snapshotLock;
+
+    public function __construct(private readonly DatabaseSettings $settings, ?string $lockDirectory = null)
     {
+        $this->snapshotLock = $lockDirectory === null ? null : new ApplicationSnapshotLock($lockDirectory);
     }
 
     /** Wraps an already-open handle. Used by the integration suite. */
@@ -107,6 +111,16 @@ final class Database
      */
     public function run(string $sql, array $parameters = []): \PDOStatement
     {
+        if ($this->transactionDepth === 0 && self::mutates($sql)) {
+            return $this->withMutation(fn (): \PDOStatement => $this->runUnlocked($sql, $parameters));
+        }
+
+        return $this->runUnlocked($sql, $parameters);
+    }
+
+    /** @param array<string, scalar|null> $parameters */
+    private function runUnlocked(string $sql, array $parameters): \PDOStatement
+    {
         try {
             $statement = $this->pdo()->prepare($sql);
             $statement->execute($parameters);
@@ -149,6 +163,19 @@ final class Database
      * place a statement is not prepared. There is exactly one caller.
      */
     public function executeRaw(string $sql, string $operation): void
+    {
+        if ($this->transactionDepth === 0 && self::mutates($sql)) {
+            $this->withMutation(function () use ($sql, $operation): void {
+                $this->executeRawUnlocked($sql, $operation);
+            });
+
+            return;
+        }
+
+        $this->executeRawUnlocked($sql, $operation);
+    }
+
+    private function executeRawUnlocked(string $sql, string $operation): void
     {
         try {
             $this->pdo()->exec($sql);
@@ -235,6 +262,16 @@ final class Database
             }
         }
 
+        return $this->withMutation(fn (): mixed => $this->transactionalUnlocked($work));
+    }
+
+    /**
+     * @template T
+     * @param \Closure(self): T $work
+     * @return T
+     */
+    private function transactionalUnlocked(\Closure $work): mixed
+    {
         $pdo = $this->pdo();
 
         try {
@@ -266,6 +303,72 @@ final class Database
         } finally {
             $this->transactionDepth = 0;
         }
+    }
+
+    /**
+     * Runs read work against one explicit MySQL consistent snapshot.
+     *
+     * @template T
+     * @param \Closure(self): T $work
+     * @return T
+     */
+    public function consistentSnapshot(\Closure $work): mixed
+    {
+        if ($this->transactionDepth > 0) {
+            throw new \LogicException('A consistent snapshot cannot start inside another transaction.');
+        }
+
+        $pdo = $this->pdo();
+
+        try {
+            $pdo->exec('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+            $pdo->exec('START TRANSACTION WITH CONSISTENT SNAPSHOT');
+        } catch (\PDOException $exception) {
+            throw DatabaseException::queryFailed('START CONSISTENT SNAPSHOT', $exception);
+        }
+
+        $this->transactionDepth = 1;
+
+        try {
+            $result = $work($this);
+            $pdo->commit();
+
+            return $result;
+        } catch (\Throwable $exception) {
+            try {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+            } catch (\PDOException) {
+            }
+
+            throw $exception;
+        } finally {
+            $this->transactionDepth = 0;
+        }
+    }
+
+    /**
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function withMutation(\Closure $work): mixed
+    {
+        return $this->snapshotLock === null ? $work() : $this->snapshotLock->withShared($work);
+    }
+
+    private static function mutates(string $sql): bool
+    {
+        $head = strtoupper((string) preg_replace('/^\s*(?:--[^\n]*\n\s*)*/', '', $sql));
+
+        foreach (['INSERT ', 'UPDATE ', 'DELETE ', 'REPLACE ', 'CREATE ', 'ALTER ', 'DROP ', 'TRUNCATE '] as $verb) {
+            if (str_starts_with($head, $verb)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

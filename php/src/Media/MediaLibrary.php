@@ -7,6 +7,7 @@ namespace Eszter\Media;
 use Eszter\Contract\ContractArtifacts;
 use Eszter\Contract\StructuralValidator;
 use Eszter\Storage\AtomicJsonFile;
+use Eszter\Storage\ApplicationSnapshotLock;
 use Eszter\Storage\FileLock;
 use Eszter\Storage\StorageException;
 use Eszter\Support\Clock;
@@ -96,6 +97,7 @@ final class MediaLibrary
 
     private readonly AtomicJsonFile $writer;
     private readonly FileLock $lock;
+    private readonly ApplicationSnapshotLock $snapshotLock;
 
     public function __construct(
         private readonly MediaContract $contract,
@@ -110,6 +112,7 @@ final class MediaLibrary
     ) {
         $this->writer = new AtomicJsonFile($this->tmpDirectory);
         $this->lock = new FileLock($lockDirectory . \DIRECTORY_SEPARATOR . 'media.lock');
+        $this->snapshotLock = new ApplicationSnapshotLock($lockDirectory);
         $this->maxIndexBytes = $artifacts->storageLimitBytes('mediaLibraryIndexLimitBytes');
     }
 
@@ -255,6 +258,32 @@ final class MediaLibrary
         string $verifiedDerivativePath,
         array $metadata,
     ): array {
+        return $this->snapshotLock->withShared(fn (): array => $this->publishAssetWithSnapshotBarrier(
+            $id,
+            $verifiedOriginalPath,
+            $verifiedDerivativePath,
+            $metadata,
+        ));
+    }
+
+    /**
+     * @param array{
+     *     id: string,
+     *     path: string,
+     *     mimeType: string,
+     *     byteSize: int,
+     *     width: int,
+     *     height: int,
+     *     uploadedAt: string,
+     * } $metadata
+     * @return array<string, mixed>
+     */
+    private function publishAssetWithSnapshotBarrier(
+        string $id,
+        string $verifiedOriginalPath,
+        string $verifiedDerivativePath,
+        array $metadata,
+    ): array {
         $this->ensureDirectories();
 
         $fileName = $this->contract->fileNameFor($id, $metadata['mimeType']);
@@ -354,6 +383,17 @@ final class MediaLibrary
      * @return array<string, mixed> The metadata of what was removed.
      */
     public function deleteAsset(string $id, callable $isReferenced): array
+    {
+        return $this->snapshotLock->withShared(
+            fn (): array => $this->deleteAssetWithSnapshotBarrier($id, $isReferenced),
+        );
+    }
+
+    /**
+     * @param callable(string): bool $isReferenced
+     * @return array<string, mixed>
+     */
+    private function deleteAssetWithSnapshotBarrier(string $id, callable $isReferenced): array
     {
         /** @var array<string, mixed> */
         return $this->lock->withLock(true, function () use ($id, $isReferenced): array {

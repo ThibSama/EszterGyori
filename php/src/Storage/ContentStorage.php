@@ -79,6 +79,7 @@ final class ContentStorage implements PublishedContentReader
 
     private readonly AtomicJsonFile $writer;
     private readonly FileLock $lock;
+    private readonly ApplicationSnapshotLock $snapshotLock;
 
     public function __construct(
         private readonly string $contentDirectory,
@@ -90,6 +91,7 @@ final class ContentStorage implements PublishedContentReader
     ) {
         $this->writer = new AtomicJsonFile($this->tmpDirectory);
         $this->lock = new FileLock($lockDirectory . \DIRECTORY_SEPARATOR . 'content.lock');
+        $this->snapshotLock = new ApplicationSnapshotLock($lockDirectory);
         $this->maxFileBytes = $artifacts->storageLimitBytes('contentFileLimitBytes');
     }
 
@@ -147,12 +149,14 @@ final class ContentStorage implements PublishedContentReader
             return $status;
         }
 
-        return $this->lock->withLock(true, function (): array {
-            return [
-                self::ROLE_DRAFT => $this->ensureFile(self::ROLE_DRAFT),
-                self::ROLE_PUBLISHED => $this->ensureFile(self::ROLE_PUBLISHED),
-            ];
-        });
+        return $this->snapshotLock->withShared(
+            fn (): array => $this->lock->withLock(true, function (): array {
+                return [
+                    self::ROLE_DRAFT => $this->ensureFile(self::ROLE_DRAFT),
+                    self::ROLE_PUBLISHED => $this->ensureFile(self::ROLE_PUBLISHED),
+                ];
+            }),
+        );
     }
 
     /** @return array<string, mixed> The validated, normalised published envelope. */
@@ -191,17 +195,19 @@ final class ContentStorage implements PublishedContentReader
             return $envelope;
         }
 
-        $this->ensureDirectory($this->tmpDirectory);
-        $this->assertSameFilesystem();
+        return $this->snapshotLock->withShared(function () use ($role): array {
+            $this->ensureDirectory($this->tmpDirectory);
+            $this->assertSameFilesystem();
 
-        return $this->lock->withLock(true, function () use ($role): array {
-            // Re-checked under the exclusive lock: between releasing the shared
-            // lock and taking this one, another process may already have seeded.
-            if (!is_file($this->descriptor($role)['path'])) {
-                $this->writeEnvelope($role, $this->seedEnvelope($role));
-            }
+            return $this->lock->withLock(true, function () use ($role): array {
+                // Re-checked under both barriers: another process may have seeded
+                // after the initial shared content-lock probe.
+                if (!is_file($this->descriptor($role)['path'])) {
+                    $this->writeEnvelope($role, $this->seedEnvelope($role));
+                }
 
-            return $this->readEnvelope($role);
+                return $this->readEnvelope($role);
+            });
         });
     }
 
@@ -216,16 +222,20 @@ final class ContentStorage implements PublishedContentReader
      */
     public function writeDraft(mixed $envelope): void
     {
-        $this->lock->withLock(true, function () use ($envelope): void {
-            $this->writeEnvelope(self::ROLE_DRAFT, $envelope);
+        $this->snapshotLock->withShared(function () use ($envelope): void {
+            $this->lock->withLock(true, function () use ($envelope): void {
+                $this->writeEnvelope(self::ROLE_DRAFT, $envelope);
+            });
         });
     }
 
     /** Validates then atomically replaces the published envelope. See {@see writeDraft()}. */
     public function writePublished(mixed $envelope): void
     {
-        $this->lock->withLock(true, function () use ($envelope): void {
-            $this->writeEnvelope(self::ROLE_PUBLISHED, $envelope);
+        $this->snapshotLock->withShared(function () use ($envelope): void {
+            $this->lock->withLock(true, function () use ($envelope): void {
+                $this->writeEnvelope(self::ROLE_PUBLISHED, $envelope);
+            });
         });
     }
 
@@ -255,6 +265,17 @@ final class ContentStorage implements PublishedContentReader
      * @throws RevisionConflictException Before anything is written.
      */
     public function saveDraft(int $expectedRevision, array $content): array
+    {
+        return $this->snapshotLock->withShared(
+            fn (): array => $this->saveDraftWithSnapshotBarrier($expectedRevision, $content),
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $content
+     * @return array<string, mixed>
+     */
+    private function saveDraftWithSnapshotBarrier(int $expectedRevision, array $content): array
     {
         $this->prepareDirectories();
 
@@ -298,6 +319,14 @@ final class ContentStorage implements PublishedContentReader
      * @throws RevisionConflictException Before anything is written.
      */
     public function publishDraft(int $expectedRevision): array
+    {
+        return $this->snapshotLock->withShared(
+            fn (): array => $this->publishDraftWithSnapshotBarrier($expectedRevision),
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private function publishDraftWithSnapshotBarrier(int $expectedRevision): array
     {
         $this->prepareDirectories();
 
@@ -351,6 +380,14 @@ final class ContentStorage implements PublishedContentReader
      * @throws RevisionConflictException Before anything is written.
      */
     public function resetDraftToPublished(int $expectedRevision): array
+    {
+        return $this->snapshotLock->withShared(
+            fn (): array => $this->resetDraftWithSnapshotBarrier($expectedRevision),
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private function resetDraftWithSnapshotBarrier(int $expectedRevision): array
     {
         $this->prepareDirectories();
 

@@ -59,7 +59,7 @@ function bookingServiceMain(array $arguments): int
         $artifacts->verifyAll();
         $clock = new SystemClock();
         $repository = new BookableServiceRepository(
-            new Database($config->requireDatabase()),
+            new Database($config->requireDatabase(), $config->lockDir),
             $clock,
             BookingDomainContract::fromArtifacts($artifacts),
         );

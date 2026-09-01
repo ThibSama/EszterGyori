@@ -49,7 +49,7 @@ function main(array $argv): int
 
     try {
         $config = Configuration::fromFile($configPath);
-        $database = new Database($config->requireDatabase());
+        $database = new Database($config->requireDatabase(), $config->lockDir);
         $migrator = new Migrator($database, \dirname(__DIR__) . '/migrations', new SystemClock());
 
         // Reported before anything is applied, and again as the outcome, so the

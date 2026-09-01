@@ -79,7 +79,7 @@ function main(array $argv): int
     try {
         $config = Configuration::fromFile($configPath);
         $clock = new SystemClock();
-        $database = new Database($config->requireDatabase());
+        $database = new Database($config->requireDatabase(), $config->lockDir);
         $repository = new AdminAccountRepository($database, $clock);
         $artifacts = new ContractArtifacts($config->contractsDir);
         $artifacts->verifyAll();

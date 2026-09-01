@@ -46,7 +46,7 @@ function bootstrapDevelopmentMain(array $arguments): int
         $artifacts = new ContractArtifacts($config->contractsDir);
         $artifacts->verifyAll();
         $clock = new SystemClock();
-        $database = new Database($config->requireDatabase());
+        $database = new Database($config->requireDatabase(), $config->lockDir);
         $bookingContract = BookingDomainContract::fromArtifacts($artifacts);
         $bookingTime = new BookingTimePolicy($bookingContract);
 

@@ -5,9 +5,10 @@
  *
  *   php bin/backup.php --config=config/config.php --to=../backups
  *
- * Read-only with respect to the deployment: it opens the database, reads the
- * content files and the media directories, and writes exactly one new file into
- * the destination. Nothing in the deployment is created, seeded or repaired.
+ * Read-only with respect to durable application state: it opens the database,
+ * reads content and media, and writes one archive into the destination. Its only
+ * deployment-side write is the excluded advisory snapshot lock; no data is
+ * created, seeded or repaired.
  *
  * What it carries and what it deliberately leaves out is declared in
  * `Eszter\Backup\BackupSet` and repeated in `docs/backup-and-restore.md`. The
@@ -68,7 +69,7 @@ function main(array $argv): int
     try {
         $config = Configuration::fromFile($configPath);
         $clock = new SystemClock();
-        $database = new Database($config->requireDatabase());
+        $database = new Database($config->requireDatabase(), $config->lockDir);
         $artifacts = new ContractArtifacts($config->contractsDir);
 
         // Verified before anything is read. A backup taken through unverified

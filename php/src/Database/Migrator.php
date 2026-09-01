@@ -78,26 +78,28 @@ final class Migrator
      */
     public function migrate(): array
     {
-        $available = $this->available();
-        $this->ensureRegistryTable();
+        return $this->database->withMutation(function (): array {
+            $available = $this->available();
+            $this->ensureRegistryTable();
 
-        return $this->withLock(function () use ($available): array {
-            $applied = $this->appliedRows();
-            $this->assertNoAppliedMigrationWasEdited($available, $applied);
-            $this->assertNoUnknownMigrationWasApplied($available, $applied);
+            return $this->withLock(function () use ($available): array {
+                $applied = $this->appliedRows();
+                $this->assertNoAppliedMigrationWasEdited($available, $applied);
+                $this->assertNoUnknownMigrationWasApplied($available, $applied);
 
-            $newlyApplied = [];
+                $newlyApplied = [];
 
-            foreach ($available as $migration) {
-                if (self::checksumOf($applied, $migration['version']) !== null) {
-                    continue;
+                foreach ($available as $migration) {
+                    if (self::checksumOf($applied, $migration['version']) !== null) {
+                        continue;
+                    }
+
+                    $this->apply($migration);
+                    $newlyApplied[] = $migration['version'];
                 }
 
-                $this->apply($migration);
-                $newlyApplied[] = $migration['version'];
-            }
-
-            return $newlyApplied;
+                return $newlyApplied;
+            });
         });
     }
 

@@ -50,9 +50,22 @@ final class DatabaseDump
 
     /**
      * @param list<string> $tables
+     * @param (\Closure(string): void)|null $afterTable Test seam invoked inside the snapshot transaction.
      * @return array{sql: string, rowCounts: array<string, int>}
      */
-    public static function export(Database $database, array $tables): array
+    public static function export(Database $database, array $tables, ?\Closure $afterTable = null): array
+    {
+        return $database->consistentSnapshot(
+            static fn (): array => self::exportSnapshot($database, $tables, $afterTable),
+        );
+    }
+
+    /**
+     * @param list<string> $tables
+     * @param (\Closure(string): void)|null $afterTable
+     * @return array{sql: string, rowCounts: array<string, int>}
+     */
+    private static function exportSnapshot(Database $database, array $tables, ?\Closure $afterTable): array
     {
         $sql = self::HEADER;
         $rowCounts = [];
@@ -73,6 +86,10 @@ final class DatabaseDump
 
             foreach ($rows as $row) {
                 $sql .= self::insert($database, $table, $row) . "\n";
+            }
+
+            if ($afterTable !== null) {
+                $afterTable($table);
             }
         }
 

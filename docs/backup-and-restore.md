@@ -1,4 +1,4 @@
-# Backup and restore (Package 8.2, ESZ-083)
+# Backup and restore (Phase 9, ESZ-083 / ESZ-097)
 
 This is the operator procedure for taking a backup of a live deployment and for
 putting one back. It also states, explicitly, which parts of "not losing the data"
@@ -59,10 +59,51 @@ It writes `backups/eszter-backup-<YYYYMMDD-HHMMSS>.tar.gz`, mode `0600`, and
 prints the entry count, the manifest digest, the applied migrations and a row
 count per table.
 
-The command is read-only with respect to the deployment. It creates nothing, seeds
-nothing and repairs nothing — a file that is absent is recorded as absent rather
-than invented, so two backups of an unchanged site are byte-identical and "has
-anything changed?" is a digest comparison.
+The command does not mutate durable application state. It may create/open the
+excluded `data/locks/application-snapshot.lock`, but it creates, seeds and repairs
+no database row, content document or media asset. A content file that is absent is
+recorded as absent rather than invented.
+
+### Coherent snapshot boundary
+
+A **coherent snapshot** is the complete declared `BackupSet` at one application
+barrier interval: every included MySQL table and its manifest row count come from
+one `REPEATABLE READ` transaction started with `START TRANSACTION WITH CONSISTENT
+SNAPSHOT`, while draft/published content, the media catalogue, originals and
+derivatives are read before the exclusive application barrier is released. The
+manifest hashes then prove the bytes of that already-coherent state; hashes are
+not used as a substitute for coherence.
+
+The barrier is local advisory `flock()` at
+`data/locks/application-snapshot.lock`, compatible with PHP on Hetzner shared
+hosting and dependent on `data/` being a local filesystem. A backup holds it
+exclusive. Participating mutations hold it shared for their complete logical
+write, so ordinary writers remain concurrent with each other but cannot cross a
+backup:
+
+- all SQL writes made by the production `Database` connection, including every
+  transaction that changes the tables in `BackupSet`; migrations hold it across
+  their complete run;
+- draft save, publish and reset, unconditional content writes and first-use
+  seeding;
+- media finalisation (catalogue + original + derivative) and deletion (reference
+  check + catalogue + both files); intake and staging remain excluded transient
+  work until finalisation;
+- restore takes the barrier exclusively across its database and filesystem
+  replacement, also excluding ordinary mutations from the replacement window.
+
+Lock ordering is fixed: application snapshot barrier first; then a content or
+media file lock, or a MySQL transaction. Media deletion retains its existing
+`media.lock` then `content.lock` order. No production path begins a MySQL
+transaction and then tries to acquire the application barrier, and no content
+path takes `content.lock` before it. This removes the obvious barrier/transaction
+and barrier/content/media deadlock cycles.
+
+Archive publication remains separate from snapshot capture. The destination file
+is reserved as `<final>.partial` and restricted to `0600` before any customer data
+is written; only a completed archive is atomically renamed to its final name. Any
+exception releases the MySQL transaction and application barrier through `finally`
+paths and never publishes a final archive.
 
 **The destination must not be inside the document root.** The archive carries every
 booking and every customer's name, e-mail address and phone number, and everything
@@ -152,11 +193,10 @@ Two things it does *not* cover, and both are why the tool above exists:
   and it cannot be restored anywhere else — including onto a laptop, which is where
   a restore should be rehearsed.
 - **Coherence.** This deployment's state is split across MySQL and the filesystem
-  by design (`docs/hetzner-target-architecture.md` §4). A copy of each taken
-  independently can disagree: a booking with no content revision to render it, or a
-  `media-library.json` naming a file the filesystem snapshot predates. The archive
-  is taken by one process in one pass, and its manifest is what proves the halves
-  belong together.
+  by design (`docs/hetzner-target-architecture.md` §4). Provider copies may take
+  the halves independently. The application archive instead uses the explicit
+  barrier and MySQL snapshot described above; its manifest proves byte integrity
+  after that coordination has proved which logical state the bytes belong to.
 
 **The deployment owner owns everything else**: running the backup on a schedule,
 keeping the archives somewhere other than the host they came from, keeping them

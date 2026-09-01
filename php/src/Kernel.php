@@ -227,7 +227,7 @@ final class Kernel
         // Constructing `Database` opens no connection, so a public-surface
         // request still costs nothing. The connection happens on the first query,
         // which only an `/api/auth/*` request makes.
-        $database = $config->database === null ? null : new Database($config->database);
+        $database = $config->database === null ? null : new Database($config->database, $config->lockDir);
 
         $accounts = $accountDirectory
             ?? ($database === null ? null : new AdminAccountRepository($database, $clock));
