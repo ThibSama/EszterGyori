@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "name": "EszterGyori",
+    "repository": "ThibSama/EszterGyori",
+    "phase": "Phase 9",
+    "derivationSource": {
+      "branch": "phase/9-consolidation",
+      "sha": "424bd372463072608d506ce3c28fa2399477096a"
+    },
+    "scopeFacts": [
+      "Next.js frontend is exported as static files; Node is build-time only in production.",
+      "PHP is the only production backend and serves the same-origin /api surface.",
+      "Editorial content is authoritative JSON; operational state is MySQL; managed media use filesystem plus an authoritative catalog.",
+      "Production includes admin authentication/sessions, booking, managed media uploads, a durable notification queue, one cron dispatcher and SMTP.",
+      "Production target is Hetzner shared webhosting; there is no production container runtime, service mesh, owned distributed-service topology, high-availability/failover topology, feature-flag system, artifact registry, vector/AI pipeline or autoscaling/load-balancing layer."
+    ]
+  },
+  "semantics": {
+    "ACTIVE": "The domain has at least one V1 project-scope trigger. Its atomic controls are evaluated from the pinned baseline using their O/A/R class and applicability trigger. ACTIVE is not PASS.",
+    "N/A": "No project-specific A/R trigger exists for this domain in the current V1 scope. Universal O controls in the pinned baseline are still evaluated and are never waived by this domain prefilter. A scope change invalidates the N/A decision.",
+    "reinforcement": "R controls remain non-blocking unless an explicit project decision promotes them.",
+    "gateRule": "FAIL or NOT VERIFIED on an O control or a triggered A control blocks the corresponding baseline gate. N/A without justification is invalid. NOT RUN is never PASS."
+  },
+  "baselines": [
+    {
+      "name": "Security",
+      "repository": "thib-tooling/security-baseline",
+      "version": "0.2.0",
+      "commitSha": "305b475636020598938145f7741d2132b6bc2b69",
+      "domainPrefix": "SEC",
+      "domainCount": 20,
+      "activeDomains": ["SEC-01","SEC-02","SEC-03","SEC-04","SEC-05","SEC-06","SEC-07","SEC-08","SEC-09","SEC-10","SEC-11","SEC-12","SEC-13","SEC-14","SEC-15","SEC-16","SEC-17","SEC-18","SEC-19","SEC-20"],
+      "notApplicableDomains": {}
+    },
+    {
+      "name": "Architecture",
+      "repository": "thib-tooling/architecture-baseline",
+      "version": "0.1.0",
+      "commitSha": "c4a47d811b0e5ec6740e2d771d593626c7c99de0",
+      "domainPrefix": "ARCH",
+      "domainCount": 23,
+      "activeDomains": ["ARCH-01","ARCH-02","ARCH-03","ARCH-04","ARCH-05","ARCH-06","ARCH-07","ARCH-08","ARCH-09","ARCH-10","ARCH-11","ARCH-12","ARCH-13","ARCH-14","ARCH-15","ARCH-16","ARCH-18","ARCH-19","ARCH-20","ARCH-21","ARCH-22","ARCH-23"],
+      "notApplicableDomains": {
+        "ARCH-17": "Production has one owned application/backend boundary (static frontend + same-origin PHP API) rather than an owned distributed-service topology; SMTP/MySQL are covered as backing/external services."
+      }
+    },
+    {
+      "name": "Quality",
+      "repository": "thib-tooling/quality-baseline",
+      "version": "0.1.0",
+      "commitSha": "e0fa9ed6d0a8f1c7992296f2a9845ec882b0388c",
+      "domainPrefix": "QUAL",
+      "domainCount": 26,
+      "activeDomains": ["QUAL-01","QUAL-02","QUAL-03","QUAL-04","QUAL-05","QUAL-06","QUAL-07","QUAL-08","QUAL-09","QUAL-10","QUAL-11","QUAL-12","QUAL-13","QUAL-14","QUAL-15","QUAL-16","QUAL-17","QUAL-18","QUAL-19","QUAL-20","QUAL-21","QUAL-22","QUAL-23","QUAL-24","QUAL-25","QUAL-26"],
+      "notApplicableDomains": {}
+    },
+    {
+      "name": "Testing",
+      "repository": "thib-tooling/testing-baseline",
+      "version": "0.1.0",
+      "commitSha": "5b41b0cb220ec705e3b91d5f335861a95fe893e0",
+      "domainPrefix": "TEST",
+      "domainCount": 32,
+      "activeDomains": ["TEST-01","TEST-02","TEST-03","TEST-04","TEST-05","TEST-06","TEST-07","TEST-08","TEST-09","TEST-10","TEST-11","TEST-12","TEST-13","TEST-14","TEST-15","TEST-16","TEST-17","TEST-18","TEST-19","TEST-20","TEST-21","TEST-22","TEST-23","TEST-24","TEST-25","TEST-26","TEST-27","TEST-28","TEST-29","TEST-30","TEST-31","TEST-32"],
+      "notApplicableDomains": {}
+    },
+    {
+      "name": "Delivery",
+      "repository": "thib-tooling/delivery-baseline",
+      "version": "0.1.0",
+      "commitSha": "1c888cc13d0a0a05fc425fde9831683e10262c32",
+      "domainPrefix": "DEL",
+      "domainCount": 34,
+      "activeDomains": ["DEL-01","DEL-02","DEL-03","DEL-04","DEL-05","DEL-06","DEL-07","DEL-08","DEL-09","DEL-10","DEL-11","DEL-12","DEL-14","DEL-15","DEL-16","DEL-17","DEL-18","DEL-19","DEL-20","DEL-21","DEL-22","DEL-23","DEL-24","DEL-26","DEL-27","DEL-28","DEL-29","DEL-31","DEL-32","DEL-33","DEL-34"],
+      "notApplicableDomains": {
+        "DEL-13": "The production delivery unit targets Hetzner shared webhosting and contains no container image/runtime; Docker Compose is only a local disposable development dependency.",
+        "DEL-25": "V1 has no feature-flag system or flag-controlled release path.",
+        "DEL-30": "V1 publishes no package/container artifact to a registry or public package repository; the production archive is deployed directly to the hosting target."
+      }
+    },
+    {
+      "name": "Operations",
+      "repository": "thib-tooling/operations-baseline",
+      "version": "0.1.0",
+      "commitSha": "9a79e55ac2ab5796915d226448210be4ea66f14f",
+      "domainPrefix": "OPS",
+      "domainCount": 36,
+      "activeDomains": ["OPS-01","OPS-02","OPS-03","OPS-04","OPS-05","OPS-06","OPS-07","OPS-08","OPS-09","OPS-10","OPS-11","OPS-12","OPS-13","OPS-14","OPS-15","OPS-16","OPS-17","OPS-18","OPS-19","OPS-20","OPS-21","OPS-22","OPS-23","OPS-24","OPS-25","OPS-27","OPS-28","OPS-29","OPS-30","OPS-31","OPS-32","OPS-33","OPS-34","OPS-35","OPS-36"],
+      "notApplicableDomains": {
+        "OPS-26": "V1 makes no high-availability or automated failover promise and has no redundant production topology; backup/restore/disaster recovery remain active separately."
+      }
+    },
+    {
+      "name": "Data",
+      "repository": "thib-tooling/data-baseline",
+      "version": "0.1.0",
+      "commitSha": "56451fa2a80fa32e6469c082c0d6ae180ea3072f",
+      "domainPrefix": "DATA",
+      "domainCount": 38,
+      "activeDomains": ["DATA-01","DATA-02","DATA-03","DATA-04","DATA-05","DATA-06","DATA-07","DATA-08","DATA-09","DATA-10","DATA-11","DATA-12","DATA-13","DATA-14","DATA-15","DATA-16","DATA-17","DATA-18","DATA-19","DATA-20","DATA-21","DATA-22","DATA-25","DATA-26","DATA-28","DATA-29","DATA-30","DATA-32","DATA-33","DATA-34","DATA-35","DATA-37","DATA-38"],
+      "notApplicableDomains": {
+        "DATA-23": "V1 contains no embeddings, chunking pipeline, vector store or search-derived vector index.",
+        "DATA-24": "V1 has no event stream, event log, CDC pipeline or streaming consumer; the notification table is an operational job queue, not an event-sourcing/CDC authority.",
+        "DATA-27": "V1 defines no analytics warehouse, analytical dataset or business-KPI data product.",
+        "DATA-31": "V1 has no application-level replica, multi-region store, sharding or multi-writer data topology.",
+        "DATA-36": "V1 contains no AI/ML training/evaluation dataset and persists no model-generated data."
+      }
+    },
+    {
+      "name": "Performance",
+      "repository": "thib-tooling/performance-baseline",
+      "version": "0.1.0",
+      "commitSha": "e7041d5867107b4a8aad6223ff0a9083055c62bb",
+      "domainPrefix": "PERF",
+      "domainCount": 40,
+      "activeDomains": ["PERF-01","PERF-02","PERF-03","PERF-04","PERF-05","PERF-06","PERF-07","PERF-08","PERF-09","PERF-10","PERF-11","PERF-12","PERF-13","PERF-14","PERF-15","PERF-16","PERF-17","PERF-18","PERF-19","PERF-20","PERF-21","PERF-22","PERF-23","PERF-24","PERF-25","PERF-27","PERF-28","PERF-29","PERF-30","PERF-31","PERF-32","PERF-33","PERF-34","PERF-35","PERF-36","PERF-37","PERF-38","PERF-39","PERF-40"],
+      "notApplicableDomains": {
+        "PERF-26": "V1 runs on fixed Hetzner shared webhosting and has no application-controlled autoscaling or load-balancing layer."
+      }
+    }
+  ]
+}
