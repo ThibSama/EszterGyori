@@ -23,6 +23,11 @@
  * visible to every user on the host through `ps`, and they are recorded verbatim
  * in the operator's shell history.
  *
+ * Interactive prompting is fail-closed: if the terminal state cannot be captured
+ * or echo cannot be suppressed, the script aborts before reading anything rather
+ * than showing the password, and the captured state is restored on every path
+ * after it may have changed.
+ *
  * ## Repeat-safe
  *
  * Running it twice with the same address updates the same row instead of failing
@@ -41,6 +46,7 @@ use Eszter\Admin\AdminEmail;
 use Eszter\Config\Configuration;
 use Eszter\Contract\ContractArtifacts;
 use Eszter\Database\Database;
+use Eszter\Support\PasswordPrompt;
 use Eszter\Support\SystemClock;
 
 require_once __DIR__ . '/../vendor/autoload.php';
@@ -176,63 +182,18 @@ function listAccounts(AdminAccountRepository $repository): int
 /**
  * Reads a password from the terminal without echoing it, or from a pipe.
  *
+ * Interactive prompting is fail-closed: the terminal state is captured and echo
+ * suppression is proved before anything is read, and the captured state is
+ * restored on every path after it may have changed. A terminal-control failure
+ * aborts provisioning instead of showing the password.
+ *
  * The confirmation prompt is skipped for a piped password: there is nobody there
  * to mistype it twice differently, and demanding the value twice on stdin would
  * only make the script awkward to automate.
  */
 function readPassword(bool $isNewAccount, ContractArtifacts $artifacts): ?string
 {
-    $minimum = passwordMinimum($artifacts);
-    $isTty = stream_isatty(STDIN);
-
-    if (!$isTty) {
-        $password = rtrim((string) fgets(STDIN), "\r\n");
-    } else {
-        fwrite(STDOUT, $isNewAccount ? "New account.\n" : "Setting a new password.\n");
-        $password = prompt('Password: ');
-        $confirmation = prompt('Confirm password: ');
-
-        if ($password !== $confirmation) {
-            fwrite(STDERR, "provision-admin: the two passwords do not match.\n");
-
-            return null;
-        }
-    }
-
-    if (mb_strlen($password, 'UTF-8') < $minimum) {
-        fwrite(STDERR, \sprintf(
-            "provision-admin: the password must be at least %d characters.\n",
-            $minimum,
-        ));
-
-        return null;
-    }
-
-    return $password;
-}
-
-function prompt(string $label): string
-{
-    fwrite(STDOUT, $label);
-
-    // `stty -echo` is the portable-enough way to suppress echo on the hosts this
-    // ships to. If it is unavailable the password would be echoed, so the failure
-    // is reported rather than silently accepted.
-    $previous = @shell_exec('stty -g 2>/dev/null');
-
-    if (!\is_string($previous) || trim($previous) === '') {
-        fwrite(STDOUT, "\n[warning] echo could not be suppressed; the password will be visible.\n");
-        $value = rtrim((string) fgets(STDIN), "\r\n");
-
-        return $value;
-    }
-
-    @shell_exec('stty -echo');
-    $value = rtrim((string) fgets(STDIN), "\r\n");
-    @shell_exec('stty ' . escapeshellarg(trim($previous)));
-    fwrite(STDOUT, "\n");
-
-    return $value;
+    return PasswordPrompt::forStandardStreams()->readPassword($isNewAccount, passwordMinimum($artifacts));
 }
 
 function passwordMinimum(ContractArtifacts $artifacts): int

@@ -190,7 +190,7 @@ const gates = [
     // must not need a database, and the SQL suites are separate gates below.
     command: ["vendor/bin/phpunit", "--no-progress", "--testsuite", "eszter"],
     proves:
-      "Configuration fail-fast including the production refusals of ESZ-027, contract-artifact digest verification, atomic JSON storage, the HTTP foundation against http-contract.json, ESZ-025/026 auth invariants, and Package 4.1/4.2 booking-domain rules without requiring SQL. Media, booking and notifications also have focused gates below.",
+      "Configuration fail-fast including the production refusals of ESZ-027, contract-artifact digest verification, atomic JSON storage, the HTTP foundation against http-contract.json, ESZ-025/026 auth invariants, and Package 4.1/4.2 booking-domain rules without requiring SQL. Media, booking and notifications also have focused gates below, and ESZ-132's fail-closed operator password prompting runs in this suite as well.",
   },
   {
     id: "php:parity-corpus",
@@ -286,10 +286,10 @@ const gates = [
       "--testsuite",
       "eszter",
       "--filter",
-      "RateLimitPolicyTest|RateLimitGuardTest|SecurityHeadersTest|StorageLimitReconciliationTest|MediaLibraryCapTest",
+      "RateLimitPolicyTest|RateLimitGuardTest|SecurityHeadersTest|StorageLimitReconciliationTest|MediaLibraryCapTest|PasswordPromptTest|ProvisionAdminCliTest",
     ],
     proves:
-      "ESZ-084 without a database: the frozen rate-limit policy is refused rather than weakened when this implementation cannot honour it; a login charges the caller's address before the submitted identity and a throttled login is byte-identical whether or not the address names an account; a forwarding header never changes which bucket a request is charged to; the generated .htaccess sends CSP, Permissions-Policy and the baseline headers with `always` and names no external origin; the content read guard stays strictly above the request limit, which is what stops a save being accepted and then refused on the next read; and the media catalogue cap is enforced before the write, so an over-sized catalogue — the one cap a caller can reach — can no longer wedge the delete that would shrink it.",
+      "ESZ-084 without a database: the frozen rate-limit policy is refused rather than weakened when this implementation cannot honour it; a login charges the caller's address before the submitted identity and a throttled login is byte-identical whether or not the address names an account; a forwarding header never changes which bucket a request is charged to; the generated .htaccess sends CSP, Permissions-Policy and the baseline headers with `always` and names no external origin; the content read guard stays strictly above the request limit, which is what stops a save being accepted and then refused on the next read; and the media catalogue cap is enforced before the write, so an over-sized catalogue — the one cap a caller can reach — can no longer wedge the delete that would shrink it. ESZ-132 adds the fail-closed operator password prompt: `--password` is a usage error that leaks nothing, piped stdin performs no terminal command, terminal-state capture and echo-suppression failures abort before any secret read, an input exception still restores the terminal in `finally`, a failed restoration is itself an operational failure, and a confirmed success restores the exact captured state with the secret in neither output nor command.",
   },
   {
     id: "php:backup",
