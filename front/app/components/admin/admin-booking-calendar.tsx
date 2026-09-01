@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { adminBookingMutationRequestSchema } from "@eszter/contracts";
 import { useAdminSession } from "./admin-session-provider";
 import type { AdminApiFailure, AdminBooking, AdminMoveAvailability } from "../../lib/admin-api";
 import {
@@ -16,7 +17,16 @@ import {
 } from "../../lib/admin-booking-calendar";
 
 type View = "month" | "day";
-type DetailAction = "none" | "move" | "cancel";
+type DetailAction = "none" | "move" | "cancel" | "edit";
+type ContactField = "customerName" | "customerEmail" | "customerPhone" | "customerNote";
+type ContactErrors = Partial<Record<ContactField, string>>;
+
+const CONTACT_ERROR_MESSAGES: Record<ContactField, string> = {
+  customerName: "Saisissez un nom valide.",
+  customerEmail: "Saisissez une adresse email valide.",
+  customerPhone: "Saisissez un numéro de téléphone valide.",
+  customerNote: "Saisissez une note valide.",
+};
 
 const SERVICE_LABELS: Record<string, string> = {
   brows: "Sourcils",
@@ -67,6 +77,11 @@ export function AdminBookingCalendar() {
   const [moveLoading, setMoveLoading] = useState(false);
   const [mutating, setMutating] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
+  const [contactName, setContactName] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [contactNote, setContactNote] = useState("");
+  const [contactErrors, setContactErrors] = useState<ContactErrors>({});
   const noticeRef = useRef<HTMLDivElement>(null);
   const detailHeadingRef = useRef<HTMLHeadingElement>(null);
   const actionHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -132,6 +147,18 @@ export function AdminBookingCalendar() {
     requestAnimationFrame(() => actionHeadingRef.current?.focus());
   };
 
+  const beginContactEdit = () => {
+    if (!selected) return;
+    setContactName(selected.customerName);
+    setContactEmail(selected.customerEmail);
+    setContactPhone(selected.customerPhone ?? "");
+    setContactNote(selected.customerNote ?? "");
+    setContactErrors({});
+    setAction("edit");
+    setMessage(null);
+    requestAnimationFrame(() => actionHeadingRef.current?.focus());
+  };
+
   const navigateDay = (date: string) => {
     setSelectedDate(date);
     if (monthKey(date) !== month) {
@@ -191,6 +218,58 @@ export function AdminBookingCalendar() {
     setAction("none");
     setCancelReason("");
     setMessage("Le rendez-vous est annulé. Il reste visible dans le calendrier.");
+    requestAnimationFrame(() => noticeRef.current?.focus());
+  };
+
+  const submitContactEdit = async () => {
+    if (!selected || mutating) return;
+    const parsed = adminBookingMutationRequestSchema.safeParse({
+      action: "update",
+      reference: selected.reference,
+      customerName: contactName,
+      customerEmail: contactEmail,
+      customerPhone: contactPhone.trim() || null,
+      customerNote: contactNote.trim() || null,
+    });
+    if (!parsed.success) {
+      const errors: ContactErrors = {};
+      for (const issue of parsed.error.issues) {
+        const field = issue.path[0];
+        if (
+          (field === "customerName" || field === "customerEmail" || field === "customerPhone" || field === "customerNote")
+          && !errors[field]
+        ) errors[field] = CONTACT_ERROR_MESSAGES[field];
+      }
+      setContactErrors(errors);
+      setMessage("Certaines coordonnées sont invalides. Corrigez les champs indiqués.");
+      const firstInvalid = (["customerName", "customerEmail", "customerPhone", "customerNote"] as const).find((field) => errors[field]);
+      const fieldIds: Record<ContactField, string> = {
+        customerName: "contact-name",
+        customerEmail: "contact-email",
+        customerPhone: "contact-phone",
+        customerNote: "contact-note",
+      };
+      requestAnimationFrame(() => firstInvalid ? document.getElementById(fieldIds[firstInvalid])?.focus() : noticeRef.current?.focus());
+      return;
+    }
+    setContactErrors({});
+    setMutating(true);
+    const result = await api.mutateBooking(parsed.data, csrfToken);
+    setMutating(false);
+    if (!result.ok) {
+      if (result.failure.kind === "conflict") {
+        await refreshOne(selected.reference);
+        setAction("none");
+        setMessage("Le rendez-vous avait changé. Ses coordonnées serveur ont été actualisées sans enregistrer la modification.");
+        requestAnimationFrame(() => noticeRef.current?.focus());
+        return;
+      }
+      return void handleFailure(result.failure);
+    }
+    setBookings((current) => replaceBooking(current, result.value));
+    setSelectedReference(result.value.reference);
+    setAction("none");
+    setMessage("Les coordonnées du rendez-vous ont été enregistrées.");
     requestAnimationFrame(() => noticeRef.current?.focus());
   };
 
@@ -265,7 +344,8 @@ export function AdminBookingCalendar() {
               <h2 ref={detailHeadingRef} tabIndex={-1} className="font-display text-2xl text-warm-900 focus:outline-none">{selected.customerName}</h2>
               <p className="mt-1 text-sm text-warm-600">{SERVICE_LABELS[selected.serviceKey] ?? selected.serviceKey}</p>
               <dl className="mt-5 grid gap-4 text-sm"><div><dt className="text-warm-500">Date et heure (Paris)</dt><dd className="mt-1 font-medium capitalize">{formatParisDate(parisLocalDate(selected.startsAtUtc))}, {formatParisTime(selected.startsAtUtc)}</dd></div><div><dt className="text-warm-500">État</dt><dd className="mt-1 font-medium">{selected.state === "cancelled" ? "Annulé" : "Confirmé"}</dd></div><div><dt className="text-warm-500">Email</dt><dd className="mt-1 break-all"><a className="underline" href={`mailto:${selected.customerEmail}`}>{selected.customerEmail}</a></dd></div>{selected.customerPhone && <div><dt className="text-warm-500">Téléphone</dt><dd className="mt-1"><a className="underline" href={`tel:${selected.customerPhone}`}>{selected.customerPhone}</a></dd></div>}{selected.customerNote && <div><dt className="text-warm-500">Note</dt><dd className="mt-1 whitespace-pre-wrap">{selected.customerNote}</dd></div>}</dl>
-              {selected.state === "confirmed" && action === "none" && <div className="mt-6 flex flex-wrap gap-2"><button type="button" onClick={beginMove} className="rounded-full bg-warm-900 px-4 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-sage-300">Déplacer</button><button type="button" onClick={() => { setAction("cancel"); setCancelReason(""); requestAnimationFrame(() => actionHeadingRef.current?.focus()); }} className="rounded-full border border-rose-300 px-4 py-2 text-sm text-rose-800 focus:outline-none focus:ring-2 focus:ring-rose-300">Annuler</button></div>}
+              {action === "none" && <div className="mt-6 flex flex-wrap gap-2"><button type="button" onClick={beginContactEdit} className="rounded-full border border-warm-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300">Modifier les coordonnées</button>{selected.state === "confirmed" && <><button type="button" onClick={beginMove} className="rounded-full bg-warm-900 px-4 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-sage-300">Déplacer</button><button type="button" onClick={() => { setAction("cancel"); setCancelReason(""); requestAnimationFrame(() => actionHeadingRef.current?.focus()); }} className="rounded-full border border-rose-300 px-4 py-2 text-sm text-rose-800 focus:outline-none focus:ring-2 focus:ring-rose-300">Annuler</button></>}</div>}
+              {action === "edit" && <div className="mt-6 border-t border-warm-200 pt-5"><h3 ref={actionHeadingRef} tabIndex={-1} className="font-medium focus:outline-none">Modifier les coordonnées</h3><label className="mt-4 block text-sm" htmlFor="contact-name">Nom</label><input id="contact-name" value={contactName} onChange={(event) => setContactName(event.target.value)} aria-invalid={Boolean(contactErrors.customerName)} aria-describedby={contactErrors.customerName ? "contact-name-error" : undefined} className="mt-1 w-full rounded-xl border border-warm-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sage-300" />{contactErrors.customerName && <p id="contact-name-error" tabIndex={-1} className="mt-1 text-sm text-rose-800">{contactErrors.customerName}</p>}<label className="mt-4 block text-sm" htmlFor="contact-email">Email</label><input id="contact-email" type="email" value={contactEmail} onChange={(event) => setContactEmail(event.target.value)} aria-invalid={Boolean(contactErrors.customerEmail)} aria-describedby={contactErrors.customerEmail ? "contact-email-error" : undefined} className="mt-1 w-full rounded-xl border border-warm-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sage-300" />{contactErrors.customerEmail && <p id="contact-email-error" tabIndex={-1} className="mt-1 text-sm text-rose-800">{contactErrors.customerEmail}</p>}<label className="mt-4 block text-sm" htmlFor="contact-phone">Téléphone</label><input id="contact-phone" type="tel" value={contactPhone} onChange={(event) => setContactPhone(event.target.value)} aria-invalid={Boolean(contactErrors.customerPhone)} aria-describedby={contactErrors.customerPhone ? "contact-phone-error" : undefined} className="mt-1 w-full rounded-xl border border-warm-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sage-300" />{contactErrors.customerPhone && <p id="contact-phone-error" tabIndex={-1} className="mt-1 text-sm text-rose-800">{contactErrors.customerPhone}</p>}<label className="mt-4 block text-sm" htmlFor="contact-note">Note</label><textarea id="contact-note" value={contactNote} onChange={(event) => setContactNote(event.target.value)} aria-invalid={Boolean(contactErrors.customerNote)} aria-describedby={contactErrors.customerNote ? "contact-note-error" : undefined} className="mt-1 min-h-24 w-full rounded-xl border border-warm-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sage-300" />{contactErrors.customerNote && <p id="contact-note-error" tabIndex={-1} className="mt-1 text-sm text-rose-800">{contactErrors.customerNote}</p>}<div className="mt-5 flex flex-wrap gap-2"><button type="button" disabled={mutating} onClick={() => void submitContactEdit()} className="rounded-full bg-warm-900 px-4 py-2 text-sm text-white disabled:opacity-40">{mutating ? "Enregistrement…" : "Enregistrer les coordonnées"}</button><button type="button" onClick={() => { setAction("none"); setContactErrors({}); }} className="rounded-full border border-warm-300 px-4 py-2 text-sm">Annuler la modification</button></div></div>}
               {action === "move" && <div className="mt-6 border-t border-warm-200 pt-5"><h3 ref={actionHeadingRef} tabIndex={-1} className="font-medium focus:outline-none">Choisir un nouvel horaire</h3><label className="mt-4 block text-sm" htmlFor="move-date">Date</label><input id="move-date" type="date" min={today} max={lastMoveDate} value={moveDate} onChange={(event) => { const date = event.target.value; setMoveDate(date); if (date) void loadMoveSlots(selected, date); }} className="mt-1 w-full rounded-xl border border-warm-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sage-300" />{moveLoading ? <p role="status" className="mt-4 text-sm">Chargement des horaires…</p> : moveAvailability?.slots.length ? <fieldset className="mt-4"><legend className="text-sm text-warm-600">Horaires disponibles</legend><div className="mt-2 grid grid-cols-3 gap-2">{moveAvailability.slots.map((slot) => <button key={slot.startsAtUtc} type="button" aria-pressed={selectedSlot === slot.startsAtUtc} onClick={() => setSelectedSlot(slot.startsAtUtc)} className={`rounded-xl border px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300 ${selectedSlot === slot.startsAtUtc ? "border-warm-900 bg-warm-900 text-white" : "border-warm-300"}`}>{slot.localStart}</button>)}</div></fieldset> : <p className="mt-4 text-sm text-warm-600">Aucun horaire disponible à cette date.</p>}<div className="mt-5 flex gap-2"><button type="button" disabled={!selectedSlot || mutating} onClick={() => void submitMove()} className="rounded-full bg-warm-900 px-4 py-2 text-sm text-white disabled:opacity-40">{mutating ? "Confirmation…" : "Confirmer le déplacement"}</button><button type="button" onClick={() => setAction("none")} className="rounded-full border border-warm-300 px-4 py-2 text-sm">Conserver</button></div></div>}
               {action === "cancel" && <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 p-4"><h3 ref={actionHeadingRef} tabIndex={-1} className="font-medium text-rose-950 focus:outline-none">Confirmer l’annulation</h3><p className="mt-2 text-sm text-rose-800">Le rendez-vous restera dans le calendrier avec l’état annulé.</p><label htmlFor="cancel-reason" className="mt-4 block text-sm">Motif facultatif</label><textarea id="cancel-reason" maxLength={500} value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} className="mt-1 min-h-20 w-full rounded-xl border border-rose-200 bg-white px-3 py-2" /><div className="mt-4 flex flex-wrap gap-2"><button type="button" disabled={mutating} onClick={() => void submitCancellation()} className="rounded-full bg-rose-800 px-4 py-2 text-sm text-white disabled:opacity-40">{mutating ? "Annulation…" : "Confirmer l’annulation"}</button><button type="button" onClick={() => setAction("none")} className="rounded-full border border-warm-300 bg-white px-4 py-2 text-sm">Conserver le rendez-vous</button></div></div>}
               {selected.state === "cancelled" && <p className="mt-6 rounded-2xl bg-warm-100 p-4 text-sm text-warm-600">Ce rendez-vous est annulé et ne peut plus être déplacé ni annulé de nouveau.{selected.cancellationReason ? ` Motif : ${selected.cancellationReason}` : ""}</p>}

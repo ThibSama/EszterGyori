@@ -419,6 +419,14 @@ const gates = [
       "ESZ-096 in a real browser and isolated full stack: a real image is uploaded and selected through the admin media library, rendered and decoded in preview across Hero, Services, Gallery and About, saved and published through the server workflow, then rendered and decoded from the same managed path on the public page. Null and broken-source fallbacks are exercised before publication.",
   },
   {
+    id: "browser:admin-booking-contact",
+    stage: "9. Browser scenarios",
+    cwd: ".",
+    command: ["node", "scripts/browser-admin-booking-contact.mjs"],
+    proves:
+      "ESZ-099 in a real browser and isolated full stack: a public booking is created from real same-day availability, its contact details are edited through the authenticated admin calendar and persist across reload, client-side invalid email keeps the editor open, and the admin API confirms the rejected edit did not alter server state.",
+  },
+  {
     id: "browser:public",
     stage: "9. Browser scenarios",
     status: NOT_RUN,

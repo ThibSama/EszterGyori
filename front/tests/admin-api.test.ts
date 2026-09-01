@@ -4,6 +4,7 @@ import {
   ADMIN_CONTENT_DRAFT_PATH,
   ADMIN_CONTENT_PUBLISH_PATH,
   ADMIN_CONTENT_RESET_PATH,
+  ADMIN_BOOKINGS_PATH,
   AUTH_LOGIN_PATH,
   AUTH_LOGOUT_PATH,
   AUTH_SESSION_PATH,
@@ -170,6 +171,50 @@ test("logout sends the token and treats 204 as success without a body", async ()
   assert.equal(calls[0]?.path, AUTH_LOGOUT_PATH);
   assert.equal(calls[0]?.method, "POST");
   assert.equal(calls[0]?.headers.get(CSRF_HEADER), "token");
+});
+
+test("booking contact update patches the admin route with the exact nullable body and returns server state", async () => {
+  const requestBody = {
+    action: "update" as const,
+    reference: "bk_00000000000000000000000000000000",
+    customerName: "Nouvelle Représentante",
+    customerEmail: "representante@example.test",
+    customerPhone: null,
+    customerNote: null,
+  };
+  const serverBooking = {
+    reference: requestBody.reference,
+    serviceKey: "brows",
+    state: "cancelled",
+    startsAtUtc: "2026-08-24T08:00:00.000Z",
+    endsAtUtc: "2026-08-24T08:30:00.000Z",
+    timezone: "Europe/Paris",
+    customerName: requestBody.customerName,
+    customerEmail: requestBody.customerEmail,
+    customerPhone: null,
+    customerNote: null,
+    consentAtUtc: "2026-08-20T10:00:00.000Z",
+    cancelledAtUtc: "2026-08-21T10:00:00.000Z",
+    cancellationReason: "Indisponible",
+    createdAt: "2026-08-20T10:00:00.000Z",
+    updatedAt: "2026-08-22T10:00:00.000Z",
+    history: [
+      { type: "created", actor: "public", occurredAt: "2026-08-20T10:00:00.000Z" },
+      { type: "cancelled", actor: "admin", occurredAt: "2026-08-21T10:00:00.000Z" },
+      { type: "customer_updated", actor: "admin", occurredAt: "2026-08-22T10:00:00.000Z" },
+    ],
+  };
+  const { calls, fetchImpl } = stubFetch([{ status: 200, body: { booking: serverBooking } }]);
+
+  const result = await createAdminApiClient(fetchImpl).mutateBooking(requestBody, "contact-csrf-token");
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.value, serverBooking);
+  assert.equal(calls[0]?.path, ADMIN_BOOKINGS_PATH);
+  assert.equal(calls[0]?.method, "PATCH");
+  assert.equal(calls[0]?.headers.get(CSRF_HEADER), "contact-csrf-token");
+  assert.deepEqual(JSON.parse(calls[0]?.body ?? "null"), requestBody);
 });
 
 test("the draft read returns the validated server envelope", async () => {

@@ -964,6 +964,36 @@ final class SqlIntegrationTest extends TestCase
         ]);
     }
 
+    public function testContactUpdateOnCancelledBooking(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '12:00')]);
+        $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
+        $reference = (string) $created['reference'];
+
+        $this->bookingApi->adminMutate([
+            'action' => 'cancel',
+            'reference' => $reference,
+            'reason' => 'Cliente indisponible',
+        ]);
+        $updated = $this->bookingApi->adminMutate([
+            'action' => 'update',
+            'reference' => $reference,
+            'customerName' => 'Nouvelle Représentante',
+            'customerEmail' => 'representante@example.test',
+            'customerPhone' => null,
+            'customerNote' => null,
+        ]);
+
+        self::assertSame('cancelled', $updated['booking']['state']);
+        self::assertSame('Nouvelle Représentante', $updated['booking']['customerName']);
+        self::assertSame('representante@example.test', $updated['booking']['customerEmail']);
+        self::assertSame(
+            ['created', 'cancelled', 'customer_updated'],
+            array_column($updated['booking']['history'], 'type'),
+        );
+    }
+
     public function testAdminMoveRevalidatesAgainstAnotherServiceAndLeavesSourceUntouched(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 15, 15, true);

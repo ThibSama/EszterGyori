@@ -102,3 +102,29 @@ test("calendar UI keeps conflict, cancellation, focus and responsive guarantees 
   assert.match(source, /Confirmer l’annulation/);
   assert.match(source, /Il reste visible dans le calendrier/);
 });
+
+test("calendar UI exposes contract-validated contact editing without deriving server state", async () => {
+  const source = await readFile(new URL("../app/components/admin/admin-booking-calendar.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /Modifier les coordonnées/);
+  for (const id of ["contact-name", "contact-email", "contact-phone", "contact-note"]) {
+    assert.match(source, new RegExp(`id="${id}"`));
+  }
+  assert.match(source, /Enregistrer les coordonnées/);
+  assert.match(source, /Annuler la modification/);
+  assert.match(source, /selected\.customerPhone &&/);
+  assert.match(source, /selected\.customerNote &&/);
+  assert.match(source, /setContactPhone\(selected\.customerPhone \?\? ""\)/);
+  assert.match(source, /setContactNote\(selected\.customerNote \?\? ""\)/);
+  assert.match(source, /adminBookingMutationRequestSchema\.safeParse/);
+  assert.match(source, /setBookings\(\(current\) => replaceBooking\(current, result\.value\)\)/);
+  assert.match(source, /setMessage\("Les coordonnées du rendez-vous ont été enregistrées\."\)/);
+  assert.match(source, /onClick=\{\(\) => \{ setAction\("none"\); setContactErrors\(\{\}\); \}\}/);
+  assert.match(source, /if \(!parsed\.success\)[\s\S]*setContactErrors\(errors\)[\s\S]*document\.getElementById/);
+  assert.match(source, /tabIndex=\{-1\}[\s\S]*contact-name-error/);
+  assert.match(source, /ref=\{noticeRef\} tabIndex=\{-1\}/);
+  const cancelEdit = source.match(/onClick=\{\(\) => \{ setAction\("none"\); setContactErrors\(\{\}\); \}\}[\s\S]*?Annuler la modification/);
+  assert.ok(cancelEdit);
+  assert.doesNotMatch(cancelEdit[0], /setBookings/);
+  assert.match(source, /result\.failure\.kind === "conflict"[\s\S]*refreshOne\(selected\.reference\)[\s\S]*setAction\("none"\)/);
+});
