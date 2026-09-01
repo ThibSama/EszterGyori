@@ -401,12 +401,20 @@ const gates = [
       "Against a deployed origin: GET /api/content with ETag revalidation, 405 on a wrong method, HTTPS redirect and security headers, /admin deep links and /reservation under the real Apache configuration.",
   },
 
-  // ── Stage 9 — Browser scenarios (not available) ───────────────────────────────
+  // ── Stage 9 — Browser scenarios ───────────────────────────────────────────────
+  {
+    id: "browser:admin-preview-csp",
+    stage: "9. Browser scenarios",
+    cwd: ".",
+    command: ["node", "scripts/browser-admin-preview-csp.mjs"],
+    proves:
+      "ESZ-095 in a real browser against Apache applying the committed generated .htaccess: the response carries the restrictive CSP, the real same-origin /admin/preview export loads inside an iframe without a frame-src violation, and an external iframe is blocked with a frame-src violation. This focused proof does not claim the broader authenticated browser:admin workflow.",
+  },
   {
     id: "browser:public",
     stage: "9. Browser scenarios",
     status: NOT_RUN,
-    reason: "No browser runner is configured and no origin is deployed.",
+    reason: "No deployed origin or project-owned runner covers this broader public scenario.",
     proves:
       "Public site: page renders published content, navigation deep links land below the fixed navbar, gallery and Instagram links resolve, layout holds at phone/tablet/desktop widths.",
   },
@@ -414,7 +422,7 @@ const gates = [
     id: "browser:admin",
     stage: "9. Browser scenarios",
     status: NOT_RUN,
-    reason: "No browser runner is configured and no origin is deployed.",
+    reason: "The focused ESZ-095 runner covers only the preview CSP. No deployed origin or project-owned runner covers this full authenticated workflow.",
     proves:
       "Admin: unauthenticated deep link redirects to login, login succeeds and rejects bad credentials, an edit saves to the server draft, publish updates the public site, and logout invalidates the session server-side.",
   },
@@ -422,7 +430,7 @@ const gates = [
     id: "browser:booking",
     stage: "9. Browser scenarios",
     status: NOT_RUN,
-    reason: "No browser runner is configured and no origin is deployed; Packages 5.1 and 7.2 are covered offline by frontend/API/routing, notification and real-MySQL producer tests.",
+    reason: "No deployed origin or project-owned runner covers this broader booking scenario; Packages 5.1 and 7.2 are covered offline by frontend/API/routing, notification and real-MySQL producer tests.",
     proves:
       "Booking: a request submits, validates, persists, is visible in admin, and enqueues its notifications; invalid input is rejected without data loss.",
   },

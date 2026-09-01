@@ -71,7 +71,7 @@ The order is the specification. Each stage assumes the previous one held.
 | **6. PHP validation** | composer validate, lint, static analysis, unit tests, parity-corpus replay, full `http-contract.json` replay, media, booking domain, document-root routing | Executable |
 | **7. SQL** | migration, integration and notification queue tests | Executable **when `ESZTER_TEST_DB_DSN` names a disposable MySQL database**; NOT RUN otherwise |
 | **8. HTTP smoke** | local PHP server plus deployed-origin checks | Local executable; deployed origin **Not run** |
-| **9. Browser scenarios** | public, admin, booking | **Not run** |
+| **9. Browser scenarios** | admin-preview CSP; public, full admin and booking | Preview CSP executable; broader scenarios **Not run** |
 | **10. Security and configuration** | deployed exposure, headers and permissions | **Not run** |
 
 > **Renumbered in Package 1.2 (ESZ-015).** The policy used to carry a stage 4,
@@ -352,8 +352,9 @@ SMS and live-provider receipt remain separate work.
 ## 5. Runtime smoke and deployment-owned gates
 
 Each gate below is declared in `scripts/validate.mjs`. The repository-local PHP smoke
-is executable; checks that require a deployed origin or browser remain NOT RUN with
-their reason, so the gap is inspectable rather than absent.
+and focused admin-preview CSP browser proof are executable; checks that require a
+deployed origin or the broader browser workflows remain NOT RUN with their reason, so
+the gap is inspectable rather than absent.
 
 ### Stage 8 — HTTP smoke
 
@@ -368,19 +369,27 @@ The separate `smoke:deployed-http` gate remains NOT RUN until an origin exists. 
 `GET /api/content` ETag revalidation, a wrong method and `Allow`, HTTP→HTTPS redirect,
 security headers, `/admin` deep links and `/reservation` under the real host.
 
-The remaining gap is now specifically the production web server. The local smoke,
-`php:routing` and `php:public-page` exercise the built-in-server adapter, routing table
-and injection. What no local gate can prove is that **Apache actually applies the
-generated `.htaccess`** — that
-`mod_rewrite` is enabled, that `AllowOverride` permits these directives, and that the
-host resolves `DirectoryIndex disabled` the way the rules assume. That is the gap this
-stage closes, and it cannot be closed before there is a host.
+The remaining deployed-origin gap is the production host configuration. The local
+smoke, `php:routing` and `php:public-page` exercise the built-in-server adapter, routing
+table and injection. `browser:admin-preview-csp` separately proves Apache applying the
+generated `.htaccess` in a controlled local production-style harness. It cannot prove
+that the deployed host enables the same modules and `AllowOverride`, terminates TLS or
+has the intended filesystem layout; `smoke:deployed-http` retains those obligations.
 
 Smoke tests assert the contract, not the copy. They must pass identically against a
 freshly deployed site with default content.
 
 ### Stage 9 — Browser scenarios
 
+`browser:admin-preview-csp` runs the built export under Apache with the committed
+generated `.htaccess`, then drives headless Chrome. It requires local Docker and
+`google-chrome` (overridable with `ESZTER_CSP_APACHE_IMAGE` and
+`ESZTER_CSP_CHROME`). The gate checks the CSP received by both the parent and the real
+`/admin/preview` iframe, requires `frame-src 'self'`, rejects broader frame authority,
+and proves an external iframe raises a `frame-src` violation. Its temporary document
+root, browser profile and container are removed on every outcome.
+
+That focused proof does not implement the broader `browser:admin` contract below.
 Critical paths only — enough to catch a broken release, few enough to stay trustworthy:
 
 - **Public**: published content renders; navigation deep links land below the fixed

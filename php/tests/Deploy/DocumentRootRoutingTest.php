@@ -191,6 +191,14 @@ final class DocumentRootRoutingTest extends TestCase
         self::assertNull($outcome['file']);
     }
 
+    public function testApacheDoesNotRedirectExportDirectoriesAheadOfPageRewrites(): void
+    {
+        $documentRoot = HtaccessRenderer::renderDocumentRoot();
+
+        self::assertStringContainsString('DirectorySlash Off', $documentRoot);
+        self::assertStringContainsString('RewriteRule ^(admin(?:/.*)?)$ $1.html [L]', $documentRoot);
+    }
+
     public function testEveryDeclaredRuleIsReachable(): void
     {
         // A rule nobody can hit is either dead or shadowed by an earlier one; both

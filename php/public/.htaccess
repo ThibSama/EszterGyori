@@ -52,6 +52,14 @@ Options -Indexes -MultiViews
 # merely unlikely.
 DirectoryIndex disabled
 
+# Next emits an RSC directory beside each extensionless page's `.html`
+# file. mod_dir would otherwise redirect `/admin/preview` to that
+# directory before serving the rewrite target, turning the preview into
+# `/admin/preview/` and a 403. The explicit rewrite table below owns
+# canonical page routing; no directory in the export needs an implicit
+# slash redirect.
+DirectorySlash Off
+
 ErrorDocument 404 /404.html
 
 <IfModule mod_rewrite.c>
