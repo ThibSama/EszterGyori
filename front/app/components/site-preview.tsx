@@ -1,4 +1,5 @@
 import { HeroInstagramButton } from "./hero-instagram-button";
+import { EditorialImage } from "./editorial-image";
 import { GallerySection } from "./site-gallery-section";
 import { Navigation } from "./navigation";
 import { Reveal } from "./reveal";
@@ -80,21 +81,31 @@ function HeroSection({ content }: { content: HeroContent }) {
         <div className="hero-entrance-delayed-2 relative aspect-[3/4] max-w-md mx-auto md:mx-0">
           <div className="absolute -inset-8 bg-gradient-to-br from-sage-300/50 via-mist-200/60 to-warm-300/40 rounded-[3rem] blur-2xl pointer-events-none" />
           <div className="relative h-full rounded-3xl overflow-hidden bg-gradient-to-br from-sage-200 via-mist-100 to-warm-200 border border-white/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_12px_48px_rgba(0,0,0,0.06)]">
-            <div className="absolute inset-0 bg-gradient-to-t from-white/30 via-transparent to-white/10" />
-            <div className="absolute inset-0 bg-gradient-to-br from-sage-300/25 via-transparent to-mist-200/20" />
-            <div className="relative h-full flex flex-col items-center justify-center p-10">
-              <div className="w-32 h-12 mb-5 border-b-[1.5px] border-sage-400/50 rounded-b-[55%]" />
-              <div className="flex gap-3 mb-6">
-                <div className="w-2 h-2 rounded-full bg-sage-400/45" />
-                <div className="w-1.5 h-1.5 rounded-full bg-sage-400/35" />
-                <div className="w-1 h-1 rounded-full bg-sage-400/40" />
-                <div className="w-1.5 h-1.5 rounded-full bg-sage-400/35" />
-                <div className="w-2 h-2 rounded-full bg-sage-400/45" />
-              </div>
-              <p className="text-sm text-warm-500 text-center leading-relaxed max-w-[200px]">
-                {content.visual.alt}
-              </p>
-            </div>
+            <EditorialImage
+              src={content.visual.src}
+              alt={content.visual.alt}
+              surface="hero"
+              loading="eager"
+              fetchPriority="high"
+              className="absolute inset-0 h-full w-full object-cover"
+              fallback={
+                <div className="relative h-full flex flex-col items-center justify-center p-10">
+                  <div className="absolute inset-0 bg-gradient-to-t from-white/30 via-transparent to-white/10" />
+                  <div className="absolute inset-0 bg-gradient-to-br from-sage-300/25 via-transparent to-mist-200/20" />
+                  <div className="relative z-10 w-32 h-12 mb-5 border-b-[1.5px] border-sage-400/50 rounded-b-[55%]" />
+                  <div className="relative z-10 flex gap-3 mb-6">
+                    <div className="w-2 h-2 rounded-full bg-sage-400/45" />
+                    <div className="w-1.5 h-1.5 rounded-full bg-sage-400/35" />
+                    <div className="w-1 h-1 rounded-full bg-sage-400/40" />
+                    <div className="w-1.5 h-1.5 rounded-full bg-sage-400/35" />
+                    <div className="w-2 h-2 rounded-full bg-sage-400/45" />
+                  </div>
+                  <p className="relative z-10 text-sm text-warm-500 text-center leading-relaxed max-w-[200px]">
+                    {content.visual.alt}
+                  </p>
+                </div>
+              }
+            />
             <HeroInstagramButton ariaLabel={content.instagramAriaLabel} />
             <div
               className="float-gentle absolute top-5 right-5 bg-white/55 backdrop-blur-md border border-white/45 rounded-xl px-3 py-1.5 shadow-[0_4px_16px_rgba(0,0,0,0.04)]"
@@ -161,33 +172,43 @@ function ServiceVisual({ item }: { item: ServiceItemContent }) {
   return (
     <div
       className={`aspect-[5/3] ${visualClassByKind[item.visualKind]} relative overflow-hidden flex items-center justify-center transition-transform duration-700 group-hover:scale-[1.02]`}>
-      <div className="absolute inset-0 bg-gradient-to-t from-white/20 to-transparent" />
-      {item.visualKind === "brows" && (
-        <div className="w-32 h-12 border-b-[1.5px] border-sage-400/50 rounded-b-[55%] relative z-10" />
-      )}
-      {item.visualKind === "eyeliner" && (
-        <div className="w-28 h-px bg-gradient-to-r from-transparent via-sage-400/50 to-transparent rotate-[-8deg] relative z-10" />
-      )}
-      {item.visualKind === "lips" && (
-        <div className="relative w-14 h-9 z-10">
-          <div className="absolute top-0 left-1/2 -translate-x-1/2 w-9 h-[18px] rounded-t-full border-t-[1.5px] border-x-[1.5px] border-warm-400/45" />
-          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-11 h-[18px] rounded-b-full border-b-[1.5px] border-x-[1.5px] border-warm-400/45" />
-        </div>
-      )}
-      {item.visualKind === "freckles" && (
-        <div className="relative w-20 h-20 z-10">
-          <div className="absolute top-2 left-5 w-2 h-2 rounded-full bg-warm-500/40" />
-          <div className="absolute top-6 left-1 w-1.5 h-1.5 rounded-full bg-warm-400/35" />
-          <div className="absolute top-4 left-10 w-1.5 h-1.5 rounded-full bg-warm-500/38" />
-          <div className="absolute top-10 left-4 w-2 h-2 rounded-full bg-warm-400/42" />
-          <div className="absolute top-8 left-12 w-1 h-1 rounded-full bg-warm-500/32" />
-          <div className="absolute top-14 left-8 w-1.5 h-1.5 rounded-full bg-warm-400/38" />
-          <div className="absolute top-12 left-14 w-2 h-2 rounded-full bg-warm-500/40" />
-        </div>
-      )}
-      <div className="absolute bottom-3 left-3 text-[11px] tracking-wide uppercase text-warm-500/80 relative z-10">
-        {item.visual.alt}
-      </div>
+      <EditorialImage
+        src={item.visual.src}
+        alt={item.visual.alt}
+        surface={`service-${item.id}`}
+        className="absolute inset-0 h-full w-full object-cover"
+        fallback={
+          <div className="relative h-full w-full flex items-center justify-center">
+            <div className="absolute inset-0 bg-gradient-to-t from-white/20 to-transparent" />
+            {item.visualKind === "brows" && (
+              <div className="w-32 h-12 border-b-[1.5px] border-sage-400/50 rounded-b-[55%] relative z-10" />
+            )}
+            {item.visualKind === "eyeliner" && (
+              <div className="w-28 h-px bg-gradient-to-r from-transparent via-sage-400/50 to-transparent rotate-[-8deg] relative z-10" />
+            )}
+            {item.visualKind === "lips" && (
+              <div className="relative w-14 h-9 z-10">
+                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-9 h-[18px] rounded-t-full border-t-[1.5px] border-x-[1.5px] border-warm-400/45" />
+                <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-11 h-[18px] rounded-b-full border-b-[1.5px] border-x-[1.5px] border-warm-400/45" />
+              </div>
+            )}
+            {item.visualKind === "freckles" && (
+              <div className="relative w-20 h-20 z-10">
+                <div className="absolute top-2 left-5 w-2 h-2 rounded-full bg-warm-500/40" />
+                <div className="absolute top-6 left-1 w-1.5 h-1.5 rounded-full bg-warm-400/35" />
+                <div className="absolute top-4 left-10 w-1.5 h-1.5 rounded-full bg-warm-500/38" />
+                <div className="absolute top-10 left-4 w-2 h-2 rounded-full bg-warm-400/42" />
+                <div className="absolute top-8 left-12 w-1 h-1 rounded-full bg-warm-500/32" />
+                <div className="absolute top-14 left-8 w-1.5 h-1.5 rounded-full bg-warm-400/38" />
+                <div className="absolute top-12 left-14 w-2 h-2 rounded-full bg-warm-500/40" />
+              </div>
+            )}
+            <div className="absolute bottom-3 left-3 text-[11px] tracking-wide uppercase text-warm-500/80 z-10">
+              {item.visual.alt}
+            </div>
+          </div>
+        }
+      />
     </div>
   );
 }
@@ -326,10 +347,20 @@ function AboutSection({
         <div className="md:col-span-2 relative">
           <div className="absolute -inset-6 bg-gradient-to-br from-sage-300/35 to-mist-200/30 rounded-[2rem] blur-xl pointer-events-none" />
           <div className="relative aspect-[3/4] rounded-2xl overflow-hidden bg-gradient-to-br from-sage-200 via-mist-100 to-warm-200 border border-white/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_12px_40px_rgba(0,0,0,0.06)] flex items-center justify-center p-8 group transition-shadow duration-500 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_16px_48px_rgba(0,0,0,0.08)]">
-            <div className="absolute inset-0 bg-gradient-to-t from-white/20 via-transparent to-white/10" />
-            <p className="text-sm text-warm-500 text-center leading-relaxed relative z-10">
-              {content.portrait.alt}
-            </p>
+            <EditorialImage
+              src={content.portrait.src}
+              alt={content.portrait.alt}
+              surface="about"
+              className="absolute inset-0 h-full w-full object-cover"
+              fallback={
+                <div className="relative h-full w-full flex items-center justify-center">
+                  <div className="absolute inset-0 bg-gradient-to-t from-white/20 via-transparent to-white/10" />
+                  <p className="text-sm text-warm-500 text-center leading-relaxed relative z-10">
+                    {content.portrait.alt}
+                  </p>
+                </div>
+              }
+            />
           </div>
         </div>
         <div className="md:col-span-3 space-y-6 md:pt-4">

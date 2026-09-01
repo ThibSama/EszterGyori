@@ -71,7 +71,7 @@ The order is the specification. Each stage assumes the previous one held.
 | **6. PHP validation** | composer validate, lint, static analysis, unit tests, parity-corpus replay, full `http-contract.json` replay, media, booking domain, document-root routing | Executable |
 | **7. SQL** | migration, integration and notification queue tests | Executable **when `ESZTER_TEST_DB_DSN` names a disposable MySQL database**; NOT RUN otherwise |
 | **8. HTTP smoke** | local PHP server plus deployed-origin checks | Local executable; deployed origin **Not run** |
-| **9. Browser scenarios** | admin-preview CSP; public, full admin and booking | Preview CSP executable; broader scenarios **Not run** |
+| **9. Browser scenarios** | admin-preview CSP, CMS media pipeline; public, full admin and booking | Focused CSP/media proofs executable; broader scenarios **Not run** |
 | **10. Security and configuration** | deployed exposure, headers and permissions | **Not run** |
 
 > **Renumbered in Package 1.2 (ESZ-015).** The policy used to carry a stage 4,
@@ -352,9 +352,9 @@ SMS and live-provider receipt remain separate work.
 ## 5. Runtime smoke and deployment-owned gates
 
 Each gate below is declared in `scripts/validate.mjs`. The repository-local PHP smoke
-and focused admin-preview CSP browser proof are executable; checks that require a
-deployed origin or the broader browser workflows remain NOT RUN with their reason, so
-the gap is inspectable rather than absent.
+and focused admin-preview CSP and media-pipeline browser proofs are executable; checks
+that require a deployed origin or the broader browser workflows remain NOT RUN with
+their reason, so the gap is inspectable rather than absent.
 
 ### Stage 8 — HTTP smoke
 
@@ -389,7 +389,17 @@ generated `.htaccess`, then drives headless Chrome. It requires local Docker and
 and proves an external iframe raises a `frame-src` violation. Its temporary document
 root, browser profile and container are removed on every outcome.
 
-That focused proof does not implement the broader `browser:admin` contract below.
+`browser:media-pipeline` runs the built export and PHP application against its own
+temporary MySQL container, content store, generated development credential and Chrome
+profile. It uploads a real PNG through the admin media input, selects the returned
+managed `/media/med_…` path, proves all eleven Hero/Services/Gallery/About images decode
+in the live preview, saves and publishes through the real server workflow, then proves
+the public page decodes the same path with the published alt text. Before the edit it
+also checks all eleven null fallbacks and a deliberately broken Hero source. The gate
+removes its container, credential, profile, content and uploaded derivative on every
+outcome; it does not use the ordinary development database or browser profile.
+
+Those focused proofs do not implement the broader `browser:admin` contract below.
 Critical paths only — enough to catch a broken release, few enough to stay trustworthy:
 
 - **Public**: published content renders; navigation deep links land below the fixed

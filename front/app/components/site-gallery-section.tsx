@@ -1,4 +1,5 @@
 import { Reveal } from "./reveal";
+import { EditorialImage } from "./editorial-image";
 import type { GalleryContent, GalleryItemContent } from "../types/site-content";
 
 function GalleryVisual({ item }: { item: GalleryItemContent }) {
@@ -84,8 +85,18 @@ function GalleryCard({ item }: { item: GalleryItemContent }) {
     <div className={containerClass}>
       <div
         className={`${item.featured ? "aspect-[16/9]" : "aspect-square"} flex items-center justify-center relative overflow-hidden`}>
-        <div className="absolute inset-0 bg-gradient-to-t from-white/15 to-transparent" />
-        <GalleryVisual item={item} />
+        <EditorialImage
+          src={item.visual.src}
+          alt={item.visual.alt}
+          surface={`gallery-${item.id}`}
+          className="absolute inset-0 h-full w-full object-cover transition-transform duration-700 group-hover:scale-[1.03]"
+          fallback={
+            <div className="relative h-full w-full flex items-center justify-center">
+              <div className="absolute inset-0 bg-gradient-to-t from-white/15 to-transparent" />
+              <GalleryVisual item={item} />
+            </div>
+          }
+        />
       </div>
       <div className="px-5 py-4">
         <p className="text-sm font-medium text-warm-600">{item.caption}</p>

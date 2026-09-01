@@ -13,6 +13,7 @@
     "php:smoke": "node scripts/smoke-local-php.mjs",
     "php:smoke:full-stack": "node scripts/smoke-full-stack.mjs",
     "browser:admin-preview-csp": "node scripts/browser-admin-preview-csp.mjs",
+    "browser:media-pipeline": "node scripts/browser-media-pipeline.mjs",
     "acceptance:production": "node scripts/production-acceptance.mjs",
     "php:lint": "php php/bin/lint.php",
     "baseline:verify": "node scripts/verify-project-baseline-matrix.mjs",

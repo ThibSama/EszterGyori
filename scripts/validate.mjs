@@ -411,6 +411,14 @@ const gates = [
       "ESZ-095 in a real browser against Apache applying the committed generated .htaccess: the response carries the restrictive CSP, the real same-origin /admin/preview export loads inside an iframe without a frame-src violation, and an external iframe is blocked with a frame-src violation. This focused proof does not claim the broader authenticated browser:admin workflow.",
   },
   {
+    id: "browser:media-pipeline",
+    stage: "9. Browser scenarios",
+    cwd: ".",
+    command: ["node", "scripts/browser-media-pipeline.mjs"],
+    proves:
+      "ESZ-096 in a real browser and isolated full stack: a real image is uploaded and selected through the admin media library, rendered and decoded in preview across Hero, Services, Gallery and About, saved and published through the server workflow, then rendered and decoded from the same managed path on the public page. Null and broken-source fallbacks are exercised before publication.",
+  },
+  {
     id: "browser:public",
     stage: "9. Browser scenarios",
     status: NOT_RUN,
@@ -422,7 +430,7 @@ const gates = [
     id: "browser:admin",
     stage: "9. Browser scenarios",
     status: NOT_RUN,
-    reason: "The focused ESZ-095 runner covers only the preview CSP. No deployed origin or project-owned runner covers this full authenticated workflow.",
+    reason: "The focused ESZ-095 and ESZ-096 runners cover preview CSP and the media pipeline only. No deployed origin or project-owned runner covers this full authenticated workflow.",
     proves:
       "Admin: unauthenticated deep link redirects to login, login succeeds and rejects bad credentials, an edit saves to the server draft, publish updates the public site, and logout invalidates the session server-side.",
   },
