@@ -14,6 +14,7 @@
     "php:smoke:full-stack": "node scripts/smoke-full-stack.mjs",
     "acceptance:production": "node scripts/production-acceptance.mjs",
     "php:lint": "php php/bin/lint.php",
+    "baseline:verify": "node scripts/verify-project-baseline-matrix.mjs",
     "validate": "node scripts/validate.mjs"
   }
 }
