@@ -33,6 +33,7 @@
       <directory>tests/Http</directory>
       <directory>tests/Media</directory>
       <directory>tests/Notification</directory>
+      <directory>tests/Retention</directory>
       <directory>tests/Security</directory>
       <directory>tests/Storage</directory>
       <directory>tests/Support</directory>

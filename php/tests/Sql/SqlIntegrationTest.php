@@ -29,8 +29,12 @@ use Eszter\Http\Request;
 use Eszter\Http\Response;
 use Eszter\Kernel;
 use Eszter\Notification\NotificationPolicy;
+use Eszter\Notification\BookingNotificationFactsRepository;
 use Eszter\Notification\BookingNotificationProducer;
 use Eszter\Notification\NotificationJobRepository;
+use Eszter\Notification\PermanentDeliveryException;
+use Eszter\Retention\BookingRetentionService;
+use Eszter\Retention\RetentionPolicy;
 use Eszter\Support\FrozenClock;
 use Eszter\Support\IsoTimestamp;
 use Eszter\Tests\TestEnvironment;
@@ -68,6 +72,12 @@ final class SqlIntegrationTest extends TestCase
     private const NOW = '2026-06-13T12:00:00.000Z';
     private const EMAIL = 'editor@example.test';
     private const PASSWORD = 'correct-horse-battery';
+
+    /** ESZ-140 fixtures: the customer values retention must erase and never print. */
+    private const OLD_NAME = 'Ancienne Cliente';
+    private const OLD_EMAIL = 'ancienne@example.test';
+    private const OLD_PHONE = '+33 6 11 22 33 44';
+    private const OLD_NOTE = 'note sensible';
 
     /**
      * The frozen clock the ESZ-134 production-wiring kernels boot with, and the
@@ -2583,6 +2593,688 @@ final class SqlIntegrationTest extends TestCase
         } finally {
             $this->removeRehashFailureTrigger();
         }
+    }
+
+    // --- ESZ-140: customer-data retention ----------------------------------
+
+    /**
+     * The whole retention matrix: confirmed and cancelled rows on both sides
+     * of their own cutoffs, plus not-yet-expired rows that must stay untouched.
+     * The suite clock is 2026-06-13T12:00:00Z, so the 90-day cutoff instant is
+     * 2026-03-15T12:00:00.000.
+     */
+    public function testRetentionErasesExactlyTheRowsPastTheirOwnCutoff(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $policy = RetentionPolicy::fromArtifacts(TestEnvironment::artifacts());
+
+        $service = new BookingRetentionService(
+            $this->database,
+            $this->clock,
+            $policy,
+            new NotificationJobRepository(
+                $this->database,
+                $this->clock,
+                NotificationPolicy::fromArtifacts(TestEnvironment::artifacts()),
+            ),
+        );
+
+        // Confirmed, ended well past the cutoff — eligible.
+        $oldConfirmed = $this->insertRetentionBooking(
+            'bk_a0000000000000000000000000000001',
+            'confirmed',
+            '2025-11-10 10:00:00.000',
+            '2025-11-10 11:00:00.000',
+            null,
+            null,
+        );
+        // Cancelled, cancelled well past the cutoff — eligible.
+        $oldCancelled = $this->insertRetentionBooking(
+            'bk_a0000000000000000000000000000002',
+            'cancelled',
+            '2025-12-01 10:00:00.000',
+            '2025-12-01 11:00:00.000',
+            '2025-12-01 10:30:00.000',
+            'Motif de l\'annulation',
+        );
+        // Confirmed, ended exactly AT the cutoff instant — eligible (<=).
+        $boundaryInside = $this->insertRetentionBooking(
+            'bk_a0000000000000000000000000000003',
+            'confirmed',
+            '2026-03-15 10:00:00.000',
+            '2026-03-15 11:00:00.000',
+            null,
+            null,
+        );
+        // Confirmed, ended after the cutoff instant — not yet eligible.
+        $boundaryOutside = $this->insertRetentionBooking(
+            'bk_a0000000000000000000000000000004',
+            'confirmed',
+            '2026-03-15 12:00:00.000',
+            '2026-03-15 13:00:00.000',
+            null,
+            null,
+        );
+        // Cancelled recently — not yet eligible.
+        $recentCancelled = $this->insertRetentionBooking(
+            'bk_a0000000000000000000000000000005',
+            'cancelled',
+            '2026-05-01 10:00:00.000',
+            '2026-05-01 11:00:00.000',
+            '2026-05-02 10:00:00.000',
+            'motif récent',
+        );
+        // Confirmed and still upcoming — untouched by design.
+        $upcoming = $this->insertRetentionBooking(
+            'bk_a0000000000000000000000000000006',
+            'confirmed',
+            '2026-07-01 08:00:00.000',
+            '2026-07-01 09:00:00.000',
+            null,
+            null,
+        );
+
+        $result = $service->applyEligible();
+
+        self::assertSame(3, $result['eligible']);
+        self::assertSame(3, $result['erased']);
+        self::assertSame(0, $result['retired']);
+        self::assertSame('2026-03-15T12:00:00.000Z', $result['cutoffUtc']);
+
+        foreach ([$oldConfirmed, $oldCancelled, $boundaryInside] as $id) {
+            $row = $this->retentionRow($id);
+            self::assertSame($policy->erasedCustomerName, $row['customer_name'], "booking {$id}");
+            self::assertSame($policy->erasedCustomerEmail, $row['customer_email'], "booking {$id}");
+            self::assertNull($row['customer_phone'], "booking {$id}");
+            self::assertNull($row['customer_note'], "booking {$id}");
+            self::assertNull($row['cancellation_reason'], "booking {$id}");
+            self::assertSame('2026-06-13 12:00:00.000', $row['customer_data_erased_at'], "booking {$id}");
+        }
+
+        foreach ([$boundaryOutside, $recentCancelled, $upcoming] as $id) {
+            $row = $this->retentionRow($id);
+            self::assertNotNull($row['customer_name'], "booking {$id} was erased");
+            self::assertNull($row['customer_data_erased_at'], "booking {$id} was erased");
+        }
+
+        // Erased rows keep their identity and appointment evidence; the row is
+        // anonymized, never deleted.
+        $kept = $this->retentionRow($oldCancelled);
+        self::assertSame('bk_a0000000000000000000000000000002', $kept['reference']);
+        self::assertSame('cancelled', $kept['state']);
+        self::assertSame('2025-12-01 11:00:00.000', $kept['ends_at_utc']);
+        self::assertSame('Europe/Paris', $kept['timezone_name']);
+        self::assertSame('2025-12-01 10:30:00.000', $kept['cancelled_at_utc']);
+        self::assertSame(6, (int) $this->database->fetchOne('SELECT COUNT(*) AS n FROM bookings')['n']);
+    }
+
+    /**
+     * Retention retires every pending and processing job of an erased booking
+     * — clearing the lease of a processing job — and leaves terminal jobs
+     * (`sent`, `failed`, `skipped`) untouched as delivery evidence.
+     */
+    public function testRetentionRetiresOnlyNonTerminalJobsAndPreservesTerminalEvidence(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $policy = RetentionPolicy::fromArtifacts(TestEnvironment::artifacts());
+        $service = new BookingRetentionService(
+            $this->database,
+            $this->clock,
+            $policy,
+            new NotificationJobRepository(
+                $this->database,
+                $this->clock,
+                NotificationPolicy::fromArtifacts(TestEnvironment::artifacts()),
+            ),
+        );
+
+        $bookingId = $this->insertRetentionBooking(
+            'bk_b0000000000000000000000000000001',
+            'confirmed',
+            '2025-11-10 10:00:00.000',
+            '2025-11-10 11:00:00.000',
+            null,
+            null,
+        );
+        $this->insertRetentionJob($bookingId, 'pending.example.confirmation', 'pending', 0, null, null, null);
+        $this->insertRetentionJob(
+            $bookingId,
+            'processing.example.reminder',
+            'processing',
+            2,
+            'host.99.abcdef012345',
+            '2026-06-13 12:30:00.000',
+            null,
+        );
+        $this->insertRetentionJob(
+            $bookingId,
+            'sent.example.confirmation',
+            'sent',
+            1,
+            null,
+            null,
+            '2026-05-01 09:00:00.000',
+        );
+        $this->insertRetentionJob($bookingId, 'failed.example.reminder', 'failed', 5, null, null, null);
+        $this->insertRetentionJob($bookingId, 'skipped.example.reminder', 'skipped', 0, null, null, null);
+
+        $result = $service->applyEligible();
+
+        self::assertSame(2, $result['retired']);
+
+        $rows = $this->database->fetchAll(
+            'SELECT status, last_error_code, lease_owner, lease_expires_at_utc, sent_at_utc'
+            . ' FROM notification_jobs WHERE booking_id = :booking ORDER BY id',
+            ['booking' => $bookingId],
+        );
+
+        self::assertSame('retired', $rows[0]['status']);
+        self::assertSame($policy->erasureJobCode, $rows[0]['last_error_code']);
+        self::assertSame('retired', $rows[1]['status']);
+        self::assertSame($policy->erasureJobCode, $rows[1]['last_error_code']);
+        // The lease of the processing job was cleared by the retirement.
+        self::assertNull($rows[1]['lease_owner']);
+        self::assertNull($rows[1]['lease_expires_at_utc']);
+
+        // Terminal evidence survives untouched, sent instant included.
+        self::assertSame('sent', $rows[2]['status']);
+        self::assertSame('2026-05-01 09:00:00.000', $rows[2]['sent_at_utc']);
+        self::assertSame('failed', $rows[3]['status']);
+        self::assertSame('skipped', $rows[4]['status']);
+
+        self::assertSame(5, (int) $this->database->fetchOne(
+            'SELECT COUNT(*) AS n FROM notification_jobs WHERE booking_id = :booking',
+            ['booking' => $bookingId],
+        )['n'], 'retention deleted notification evidence');
+    }
+
+    /**
+     * Notification fact resolution reads the e-mail from bookings at delivery
+     * time; an erased booking is refused with the frozen retention code, so
+     * even a leftover job can never deliver from the erased row.
+     */
+    public function testNotificationFactResolutionRefusesAnErasedBooking(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $policy = RetentionPolicy::fromArtifacts(TestEnvironment::artifacts());
+        $jobs = new NotificationJobRepository(
+            $this->database,
+            $this->clock,
+            NotificationPolicy::fromArtifacts(TestEnvironment::artifacts()),
+        );
+        $service = new BookingRetentionService($this->database, $this->clock, $policy, $jobs);
+        $facts = new BookingNotificationFactsRepository($this->database);
+
+        $bookingId = $this->insertRetentionBooking(
+            'bk_c0000000000000000000000000000001',
+            'confirmed',
+            '2025-11-10 10:00:00.000',
+            '2025-11-10 11:00:00.000',
+            null,
+            null,
+        );
+        $this->insertRetentionJob($bookingId, 'failed.example.reminder', 'failed', 5, null, null, null);
+        $job = $jobs->findByIdempotencyKey('failed.example.reminder');
+        self::assertNotNull($job);
+
+        // Live booking: facts resolve normally.
+        $liveFacts = $facts->forJob($job);
+        self::assertSame(self::OLD_EMAIL, $liveFacts->recipientAddress);
+
+        $service->applyEligible();
+
+        try {
+            $facts->forJob($job);
+            self::fail('facts resolved for an erased booking');
+        } catch (PermanentDeliveryException $refusal) {
+            self::assertSame('customer_data_erased', $refusal->errorCode);
+        }
+    }
+
+    /** A second run changes zero rows: eligibility and the marker are re-checked. */
+    public function testRepeatedRetentionRunsChangeZeroRows(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $service = new BookingRetentionService(
+            $this->database,
+            $this->clock,
+            RetentionPolicy::fromArtifacts(TestEnvironment::artifacts()),
+            new NotificationJobRepository(
+                $this->database,
+                $this->clock,
+                NotificationPolicy::fromArtifacts(TestEnvironment::artifacts()),
+            ),
+        );
+        $this->insertRetentionBooking(
+            'bk_d0000000000000000000000000000001',
+            'cancelled',
+            '2025-11-10 10:00:00.000',
+            '2025-11-10 11:00:00.000',
+            '2025-11-10 10:30:00.000',
+            'motif',
+        );
+        $this->insertRetentionJob(
+            'bk_d0000000000000000000000000000001',
+            'pending.example.confirmation',
+            'pending',
+            0,
+            null,
+            null,
+            null,
+        );
+
+        $first = $service->applyEligible();
+        self::assertSame(1, $first['erased']);
+        self::assertSame(1, $first['retired']);
+
+        $before = $this->database->fetchAll(
+            'SELECT customer_name, customer_email, customer_phone, customer_note,'
+            . ' cancellation_reason, customer_data_erased_at'
+            . ' FROM bookings ORDER BY id',
+        );
+        $jobsBefore = $this->database->fetchAll(
+            'SELECT status, last_error_code, lease_owner FROM notification_jobs ORDER BY id',
+        );
+
+        $second = $service->applyEligible();
+        self::assertSame(0, $second['eligible']);
+        self::assertSame(0, $second['erased']);
+        self::assertSame(0, $second['retired']);
+
+        self::assertSame($before, $this->database->fetchAll(
+            'SELECT customer_name, customer_email, customer_phone, customer_note,'
+            . ' cancellation_reason, customer_data_erased_at'
+            . ' FROM bookings ORDER BY id',
+        ));
+        self::assertSame($jobsBefore, $this->database->fetchAll(
+            'SELECT status, last_error_code, lease_owner FROM notification_jobs ORDER BY id',
+        ));
+    }
+
+    /**
+     * The admin contact editor (ESZ-099) must not be able to repopulate an
+     * erased booking: the update — and any other lifecycle write — is refused
+     * at the persistence layer, and the row stays anonymized.
+     */
+    public function testAdminUpdatesCannotReintroducePiiIntoAnErasedBooking(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $service = new BookingRetentionService(
+            $this->database,
+            $this->clock,
+            RetentionPolicy::fromArtifacts(TestEnvironment::artifacts()),
+            new NotificationJobRepository(
+                $this->database,
+                $this->clock,
+                NotificationPolicy::fromArtifacts(TestEnvironment::artifacts()),
+            ),
+        );
+        $reference = 'bk_e0000000000000000000000000000001';
+        $this->insertRetentionBooking(
+            $reference,
+            'cancelled',
+            '2025-11-10 10:00:00.000',
+            '2025-11-10 11:00:00.000',
+            '2025-11-10 10:30:00.000',
+            'motif',
+        );
+        $service->applyEligible();
+
+        // Contact update: refused, even though the admin UI would seed the
+        // editor from the server booking's placeholder values.
+        try {
+            $this->bookingApi->adminMutate([
+                'action' => 'update',
+                'reference' => $reference,
+                'customerName' => 'Nouvelle Cliente',
+                'customerEmail' => 'nouvelle@example.test',
+                'customerPhone' => '+33 6 12 34 56 78',
+                'customerNote' => 'nouvelle note',
+            ]);
+            self::fail('an erased booking accepted a customer update');
+        } catch (BookingValidationException $refusal) {
+            self::assertSame('customerDataErasedAt', $refusal->field);
+        }
+
+        // Cancelling an erased booking is refused too: a cancellation reason is
+        // customer text the erasure CHECK would refuse to store, and an erased
+        // row accepts no lifecycle write at all.
+        try {
+            $this->bookingApi->adminMutate([
+                'action' => 'cancel',
+                'reference' => $reference,
+                'reason' => 'nouveau motif',
+            ]);
+            self::fail('an erased booking accepted a cancellation');
+        } catch (BookingValidationException $refusal) {
+            self::assertSame('customerDataErasedAt', $refusal->field);
+        }
+
+        $row = $this->retentionRow(
+            (int) $this->database->fetchOne(
+                'SELECT id FROM bookings WHERE reference = :reference',
+                ['reference' => $reference],
+            )['id'],
+        );
+        self::assertSame('Deleted customer', $row['customer_name']);
+        self::assertSame('erased@example.invalid', $row['customer_email']);
+        self::assertNull($row['customer_note']);
+        self::assertNull($row['cancellation_reason']);
+        self::assertNotNull($row['customer_data_erased_at']);
+    }
+
+    /**
+     * Audit of the history producers: across the full lifecycle — created,
+     * customer_updated with every field changed, cancelled — the details_json
+     * carries field names and instants, never customer values, and retention
+     * neither rewrites nor deletes history rows.
+     */
+    public function testBookingHistoryDetailsJsonNeverHoldsErasedCustomerValues(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
+        $service = new BookingRetentionService(
+            $this->database,
+            $this->clock,
+            RetentionPolicy::fromArtifacts(TestEnvironment::artifacts()),
+            new NotificationJobRepository(
+                $this->database,
+                $this->clock,
+                NotificationPolicy::fromArtifacts(TestEnvironment::artifacts()),
+            ),
+        );
+
+        $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
+        $booking = $this->bookings->find((string) $created['reference']);
+        self::assertNotNull($booking);
+        $this->bookingApi->adminMutate([
+            'action' => 'update',
+            'reference' => $booking->reference,
+            'customerName' => 'Cliente Modifiée',
+            'customerEmail' => 'modifiee@example.test',
+            'customerPhone' => '+33 6 98 76 54 32',
+            'customerNote' => 'note modifiée',
+        ]);
+        $this->bookingApi->adminMutate([
+            'action' => 'cancel',
+            'reference' => $booking->reference,
+            'reason' => null,
+        ]);
+
+        // The booking was created inside the 90-day horizon, so it is not yet
+        // eligible; age it directly the way the calendar never could.
+        $this->database->run(
+            'UPDATE bookings SET starts_at_utc = :starts, ends_at_utc = :ends,'
+            . ' cancelled_at_utc = :cancelled'
+            . ' WHERE id = :id',
+            [
+                'starts' => '2025-12-01 08:00:00.000',
+                'ends' => '2025-12-01 09:00:00.000',
+                'cancelled' => '2025-12-02 09:00:00.000',
+                'id' => $booking->id,
+            ],
+        );
+
+        $historyBefore = $this->database->fetchAll(
+            'SELECT event_type, actor_type, details_json FROM booking_history'
+            . ' WHERE booking_id = :booking ORDER BY id',
+            ['booking' => $booking->id],
+        );
+        self::assertCount(3, $historyBefore);
+        $allDetails = implode('', array_column($historyBefore, 'details_json'));
+        foreach (
+            [
+                self::OLD_NAME,
+                self::OLD_EMAIL,
+                self::OLD_PHONE,
+                'Cliente Modifiée',
+                'modifiee@example.test',
+                '+33 6 98 76 54 32',
+                'note modifiée',
+            ] as $value
+        ) {
+            self::assertStringNotContainsString($value, $allDetails, 'a history details_json holds a customer value');
+        }
+
+        $service->applyEligible();
+
+        $historyAfter = $this->database->fetchAll(
+            'SELECT event_type, actor_type, details_json FROM booking_history'
+            . ' WHERE booking_id = :booking ORDER BY id',
+            ['booking' => $booking->id],
+        );
+        self::assertSame($historyBefore, $historyAfter, 'retention rewrote or deleted history rows');
+        self::assertSame(1, (int) $this->database->fetchOne(
+            'SELECT COUNT(*) AS n FROM bookings WHERE id = :id',
+            ['id' => $booking->id],
+        )['n'], 'retention deleted the booking row');
+    }
+
+    /**
+     * The shipped CLI, run twice against the real database: first run erases
+     * and retires, second run changes nothing, and neither run prints a
+     * booking reference or any seeded customer value.
+     */
+    public function testTheRetentionCliErasesIdempotentlyAndPrintsNoPii(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+
+        $this->insertRetentionBooking(
+            'bk_f0000000000000000000000000000001',
+            'confirmed',
+            '2025-11-10 10:00:00.000',
+            '2025-11-10 11:00:00.000',
+            null,
+            null,
+        );
+        $this->insertRetentionJob(
+            'bk_f0000000000000000000000000000001',
+            'cli.pending.example.confirmation',
+            'pending',
+            0,
+            null,
+            null,
+            null,
+        );
+        $this->insertRetentionBooking(
+            'bk_f0000000000000000000000000000002',
+            'cancelled',
+            '2025-12-01 10:00:00.000',
+            '2025-12-01 11:00:00.000',
+            '2025-12-02 09:00:00.000',
+            'motif confidentiel',
+        );
+        // A recent booking the CLI must leave alone (well inside the real
+        // clock's 90-day window).
+        $this->insertRetentionBooking(
+            'bk_f0000000000000000000000000000003',
+            'confirmed',
+            '2026-08-01 10:00:00.000',
+            '2026-08-01 11:00:00.000',
+            null,
+            null,
+        );
+
+        $settings = TestDatabase::settings();
+        $config = TestEnvironment::writeDeployment($this->root, [
+            'database' => [
+                'dsn' => $settings->dsn,
+                'username' => $settings->username,
+                'password' => $settings->password,
+                'connectTimeoutSeconds' => $settings->connectTimeoutSeconds,
+            ],
+        ]);
+
+        $binary = TestEnvironment::repositoryRoot() . '/php/bin/apply-booking-retention.php';
+        [$firstExit, $firstOut, $firstErr] = $this->runRetentionCli($binary, $config);
+        [$secondExit, $secondOut, $secondErr] = $this->runRetentionCli($binary, $config);
+
+        self::assertSame(0, $firstExit);
+        self::assertSame(0, $secondExit);
+        self::assertSame('', $firstErr);
+        self::assertSame('', $secondErr);
+
+        self::assertStringContainsString('status:  completed', $firstOut);
+        self::assertStringContainsString('cutoff:  ', $firstOut);
+        self::assertStringContainsString('scanned: 2', $firstOut);
+        self::assertStringContainsString('erased:  2', $firstOut);
+        self::assertStringContainsString('retired: 1', $firstOut);
+
+        // Idempotence at the CLI boundary: the second run changed zero rows.
+        self::assertStringContainsString('scanned: 0', $secondOut);
+        self::assertStringContainsString('erased:  0', $secondOut);
+        self::assertStringContainsString('retired: 0', $secondOut);
+
+        // Counts and cutoffs only: no reference, no customer value, nowhere.
+        foreach (
+            [
+                self::OLD_NAME,
+                self::OLD_EMAIL,
+                self::OLD_PHONE,
+                self::OLD_NOTE,
+                'motif confidentiel',
+                'bk_f0000000000000000000000000000001',
+            ] as $secret
+        ) {
+            self::assertStringNotContainsString($secret, $firstOut . $firstErr . $secondOut . $secondErr);
+        }
+
+        $erased = $this->retentionRow(
+            (int) $this->database->fetchOne(
+                'SELECT id FROM bookings WHERE reference = :reference',
+                ['reference' => 'bk_f0000000000000000000000000000001'],
+            )['id'],
+        );
+        self::assertNotNull($erased['customer_data_erased_at']);
+        self::assertNull($this->database->fetchOne(
+            'SELECT customer_data_erased_at FROM bookings WHERE reference = :reference',
+            ['reference' => 'bk_f0000000000000000000000000000003'],
+        )['customer_data_erased_at']);
+    }
+
+    /** @return array<string, mixed> */
+    private function retentionRow(int $id): array
+    {
+        $row = $this->database->fetchOne(
+            'SELECT reference, state, starts_at_utc, ends_at_utc, timezone_name, customer_name,'
+            . ' customer_email, customer_phone, customer_note, cancelled_at_utc,'
+            . ' cancellation_reason, customer_data_erased_at'
+            . ' FROM bookings WHERE id = :id',
+            ['id' => $id],
+        );
+        self::assertIsArray($row);
+
+        return $row;
+    }
+
+    /**
+     * Inserts a booking row with full customer PII and explicit lifecycle
+     * instants, so a test can place a booking anywhere relative to the
+     * retention cutoff.
+     */
+    private function insertRetentionBooking(
+        string $reference,
+        string $state,
+        string $starts,
+        string $ends,
+        ?string $cancelledAt,
+        ?string $reason,
+    ): int {
+        $this->database->run(
+            'INSERT INTO bookings (reference, service_key, state, starts_at_utc, ends_at_utc,'
+            . ' timezone_name, customer_name, customer_email, customer_phone, customer_note,'
+            . ' consent_at_utc, cancelled_at_utc, cancellation_reason, created_at, updated_at,'
+            . ' state_changed_at)'
+            . ' VALUES (:reference, :service, :state, :starts, :ends, :timezone, :name, :email,'
+            . ' :phone, :note, :consent, :cancelled, :reason, :created, :updated, :changed)',
+            [
+                'reference' => $reference,
+                'service' => 'brows',
+                'state' => $state,
+                'starts' => $starts,
+                'ends' => $ends,
+                'timezone' => 'Europe/Paris',
+                'name' => self::OLD_NAME,
+                'email' => self::OLD_EMAIL,
+                'phone' => self::OLD_PHONE,
+                'note' => self::OLD_NOTE,
+                'consent' => '2025-11-01 09:00:00.000',
+                'cancelled' => $cancelledAt,
+                'reason' => $reason,
+                'created' => self::NOW,
+                'updated' => self::NOW,
+                'changed' => self::NOW,
+            ],
+        );
+
+        return (int) $this->database->pdo()->lastInsertId();
+    }
+
+    /**
+     * Inserts one notification job for a booking named by id or reference.
+     */
+    private function insertRetentionJob(
+        int|string $booking,
+        string $key,
+        string $status,
+        int $attempts,
+        ?string $leaseOwner,
+        ?string $leaseExpires,
+        ?string $sentAt,
+    ): void {
+        if (\is_string($booking)) {
+            $bookingId = (int) $this->database->fetchOne(
+                'SELECT id FROM bookings WHERE reference = :reference',
+                ['reference' => $booking],
+            )['id'];
+        } else {
+            $bookingId = $booking;
+        }
+        $this->database->run(
+            'INSERT INTO notification_jobs (idempotency_key, booking_id, channel, job_type,'
+            . ' due_at_utc, next_attempt_at_utc, status, attempts, last_error_code, sent_at_utc,'
+            . ' lease_owner, lease_expires_at_utc, created_at, updated_at, status_changed_at)'
+            . ' VALUES (:key, :booking, :channel, :type, :due, :next, :status, :attempts, :code,'
+            . ' :sentAt, :leaseOwner, :leaseExpires, :created, :updated, :changed)',
+            [
+                'key' => $key,
+                'booking' => $bookingId,
+                'channel' => 'email',
+                'type' => 'booking_confirmation',
+                'due' => '2026-06-13 12:00:00.000',
+                'next' => '2026-06-13 12:00:00.000',
+                'status' => $status,
+                'attempts' => $attempts,
+                'code' => $status === 'failed' ? 'attempts_exhausted' : null,
+                'sentAt' => $sentAt,
+                'leaseOwner' => $leaseOwner,
+                'leaseExpires' => $leaseExpires,
+                'created' => self::NOW,
+                'updated' => self::NOW,
+                'changed' => self::NOW,
+            ],
+        );
+    }
+
+    /** @return array{int, string, string} */
+    private function runRetentionCli(string $binary, string $config): array
+    {
+        $pipes = [];
+        $process = proc_open(
+            [PHP_BINARY, $binary, '--config=' . $config],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            TestEnvironment::repositoryRoot(),
+        );
+        self::assertIsResource($process);
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        return [proc_close($process), (string) $stdout, (string) $stderr];
     }
 
     // --- ESZ-134 helpers ----------------------------------------------------

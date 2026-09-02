@@ -439,6 +439,41 @@ final class NotificationJobRepository
     }
 
     /**
+     * Terminally retires every non-terminal job of one booking (ESZ-140).
+     *
+     * Written by customer-data retention, in the same transaction as the
+     * booking erasure. `pending` and `processing` become `retired` with the
+     * frozen retention code; a processing job's lease is cleared by the same
+     * update, so the runner that held it can no longer record an outcome
+     * (`markSent` and the failure writers are all guarded on
+     * `status = 'processing'`). Terminal jobs — `sent`, `failed`, `skipped` —
+     * are delivery evidence and are deliberately not matched.
+     *
+     * The status guard makes the method idempotent: a second call finds no
+     * pending or processing rows and retires nothing.
+     */
+    public function retireForBooking(int $bookingId, string $errorCode): int
+    {
+        $this->assertErrorCode($errorCode);
+
+        return $this->database->run(
+            'UPDATE notification_jobs SET'
+            . ' status = :retired, lease_owner = NULL, lease_expires_at_utc = NULL,'
+            . ' last_error_code = :code, updated_at = :updatedAt, status_changed_at = :changedAt'
+            . ' WHERE booking_id = :booking AND status IN (:pending, :processing)',
+            [
+                'retired' => 'retired',
+                'code' => $errorCode,
+                'updatedAt' => $this->clock->nowIso(),
+                'changedAt' => $this->clock->nowIso(),
+                'booking' => $bookingId,
+                'pending' => 'pending',
+                'processing' => 'processing',
+            ],
+        )->rowCount();
+    }
+
+    /**
      * Terminally skips every pending time-sensitive job whose window has closed.
      *
      * One statement, no claim, no lease: a stale reminder is not being delivered

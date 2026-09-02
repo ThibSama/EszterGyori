@@ -13,6 +13,7 @@ use Eszter\Database\Migrator;
 use Eszter\Media\ImagePipeline;
 use Eszter\Media\MediaContract;
 use Eszter\Media\MediaLibrary;
+use Eszter\Retention\BookingRetentionService;
 use Eszter\Storage\ApplicationSnapshotLock;
 
 /**
@@ -64,11 +65,23 @@ final class BackupRestore
         private readonly Migrator $migrator,
         /** @var (\Closure(string): void)|null Deterministic project-owned test seam. */
         private readonly ?\Closure $failureInjector = null,
+        /**
+         * ESZ-140 restore reconciliation. When provided, the restore applies
+         * the customer-data retention policy to the restored rows — before the
+         * transaction commits and before the restore reports success — so an
+         * archive that carries PII already expired at restore time cannot
+         * resurrect it and cannot resume its notification queue. A
+         * reconciliation failure is a restore failure: it happens inside the
+         * same transaction as the row replacement, so it rolls the whole
+         * restore back through the existing compensation path.
+         */
+        private readonly ?BookingRetentionService $retention = null,
     ) {
     }
 
     /**
-     * @return array{manifest: BackupManifest, statements: int, files: int, migrations: list<string>}
+     * @return array{manifest: BackupManifest, statements: int, files: int,
+     *   migrations: list<string>, retention: array{reconciled: int, erased: int, retired: int}}
      */
     public function restore(string $archivePath, bool $overwrite, bool $allowProduction): array
     {
@@ -79,7 +92,10 @@ final class BackupRestore
         );
     }
 
-    /** @return array{manifest: BackupManifest, statements: int, files: int, migrations: list<string>} */
+    /**
+     * @return array{manifest: BackupManifest, statements: int, files: int,
+     *   migrations: list<string>, retention: array{reconciled: int, erased: int, retired: int}}
+     */
     private function restoreWithSnapshotBarrier(
         string $archivePath,
         bool $overwrite,
@@ -146,10 +162,12 @@ final class BackupRestore
             $applied = $schema['pending'] === [] ? [] : $this->migrator->migrate();
 
             $files = 0;
+            $retentionTotals = ['reconciled' => 0, 'erased' => 0, 'retired' => 0];
             $statements = $this->database->transactional(function (Database $connection) use (
                 $sql,
                 $filesystem,
                 &$files,
+                &$retentionTotals,
             ): int {
                 foreach (array_reverse(BackupSet::TABLES) as $table) {
                     if ($table !== Migrator::TABLE) {
@@ -158,6 +176,21 @@ final class BackupRestore
                 }
 
                 $count = DatabaseDump::import($connection, $sql, [Migrator::TABLE]);
+
+                // ESZ-140 restore reconciliation: the imported rows may carry
+                // customer data whose retention period has expired since the
+                // archive was taken. Apply the same policy the scheduled sweep
+                // applies — same service, same per-booking transactions — while
+                // the replacement transaction is still open, so the restore can
+                // only report success once the restored data obeys retention.
+                // Because this runs inside the transaction, a reconciliation
+                // failure rolls the rows, the erased markers and every moved
+                // file back together: retention-reconciliation failure can never
+                // produce restore success, and compensation covers it exactly
+                // like any other post-replacement failure.
+                $this->inject('before_retention_reconciliation');
+                $retentionTotals = $this->reconcileRestoredRetention();
+                $this->inject('after_retention_reconciliation');
                 $this->inject('after_database_replacement');
                 $files = $filesystem->install($this->failureInjector);
                 $this->inject('after_filesystem_installation');
@@ -187,7 +220,45 @@ final class BackupRestore
             'statements' => $statements,
             'files' => $files,
             'migrations' => $applied,
+            'retention' => $retentionTotals,
         ];
+    }
+
+    /**
+     * Applies the retention policy to the rows a restore just imported.
+     *
+     * Runs inside the replacement transaction, on the same connection, so
+     * every per-booking erasure joins that transaction. Batched to the
+     * retention service's own ceiling; the loop repeats until a pass finds no
+     * eligible booking left, so a single restore reconciles all of them and
+     * only then may the restore commit and report success.
+     *
+     * @return array{reconciled: int, erased: int, retired: int}
+     */
+    private function reconcileRestoredRetention(): array
+    {
+        $totals = ['reconciled' => 0, 'erased' => 0, 'retired' => 0];
+
+        if ($this->retention === null) {
+            return $totals;
+        }
+
+        do {
+            $run = $this->retention->applyEligible(BookingRetentionService::MAX_BATCH_SIZE);
+            $totals['reconciled'] += $run['eligible'];
+            $totals['erased'] += $run['erased'];
+            $totals['retired'] += $run['retired'];
+
+            // A pass that finds candidates but erases none cannot make
+            // progress (every candidate is re-checked under its row lock and
+            // either erased or skipped as already erased), so the loop must
+            // not spin.
+            if ($run['eligible'] > 0 && $run['erased'] === 0) {
+                break;
+            }
+        } while ($run['eligible'] > 0);
+
+        return $totals;
     }
 
     /**

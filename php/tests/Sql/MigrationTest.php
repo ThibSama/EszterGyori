@@ -7,6 +7,8 @@ namespace Eszter\Tests\Sql;
 use Eszter\Database\Database;
 use Eszter\Database\DatabaseException;
 use Eszter\Database\Migrator;
+use Eszter\Notification\NotificationPolicy;
+use Eszter\Retention\RetentionPolicy;
 use Eszter\Support\FrozenClock;
 use Eszter\Tests\TestEnvironment;
 use PHPUnit\Framework\Attributes\Group;
@@ -66,7 +68,7 @@ final class MigrationTest extends TestCase
         self::assertSame($sorted, $applied);
 
         self::assertSame(
-            ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '0010'],
+            ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '0010', '0011'],
             $applied,
         );
     }
@@ -294,8 +296,8 @@ final class MigrationTest extends TestCase
                     'id', 'reference', 'service_key', 'state', 'starts_at_utc',
                     'ends_at_utc', 'timezone_name', 'customer_name', 'customer_email',
                     'customer_phone', 'customer_note', 'consent_at_utc',
-                    'cancelled_at_utc', 'cancellation_reason', 'created_at',
-                    'updated_at', 'state_changed_at',
+                    'cancelled_at_utc', 'cancellation_reason', 'customer_data_erased_at',
+                    'created_at', 'updated_at', 'state_changed_at',
                 ],
                 'booking_resource_locks' => ['resource_key'],
                 'booking_history' => [
@@ -846,5 +848,161 @@ final class MigrationTest extends TestCase
 
         $this->expectException(DatabaseException::class);
         $this->database->run($insert, ['key' => $key, 'scope' => 'auth.login.address']);
+    }
+
+    // --- ESZ-140: customer-data retention schema ---------------------------
+
+    /**
+     * Migration 0011 must be as repeat-safe as every other one: DDL commits
+     * implicitly on MySQL, so a crash after the first guarded ALTER but before
+     * the registry insert leaves 0011 pending. Re-running it must complete on
+     * the parts that already succeeded instead of failing on them.
+     */
+    public function testMigration0011CompletesWhenRerunAfterAPartialApplication(): void
+    {
+        $this->migrator()->migrate();
+
+        // Exactly the state such a crash leaves: the DDL applied, the registry
+        // row missing.
+        $this->database->run(
+            'DELETE FROM ' . Migrator::TABLE . ' WHERE version = :version',
+            ['version' => '0011'],
+        );
+
+        self::assertSame(['0011'], $this->migrator()->migrate());
+        self::assertSame([], $this->migrator()->pendingVersions());
+
+        // The guarded forms must have been no-ops, not duplicates.
+        $markers = $this->database->fetchAll(
+            'SELECT COUNT(*) AS total FROM information_schema.columns'
+            . ' WHERE table_schema = DATABASE() AND table_name = :t AND column_name = :c',
+            ['t' => 'bookings', 'c' => 'customer_data_erased_at'],
+        );
+        self::assertSame(1, (int) $markers[0]['total']);
+    }
+
+    /**
+     * The retention schema is the policy written where SQL can enforce it:
+     * the erasure column exists and is nullable, the erasure CHECK restates the
+     * frozen placeholders, and the notification status CHECK admits exactly the
+     * frozen statuses. Read from `information_schema` so the assertion is about
+     * what MySQL actually enforces, not about a migration text.
+     */
+    public function testTheRetentionSchemaAgreesWithTheBookingDomainArtifact(): void
+    {
+        $this->migrator()->migrate();
+
+        $retentionPolicy = RetentionPolicy::fromArtifacts(TestEnvironment::artifacts());
+        $notificationPolicy = NotificationPolicy::fromArtifacts(TestEnvironment::artifacts());
+
+        $marker = $this->column('bookings', 'customer_data_erased_at');
+        self::assertSame('datetime', $marker['DATA_TYPE']);
+        self::assertSame('YES', $marker['IS_NULLABLE']);
+
+        $erasureCheck = $this->checkClause('bookings', 'chk_bookings_customer_data_erasure');
+        self::assertNotNull($erasureCheck, 'the erasure CHECK constraint is missing');
+        self::assertStringContainsString('`customer_data_erased_at` is null', $erasureCheck);
+        self::assertStringContainsString($retentionPolicy->erasedCustomerName, $erasureCheck);
+        self::assertStringContainsString($retentionPolicy->erasedCustomerEmail, $erasureCheck);
+        self::assertStringContainsString('`customer_phone` is null', $erasureCheck);
+        self::assertStringContainsString('`customer_note` is null', $erasureCheck);
+        self::assertStringContainsString('`cancellation_reason` is null', $erasureCheck);
+
+        $statusCheck = $this->checkClause('notification_jobs', 'chk_notification_jobs_status');
+        self::assertNotNull($statusCheck, 'the notification status CHECK constraint is missing');
+        foreach ($notificationPolicy->statuses as $status) {
+            self::assertStringContainsString($status, $statusCheck, "status {$status} is not in the CHECK");
+        }
+        // A status that is not in the frozen set must not be enforceable either.
+        self::assertStringNotContainsString('deleted', $statusCheck);
+    }
+
+    /**
+     * The schema itself refuses to repopulate an erased booking: once the
+     * marker is set, the only customer values the row may hold are the frozen
+     * placeholders, and the database — not a review habit — is what says so.
+     */
+    public function testAnErasedBookingRowCannotBeRepopulatedAtTheSchemaLevel(): void
+    {
+        $this->migrator()->migrate();
+        $policy = RetentionPolicy::fromArtifacts(TestEnvironment::artifacts());
+
+        $bookingId = $this->seedBookingForNotifications();
+        $this->database->run(
+            'UPDATE bookings SET customer_data_erased_at = :marker,'
+            . ' customer_name = :name, customer_email = :email,'
+            . ' customer_phone = NULL, customer_note = NULL, cancellation_reason = NULL'
+            . ' WHERE id = :id',
+            [
+                'marker' => '2026-01-01 00:00:00.000',
+                'name' => $policy->erasedCustomerName,
+                'email' => $policy->erasedCustomerEmail,
+                'id' => $bookingId,
+            ],
+        );
+
+        // A real customer write to the erased row violates chk_bookings_customer_data_erasure.
+        $this->expectException(DatabaseException::class);
+        $this->database->run(
+            'UPDATE bookings SET customer_name = :name, customer_phone = :phone WHERE id = :id',
+            ['name' => 'Reintroduced', 'phone' => '+33 6 00 00 00 00', 'id' => $bookingId],
+        );
+    }
+
+    /**
+     * A `retired` notification row must satisfy every lease, sent-instant and
+     * error-code constraint that applies to the other statuses: no dangling
+     * lease, no sent instant, a code that matches the frozen pattern.
+     */
+    public function testARetiredNotificationJobSatisfiesTheTerminalConstraints(): void
+    {
+        $this->migrator()->migrate();
+        $policy = RetentionPolicy::fromArtifacts(TestEnvironment::artifacts());
+
+        $bookingId = $this->seedBookingForNotifications();
+        $this->database->run(
+            'INSERT INTO notification_jobs ('
+            . ' idempotency_key, booking_id, channel, job_type, due_at_utc, next_attempt_at_utc,'
+            . ' status, attempts, last_error_code, sent_at_utc, lease_owner, lease_expires_at_utc,'
+            . ' created_at, updated_at, status_changed_at'
+            . ') VALUES ('
+            . ' :key, :booking, :channel, :type, :due, :next, :status, 1, :code,'
+            . ' NULL, NULL, NULL, :now, :now2, :now3)',
+            [
+                'key' => 'retired.example.confirmation',
+                'booking' => $bookingId,
+                'channel' => 'email',
+                'type' => 'booking_confirmation',
+                'due' => '2026-06-15 08:00:00.000',
+                'next' => '2026-06-15 08:00:00.000',
+                'status' => 'retired',
+                'code' => $policy->erasureJobCode,
+                'now' => self::NOW,
+                'now2' => self::NOW,
+                'now3' => self::NOW,
+            ],
+        );
+
+        $stored = $this->database->fetchOne(
+            'SELECT status, last_error_code, lease_owner, sent_at_utc FROM notification_jobs'
+            . ' WHERE idempotency_key = :key',
+            ['key' => 'retired.example.confirmation'],
+        );
+        self::assertSame('retired', $stored['status']);
+        self::assertSame($policy->erasureJobCode, $stored['last_error_code']);
+        self::assertNull($stored['lease_owner']);
+        self::assertNull($stored['sent_at_utc']);
+    }
+
+    /** @return string|null */
+    private function checkClause(string $table, string $constraint): ?string
+    {
+        $row = $this->database->fetchOne(
+            'SELECT CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS'
+            . ' WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = :name',
+            ['name' => $constraint],
+        );
+
+        return \is_string($row['CHECK_CLAUSE'] ?? null) ? $row['CHECK_CLAUSE'] : null;
     }
 }

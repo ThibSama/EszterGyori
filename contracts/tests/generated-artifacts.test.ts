@@ -40,6 +40,7 @@ import {
   notificationStatusTransitions,
   notificationStatuses,
   notificationTerminalStatuses,
+  customerDataRetentionPolicy,
   BOOKING_SLOT_MAX_HORIZON_DAYS,
   BOOKING_SLOT_MAX_RESULTS,
   BOOKING_TIME_ZONE,
@@ -151,21 +152,27 @@ test("the generated booking domain freezes the Package 7.1 notification policy",
   const document = JSON.parse(await readGenerated("booking-domain.json")) as {
     version: number;
     notifications?: typeof notificationPolicy;
+    customerDataRetention?: typeof customerDataRetentionPolicy;
   };
 
   // The whole block, byte for byte. PHP reads this file rather than a second
   // copy of these constants, so anything that drifts here drifts everywhere.
   assert.deepEqual(document.notifications, notificationPolicy);
-  assert.equal(document.version, 3, "adding a policy block is a domain version bump");
+  assert.equal(document.version, 4, "adding a policy block is a domain version bump");
+
+  // ESZ-140: the customer-data retention policy (cutoffs, placeholders, code,
+  // archive ceiling) is frozen in the same artifact the PHP sweep reads.
+  assert.deepEqual(document.customerDataRetention, customerDataRetentionPolicy);
 
   assert.deepEqual(document.notifications?.channels, notificationChannels);
   assert.deepEqual(document.notifications?.jobTypes, notificationJobTypes);
   assert.deepEqual(document.notifications?.statuses.transitions, notificationStatusTransitions);
   assert.deepEqual(document.notifications?.statuses.terminal, notificationTerminalStatuses);
 
-  // Three terminal statuses, and nothing leaves any of them. A queue whose
-  // `sent` could go back to `pending` would deliver twice, which is the one
-  // outcome the whole package exists to make impossible.
+  // Four terminal statuses — `sent`, `failed`, `skipped` and, since ESZ-140,
+  // `retired` — and nothing leaves any of them. A queue whose `sent` could go
+  // back to `pending` would deliver twice, which is the one outcome the whole
+  // package exists to make impossible.
   for (const terminal of notificationTerminalStatuses) {
     assert.deepEqual(
       notificationStatusTransitions[terminal],

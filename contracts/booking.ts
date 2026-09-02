@@ -1,7 +1,12 @@
 import { serviceItemIds } from "./site-content.js";
 
-/** Package 4.1/4.2/7.1 language-neutral booking-domain contract. */
-export const BOOKING_DOMAIN_VERSION = 3;
+/**
+ * Package 4.1/4.2/7.1 language-neutral booking-domain contract.
+ *
+ * Version 4 (ESZ-140) adds the V1 customer-data retention policy and the
+ * `retired` notification status the retention sweep writes.
+ */
+export const BOOKING_DOMAIN_VERSION = 4;
 
 /**
  * The business operates in metropolitan France. Rules are authored as local
@@ -75,21 +80,31 @@ export const notificationStatuses = [
   "sent",
   "failed",
   "skipped",
+  "retired",
 ] as const;
 export type NotificationStatus = (typeof notificationStatuses)[number];
 
 export const NOTIFICATION_INITIAL_STATUS: NotificationStatus = "pending";
 
-/** `sent`, `failed` and `skipped` are terminal: nothing leaves them, ever. */
+/**
+ * `sent`, `failed`, `skipped` and `retired` are terminal: nothing leaves them,
+ * ever.
+ */
 export const notificationStatusTransitions = {
-  pending: ["processing", "skipped"],
-  processing: ["sent", "pending", "failed", "skipped"],
+  pending: ["processing", "skipped", "retired"],
+  processing: ["sent", "pending", "failed", "skipped", "retired"],
   sent: [],
   failed: [],
   skipped: [],
+  retired: [],
 } as const satisfies Record<NotificationStatus, readonly NotificationStatus[]>;
 
-export const notificationTerminalStatuses = ["sent", "failed", "skipped"] as const;
+export const notificationTerminalStatuses = [
+  "sent",
+  "failed",
+  "skipped",
+  "retired",
+] as const;
 
 /**
  * Retry arithmetic. Deterministic on purpose: no jitter, because with one cron
@@ -144,7 +159,14 @@ export const NOTIFICATION_ERROR_CODE_PATTERN = "^[a-z][a-z0-9_]{2,63}$";
 
 export const NOTIFICATION_LEASE_OWNER_PATTERN = "^[a-z0-9][a-z0-9_.:-]{7,63}$";
 
-/** Reserved codes the runner itself writes. Transports may add their own. */
+/**
+ * The frozen code retention writes when it retires a job or refuses fact
+ * resolution for an erased booking (ESZ-140). A code, never a message: it is
+ * one of the reserved codes below and therefore cannot express customer data.
+ */
+export const NOTIFICATION_CUSTOMER_DATA_ERASURE_CODE = "customer_data_erased";
+
+/** Reserved codes the runner and retention write themselves. Transports may add their own. */
 export const notificationReservedErrorCodes = [
   "lease_expired",
   "lease_lost",
@@ -155,6 +177,7 @@ export const notificationReservedErrorCodes = [
   "transport_transient",
   "transport_permanent",
   "attempts_exhausted",
+  NOTIFICATION_CUSTOMER_DATA_ERASURE_CODE,
 ] as const;
 
 /**
@@ -222,6 +245,8 @@ export const notificationPolicy = {
         "Terminal. Either the transport refused permanently, or the bounded retries were exhausted.",
       skipped:
         "Terminal, and deliberate: the notification was considered and consciously not sent. Stale reminders and disabled channels land here so the decision is recorded rather than inferred from an absence.",
+      retired:
+        "Terminal, written by customer-data retention (ESZ-140): while the job was pending or processing, its booking's customer data was erased under the retention policy. The job was never delivered and never will be; last_error_code carries the frozen retention code. sent/failed/skipped jobs are evidence of what already happened and are never rewritten.",
     },
   },
   identity: {
@@ -279,7 +304,70 @@ export const notificationPolicy = {
   retention: {
     bookingRelation:
       "notification_jobs.booking_id references bookings with ON DELETE RESTRICT. Notification history is evidence of what was sent and must not disappear with the appointment it describes; V1 never deletes a booking anyway, and this makes that a schema guarantee rather than a convention.",
+    erasure:
+      "When customer-data retention erases a booking (ESZ-140), every non-terminal job of that booking is retired to the terminal `retired` status with the reserved code `customer_data_erased`, under the same transaction as the erasure, so no job survives that could deliver after the erasure. Terminal jobs — sent, failed, skipped — are delivery evidence and are never rewritten.",
+    factResolution:
+      "Notification delivery resolves the current customer e-mail from bookings at delivery time. A booking whose customer data has been erased is refused: the provider throws a permanent delivery failure with the code `customer_data_erased`, so even a job that somehow survived erasure can never deliver from the erased row.",
   },
+} as const;
+
+/**
+ * ESZ-140 — the V1 customer-data retention policy.
+ *
+ * This is a product policy of this application, frozen as a contract so the
+ * sweep, the schema and the documentation cannot drift apart. It is not a
+ * claim about any statute: the terms that happen to be named in it are the
+ * product's own chosen retention periods, not a transcription of a legal
+ * requirement.
+ */
+export const customerDataRetentionPolicy = {
+  /**
+   * A booking is erased when it has reached the end of its lifecycle and the
+   * retention period has passed since the lifecycle-ending instant: 90 days
+   * after `ends_at_utc` for a confirmed booking, 90 days after
+   * `cancelled_at_utc` for a cancelled one. Non-expired bookings are never
+   * touched.
+   */
+  confirmedExpiryDaysAfterEndsAtUtc: 90,
+  cancelledExpiryDaysAfterCancelledAtUtc: 90,
+  erasedAtColumn: "bookings.customer_data_erased_at",
+  /**
+   * What erasure does to the booking row. name/e-mail are required columns, so
+   * they hold fixed placeholders — never hashes, which would still be
+   * personally identifying in a brute-force sense — and phone, note and
+   * cancellation reason become NULL.
+   */
+  erasedFields: {
+    customerName: "Deleted customer",
+    customerEmail: "erased@example.invalid",
+    customerPhone: null,
+    customerNote: null,
+    cancellationReason: null,
+  },
+  /** The frozen code written to retired jobs and used to refuse delivery for an erased booking. */
+  erasureJobCode: NOTIFICATION_CUSTOMER_DATA_ERASURE_CODE,
+  emailPlaceholderIsNonDeliverable:
+    "The placeholder domain is `example.invalid`, reserved by RFC 2606 and unrouteable, so the placeholder address can never be delivered to.",
+  retainedFields: [
+    "id and reference",
+    "service and appointment instants and timezone",
+    "state and lifecycle timestamps (created, updated, state changed, consent, cancellation)",
+    "erasure timestamp",
+    "non-PII booking history facts",
+    "notification delivery metadata (terminal jobs)",
+  ],
+  neverDelete:
+    "Retention never deletes a booking, a history row or a notification job: evidence of the appointment, its history and what was sent survives anonymized.",
+  /**
+   * Application backup archives carry booking PII by design, so an archive is
+   * itself a personal-data store with a bounded life: at most 30 days. Archive
+   * pruning is an operator schedule, not a repo-enforced job; this is the
+   * policy the operator schedule and the documentation state. Provider-side
+   * snapshots are an external policy check and are not governed here.
+   */
+  backupArchiveRetentionDays: 30,
+  scope:
+    "V1 product policy. Non-expired bookings are untouched; erased rows keep their identity and appointment facts; no booking, history or notification evidence is deleted.",
 } as const;
 
 export const bookingDomainContract = {
@@ -353,4 +441,5 @@ export const bookingDomainContract = {
     ],
   },
   notifications: notificationPolicy,
+  customerDataRetention: customerDataRetentionPolicy,
 } as const;

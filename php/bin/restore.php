@@ -32,10 +32,14 @@
  *
  * ## After a restore
  *
- * Every admin session is gone — sessions are deliberately not in the backup — so
- * the operator signs in again. Notification jobs come back in the state they were
- * saved in, so the cron runner will resume them; the runbook says to check the
- * queue before letting a tick fire against real customers.
+ * Every admin session is gone — sessions are deliberately not in the backup —
+ * so the operator signs in again. Customer-data retention (ESZ-140) is applied
+ * to the restored rows inside the replacement transaction, before this command
+ * can report success: bookings whose customer data was already past the
+ * retention cutoff are anonymized and their pending/processing notification
+ * jobs retired, so the queue can resume only from rows that may still deliver.
+ * The remaining queue should still be checked before letting a tick fire
+ * against real customers.
  *
  * Exit codes: 0 success, 1 failure or refusal, 2 usage error.
  */
@@ -51,6 +55,10 @@ use Eszter\Contract\ContractArtifacts;
 use Eszter\Database\Database;
 use Eszter\Database\DatabaseException;
 use Eszter\Database\Migrator;
+use Eszter\Notification\NotificationJobRepository;
+use Eszter\Notification\NotificationPolicy;
+use Eszter\Retention\BookingRetentionService;
+use Eszter\Retention\RetentionPolicy;
 use Eszter\Support\CommandOptions;
 use Eszter\Support\SystemClock;
 
@@ -105,6 +113,17 @@ function main(array $argv): int
             $config,
             $database,
             new Migrator($database, \dirname(__DIR__) . '/migrations', $clock),
+            null,
+            new BookingRetentionService(
+                $database,
+                $clock,
+                RetentionPolicy::fromArtifacts($artifacts),
+                new NotificationJobRepository(
+                    $database,
+                    $clock,
+                    NotificationPolicy::fromArtifacts($artifacts),
+                ),
+            ),
         );
 
         $result = $restore->restore(
@@ -124,10 +143,22 @@ function main(array $argv): int
         fwrite(STDOUT, \sprintf("rows:     %d inserted\n", $result['statements']));
         fwrite(STDOUT, \sprintf("files:    %d written\n", $result['files']));
 
+        // ESZ-140: the restored data has been reconciled against the retention
+        // policy before this line can be reached — restored rows whose customer
+        // data was already expired are anonymized here, with their pending
+        // notification jobs retired. Counts only, never references or values.
+        fwrite(STDOUT, \sprintf(
+            "retention: %d restored booking(s) past the retention cutoff (%d erased, %d job(s) retired)\n",
+            $result['retention']['reconciled'],
+            $result['retention']['erased'],
+            $result['retention']['retired'],
+        ));
+
         // Said plainly rather than left to be discovered. Both are consequences of
         // what the backup deliberately does not carry, and both surprise people.
         fwrite(STDOUT, "\nAdmin sessions were not restored; sign in again.\n");
-        fwrite(STDOUT, "Check the notification queue before the next cron tick.\n");
+        fwrite(STDOUT, "Retention was reconciled before this restore reported success;\n");
+        fwrite(STDOUT, "check remaining notification jobs before the next cron tick.\n");
 
         return 0;
     } catch (BackupException $exception) {
@@ -167,8 +198,9 @@ function usage(): void
         deliberate: an older backup restores onto a newer schema and picks up the
         new columns' defaults. A backup from a NEWER schema is refused.
 
-        Admin sessions, rate-limit counters and logs are not in a backup and are
-        not restored.
+        Admin sessions, rate-limit counters and logs are not in a backup and
+        are not restored. Restored bookings past the retention cutoff are
+        anonymized, with their pending jobs retired, before success is reported.
 
         TEXT);
 }

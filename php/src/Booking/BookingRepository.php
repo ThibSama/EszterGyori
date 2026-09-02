@@ -12,7 +12,8 @@ final class BookingRepository
 {
     private const SELECT_COLUMNS = 'id, reference, service_key, state, starts_at_utc, ends_at_utc,'
         . ' timezone_name, customer_name, customer_email, customer_phone, customer_note,'
-        . ' consent_at_utc, cancelled_at_utc, cancellation_reason, created_at, updated_at, state_changed_at';
+        . ' consent_at_utc, cancelled_at_utc, cancellation_reason, customer_data_erased_at,'
+        . ' created_at, updated_at, state_changed_at';
 
     public function __construct(
         private readonly Database $database,
@@ -176,6 +177,7 @@ final class BookingRepository
             }
 
             $booking = Booking::fromRow($row, $this->contract);
+            $this->assertCustomerDataLive($booking);
             $next = $this->states->transition($booking->state, $target);
             $nowIso = $this->clock->nowIso();
             $cancelledAt = $next->value === 'cancelled'
@@ -267,6 +269,8 @@ final class BookingRepository
 
     public function move(Booking $booking, \DateTimeImmutable $start, \DateTimeImmutable $end): Booking
     {
+        $this->assertCustomerDataLive($booking);
+
         $now = $this->clock->nowIso();
         $this->database->run(
             'UPDATE bookings SET starts_at_utc = :start, ends_at_utc = :end,'
@@ -289,6 +293,12 @@ final class BookingRepository
         ?string $phone,
         ?string $note,
     ): Booking {
+        // ESZ-140: an erased booking holds fixed placeholders and a marker;
+        // no customer write may repopulate it. Refused here, at the
+        // persistence layer, so no future caller can reintroduce PII either —
+        // the schema's erasure CHECK is the second line of defence.
+        $this->assertCustomerDataLive($booking);
+
         $name = trim($name);
         $email = trim($email);
         $phone = self::optional($phone);
@@ -328,6 +338,22 @@ final class BookingRepository
         }
 
         return $booking;
+    }
+
+    /**
+     * ESZ-140: refuses any further customer or lifecycle write to a booking
+     * whose customer data retention has erased. The retention sweep itself
+     * writes through raw SQL and never passes through here.
+     */
+    private function assertCustomerDataLive(Booking $booking): void
+    {
+        if ($booking->customerDataErasedAt !== null) {
+            throw new BookingValidationException(
+                'customerDataErasedAt',
+                'This booking\'s customer data was erased by the retention policy; '
+                . 'it accepts no further customer or lifecycle writes.',
+            );
+        }
     }
 
     private function validateCustomer(string $name, string $email, ?string $phone, ?string $note): void

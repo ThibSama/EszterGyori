@@ -16,6 +16,9 @@ use Eszter\Config\Configuration;
 use Eszter\Database\Database;
 use Eszter\Media\MediaLibrary;
 use Eszter\Notification\NotificationPolicy;
+use Eszter\Notification\NotificationJobRepository;
+use Eszter\Retention\BookingRetentionService;
+use Eszter\Retention\RetentionPolicy;
 use Eszter\Storage\ApplicationSnapshotLock;
 use Eszter\Support\FrozenClock;
 use Eszter\Tests\Media\MediaFixtures;
@@ -356,6 +359,201 @@ final class BackupRestoreSqlTest extends TestCase
         self::assertSame(1, $this->rowCount($this->target, 'bookings'));
     }
 
+    /**
+     * ESZ-140: an archive can carry booking PII whose retention period has
+     * expired since the archive was taken. The restore applies the same
+     * retention policy to the restored rows before it reports success — the
+     * expired booking comes back anonymized with its pending jobs retired, the
+     * not-yet-expired booking comes back intact, and its queue can resume.
+     */
+    public function testRestoredRowsWhoseCustomerDataAlreadyExpiredComeBackAnonymized(): void
+    {
+        $expected = $this->seedRealisticSource();
+        $expiredReference = $this->seedExpiredBookingWithPendingJob();
+        $archive = $this->writeBackup();
+
+        $result = $this->restoreIntoTarget($archive);
+
+        // The reconcile ran inside the restore, before success was reported.
+        self::assertSame(1, $result['retention']['reconciled']);
+        self::assertSame(1, $result['retention']['erased']);
+        self::assertSame(1, $result['retention']['retired']);
+
+        // The future booking came back whole, customer data included.
+        $live = $this->target->fetchOne(
+            'SELECT customer_name, customer_email, customer_phone, customer_data_erased_at'
+            . ' FROM bookings WHERE reference = :reference',
+            ['reference' => $expected['reference']],
+        );
+        self::assertSame(self::CUSTOMER, $live['customer_name']);
+        self::assertNull($live['customer_data_erased_at']);
+
+        // The expired booking came back anonymized: placeholders, nulls, the
+        // erasure timestamp, and its pending job retired with the retention
+        // code — nothing left in the queue that could deliver from the erased
+        // row once the runner resumes.
+        $erased = $this->target->fetchOne(
+            'SELECT state, customer_name, customer_email, customer_phone, customer_note,'
+            . ' cancellation_reason, customer_data_erased_at'
+            . ' FROM bookings WHERE reference = :reference',
+            ['reference' => $expiredReference],
+        );
+        self::assertNotNull($erased, 'the expired booking did not survive the restore');
+        self::assertSame('confirmed', $erased['state']);
+        self::assertSame('Deleted customer', $erased['customer_name']);
+        self::assertSame('erased@example.invalid', $erased['customer_email']);
+        self::assertNull($erased['customer_phone']);
+        self::assertNull($erased['customer_note']);
+        self::assertNull($erased['cancellation_reason']);
+        self::assertSame('2026-06-13 12:00:00.000', $erased['customer_data_erased_at']);
+
+        $job = $this->target->fetchOne(
+            'SELECT status, last_error_code, lease_owner FROM notification_jobs'
+            . ' WHERE booking_id = (SELECT id FROM bookings WHERE reference = :reference)',
+            ['reference' => $expiredReference],
+        );
+        self::assertSame('retired', $job['status']);
+        self::assertSame('customer_data_erased', $job['last_error_code']);
+        self::assertNull($job['lease_owner']);
+
+        self::assertSame(2, $this->rowCount($this->target, 'bookings'));
+    }
+
+    /**
+     * ESZ-140: retention reconciliation happens inside the restore's
+     * replacement transaction. A failure after reconciliation — when the
+     * archive's expired rows have already been erased inside the transaction —
+     * rolls the erasures, the imports and every moved file back through the
+     * ESZ-098 compensation path: retention-reconciliation failure can never
+     * produce restore success.
+     */
+    public function testARetentionReconciliationFailureRollsBackToTheCompleteOldState(): void
+    {
+        $this->seedRealisticSource();
+        $this->seedExpiredBookingWithPendingJob();
+        $archive = $this->writeBackup();
+
+        // A successful restore first: target holds the anonymized expired row
+        // and the live future row.
+        $this->restoreIntoTarget($archive);
+
+        // A second archive carries one more live booking (PII not expired), so
+        // a re-import is distinguishable from the current target state.
+        $this->seedExtraLiveBooking();
+        $secondArchive = $this->writeBackup();
+        $old = $this->targetState();
+
+        $restore = new BackupRestore(
+            $this->targetConfig,
+            $this->target,
+            TestDatabase::migrator($this->target, $this->clock),
+            static function (string $reached): void {
+                if ($reached === 'after_retention_reconciliation') {
+                    throw new \RuntimeException('injected restore failure after retention reconciliation');
+                }
+            },
+            $this->retentionServiceFor($this->target),
+        );
+
+        try {
+            $restore->restore($secondArchive, overwrite: true, allowProduction: false);
+            self::fail('a restore passed the injected retention-reconciliation failure');
+        } catch (\RuntimeException $failure) {
+            self::assertSame(
+                'injected restore failure after retention reconciliation',
+                $failure->getMessage(),
+            );
+        }
+
+        // Complete old state: the second archive's extra booking is gone, the
+        // two rows from the first restore are exactly as they were (expired
+        // row anonymized, live row whole), and no file changed.
+        self::assertSame($old, $this->targetState(), 'the failure left a hybrid instead of complete OLD state');
+        self::assertSame(2, $this->rowCount($this->target, 'bookings'));
+
+        // Without the injected failure the same archive restores and
+        // reconciles: the expired booking is anonymized again and the extra
+        // live booking survives with its customer data.
+        $retried = $this->restoreIntoTarget($secondArchive, overwrite: true);
+        self::assertSame(1, $retried['retention']['erased']);
+        self::assertSame(3, $this->rowCount($this->target, 'bookings'));
+    }
+
+    /**
+     * A booking whose lifecycle ended long before the retention cutoff, with a
+     * pending confirmation job, plus full customer PII in the source.
+     */
+    private function seedExpiredBookingWithPendingJob(): string
+    {
+        $reference = 'bk_e000000000000000000000000000000e';
+        $this->source->run(
+            'INSERT INTO bookings (reference, service_key, state, starts_at_utc, ends_at_utc,'
+            . ' timezone_name, customer_name, customer_email, customer_phone, customer_note,'
+            . ' consent_at_utc, cancelled_at_utc, cancellation_reason, created_at, updated_at,'
+            . ' state_changed_at)'
+            . ' VALUES (:reference, :service, :state, :starts, :ends, :timezone, :name, :email,'
+            . ' :phone, :note, :consent, NULL, NULL, :now, :now2, :now3)',
+            [
+                'reference' => $reference,
+                'service' => self::SERVICE,
+                'state' => 'confirmed',
+                'starts' => '2025-09-01 08:00:00.000',
+                'ends' => '2025-09-01 10:00:00.000',
+                'timezone' => 'Europe/Paris',
+                'name' => 'Cliente Expirée',
+                'email' => 'expiree@example.test',
+                'phone' => '+33 6 55 44 33 22',
+                'note' => 'note expirée',
+                'consent' => '2025-08-01 09:00:00.000',
+                'now' => self::NOW,
+                'now2' => self::NOW,
+                'now3' => self::NOW,
+            ],
+        );
+
+        $row = $this->source->fetchOne(
+            'SELECT id FROM bookings WHERE reference = :reference',
+            ['reference' => $reference],
+        );
+        $policy = NotificationPolicy::fromArtifacts(TestEnvironment::artifacts());
+        $jobs = new NotificationJobRepository($this->source, $this->clock, $policy);
+        $jobs->enqueue(
+            (int) $row['id'],
+            'email',
+            'booking_confirmation',
+            'restore.expired.confirmation',
+            $this->clock->now(),
+        );
+
+        return $reference;
+    }
+
+    /** A live booking whose retention period has not expired, distinct from the fixture booking. */
+    private function seedExtraLiveBooking(): void
+    {
+        $this->source->run(
+            'INSERT INTO bookings (reference, service_key, state, starts_at_utc, ends_at_utc,'
+            . ' timezone_name, customer_name, customer_email, customer_phone, customer_note,'
+            . ' consent_at_utc, created_at, updated_at, state_changed_at)'
+            . ' VALUES (:reference, :service, :state, :starts, :ends, :timezone, :name, :email,'
+            . ' NULL, NULL, :consent, :now, :now2, :now3)',
+            [
+                'reference' => 'bk_0a0000000000000000000000000000ab',
+                'service' => self::SERVICE,
+                'state' => 'confirmed',
+                'starts' => '2026-06-20 08:00:00.000',
+                'ends' => '2026-06-20 10:00:00.000',
+                'timezone' => 'Europe/Paris',
+                'name' => 'Cliente Récente',
+                'email' => 'recente@example.test',
+                'consent' => '2026-06-13 12:00:00.000',
+                'now' => self::NOW,
+                'now2' => self::NOW,
+                'now3' => self::NOW,
+            ],
+        );
+    }
+
     #[DataProvider('restoreFailurePhases')]
     public function testInjectedRestoreFailuresLeaveAWholeOldOrNewState(string $phase): void
     {
@@ -374,6 +572,9 @@ final class BackupRestoreSqlTest extends TestCase
                     throw new \RuntimeException("injected restore failure at {$phase}");
                 }
             },
+            // Retention reconciliation is part of the replace, so the injected
+            // phases exercise its compensation too.
+            $this->retentionServiceFor($this->target),
         );
 
         try {
@@ -399,6 +600,8 @@ final class BackupRestoreSqlTest extends TestCase
     public static function restoreFailurePhases(): iterable
     {
         yield 'before DB replacement' => ['before_database_replacement'];
+        yield 'before retention reconciliation' => ['before_retention_reconciliation'];
+        yield 'after retention reconciliation' => ['after_retention_reconciliation'];
         yield 'after DB replacement before files' => ['after_database_replacement'];
         yield 'during file installation and stale reconciliation' => ['during_filesystem_installation'];
     }
@@ -973,14 +1176,32 @@ final class BackupRestoreSqlTest extends TestCase
         );
     }
 
-    /** @return array{manifest: \Eszter\Backup\BackupManifest, statements: int, files: int, migrations: list<string>} */
+    /**
+     * @return array{manifest: \Eszter\Backup\BackupManifest, statements: int,
+     *   files: int, migrations: list<string>, retention: array{reconciled: int, erased: int, retired: int}}
+     */
     private function restoreIntoTarget(string $archive, bool $overwrite = false): array
     {
         return (new BackupRestore(
             $this->targetConfig,
             $this->target,
             TestDatabase::migrator($this->target, $this->clock),
+            null,
+            $this->retentionServiceFor($this->target),
         ))->restore($archive, $overwrite, allowProduction: false);
+    }
+
+    /** The retention sweep wired to a database and the suite's frozen clock. */
+    private function retentionServiceFor(Database $database): BookingRetentionService
+    {
+        $policy = NotificationPolicy::fromArtifacts(TestEnvironment::artifacts());
+
+        return new BookingRetentionService(
+            $database,
+            $this->clock,
+            RetentionPolicy::fromArtifacts(TestEnvironment::artifacts()),
+            new NotificationJobRepository($database, $this->clock, $policy),
+        );
     }
 
     /**

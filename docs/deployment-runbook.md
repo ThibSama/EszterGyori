@@ -115,7 +115,7 @@ needed; they are not schema steps:
 
 The admin password is read interactively or from standard input, never an argument.
 
-## 4. Configure SMTP and the single cron runner
+## 4. Configure SMTP and the cron entries
 
 Do not send a probe message until the deployment owner has supplied an approved SMTP
 account and recipient. The application uses Symfony Mailer and the production runner
@@ -141,13 +141,36 @@ Job Manager, inspect its output and confirm that the next scheduled run occurred
 Hetzner notes that the panel reporting a cron execution does not itself prove the
 command succeeded, so inspect the command output/log.
 
+A second job runs the **customer-data retention sweep** (ESZ-140). Daily is the
+right cadence: bookings only become eligible 90 days after their lifecycle ends,
+and the sweep is idempotent, so even a missed or doubled run is harmless:
+
+- cadence: daily (e.g. `15 3 * * *`);
+- mode: no exclusivity requirement applies at this cadence;
+- working directory: `/usr/home/<FTP_LOGIN>/eszter/app`;
+- PHP version: the domain's configured PHP, at least 8.2;
+- command:
+
+```sh
+cd /usr/home/<FTP_LOGIN>/eszter/app && /usr/bin/php bin/apply-booking-retention.php --config=/usr/home/<FTP_LOGIN>/eszter/config/config.php >> /usr/home/<FTP_LOGIN>/eszter/var/log/retention-cron.log 2>&1
+```
+
+The sweep erases — per the frozen policy in `contracts/generated/booking-domain.json`
+(`customerDataRetention`) — the customer data of bookings past their 90-day period
+and retires their pending/processing notification jobs; it never deletes a booking,
+a history row or a notification job. It prints and logs counts and the cutoff only:
+no booking reference and no customer value ever reaches its stdout or
+`var/log/retention.log`, which is what makes the cron log safe to keep and to read.
+A non-zero exit requires attention, and a failure changes nothing: each booking is
+erased in its own transaction.
+
 These path, interpreter and scheduling rules come from Hetzner's official
 [Cron Job Manager documentation](https://docs.hetzner.com/managed/administration-on-konsoleh/cronmanager/).
 The relationship between `/usr/bin/php` and the version selected in konsoleH is
 documented in Hetzner's official
 [PHP configuration guide](https://docs.hetzner.com/de/managed/webserver/php-configuration/).
 
-The cron job and a mailbox receipt are deployment-owned acceptance checks. They are
+The cron jobs and a mailbox receipt are deployment-owned acceptance checks. They are
 not simulated with invented credentials. SMS is deferred post-V1 and has no cron or
 configuration requirement here.
 
@@ -174,10 +197,14 @@ artifact, which is reproducible from the repository.
 `restore.php` verifies every entry against the manifest and migrates the schema
 **before** writing anything, and refuses a populated target without `--overwrite`
 and a production configuration without `--allow-production`. After any restore,
-every admin session is gone and the notification queue should be inspected before
-the next cron tick.
+every admin session is gone. Restored bookings whose customer-data retention
+period had already expired at restore time are anonymized — and their
+pending/processing notification jobs retired — inside the restore, before it
+reports success (ESZ-140); the remaining notification queue should be inspected
+before the next cron tick.
 
-The full procedure, the exclusion rationale, retention guidance and the split
+The full procedure, the exclusion rationale, retention policy (a 30-day ceiling
+for application archives, 90-day booking customer-data erasure) and the split
 between provider-owned and application-owned responsibility are in
 `docs/backup-and-restore.md`. Rehearse a restore into a scratch database before
 launch; a backup that has never been restored is a hypothesis.

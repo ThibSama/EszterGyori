@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "scope": "Package 4.1/4.2 booking domain and dynamic slot computation; no booking HTTP API.",
   "services": {
     "keys": [
@@ -95,35 +95,41 @@
         "processing",
         "sent",
         "failed",
-        "skipped"
+        "skipped",
+        "retired"
       ],
       "initial": "pending",
       "terminal": [
         "sent",
         "failed",
-        "skipped"
+        "skipped",
+        "retired"
       ],
       "transitions": {
         "pending": [
           "processing",
-          "skipped"
+          "skipped",
+          "retired"
         ],
         "processing": [
           "sent",
           "pending",
           "failed",
-          "skipped"
+          "skipped",
+          "retired"
         ],
         "sent": [],
         "failed": [],
-        "skipped": []
+        "skipped": [],
+        "retired": []
       },
       "semantics": {
         "pending": "Due or waiting for its next attempt. The only status a runner may claim.",
         "processing": "Claimed under a durable expiring lease. Exactly one runner owns it until the lease expires.",
         "sent": "Delivered once. Terminal; a job is never delivered twice.",
         "failed": "Terminal. Either the transport refused permanently, or the bounded retries were exhausted.",
-        "skipped": "Terminal, and deliberate: the notification was considered and consciously not sent. Stale reminders and disabled channels land here so the decision is recorded rather than inferred from an absence."
+        "skipped": "Terminal, and deliberate: the notification was considered and consciously not sent. Stale reminders and disabled channels land here so the decision is recorded rather than inferred from an absence.",
+        "retired": "Terminal, written by customer-data retention (ESZ-140): while the job was pending or processing, its booking's customer data was erased under the retention policy. The job was never delivered and never will be; last_error_code carries the frozen retention code. sent/failed/skipped jobs are evidence of what already happened and are never rewritten."
       }
     },
     "identity": {
@@ -169,7 +175,8 @@
         "channel_disabled",
         "transport_transient",
         "transport_permanent",
-        "attempts_exhausted"
+        "attempts_exhausted",
+        "customer_data_erased"
       ],
       "logFields": [
         "jobId",
@@ -205,7 +212,34 @@
       "rule": "Notification logging is an allowlist. No customer name, address, phone number, note, message body or credential is ever written to a log line or to the stored diagnostic column."
     },
     "retention": {
-      "bookingRelation": "notification_jobs.booking_id references bookings with ON DELETE RESTRICT. Notification history is evidence of what was sent and must not disappear with the appointment it describes; V1 never deletes a booking anyway, and this makes that a schema guarantee rather than a convention."
+      "bookingRelation": "notification_jobs.booking_id references bookings with ON DELETE RESTRICT. Notification history is evidence of what was sent and must not disappear with the appointment it describes; V1 never deletes a booking anyway, and this makes that a schema guarantee rather than a convention.",
+      "erasure": "When customer-data retention erases a booking (ESZ-140), every non-terminal job of that booking is retired to the terminal `retired` status with the reserved code `customer_data_erased`, under the same transaction as the erasure, so no job survives that could deliver after the erasure. Terminal jobs — sent, failed, skipped — are delivery evidence and are never rewritten.",
+      "factResolution": "Notification delivery resolves the current customer e-mail from bookings at delivery time. A booking whose customer data has been erased is refused: the provider throws a permanent delivery failure with the code `customer_data_erased`, so even a job that somehow survived erasure can never deliver from the erased row."
     }
+  },
+  "customerDataRetention": {
+    "confirmedExpiryDaysAfterEndsAtUtc": 90,
+    "cancelledExpiryDaysAfterCancelledAtUtc": 90,
+    "erasedAtColumn": "bookings.customer_data_erased_at",
+    "erasedFields": {
+      "customerName": "Deleted customer",
+      "customerEmail": "erased@example.invalid",
+      "customerPhone": null,
+      "customerNote": null,
+      "cancellationReason": null
+    },
+    "erasureJobCode": "customer_data_erased",
+    "emailPlaceholderIsNonDeliverable": "The placeholder domain is `example.invalid`, reserved by RFC 2606 and unrouteable, so the placeholder address can never be delivered to.",
+    "retainedFields": [
+      "id and reference",
+      "service and appointment instants and timezone",
+      "state and lifecycle timestamps (created, updated, state changed, consent, cancellation)",
+      "erasure timestamp",
+      "non-PII booking history facts",
+      "notification delivery metadata (terminal jobs)"
+    ],
+    "neverDelete": "Retention never deletes a booking, a history row or a notification job: evidence of the appointment, its history and what was sent survives anonymized.",
+    "backupArchiveRetentionDays": 30,
+    "scope": "V1 product policy. Non-expired bookings are untouched; erased rows keep their identity and appointment facts; no booking, history or notification evidence is deleted."
   }
 }

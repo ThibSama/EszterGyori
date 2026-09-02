@@ -124,7 +124,8 @@ php/
 │   ├── lint.php              php -l over every source file
 │   ├── static-analysis.php   PHPStan (two pins) + PSR-12
 │   ├── sync-contracts.php    copy + verify contracts/generated/ for deployment
-│   └── run-notification-jobs.php  one notification cron tick (Package 7.1)
+│   ├── run-notification-jobs.php  one notification cron tick (Package 7.1)
+│   └── apply-booking-retention.php  one customer-data retention sweep (ESZ-140)
 ├── config/
 │   ├── config.example.php       production template (copy outside the web root)
 │   └── config.development.php   non-secret repository-local public config
@@ -386,6 +387,15 @@ php bin/run-notification-jobs.php --config=config/config.php
 php bin/run-notification-jobs.php --config=config/config.php --batch=25
 # Development/test only; production refuses the no-network logging transport.
 php bin/run-notification-jobs.php --config=config/config.php --transport=logging
+
+# The customer-data retention sweep (ESZ-140). Cron-safe and idempotent: erases
+# per the frozen `customerDataRetention` policy the customer fields of bookings
+# past their 90-day period, retires their pending/processing notification jobs,
+# and never deletes a booking, a history row or a notification job. Prints and
+# logs counts and the cutoff only — never a reference or a customer value.
+# Safe to run daily from cron, and safe when two runs overlap.
+php bin/apply-booking-retention.php --config=config/config.php
+php bin/apply-booking-retention.php --config=config/config.php --batch=200
 
 cd ..
 npm run validate               # every gate, in policy order

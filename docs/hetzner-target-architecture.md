@@ -108,7 +108,7 @@ What remains owed, in the order it matters:
                       media originals)   booking, settings,
                                          notifications)
                             ▲
-                            │ one cron entry ──▶ job dispatcher ──▶ SMTP
+                            │ notification cron ──▶ job dispatcher ──▶ SMTP
 ```
 
 Single origin. No CORS anywhere, no preflight, no cross-site cookie problem: the

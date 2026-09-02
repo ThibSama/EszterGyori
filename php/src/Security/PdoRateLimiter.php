@@ -68,9 +68,10 @@ final class PdoRateLimiter implements RateLimiter
     /**
      * How often, in charges, the expired-row sweep runs.
      *
-     * Probabilistic rather than scheduled: the deployment has exactly one cron
-     * entry and it belongs to notifications, so a limiter that needed its own
-     * would not get one. One in this many charges pays for a bounded `DELETE`;
+     * Probabilistic rather than scheduled: the deployment's cron entries are
+     * owned by notifications and by customer-data retention, so a limiter
+     * that needed its own would not get one. One in this many charges pays
+     * for a bounded `DELETE`;
      * the rest pay nothing. Sweeping is pure housekeeping — a row that survives
      * too long enforces the policy correctly, and one deleted early only forgives
      * allowance — so it is safe to leave to chance.

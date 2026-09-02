@@ -34,18 +34,24 @@ final class NotificationPolicyTest extends TestCase
         );
         self::assertSame(['booking_reminder'], $this->policy->timeSensitiveJobTypes);
         self::assertSame(
-            ['pending', 'processing', 'sent', 'failed', 'skipped'],
+            ['pending', 'processing', 'sent', 'failed', 'skipped', 'retired'],
             $this->policy->statuses,
         );
         self::assertSame('pending', $this->policy->initialStatus);
-        self::assertSame(['sent', 'failed', 'skipped'], $this->policy->terminalStatuses);
+        self::assertSame(
+            ['sent', 'failed', 'skipped', 'retired'],
+            $this->policy->terminalStatuses,
+        );
     }
 
-    public function testTheStatusGraphHasThreeTerminalStatesAndNoWayBackOut(): void
+    public function testTheStatusGraphHasFourTerminalStatesAndNoWayBackOut(): void
     {
-        self::assertSame(['processing', 'skipped'], $this->policy->nextStatuses('pending'));
         self::assertSame(
-            ['sent', 'pending', 'failed', 'skipped'],
+            ['processing', 'skipped', 'retired'],
+            $this->policy->nextStatuses('pending'),
+        );
+        self::assertSame(
+            ['sent', 'pending', 'failed', 'skipped', 'retired'],
             $this->policy->nextStatuses('processing'),
         );
 
@@ -140,9 +146,13 @@ final class NotificationPolicyTest extends TestCase
     }
 
     /**
-     * The migration restates the frozen sets where SQL can enforce them. This is
+     * The migrations restate the frozen sets where SQL can enforce them. This is
      * the test that stops the restatement from drifting: it reads the actual
-     * `.sql` file and looks for each frozen value inside the CHECK constraints.
+     * `.sql` files and looks for each frozen value inside the CHECK constraints.
+     *
+     * The status set spans two files: 0009 created `chk_notification_jobs_status`
+     * with the original five statuses, and 0011 (ESZ-140) replaced it to add the
+     * terminal `retired` status the retention sweep writes.
      */
     public function testTheMigrationRestatesTheFrozenSetsAndBounds(): void
     {
@@ -151,9 +161,20 @@ final class NotificationPolicyTest extends TestCase
         );
         self::assertIsString($sql);
 
-        foreach ([...$this->policy->channels, ...$this->policy->jobTypes, ...$this->policy->statuses] as $value) {
+        foreach ([...$this->policy->channels, ...$this->policy->jobTypes] as $value) {
             self::assertStringContainsString("'{$value}'", $sql, "{$value} is not in the migration");
         }
+
+        // The five statuses 0009 was written with live in its CHECK; `retired`
+        // arrived with 0011, which replaces that CHECK.
+        foreach (['pending', 'processing', 'sent', 'failed', 'skipped'] as $status) {
+            self::assertStringContainsString("'{$status}'", $sql, "{$status} is not in the migration");
+        }
+        $retentionSql = file_get_contents(
+            TestEnvironment::repositoryRoot() . '/php/migrations/0011_booking_customer_data_retention.sql',
+        );
+        self::assertIsString($retentionSql);
+        self::assertStringContainsString("'retired'", $retentionSql);
 
         self::assertStringContainsString($this->policy->idempotencyKeyPattern, $sql);
         self::assertStringContainsString($this->policy->errorCodePattern, $sql);

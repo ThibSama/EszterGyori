@@ -81,9 +81,11 @@ base et un dossier de test vides. Le détail et les commandes sont dans
 [`backup-and-restore.md`](backup-and-restore.md).
 
 Une restauration de production exige `--overwrite` si la cible contient des données
-et `--allow-production`. Elle invalide les sessions. Avant de réactiver le cron,
-inspecter les notifications restaurées afin de ne pas renvoyer un ancien message.
-Ne jamais restaurer « pour voir » sur la production.
+et `--allow-production`. Elle invalide les sessions. Avant de rapporter le succès,
+elle applique la rétention des données client (ESZ-140) : les réservations dont les
+90 jours sont écoulés sont anonymisées et leurs notifications en attente retirées.
+Inspecter ensuite les notifications restaurées restantes afin de ne pas renvoyer un
+ancien message. Ne jamais restaurer « pour voir » sur la production.
 
 ## En cas d’incident
 

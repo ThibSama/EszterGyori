@@ -115,12 +115,32 @@ at rest wherever it is copied to, and deleted from anywhere it does not need to 
 
 ### Retention
 
-Not automated, and not by omission. The deployment has exactly one cron entry and
-it belongs to notifications (`docs/deployment-runbook.md` §4); a second one is an
-operator decision about a schedule and a retention window that this repository
-cannot make on their behalf. A reasonable starting point is a daily backup kept for
-thirty days plus a monthly one kept for a year, and the command is safe to run from
-cron unattended — it exits non-zero and writes nothing on failure.
+Two retention clocks apply to the archives this command produces, and both are
+frozen product policy — `contracts/generated/booking-domain.json` under
+`customerDataRetention` — not statutory claims. The repo does not enforce
+either by itself; the schedules below are the operator side of that policy.
+
+**Booking customer data.** Confirmed bookings keep their customer data for 90
+days after `ends_at_utc`; cancelled bookings for 90 days after
+`cancelled_at_utc`. Past that, the customer fields (name, e-mail, phone, note,
+cancellation reason) are erased to the frozen placeholders and the row carries
+a `customer_data_erased_at` timestamp; the booking, its history and its
+notification evidence are never deleted. Erasure is applied by the retention
+sweep (`app/bin/apply-booking-retention.php`, see
+`docs/deployment-runbook.md` §4) and — critically for this document — by every
+restore, before the restore reports success.
+
+**Application archives.** An archive carries every booking's customer data by
+design, so an archive is itself a personal-data store with a bounded life: at
+**most 30 days**. Delete archives older than that from the host and from
+anywhere they were copied to. The previous suggestion of a monthly archive kept
+for a year is withdrawn: it contradicts the 30-day ceiling. A reasonable
+starting point is a daily backup deleted after 30 days. Provider-side
+snapshots are an external policy check, not governed here and not enforced by
+this repository.
+
+The command is safe to run from cron unattended — it exits non-zero and writes
+nothing on failure.
 
 ## 4. Restoring
 
@@ -155,6 +175,15 @@ cd /usr/home/<FTP_LOGIN>/eszter
    files absent from the archive aside. Commit SQL only after file installation is
    complete. Any throwable before that commit rolls SQL back and moves every old
    file back before reporting failure.
+7. **Apply customer-data retention to the restored rows** (ESZ-140), still inside
+   the replacement transaction and before any success is reported. An archive may
+   carry booking PII whose 90-day period expired while the archive was sitting in
+   `backups/`; the same retention sweep that runs on a schedule runs here against
+   the restored rows, retiring the pending/processing notification jobs of the
+   bookings it erases. A reconciliation failure is a restore failure: it rolls the
+   rows, the erasures and the moved files back through the same compensation path,
+   so a restore can never report success while expired PII is live or while a job
+   that could deliver from an erased row is pending.
 
 This is explicit cross-store compensation, not global atomic rename: individual
 renames are atomic only for their own paths. Deterministic failure injection proves
@@ -209,11 +238,17 @@ are all fail-closed refusals.
 ### After a restore
 
 - **Everyone signs in again.** Sessions are not in the backup.
-- **Check the notification queue before the next cron tick.** Jobs come back in the
-  state they were saved in, and the runner will resume them. A restore that rolls
-  the site back by a day can leave confirmations that have already been sent, or
-  reminders whose window has passed — the runner retires stale reminders on its own
-  (ESZ-072), but look before letting a tick fire at real customers.
+- **Retention was already reconciled.** Restored bookings whose customer data was
+  past the 90-day retention cutoff at restore time were anonymized — and their
+  pending/processing notification jobs retired — inside the restore, before it
+  reported success. Their history and their terminal notification evidence
+  survived, anonymized rows included.
+- **Check the remaining notification queue before the next cron tick.** Jobs of
+  live bookings come back in the state they were saved in, and the runner will
+  resume them. A restore that rolls the site back by a day can leave confirmations
+  that have already been sent, or reminders whose window has passed — the runner
+  retires stale reminders on its own (ESZ-072), but look before letting a tick
+  fire at real customers.
 - **Rate limits start empty.** Expected, and harmless: an empty bucket is
   indistinguishable from one idle for a full period.
 
