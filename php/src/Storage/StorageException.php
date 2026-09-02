@@ -25,6 +25,7 @@ final class StorageException extends \RuntimeException
     public const VALIDATION_FAILED = 'STORAGE_VALIDATION_FAILED';
     public const WRITE_FAILED = 'STORAGE_WRITE_FAILED';
     public const RENAME_FAILED = 'STORAGE_RENAME_FAILED';
+    public const REMOVE_FAILED = 'STORAGE_REMOVE_FAILED';
     public const LOCK_FAILED = 'STORAGE_LOCK_FAILED';
     public const CROSS_DEVICE_TMP = 'STORAGE_CROSS_DEVICE_TMP';
 

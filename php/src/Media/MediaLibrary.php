@@ -9,6 +9,7 @@ use Eszter\Contract\StructuralValidator;
 use Eszter\Storage\AtomicJsonFile;
 use Eszter\Storage\ApplicationSnapshotLock;
 use Eszter\Storage\FileLock;
+use Eszter\Storage\MediaContentLock;
 use Eszter\Storage\StorageException;
 use Eszter\Support\Clock;
 
@@ -39,13 +40,25 @@ use Eszter\Support\Clock;
  * no id for it was ever handed out — and this class never serves, lists or
  * deletes one.
  *
- * ## Its own lock, and why that is safe
+ * ## Its own lock, and the boundary with content (ESZ-100)
  *
  * The library takes `media.lock`, not the content lock. {@see deleteAsset()}
  * reads content *inside* its own lock via the injected predicate, so the
  * acquisition order is always media-then-content and never the reverse: uploading
  * takes only this lock, and every content write takes only the content lock, so
  * there is no cycle to deadlock on.
+ *
+ * That alone leaves one hole, which is why deletion additionally takes the
+ * {@see \Eszter\Storage\MediaContentLock} boundary **exclusively** for its whole
+ * critical section: without it, a content save could commit a new reference
+ * between the delete's "unreferenced" check and its removal, because the check
+ * runs under `media.lock` while the save runs under `content.lock`. Every
+ * content write that can make media references durable takes the same boundary
+ * **shared**, so a delete and a content write can never overlap: whichever
+ * acquires the boundary first is ordered first. Uploads take no boundary — they
+ * never read content — and the lock order stays
+ * `application-snapshot → media-content → media.lock → content.lock`, with no
+ * inverse path.
  *
  * ## Finalisation order
  *
@@ -95,9 +108,20 @@ final class MediaLibrary
     /** The staging prefix inside the document root's media directory. */
     private const STAGING_PREFIX = '.staging-';
 
+    /**
+     * The staging prefix a delete renames a managed file to before removing it.
+     *
+     * Distinct from the upload {@see STAGING_PREFIX} so a file waiting out a
+     * failed delete can never be mistaken for a file waiting to be published.
+     * It is dot-prefixed, so the generated `media/.htaccess` denies it and the
+     * backup writer treats it as transient, exactly like upload staging.
+     */
+    private const DELETING_PREFIX = '.deleting-';
+
     private readonly AtomicJsonFile $writer;
     private readonly FileLock $lock;
     private readonly ApplicationSnapshotLock $snapshotLock;
+    private readonly MediaContentLock $mediaContentLock;
 
     public function __construct(
         private readonly MediaContract $contract,
@@ -113,6 +137,7 @@ final class MediaLibrary
         $this->writer = new AtomicJsonFile($this->tmpDirectory);
         $this->lock = new FileLock($lockDirectory . \DIRECTORY_SEPARATOR . 'media.lock');
         $this->snapshotLock = new ApplicationSnapshotLock($lockDirectory);
+        $this->mediaContentLock = new MediaContentLock($lockDirectory);
         $this->maxIndexBytes = $artifacts->storageLimitBytes('mediaLibraryIndexLimitBytes');
     }
 
@@ -364,28 +389,67 @@ final class MediaLibrary
     }
 
     /**
-     * Removes one asset, its original and its catalogue entry.
+     * Removes one asset, its original, its derivative and its catalogue entry.
      *
-     * $isReferenced is consulted **inside** the lock and decides nothing else: it
-     * is given the asset's public path and answers whether any content document
-     * still points at it. Injecting it keeps this class free of any dependency on
-     * content storage, and — more usefully — makes the refusal testable without
-     * a content directory.
+     * $isReferenced is consulted **inside** every barrier and decides nothing
+     * else: it is given the asset's public path and answers whether any content
+     * document still points at it. Injecting it keeps this class free of any
+     * dependency on content storage, and — more usefully — makes the refusal
+     * testable without a content directory.
      *
-     * A catalogue entry whose file is already gone still deletes cleanly. The goal
-     * state is "this asset is not in the library", and refusing to reach it
-     * because a file is missing would make a disagreement between disk and
-     * catalogue permanent.
+     * ## Why the reference check cannot race a content write (ESZ-100)
+     *
+     * The check reads content while the content writers serialise on
+     * `content.lock`; without more, a save could commit a fresh reference
+     * between the check and the removal. The delete therefore holds the
+     * {@see MediaContentLock} boundary **exclusively** from before the check to
+     * after the catalogue commit, and every content write that can make a media
+     * reference durable holds the same boundary shared — so a write either
+     * commits before the check (the delete then sees the reference and refuses)
+     * or waits until the deletion is complete. Whichever side acquires the
+     * boundary first is linearised first; the two can never overlap.
+     *
+     * ## The deletion protocol: stage, remove, then commit
+     *
+     * A successful delete must mean the asset is absent from the catalogue, from
+     * the managed public derivative path **and** from the managed original path,
+     * and no fault may be reported as a 204 or strand an unrecoverable
+     * half-delete. The byte removal is therefore staged so that every step up to
+     * the commit is reversible, and the catalogue removal is the commit point,
+     * taken **last**:
+     *
+     *  1. a `.deleting-` leftover of an interrupted earlier attempt of this same
+     *     delete is removed;
+     *  2. each file that exists is renamed to a `.deleting-` name beside it
+     *     (rename is reversible; unlink is not), a missing file being noted and
+     *     skipped so a catalogue/disk disagreement stays resolvable;
+     *  3. the staged files are unlinked;
+     *  4. the catalogue entry is removed — the single atomic commit.
+     *
+     * A fault in steps 1–3 compensates by renaming this attempt's staged files
+     * back onto their managed names and throws, so the asset is left exactly as
+     * it was whenever the bytes could be restored; a file already irreversibly
+     * removed cannot be restored, and the throw then reports the failure rather
+     * than a success. Because the catalogue entry is removed only in step 4,
+     * every failure leaves the entry in place and the **same delete can be
+     * retried** to finish the removal — including over a leftover `.deleting-`
+     * file, which step 1 sweeps. A fault in step 4 leaves the entry in place
+     * with the bytes already gone, and the retry converges by committing the
+     * removal alone.
      *
      * @param callable(string): bool $isReferenced
      * @throws MediaMissingException When the catalogue has no such asset.
      * @throws MediaReferencedException When a document still points at the asset.
+     * @throws StorageException When a managed file or the catalogue cannot be
+     *         changed; nothing is reported as removed that is not.
      * @return array<string, mixed> The metadata of what was removed.
      */
     public function deleteAsset(string $id, callable $isReferenced): array
     {
         return $this->snapshotLock->withShared(
-            fn (): array => $this->deleteAssetWithSnapshotBarrier($id, $isReferenced),
+            fn (): array => $this->mediaContentLock->withExclusive(
+                fn (): array => $this->deleteAssetLocked($id, $isReferenced),
+            ),
         );
     }
 
@@ -393,7 +457,7 @@ final class MediaLibrary
      * @param callable(string): bool $isReferenced
      * @return array<string, mixed>
      */
-    private function deleteAssetWithSnapshotBarrier(string $id, callable $isReferenced): array
+    private function deleteAssetLocked(string $id, callable $isReferenced): array
     {
         /** @var array<string, mixed> */
         return $this->lock->withLock(true, function () use ($id, $isReferenced): array {
@@ -423,23 +487,117 @@ final class MediaLibrary
                 throw new MediaReferencedException($id);
             }
 
+            $fileName = basename($publicPath);
+            $this->removeManagedFiles($fileName);
+
             $index['assets'] = array_values(array_filter(
                 $index['assets'],
                 static fn (array $candidate): bool => ($candidate['id'] ?? null) !== $id,
             ));
 
-            // The catalogue first, then the bytes. If the process dies between
-            // them the asset is already out of the library and the files are
-            // unreachable orphans; the reverse order would leave the catalogue
-            // advertising an asset whose file had gone.
+            // The commit point, taken last: every earlier step is reversible,
+            // and a fault in any of them has already thrown with the catalogue
+            // entry still in place, so the same delete can be retried to finish
+            // the removal. Once this atomic rename lands, the asset is gone from
+            // all three locations and nothing is left to undo — no step follows
+            // the commit that could fail after a success was claimed.
             $this->writeIndex($index);
-
-            $fileName = basename($publicPath);
-            @unlink($this->publicMediaDirectory . \DIRECTORY_SEPARATOR . $fileName);
-            @unlink($this->originalsDirectory . \DIRECTORY_SEPARATOR . $fileName);
 
             return $asset;
         });
+    }
+
+    /**
+     * Removes both managed files of one asset: the public derivative and the
+     * original. See {@see deleteAsset()} for the protocol this implements.
+     *
+     * The caller holds `media.lock` exclusively and the media/content boundary
+     * exclusively, so no other media or content writer can observe the transient
+     * staged state or interleave with it.
+     */
+    private function removeManagedFiles(string $fileName): void
+    {
+        $publicStage = $this->publicMediaDirectory . \DIRECTORY_SEPARATOR . self::DELETING_PREFIX . $fileName;
+        $originalStage = $this->originalsDirectory . \DIRECTORY_SEPARATOR . self::DELETING_PREFIX . $fileName;
+        $publicTarget = $this->publicMediaDirectory . \DIRECTORY_SEPARATOR . $fileName;
+        $originalTarget = $this->originalsDirectory . \DIRECTORY_SEPARATOR . $fileName;
+
+        // A `.deleting-` leftover can only be the residue of an interrupted
+        // earlier attempt of this same delete: the name embeds this asset's file
+        // name, uploads stage under a different prefix, and the catalogue entry
+        // is removed only after every byte removal, so a leftover is always
+        // reachable through the entry that is still present. Removing it is how
+        // a retry converges over a delete that died or lost its compensation.
+        foreach ([$publicStage, $originalStage] as $leftover) {
+            if (is_file($leftover)) {
+                $this->unlinkManagedFile($leftover);
+            }
+        }
+
+        /** @var list<string> $staged Files this attempt renamed and can still restore. */
+        $staged = [];
+
+        try {
+            if (is_file($publicTarget)) {
+                $this->stageManagedFile($publicTarget, $publicStage);
+                $staged[] = $publicStage;
+            }
+
+            if (is_file($originalTarget)) {
+                $this->stageManagedFile($originalTarget, $originalStage);
+                $staged[] = $originalStage;
+            }
+
+            foreach ($staged as $path) {
+                $this->unlinkManagedFile($path);
+            }
+
+            $staged = [];
+        } catch (\Throwable $failure) {
+            // Compensation: restore whatever this attempt can still restore. A
+            // file that was already unlinked is gone for good and cannot be put
+            // back — the throw below reports the failure instead of a success,
+            // and the retry of the same delete finishes the removal. A staged
+            // file that cannot be renamed back keeps its deterministic
+            // `.deleting-` name, which the next attempt of this delete sweeps.
+            foreach ($staged as $path) {
+                @rename($path, $this->managedTargetOf($path));
+            }
+
+            throw $failure;
+        }
+    }
+
+    /** Renames a managed file onto its `.deleting-` staging name. */
+    private function stageManagedFile(string $target, string $stage): void
+    {
+        if (!@rename($target, $stage)) {
+            throw new StorageException(
+                StorageException::RENAME_FAILED,
+                "Could not stage the managed file {$target} for deletion.",
+                self::METADATA_ROLE,
+            );
+        }
+    }
+
+    /** Unlinks a managed or staged file, reporting a failure instead of ignoring it. */
+    private function unlinkManagedFile(string $path): void
+    {
+        if (!@unlink($path)) {
+            throw new StorageException(
+                StorageException::REMOVE_FAILED,
+                "Could not remove the managed file {$path}. "
+                    . 'The catalogue entry is untouched; retry the delete once the file can be removed.',
+                self::METADATA_ROLE,
+            );
+        }
+    }
+
+    /** The managed name a `.deleting-` staging path was renamed from. */
+    private function managedTargetOf(string $stage): string
+    {
+        return \dirname($stage) . \DIRECTORY_SEPARATOR
+            . \substr(\basename($stage), \strlen(self::DELETING_PREFIX));
     }
 
     /**

@@ -92,12 +92,27 @@ backup:
 - restore takes the barrier exclusively across its database and filesystem
   replacement, also excluding ordinary mutations from the replacement window.
 
-Lock ordering is fixed: application snapshot barrier first; then a content or
-media file lock, or a MySQL transaction. Media deletion retains its existing
-`media.lock` then `content.lock` order. No production path begins a MySQL
+Inside the snapshot barrier, media deletion and content writes are additionally
+serialised against each other by `data/locks/media-content.lock` (ESZ-100): a
+content write must never commit a fresh media reference between a delete's
+reference check and its removal, because the two used to lock different domains
+(`media.lock` vs `content.lock`). The delete takes that boundary **exclusively**
+across its whole check-to-commit critical section; every content write that can
+make a media reference durable — draft save, publish, reset and the raw envelope
+writers — takes it **shared**, so ordinary saves stay concurrent with each other
+and queue only behind an actual delete. Media finalisation (upload) does not take
+it: it never reads content. First-use seeding writes canonical, reference-free
+defaults and also stays outside it.
+
+Lock ordering is fixed: application snapshot barrier first; then the
+media-content boundary; then a content or media file lock, or a MySQL
+transaction. Media deletion retains its existing `media.lock` then `content.lock`
+order, now inside the exclusive boundary. No production path begins a MySQL
 transaction and then tries to acquire the application barrier, and no content
-path takes `content.lock` before it. This removes the obvious barrier/transaction
-and barrier/content/media deadlock cycles.
+path takes `content.lock` — and no path takes `media.lock` or `content.lock`
+before the media-content boundary — so there is no inverse order to deadlock on.
+This removes the obvious barrier/transaction, boundary and barrier/content/media
+deadlock cycles.
 
 Archive publication remains separate from snapshot capture. The destination file
 is reserved as `<final>.partial` and restricted to `0600` before any customer data

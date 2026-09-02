@@ -277,6 +277,184 @@ final class MediaLibraryTest extends TestCase
         self::assertFileDoesNotExist($this->originals() . '/' . $fileName);
     }
 
+    // ── ESZ-100 — delete coherence under filesystem faults ─────────────────
+    //
+    // The delete protocol stages both files (`.deleting-` names beside the
+    // originals), removes the staged bytes, and only then commits the catalogue
+    // removal, so a success (204) can never be reported while bytes remain and
+    // every fault leaves the catalogue entry in place for the same delete to be
+    // retried. Faults here are real filesystem failures: the directory a step
+    // needs to write is made read-only, which is exactly the permission failure
+    // shared hosting produces.
+
+    public function testAnUnwritablePublicDirectoryFailsTheDeleteAndLeavesTheAssetUntouched(): void
+    {
+        $kernel = $this->boot();
+        $kernel->storage->initialize();
+        $asset = $this->assetFrom($this->upload($kernel, MediaFixtures::jpeg()));
+        $fileName = basename((string) $asset['path']);
+
+        chmod($this->publicMedia(), 0o555);
+
+        try {
+            $response = $kernel->handle($this->delete((string) $asset['id']));
+        } finally {
+            chmod($this->publicMedia(), 0o700);
+        }
+
+        // A removal the filesystem refused is a failure, never a 204: nothing
+        // was staged (the very first step needs the directory write), so the
+        // asset is exactly as it was and the delete can simply be retried.
+        self::assertSame(500, $response->status);
+        self::assertSame('STORAGE_FAILURE', $this->errorCodeOf($response));
+        self::assertFileExists($this->publicMedia() . '/' . $fileName);
+        self::assertFileExists($this->originals() . '/' . $fileName);
+        self::assertSame([$asset], $this->assetsOf($kernel->handle($this->get())));
+        self::assertSame([], $this->deletingLeftovers($this->publicMedia()));
+        self::assertSame([], $this->deletingLeftovers($this->originals()));
+
+        self::assertSame(204, $kernel->handle($this->delete((string) $asset['id']))->status);
+        self::assertSame([], $this->assetsOf($kernel->handle($this->get())));
+        self::assertFileDoesNotExist($this->publicMedia() . '/' . $fileName);
+        self::assertFileDoesNotExist($this->originals() . '/' . $fileName);
+    }
+
+    public function testAnUnwritableOriginalsDirectoryCompensatesAndLeavesTheAssetUntouched(): void
+    {
+        $kernel = $this->boot();
+        $kernel->storage->initialize();
+        $asset = $this->assetFrom($this->upload($kernel, MediaFixtures::jpeg()));
+        $fileName = basename((string) $asset['path']);
+
+        // The derivative stages first (its directory still writable), then the
+        // original's staging rename fails — and the derivative must be renamed
+        // back, not left under a staging name.
+        chmod($this->originals(), 0o555);
+
+        try {
+            $response = $kernel->handle($this->delete((string) $asset['id']));
+        } finally {
+            chmod($this->originals(), 0o700);
+        }
+
+        self::assertSame(500, $response->status);
+        self::assertSame('STORAGE_FAILURE', $this->errorCodeOf($response));
+        self::assertFileExists($this->publicMedia() . '/' . $fileName, 'the staged derivative was not restored');
+        self::assertFileExists($this->originals() . '/' . $fileName);
+        self::assertSame([$asset], $this->assetsOf($kernel->handle($this->get())));
+        self::assertSame([], $this->deletingLeftovers($this->publicMedia()));
+        self::assertSame([], $this->deletingLeftovers($this->originals()));
+
+        self::assertSame(204, $kernel->handle($this->delete((string) $asset['id']))->status);
+        self::assertSame([], $this->assetsOf($kernel->handle($this->get())));
+    }
+
+    public function testACatalogueWriteFailureCannotClaimASuccessAndRetriesToFullDeletion(): void
+    {
+        $kernel = $this->boot();
+        $kernel->storage->initialize();
+        $asset = $this->assetFrom($this->upload($kernel, MediaFixtures::jpeg()));
+        $fileName = basename((string) $asset['path']);
+        $contentBefore = $this->storedContent();
+
+        // Both files are removed before the catalogue commit, so the commit
+        // fault must surface as a failure — never a 204 — with the catalogue
+        // entry still present (the atomic write left the previous file in
+        // place), which is what makes the retry reachable and convergent.
+        chmod($this->root . '/data/content', 0o555);
+
+        try {
+            $response = $kernel->handle($this->delete((string) $asset['id']));
+        } finally {
+            chmod($this->root . '/data/content', 0o700);
+        }
+
+        self::assertSame(500, $response->status);
+        self::assertSame('STORAGE_FAILURE', $this->errorCodeOf($response));
+        self::assertFileDoesNotExist($this->publicMedia() . '/' . $fileName);
+        self::assertFileDoesNotExist($this->originals() . '/' . $fileName);
+        self::assertSame([$asset], $this->assetsOf($kernel->handle($this->get())));
+        self::assertSame([], $this->deletingLeftovers($this->publicMedia()));
+        self::assertSame([], $this->deletingLeftovers($this->originals()));
+        self::assertSame([], $this->temporaryFiles());
+        self::assertSame($contentBefore, $this->storedContent(), 'a failed delete moved a content revision');
+
+        // The retry over the entry whose bytes are already gone converges: the
+        // missing files are simply noted, and the commit completes the delete.
+        self::assertSame(204, $kernel->handle($this->delete((string) $asset['id']))->status);
+        self::assertSame([], $this->assetsOf($kernel->handle($this->get())));
+        self::assertFileDoesNotExist($this->publicMedia() . '/' . $fileName);
+        self::assertFileDoesNotExist($this->originals() . '/' . $fileName);
+    }
+
+    public function testARetrySweepsTheResidueOfAnInterruptedDeleteAndConverges(): void
+    {
+        // What a delete that died between staging and removal leaves behind: the
+        // canonical derivative gone, a `.deleting-` file beside where it was, the
+        // catalogue entry still present. The retry of the same delete must sweep
+        // the leftover and reach full deletion, in both directories.
+        foreach (['derivative', 'original'] as $label) {
+            $kernel = $this->boot();
+            $kernel->storage->initialize();
+            $asset = $this->assetFrom($this->upload($kernel, MediaFixtures::jpeg()));
+            $fileName = basename((string) $asset['path']);
+            $directory = $label === 'derivative' ? $this->publicMedia() : $this->originals();
+
+            rename($directory . '/' . $fileName, $directory . '/.deleting-' . $fileName);
+            self::assertFileExists($directory . '/.deleting-' . $fileName, "{$label} residue not arranged");
+
+            $response = $kernel->handle($this->delete((string) $asset['id']));
+
+            self::assertSame(204, $response->status, $label);
+            self::assertSame([], $this->assetsOf($kernel->handle($this->get())));
+            self::assertFileDoesNotExist($this->publicMedia() . '/' . $fileName);
+            self::assertFileDoesNotExist($this->originals() . '/' . $fileName);
+            self::assertSame([], $this->deletingLeftovers($this->publicMedia()));
+            self::assertSame([], $this->deletingLeftovers($this->originals()));
+
+            TestEnvironment::removeDirectory($this->root);
+            $this->root = TestEnvironment::makeTempDirectory('eszter-media-library');
+        }
+    }
+
+    public function testAPreMissingOriginalStillDeletesCompletely(): void
+    {
+        // The existing proof covers a catalogue entry whose *derivative* is gone;
+        // this is the mirror disagreement: the managed original has vanished and
+        // the entry must still converge to complete deletion.
+        $kernel = $this->boot();
+        $kernel->storage->initialize();
+        $asset = $this->assetFrom($this->upload($kernel, MediaFixtures::jpeg()));
+        $fileName = basename((string) $asset['path']);
+
+        unlink($this->originals() . '/' . $fileName);
+
+        self::assertSame(204, $kernel->handle($this->delete((string) $asset['id']))->status);
+        self::assertSame([], $this->assetsOf($kernel->handle($this->get())));
+        self::assertFileDoesNotExist($this->publicMedia() . '/' . $fileName);
+        self::assertFileDoesNotExist($this->originals() . '/' . $fileName);
+    }
+
+    public function testASuccessfulDeleteLeavesNoTransientFilesBehind(): void
+    {
+        $kernel = $this->boot();
+        $kernel->storage->initialize();
+        $asset = $this->assetFrom($this->upload($kernel, MediaFixtures::jpeg()));
+        $fileName = basename((string) $asset['path']);
+
+        self::assertSame(204, $kernel->handle($this->delete((string) $asset['id']))->status);
+
+        self::assertSame([], $this->deletingLeftovers($this->publicMedia()));
+        self::assertSame([], $this->deletingLeftovers($this->originals()));
+        self::assertSame([], $this->temporaryFiles());
+
+        // The managed directories hold nothing of the asset: no canonical file,
+        // no staging name, nothing at all in the served media directory.
+        self::assertSame([], array_values(array_diff(scandir($this->publicMedia()) ?: [], ['.', '..'])));
+        $remaining = array_values(array_diff(scandir($this->originals()) ?: [], ['.', '..']));
+        self::assertNotContains($fileName, $remaining);
+    }
+
     public function testAFileWithNoCatalogueEntryIsNotDeletableThroughThisApi(): void
     {
         // The catalogue is authoritative for what the library contains. Bytes
@@ -585,6 +763,27 @@ final class MediaLibraryTest extends TestCase
         self::assertIsArray($body);
 
         return (string) $body['error']['code'];
+    }
+
+    /** @return list<string> Every `.deleting-*` file under $directory. */
+    private function deletingLeftovers(string $directory): array
+    {
+        return glob($directory . '/.deleting-*') ?: [];
+    }
+
+    /** @return list<string> */
+    private function temporaryFiles(): array
+    {
+        $entries = @scandir($this->root . '/var/tmp');
+
+        if ($entries === false) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            $entries,
+            static fn (string $entry): bool => $entry !== '.' && $entry !== '..',
+        ));
     }
 
     /** @return array<string, string|false> */

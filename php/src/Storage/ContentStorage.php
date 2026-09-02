@@ -47,6 +47,14 @@ use Eszter\Support\Clock;
  * therefore never block each other, while a reader still never observes a
  * half-written file, since every writer holds the exclusive lock across the whole
  * temp-write/fsync/rename sequence.
+ *
+ * Since ESZ-100 every write that can make a media reference durable — draft
+ * save, publish, reset and the raw envelope writers — additionally takes the
+ * {@see MediaContentLock} boundary **shared** (after the snapshot barrier,
+ * before `content.lock`), so a media delete holding that boundary exclusively
+ * can never be crossed by a content write between its reference check and its
+ * commit. Seeding stays outside the boundary: it writes canonical,
+ * reference-free defaults, so it has nothing to serialise against a delete.
  */
 final class ContentStorage implements PublishedContentReader
 {
@@ -80,6 +88,7 @@ final class ContentStorage implements PublishedContentReader
     private readonly AtomicJsonFile $writer;
     private readonly FileLock $lock;
     private readonly ApplicationSnapshotLock $snapshotLock;
+    private readonly MediaContentLock $mediaContentLock;
 
     public function __construct(
         private readonly string $contentDirectory,
@@ -92,6 +101,7 @@ final class ContentStorage implements PublishedContentReader
         $this->writer = new AtomicJsonFile($this->tmpDirectory);
         $this->lock = new FileLock($lockDirectory . \DIRECTORY_SEPARATOR . 'content.lock');
         $this->snapshotLock = new ApplicationSnapshotLock($lockDirectory);
+        $this->mediaContentLock = new MediaContentLock($lockDirectory);
         $this->maxFileBytes = $artifacts->storageLimitBytes('contentFileLimitBytes');
     }
 
@@ -223,8 +233,10 @@ final class ContentStorage implements PublishedContentReader
     public function writeDraft(mixed $envelope): void
     {
         $this->snapshotLock->withShared(function () use ($envelope): void {
-            $this->lock->withLock(true, function () use ($envelope): void {
-                $this->writeEnvelope(self::ROLE_DRAFT, $envelope);
+            $this->mediaContentLock->withShared(function () use ($envelope): void {
+                $this->lock->withLock(true, function () use ($envelope): void {
+                    $this->writeEnvelope(self::ROLE_DRAFT, $envelope);
+                });
             });
         });
     }
@@ -233,8 +245,10 @@ final class ContentStorage implements PublishedContentReader
     public function writePublished(mixed $envelope): void
     {
         $this->snapshotLock->withShared(function () use ($envelope): void {
-            $this->lock->withLock(true, function () use ($envelope): void {
-                $this->writeEnvelope(self::ROLE_PUBLISHED, $envelope);
+            $this->mediaContentLock->withShared(function () use ($envelope): void {
+                $this->lock->withLock(true, function () use ($envelope): void {
+                    $this->writeEnvelope(self::ROLE_PUBLISHED, $envelope);
+                });
             });
         });
     }
@@ -267,7 +281,9 @@ final class ContentStorage implements PublishedContentReader
     public function saveDraft(int $expectedRevision, array $content): array
     {
         return $this->snapshotLock->withShared(
-            fn (): array => $this->saveDraftWithSnapshotBarrier($expectedRevision, $content),
+            fn (): array => $this->mediaContentLock->withShared(
+                fn (): array => $this->saveDraftWithSnapshotBarrier($expectedRevision, $content),
+            ),
         );
     }
 
@@ -321,7 +337,9 @@ final class ContentStorage implements PublishedContentReader
     public function publishDraft(int $expectedRevision): array
     {
         return $this->snapshotLock->withShared(
-            fn (): array => $this->publishDraftWithSnapshotBarrier($expectedRevision),
+            fn (): array => $this->mediaContentLock->withShared(
+                fn (): array => $this->publishDraftWithSnapshotBarrier($expectedRevision),
+            ),
         );
     }
 
@@ -382,7 +400,9 @@ final class ContentStorage implements PublishedContentReader
     public function resetDraftToPublished(int $expectedRevision): array
     {
         return $this->snapshotLock->withShared(
-            fn (): array => $this->resetDraftWithSnapshotBarrier($expectedRevision),
+            fn (): array => $this->mediaContentLock->withShared(
+                fn (): array => $this->resetDraftWithSnapshotBarrier($expectedRevision),
+            ),
         );
     }
 

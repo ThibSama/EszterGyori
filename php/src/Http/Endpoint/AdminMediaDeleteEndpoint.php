@@ -37,14 +37,18 @@ use Eszter\Support\Logger;
  * showed nothing wrong. Checking only the published side is the mirror mistake —
  * it would let an editor delete the photograph their unsaved layout depends on.
  *
- * The check runs **inside** the library's exclusive lock, as a closure the library
- * calls, so no upload or delete can interleave with it. What it cannot exclude is
- * a *content* save landing between the check and the removal, because that write
- * takes a different lock; the consequence is a draft holding one dangling path,
- * which the editor sees as a broken preview and fixes by repointing the field. A
- * single lock over both would close it, at the cost of making every draft save
- * wait behind media operations — the wrong trade for a race that needs two people
- * editing the same asset in the same instant.
+ * The check runs **inside** the library's exclusive locks, as a closure the
+ * library calls, so no upload or delete can interleave with it. What used to be
+ * left open was a *content* save landing between the check and the removal,
+ * because that write takes a different lock. ESZ-100 closes it with the
+ * {@see \Eszter\Storage\MediaContentLock} boundary: the delete holds that
+ * boundary exclusively across the whole check-to-commit critical section, and
+ * every content write that can make a media reference durable — draft save,
+ * publish, reset — holds it shared. A save therefore either commits before the
+ * check (the delete observes the reference and refuses) or waits until the
+ * deletion is complete; it can never land between the verdict and the removal.
+ * Saves stay concurrent with each other and wait only behind an actual delete,
+ * not behind ordinary media operations.
  *
  * ## Reading content here does not make this a content route
  *
