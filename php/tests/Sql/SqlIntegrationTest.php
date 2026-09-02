@@ -69,6 +69,20 @@ final class SqlIntegrationTest extends TestCase
     private const EMAIL = 'editor@example.test';
     private const PASSWORD = 'correct-horse-battery';
 
+    /**
+     * The frozen clock the ESZ-134 production-wiring kernels boot with, and the
+     * value their recordLogin writes. Distinct from the suite's 2026 clock, so
+     * an injected-failure trigger can never misfire on another test's rows.
+     */
+    private const FAILED_LOGIN_NOW = '2099-06-13T12:00:00.000Z';
+
+    /**
+     * The frozen clock of the ESZ-134 rehash kernels. Distinct from
+     * {@see FAILED_LOGIN_NOW} so the two injected-failure triggers cannot
+     * interfere even if one were ever left behind.
+     */
+    private const REHASH_NOW = '2098-06-13T12:00:00.000Z';
+
     private static bool $migrated = false;
 
     private Database $database;
@@ -1843,6 +1857,12 @@ final class SqlIntegrationTest extends TestCase
         self::assertNotNull($stored);
         self::assertNotNull($stored->accountId);
 
+        // ESZ-134: the committed transition includes the login record, not just
+        // the session — last_login_at is written in the same unit as the rotation.
+        $recorded = $this->accounts->findById(1);
+        self::assertNotNull($recorded);
+        self::assertSame(self::NOW, $recorded->lastLoginAt);
+
         // 4. Logout with the stale token is refused; with the fresh one it works.
         $newToken = (string) $body['csrfToken'];
         self::assertSame(403, $this->logout($kernel, $newSessionId, $token)->status);
@@ -2186,5 +2206,307 @@ final class SqlIntegrationTest extends TestCase
             $listed,
             'a ranged read returned more rows than the contract\'s own result ceiling',
         );
+    }
+
+    // --- ESZ-134: login is fail-closed after session rotation -----------------
+
+    /**
+     * The success half of the ESZ-134 acceptance criterion, against the real
+     * production wiring: rotation, last_login_at and the required rehash are one
+     * committed transition, and the authenticated session is published only
+     * after that commit.
+     */
+    public function testARequiredRehashIsCommittedWithTheSessionWhenLoginSucceeds(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $legacy = $this->insertLegacyHashAccount(self::PASSWORD);
+
+        // Fixture guard: if PASSWORD_DEFAULT ever stops considering a cost-10
+        // bcrypt hash outdated, the rehash branch this proof exists for is dead
+        // and this test must say so instead of silently passing.
+        self::assertTrue(AdminAccountRepository::needsRehash($legacy));
+
+        $kernel = $this->bootProductionKernel($this->root, new FrozenClock(self::REHASH_NOW));
+        $anonymous = $kernel->handle(new Request('GET', '/api/auth/session'));
+        /** @var array<string, mixed> $anonymousBody */
+        $anonymousBody = $anonymous->decodedBody();
+        $accepted = $this->login(
+            $kernel,
+            self::cookieValue($anonymous),
+            (string) $anonymousBody['csrfToken'],
+            self::PASSWORD,
+        );
+        /** @var array<string, mixed> $body */
+        $body = $accepted->decodedBody();
+
+        self::assertSame(200, $accepted->status);
+        self::assertTrue($body['authenticated']);
+        self::assertIsString($accepted->header('Set-Cookie'));
+
+        // Exactly one authenticated session row was committed.
+        $sessions = $this->database->fetchAll(
+            'SELECT id, account_id FROM admin_sessions WHERE account_id IS NOT NULL',
+        );
+        self::assertCount(1, $sessions);
+        self::assertSame(1, (int) $sessions[0]['account_id']);
+
+        // The account half of the transition committed too: the hash was
+        // upgraded and the login was recorded under the kernel's clock.
+        $account = $this->database->fetchOne(
+            'SELECT password_hash, last_login_at FROM admin_accounts WHERE email = :email',
+            ['email' => self::EMAIL],
+        );
+        self::assertIsArray($account);
+        self::assertSame(self::REHASH_NOW, $account['last_login_at']);
+        self::assertNotSame($legacy, $account['password_hash']);
+        self::assertFalse(AdminAccountRepository::needsRehash($account['password_hash']));
+        self::assertTrue(password_verify(self::PASSWORD, $account['password_hash']));
+    }
+
+    /**
+     * ESZ-134, recordLogin path, real production wiring: a failure *after* the
+     * rotation must roll back the authenticated session row and the login
+     * record, and the error response must publish no cookie. The failure is a
+     * real MySQL SIGNAL raised by a trigger the moment recordLogin writes the
+     * kernel's clock value into last_login_at — no mock stands in for SQL.
+     */
+    public function testARecordLoginFailureAfterRotationRollsBackSessionAndLoginRecord(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $this->accounts->provision($this->email(self::EMAIL), self::PASSWORD, true);
+        $this->installRecordLoginFailureTrigger();
+
+        try {
+            $kernel = $this->bootProductionKernel($this->root, new FrozenClock(self::FAILED_LOGIN_NOW));
+            $anonymous = $kernel->handle(new Request('GET', '/api/auth/session'));
+            /** @var array<string, mixed> $anonymousBody */
+            $anonymousBody = $anonymous->decodedBody();
+            $sessionId = self::cookieValue($anonymous);
+
+            self::assertSame(1, (int) ($this->database->fetchOne(
+                'SELECT COUNT(*) AS n FROM admin_sessions',
+            )['n'] ?? 0), 'the anonymous session is not alone in admin_sessions');
+
+            $response = $this->login(
+                $kernel,
+                $sessionId,
+                (string) $anonymousBody['csrfToken'],
+                self::PASSWORD,
+            );
+            /** @var array<string, mixed> $body */
+            $body = $response->decodedBody();
+
+            // An error response, never a false success, and no cookie on it.
+            self::assertSame(500, $response->status);
+            self::assertSame('INTERNAL_ERROR', $body['error']['code']);
+            self::assertNull($response->header('Set-Cookie'), 'the 500 published the rotated session cookie');
+            self::assertStringNotContainsString($sessionId, $response->body);
+            self::assertStringNotContainsString(self::PASSWORD, $response->body);
+
+            // No authenticated session row survived the rollback, and the
+            // pre-login anonymous row is back under its original id.
+            self::assertSame([], $this->database->fetchAll(
+                'SELECT id FROM admin_sessions WHERE account_id IS NOT NULL',
+            ));
+            $rows = $this->database->fetchAll('SELECT id, account_id FROM admin_sessions');
+            self::assertCount(1, $rows);
+            self::assertSame($sessionId, $rows[0]['id']);
+            self::assertNull($rows[0]['account_id']);
+
+            // The account records no login and no hash change.
+            $account = $this->database->fetchOne(
+                'SELECT password_hash, last_login_at FROM admin_accounts WHERE email = :email',
+                ['email' => self::EMAIL],
+            );
+            self::assertIsArray($account);
+            self::assertNull($account['last_login_at']);
+            self::assertTrue(password_verify(self::PASSWORD, $account['password_hash']));
+
+            // The restored anonymous cookie keeps working on the same kernel.
+            $replay = $kernel->handle(new Request(
+                'GET',
+                '/api/auth/session',
+                ['cookie' => $this->cookieName() . '=' . $sessionId],
+            ));
+            /** @var array<string, mixed> $replayBody */
+            $replayBody = $replay->decodedBody();
+            self::assertSame(200, $replay->status);
+            self::assertFalse($replayBody['authenticated']);
+            self::assertSame((string) $anonymousBody['csrfToken'], $replayBody['csrfToken']);
+        } finally {
+            $this->removeRecordLoginFailureTrigger();
+        }
+    }
+
+    /**
+     * ESZ-134, required-rehash path, real production wiring: an account whose
+     * hash PASSWORD_DEFAULT considers outdated makes the login rehash inside the
+     * same transition, and a failure there rolls the session, the login record
+     * and the hash change back together.
+     */
+    public function testARequiredRehashFailureAfterRotationRollsBackSessionLoginAndHash(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $legacy = $this->insertLegacyHashAccount(self::PASSWORD);
+        $this->installRehashFailureTrigger();
+
+        try {
+            $kernel = $this->bootProductionKernel($this->root, new FrozenClock(self::REHASH_NOW));
+            $anonymous = $kernel->handle(new Request('GET', '/api/auth/session'));
+            /** @var array<string, mixed> $anonymousBody */
+            $anonymousBody = $anonymous->decodedBody();
+            $sessionId = self::cookieValue($anonymous);
+
+            $response = $this->login(
+                $kernel,
+                $sessionId,
+                (string) $anonymousBody['csrfToken'],
+                self::PASSWORD,
+            );
+            /** @var array<string, mixed> $body */
+            $body = $response->decodedBody();
+
+            self::assertSame(500, $response->status);
+            self::assertSame('INTERNAL_ERROR', $body['error']['code']);
+            self::assertNull($response->header('Set-Cookie'), 'the 500 published the rotated session cookie');
+
+            // The rollback undid the rotation...
+            self::assertSame([], $this->database->fetchAll(
+                'SELECT id FROM admin_sessions WHERE account_id IS NOT NULL',
+            ));
+            $rows = $this->database->fetchAll('SELECT id, account_id FROM admin_sessions');
+            self::assertCount(1, $rows);
+            self::assertSame($sessionId, $rows[0]['id']);
+            self::assertNull($rows[0]['account_id']);
+
+            // ...and undid the account half of the transition: the legacy hash
+            // is still in place, the upgrade was not committed, and the login
+            // was not recorded.
+            $account = $this->database->fetchOne(
+                'SELECT password_hash, last_login_at FROM admin_accounts WHERE email = :email',
+                ['email' => self::EMAIL],
+            );
+            self::assertIsArray($account);
+            self::assertSame($legacy, $account['password_hash']);
+            self::assertTrue(AdminAccountRepository::needsRehash($account['password_hash']));
+            self::assertNull($account['last_login_at']);
+
+            // The restored anonymous cookie still works on the same kernel.
+            $replay = $kernel->handle(new Request(
+                'GET',
+                '/api/auth/session',
+                ['cookie' => $this->cookieName() . '=' . $sessionId],
+            ));
+            /** @var array<string, mixed> $replayBody */
+            $replayBody = $replay->decodedBody();
+            self::assertSame(200, $replay->status);
+            self::assertFalse($replayBody['authenticated']);
+        } finally {
+            $this->removeRehashFailureTrigger();
+        }
+    }
+
+    // --- ESZ-134 helpers ----------------------------------------------------
+
+    /**
+     * Leaves the suite's rollback-only wrapper, like the booking rollback proof
+     * does, so a production-wired kernel with its own connection can commit and
+     * roll back real rows instead of sharing the test's transaction.
+     */
+    private function leaveTheWrapperTransaction(): void
+    {
+        $this->database->rollBack();
+        TestDatabase::truncateData($this->database);
+    }
+
+    /**
+     * The full production wiring: Kernel::boot over a deployment configuration
+     * pointing at the disposable MySQL, with no seams. The kernel opens its own
+     * connection, exactly as public/api/index.php would.
+     */
+    private function bootProductionKernel(string $root, FrozenClock $clock): Kernel
+    {
+        $settings = TestDatabase::settings();
+        $configPath = TestEnvironment::writeDeployment($root, [
+            'database' => [
+                'dsn' => $settings->dsn,
+                'username' => $settings->username,
+                'password' => $settings->password,
+                'connectTimeoutSeconds' => $settings->connectTimeoutSeconds,
+            ],
+        ]);
+
+        return Kernel::boot($configPath, $clock);
+    }
+
+    /**
+     * An account whose hash the current PASSWORD_DEFAULT considers outdated, so
+     * the very next successful login must rehash it. Inserted directly because
+     * provisioning always writes a current hash.
+     */
+    private function insertLegacyHashAccount(string $password): string
+    {
+        $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 10]);
+
+        $this->database->run(
+            'INSERT INTO admin_accounts (email, password_hash, is_enabled, created_at, updated_at)'
+            . ' VALUES (:email, :hash, 1, :created_at, :updated_at)',
+            [
+                'email' => self::EMAIL,
+                'hash' => $hash,
+                // PDO native prepares forbid reusing one named parameter, so the
+                // two identical timestamps are two parameters.
+                'created_at' => self::NOW,
+                'updated_at' => self::NOW,
+            ],
+        );
+
+        return $hash;
+    }
+
+    /**
+     * A real MySQL fault injection: the moment recordLogin writes the
+     * ESZ-134 kernel clock into last_login_at, the statement fails. Scoped to
+     * that one value so a leftover trigger could never misfire on the suite's
+     * own 2026-clock rows.
+     */
+    private function installRecordLoginFailureTrigger(): void
+    {
+        $this->database->executeRaw('DROP TRIGGER IF EXISTS esz134_login_record_failure', 'reset esz134 login trigger');
+        $this->database->executeRaw(
+            'CREATE TRIGGER esz134_login_record_failure BEFORE UPDATE ON admin_accounts'
+            . ' FOR EACH ROW'
+            . " BEGIN IF NEW.last_login_at = '" . self::FAILED_LOGIN_NOW . "' THEN"
+            . " SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'esz134 forced recordLogin failure';"
+            . ' END IF; END',
+            'create esz134 login trigger',
+        );
+    }
+
+    private function removeRecordLoginFailureTrigger(): void
+    {
+        $this->database->executeRaw('DROP TRIGGER IF EXISTS esz134_login_record_failure', 'drop esz134 login trigger');
+    }
+
+    /**
+     * A real MySQL fault injection scoped to a legacy cost-10 hash being
+     * rewritten: exactly the write upgradeHash performs, and no other.
+     */
+    private function installRehashFailureTrigger(): void
+    {
+        $this->database->executeRaw('DROP TRIGGER IF EXISTS esz134_rehash_failure', 'reset esz134 rehash trigger');
+        $this->database->executeRaw(
+            'CREATE TRIGGER esz134_rehash_failure BEFORE UPDATE ON admin_accounts'
+            . ' FOR EACH ROW'
+            . " BEGIN IF OLD.password_hash LIKE '$2y$10$%' AND NEW.password_hash <> OLD.password_hash THEN"
+            . " SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'esz134 forced rehash failure';"
+            . ' END IF; END',
+            'create esz134 rehash trigger',
+        );
+    }
+
+    private function removeRehashFailureTrigger(): void
+    {
+        $this->database->executeRaw('DROP TRIGGER IF EXISTS esz134_rehash_failure', 'drop esz134 rehash trigger');
     }
 }

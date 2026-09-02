@@ -21,6 +21,25 @@ final class InMemorySessionStore implements SessionStore
     /** @var array<string, Session> */
     public array $sessions = [];
 
+    /**
+     * Every save, in order, so a test can name the session a rotation created
+     * even after it was destroyed again.
+     *
+     * @var list<array{id: string, accountId: int|null}>
+     */
+    public array $saveHistory = [];
+
+    /**
+     * When true, the next destroy() call is allowed through and arms
+     * {@see $throwOnDestroy} — so a test can make the *second* destroy of a
+     * request fail (the rotation's own destroy of the anonymous row succeeds,
+     * the revocation's destroy of the rotated row throws).
+     */
+    public bool $armThrowOnNextDestroy = false;
+
+    /** When true, destroy() throws without removing anything. */
+    public bool $throwOnDestroy = false;
+
     public function __construct(private readonly Clock $clock)
     {
     }
@@ -48,8 +67,17 @@ final class InMemorySessionStore implements SessionStore
         return $session;
     }
 
+    /** When true, save() throws without recording or storing anything. */
+    public bool $throwOnSave = false;
+
     public function save(Session $session): void
     {
+        if ($this->throwOnSave) {
+            throw new \RuntimeException('Forced session save failure.');
+        }
+
+        $this->saveHistory[] = ['id' => $session->id, 'accountId' => $session->accountId];
+
         $existing = $this->sessions[$session->id] ?? null;
 
         // Mirrors the SQL `ON DUPLICATE KEY UPDATE` list: the absolute ceiling and
@@ -69,6 +97,17 @@ final class InMemorySessionStore implements SessionStore
 
     public function destroy(string $id): void
     {
+        if ($this->throwOnDestroy) {
+            throw new \RuntimeException('Forced session destroy failure.');
+        }
+
+        // Consumed after the throw check, so the destroy that arms the failure
+        // is allowed through and the *next* one throws.
+        if ($this->armThrowOnNextDestroy) {
+            $this->armThrowOnNextDestroy = false;
+            $this->throwOnDestroy = true;
+        }
+
         unset($this->sessions[$id]);
     }
 

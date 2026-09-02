@@ -229,6 +229,14 @@ final class Kernel
         // which only an `/api/auth/*` request makes.
         $database = $config->database === null ? null : new Database($config->database, $config->lockDir);
 
+        // Whether the authenticated surface is backed by this kernel's own SQL
+        // wiring — the account directory and the session store built from
+        // `$database` below — rather than by seams the caller injected. Only
+        // then does `$database` transact the login (ESZ-134). Captured before
+        // `$sessionStore` is replaced by its SQL default, which would erase the
+        // distinction.
+        $sqlWiring = $accountDirectory === null && $sessionStore === null;
+
         $accounts = $accountDirectory
             ?? ($database === null ? null : new AdminAccountRepository($database, $clock));
         $sessionStore ??= $database === null ? null : new PdoSessionStore($database, $clock);
@@ -296,6 +304,14 @@ final class Kernel
                 $structural,
                 $uploadTransport ?? new PhpUploadTransport(),
                 $bookingApi,
+                // The login transition (ESZ-134) is transactional exactly when
+                // this kernel built the SQL wiring itself — the account
+                // directory and the session store then share this Database. In
+                // the seam-driven replay wiring the seams carry their own (or no)
+                // persistence, so passing this Database would open a real
+                // connection behind the doubles; there the rotation is
+                // compensated rather than rolled back.
+                $sqlWiring ? $database : null,
             );
         }
 
@@ -408,8 +424,9 @@ final class Kernel
         StructuralValidator $structural,
         UploadTransport $uploadTransport,
         ?BookingApi $bookingApi,
+        ?Database $loginDatabase,
     ): void {
-        $authenticator = new Authenticator($accounts, $sessions, $clock, $logger);
+        $authenticator = new Authenticator($accounts, $sessions, $clock, $logger, $loginDatabase);
         $csrf = CsrfGuard::fromArtifacts($this->artifacts);
 
         $this->router->register('GET', AuthSessionEndpoint::PATH, new AuthSessionEndpoint($authenticator));

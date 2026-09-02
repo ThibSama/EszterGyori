@@ -55,6 +55,18 @@ final class SessionManager
     private bool $cookieMustBeSet = false;
     private bool $cookieMustBeCleared = false;
 
+    /**
+     * True between {@see rotate()} and the point the caller's login work has
+     * committed — or been revoked by {@see revokeRotation()}.
+     */
+    private bool $rotationInProgress = false;
+
+    /** The live session {@see rotate()} replaced, restored on revocation. */
+    private ?Session $preRotationSession = null;
+
+    /** The session {@see rotate()} created, destroyed on revocation. */
+    private ?Session $rotatedSession = null;
+
     public function __construct(
         private readonly SessionStore $store,
         private readonly SessionCookie $cookie,
@@ -83,6 +95,9 @@ final class SessionManager
         $this->session = null;
         $this->cookieMustBeSet = false;
         $this->cookieMustBeCleared = false;
+        $this->rotationInProgress = false;
+        $this->preRotationSession = null;
+        $this->rotatedSession = null;
 
         $this->incomingId = $this->cookie->read($request);
 
@@ -124,6 +139,12 @@ final class SessionManager
      * so the pre-login id confers nothing afterwards, and the new session gets a
      * new CSRF token as well — a token captured before the privilege change is as
      * useless as the id it was bound to.
+     *
+     * The replacement is provisional until the rest of the login has committed:
+     * {@see revokeRotation()} undoes it (restoring the pre-login session and row,
+     * and disarming the cookie) when the work after rotation fails. Until then
+     * the new authenticated row exists and its cookie is armed — which is
+     * precisely the window ESZ-134 closes.
      */
     public function rotate(int $accountId): Session
     {
@@ -133,7 +154,57 @@ final class SessionManager
             $this->store->destroy($previous);
         }
 
-        return $this->session = $this->create($accountId);
+        // Remember what this rotation replaced, and that it is not yet final.
+        // Assigned before create() so that even a rotation whose persistence
+        // fails halfway can still be revoked.
+        $this->preRotationSession = $this->session;
+        $this->rotationInProgress = true;
+
+        $this->session = $this->create($accountId);
+        $this->rotatedSession = $this->session;
+
+        return $this->session;
+    }
+
+    /**
+     * Undoes a rotation whose login work failed after it ran.
+     *
+     * The caller — {@see Authenticator::login()} — has already
+     * rolled the database back when a transaction surrounded the rotation, so
+     * the store compensation here is the safety net for the wiring without one
+     * (the in-memory seams, or a rollback that itself failed): the pre-login row
+     * is restored and the rotated row is destroyed.
+     *
+     * The request-local state is reconciled *first*, and that half cannot fail:
+     * even if the store compensation throws, this request no longer holds the
+     * rotated session and {@see applyTo()} publishes no cookie for it.
+     */
+    public function revokeRotation(): void
+    {
+        if (!$this->rotationInProgress) {
+            return;
+        }
+
+        $rotated = $this->rotatedSession;
+        $previous = $this->preRotationSession;
+
+        $this->session = $previous;
+        $this->cookieMustBeSet = false;
+        $this->cookieMustBeCleared = false;
+        $this->rotationInProgress = false;
+        $this->preRotationSession = null;
+        $this->rotatedSession = null;
+
+        // Store compensation. The pre-login row first, so the state a retry
+        // needs is restored even if the destroy below throws; the rotated row's
+        // id was never published, so it is harmless if the destroy fails.
+        if ($previous !== null) {
+            $this->store->save($previous);
+        }
+
+        if ($rotated !== null) {
+            $this->store->destroy($rotated->id);
+        }
     }
 
     /**
@@ -156,6 +227,10 @@ final class SessionManager
         $this->session = null;
         $this->cookieMustBeSet = false;
         $this->cookieMustBeCleared = true;
+        // Ending the session ends any rotation that was in flight with it.
+        $this->rotationInProgress = false;
+        $this->preRotationSession = null;
+        $this->rotatedSession = null;
     }
 
     /**

@@ -33,6 +33,12 @@ final class InMemoryAccountDirectory implements AccountDirectory
     /** @var list<array{id: int, at: string}> */
     public array $recordedLogins = [];
 
+    /**
+     * When true, recordLogin() throws before recording anything, standing in
+     * for a post-rotation persistence failure in the SQL implementation.
+     */
+    public bool $throwOnRecordLogin = false;
+
     public static function withAccount(bool $enabled): self
     {
         $directory = new self();
@@ -104,6 +110,10 @@ final class InMemoryAccountDirectory implements AccountDirectory
 
     public function recordLogin(int $id, string $at): void
     {
+        if ($this->throwOnRecordLogin) {
+            throw new \RuntimeException('Forced recordLogin failure after rotation.');
+        }
+
         $this->recordedLogins[] = ['id' => $id, 'at' => $at];
 
         $account = $this->accounts[$id] ?? null;

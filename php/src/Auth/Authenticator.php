@@ -8,6 +8,7 @@ use Eszter\Admin\AccountDirectory;
 use Eszter\Admin\AdminAccount;
 use Eszter\Admin\AdminAccountRepository;
 use Eszter\Admin\AdminEmail;
+use Eszter\Database\Database;
 use Eszter\Http\HttpException;
 use Eszter\Support\Clock;
 use Eszter\Support\Logger;
@@ -43,6 +44,17 @@ final class Authenticator
         private readonly SessionManager $sessions,
         private readonly Clock $clock,
         private readonly Logger $logger,
+        /**
+         * The shared database the account directory and the session store write
+         * through, when both are the SQL implementations. Null in the
+         * seam-driven replay wiring, where there is no SQL to transact; there,
+         * and there only, the rotation is compensated rather than rolled back.
+         *
+         * {@see \Eszter\Kernel::boot()} decides which wiring is in front of it
+         * and passes the database exactly when it built the SQL implementations
+         * itself.
+         */
+        private readonly ?Database $database = null,
     ) {
     }
 
@@ -100,6 +112,13 @@ final class Authenticator
      * done one password verification. The reason is written to the log, where it
      * belongs; it is not expressible in the response.
      *
+     * A verified credential then commits one atomic transition — session
+     * rotation, the login record and any required hash upgrade — and only a
+     * committed transition publishes the authenticated session/cookie. A failure
+     * inside the transition (ESZ-134) rolls it back and reconciles the
+     * request-local session state, so the error response that follows never
+     * carries an authenticated cookie and no authenticated row survives.
+     *
      * @throws HttpException 401 INVALID_CREDENTIALS
      */
     public function login(string $email, string $password): AdminAccount
@@ -130,21 +149,63 @@ final class Authenticator
             throw HttpException::invalidCredentials();
         }
 
-        $this->sessions->rotate($account->id);
-
+        // From here the login is one transition — rotation, login record and
+        // (when the stored hash is outdated) its rehash — and it is all or
+        // nothing. Where the SQL implementations share one Database, the
+        // transition runs inside Database::transactional(), so a failure after
+        // the rotation rolls the authenticated session row, last_login_at and
+        // the hash change back together; only after that commit is the
+        // authenticated session/cookie published by the response. In the
+        // seam-driven replay wiring (no SQL) the same transition runs directly
+        // and a failure is compensated by SessionManager::revokeRotation()
+        // instead of by a rollback. Either way the request-local session state
+        // is reconciled on failure, so an error response never carries the
+        // rotated cookie and the rotated id never authorises a later request.
         $now = $this->clock->nowIso();
-        $this->accounts->recordLogin($account->id, $now);
 
-        // An algorithm or cost change only ever reaches an existing account here:
-        // it is the one moment the plaintext is available to re-hash with.
-        if (
-            $this->accounts instanceof AdminAccountRepository
-            && AdminAccountRepository::needsRehash($account->passwordHash)
-        ) {
-            $this->accounts->upgradeHash($account->id, $password);
-            $this->logger->info('Password hash upgraded to the current algorithm.', [
-                'accountId' => $account->id,
-            ]);
+        $transition = function () use ($account, $password, $now): void {
+            $this->sessions->rotate($account->id);
+            $this->accounts->recordLogin($account->id, $now);
+
+            // An algorithm or cost change only ever reaches an existing account
+            // here: it is the one moment the plaintext is available to re-hash
+            // with.
+            if (
+                $this->accounts instanceof AdminAccountRepository
+                && AdminAccountRepository::needsRehash($account->passwordHash)
+            ) {
+                $this->accounts->upgradeHash($account->id, $password);
+                $this->logger->info('Password hash upgraded to the current algorithm.', [
+                    'accountId' => $account->id,
+                ]);
+            }
+        };
+
+        try {
+            if ($this->database === null) {
+                $transition();
+            } else {
+                $this->database->transactional($transition);
+            }
+        } catch (\Throwable $failure) {
+            try {
+                $this->sessions->revokeRotation();
+            } catch (\Throwable $revocationFailure) {
+                // The original failure is the one to report; revocation already
+                // reconciled the request-local state before it could throw, so
+                // nothing authenticated is published regardless. Log the
+                // compensation failure — its message and context carry no
+                // session id and no credential.
+                $this->logger->error(
+                    'Login failed and its session rotation could not be fully revoked.',
+                    [
+                        'accountId' => $account->id,
+                        'detail' => $revocationFailure->getMessage(),
+                    ],
+                );
+            }
+
+            throw $failure;
         }
 
         $this->logger->info('Login accepted.', ['accountId' => $account->id]);

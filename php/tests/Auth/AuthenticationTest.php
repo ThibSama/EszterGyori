@@ -214,6 +214,116 @@ final class AuthenticationTest extends TestCase
         self::assertNotSame(400, $response->status);
     }
 
+    public function testARecordLoginFailureAfterRotationPublishesNoSessionAndRestoresTheAnonymousOne(): void
+    {
+        // ESZ-134. The defect: rotate() deletes the anonymous row, persists the
+        // authenticated session and arms its cookie *before* recordLogin runs,
+        // so a failure there used to answer 500 while handing out the new
+        // authenticated cookie and leaving the authenticated row behind.
+        $anonymous = $this->openAnonymousSession();
+        $anonymousCount = \count($this->sessions->sessions);
+
+        $this->accounts->throwOnRecordLogin = true;
+        $response = $this->login($anonymous['sessionId'], $anonymous['csrfToken']);
+        /** @var array<string, mixed> $body */
+        $body = $response->decodedBody();
+
+        // An error response, never a false success — and no session cookie on it.
+        self::assertSame(500, $response->status);
+        self::assertSame('INTERNAL_ERROR', $body['error']['code']);
+        self::assertNull($response->header('Set-Cookie'), 'the failure response published a session cookie');
+
+        // The login itself was never recorded as successful.
+        self::assertSame([], $this->accounts->recordedLogins);
+
+        // The rotation did persist an authenticated session for one moment; it
+        // must be gone now, and no authenticated row may remain anywhere.
+        $rotatedId = null;
+        foreach ($this->sessions->saveHistory as $entry) {
+            if ($entry['accountId'] !== null) {
+                $rotatedId = $entry['id'];
+            }
+        }
+
+        self::assertNotNull($rotatedId, 'the rotation never saved an authenticated session');
+        self::assertNull($this->sessions->find($rotatedId), 'the rotated session row survived the failure');
+
+        foreach ($this->sessions->sessions as $id => $session) {
+            self::assertNull($session->accountId, "session {$id} is still authenticated");
+        }
+
+        // The pre-login anonymous state was restored consistently: the same row
+        // count, the same id, the same CSRF token — so the client's existing
+        // cookie keeps working without a reissue.
+        self::assertCount($anonymousCount, $this->sessions->sessions);
+        self::assertArrayHasKey($anonymous['sessionId'], $this->sessions->sessions);
+
+        $replayed = $this->sessionResponse($anonymous['sessionId']);
+        /** @var array<string, mixed> $replayedBody */
+        $replayedBody = $replayed->decodedBody();
+        self::assertSame(200, $replayed->status);
+        self::assertFalse($replayedBody['authenticated']);
+        self::assertSame($anonymous['csrfToken'], $replayedBody['csrfToken']);
+        self::assertNull($replayed->header('Set-Cookie'), 'a restored session must not be reissued');
+
+        // The id the failed rotation minted cannot authorise anything later.
+        $stolen = $this->sessionResponse($rotatedId);
+        /** @var array<string, mixed> $stolenBody */
+        $stolenBody = $stolen->decodedBody();
+        self::assertFalse($stolenBody['authenticated']);
+
+        // And the same anonymous cookie and token sign in cleanly on the next
+        // attempt: the failure consumed nothing.
+        $this->accounts->throwOnRecordLogin = false;
+        $retry = $this->login($anonymous['sessionId'], $anonymous['csrfToken']);
+        self::assertSame(200, $retry->status, 'the restored anonymous session must accept a retry');
+    }
+
+    public function testARotationRevocationFailureStillNeverPublishesAuthentication(): void
+    {
+        // ESZ-134, third injected failure: the compensation itself (destroying
+        // the rotated row) can fail. It must still never publish authentication:
+        // the request-local state is reconciled before the store is touched, so
+        // the error response carries no cookie no matter what the store does.
+        $anonymous = $this->openAnonymousSession();
+
+        // The rotation's own destroy of the anonymous row succeeds and arms the
+        // store; the revocation's destroy of the rotated row then throws.
+        $this->sessions->armThrowOnNextDestroy = true;
+        $this->accounts->throwOnRecordLogin = true;
+
+        $response = $this->login($anonymous['sessionId'], $anonymous['csrfToken']);
+        /** @var array<string, mixed> $body */
+        $body = $response->decodedBody();
+
+        self::assertSame(500, $response->status);
+        self::assertSame('INTERNAL_ERROR', $body['error']['code']);
+        self::assertNull($response->header('Set-Cookie'), 'the failure response published a session cookie');
+
+        $rotatedId = null;
+        foreach ($this->sessions->saveHistory as $entry) {
+            if ($entry['accountId'] !== null) {
+                $rotatedId = $entry['id'];
+            }
+        }
+
+        self::assertNotNull($rotatedId);
+
+        // The compensation failure is an operational event, not a secret: no
+        // session id may reach the log either.
+        $log = (string) @file_get_contents($this->root . '/var/log/app.log');
+        self::assertStringNotContainsString($rotatedId, $log);
+        self::assertStringNotContainsString(InMemoryAccountDirectory::PASSWORD, $log);
+
+        // The pre-rotation session was restored before the compensation could
+        // fail, so the anonymous cookie keeps working.
+        $replayed = $this->sessionResponse($anonymous['sessionId']);
+        /** @var array<string, mixed> $replayedBody */
+        $replayedBody = $replayed->decodedBody();
+        self::assertSame(200, $replayed->status);
+        self::assertFalse($replayedBody['authenticated']);
+    }
+
     public function testDisablingAnAccountEndsItsLiveSession(): void
     {
         $signedIn = $this->signIn();
