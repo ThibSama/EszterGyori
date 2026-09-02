@@ -160,10 +160,53 @@
         ],
         "additionalProperties": false
       }
+    },
+    "page": {
+      "type": "object",
+      "properties": {
+        "pageSize": {
+          "type": "number",
+          "const": 200
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "startsAtUtc": {
+                  "type": "string"
+                },
+                "reference": {
+                  "type": "string",
+                  "pattern": "^bk_[0-9a-f]{32}$"
+                }
+              },
+              "required": [
+                "startsAtUtc",
+                "reference"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "pageSize",
+        "hasMore",
+        "nextCursor"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
-    "bookings"
+    "bookings",
+    "page"
   ],
   "additionalProperties": false
 }

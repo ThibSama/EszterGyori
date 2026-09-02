@@ -2333,68 +2333,523 @@ final class SqlIntegrationTest extends TestCase
         return $header;
     }
 
-    // --- ESZ-085: query bounds -------------------------------------------
+    // --- ESZ-144: explicit pagination and exact summary aggregation --------
 
     /**
-     * A ranged booking read is bounded by rows as well as by dates.
-     *
-     * The callers already bound the range to 90 days, and until Package 8.2 that
-     * was the only bound there was. A range is not a bound on rows: how many
-     * bookings fall inside 90 days is decided by how busy the site is, not by the
-     * query, so the response size and the memory this method allocates had no
-     * ceiling. The cap is far above what one practitioner can book in a quarter,
-     * which is what makes it a guard rather than pagination — reaching it means
-     * something has gone wrong, not that a page is missing.
+     * ISO instant plus a minute offset, as the database form the fixtures
+     * store (`Y-m-d H:i:s.v`).
      */
-    public function testARangedBookingReadIsCappedByRowsAndNotOnlyByDates(): void
+    private function dbStart(string $instant, int $minutes): string
     {
-        $this->bookingServices->provision('brows', 'Sourcils', 120, 0, 0, true);
+        return (new \DateTimeImmutable($instant))->modify("+{$minutes} minutes")->format('Y-m-d H:i:s.v');
+    }
 
-        $limit = $this->bookingContract->slotMaxResults;
-        $values = [];
-        $parameters = [];
+    /**
+     * Bulk-inserts raw booking rows, bypassing the slot engine exactly as the
+     * ESZ-085 fixture did: the point is a table holding more rows in one valid
+     * window than the old 1000-row cap allowed, and the domain rules that stop
+     * two appointments overlapping would make that impossible to arrange
+     * honestly.
+     *
+     * @param list<array{start: string, state?: string, reference?: string, name?: string, end?: string}> $rows
+     * @return list<string> the references, in insertion order
+     */
+    private function insertRawBookings(array $rows): array
+    {
+        $references = [];
+        // Global across calls: a test that bulk-inserts twice must not reuse
+        // default references (each test instance is fresh, so runs restart).
+        static $sequence = -1;
+        $stamp = (new \DateTimeImmutable(self::NOW))->format('Y-m-d H:i:s');
 
-        // Inserted directly rather than through createConfirmed(): the point is a
-        // table with more rows in range than the cap allows, and the domain rules
-        // that stop two appointments overlapping would make that impossible to
-        // arrange honestly. One statement, so the fixture is not the slow part.
-        for ($i = 0; $i <= $limit; ++$i) {
-            $start = (new \DateTimeImmutable('2026-07-01T06:00:00Z'))->modify("+{$i} minutes");
-            $end = $start->modify('+1 minute');
+        foreach (\array_chunk($rows, 200) as $chunk) {
+            $values = [];
+            $parameters = [];
 
-            $values[] = "(:ref{$i}, 'brows', 'confirmed', :start{$i}, :end{$i}, 'Europe/Paris',"
-                . " 'Cliente', 'cliente@example.test', NULL, NULL, :consent{$i}, NULL, NULL,"
-                . " :created{$i}, :updated{$i}, :changed{$i})";
+            foreach ($chunk as $row) {
+                $i = ++$sequence;
+                $reference = $row['reference'] ?? 'bk_' . str_pad(dechex($i), 32, '0', STR_PAD_LEFT);
+                $start = $row['start'];
+                $state = $row['state'] ?? 'confirmed';
+                $cancelled = $state === 'cancelled';
+                $end = $row['end'] ?? (new \DateTimeImmutable($start, new \DateTimeZone('UTC')))
+                    ->modify('+1 minute')
+                    ->format('Y-m-d H:i:s');
 
-            $parameters["ref{$i}"] = 'bk_' . str_pad(dechex($i), 32, '0', STR_PAD_LEFT);
-            $parameters["start{$i}"] = $start->format('Y-m-d H:i:s');
-            $parameters["end{$i}"] = $end->format('Y-m-d H:i:s');
-            // DATETIME columns, so the wire ISO form is not what goes in.
-            $stamp = (new \DateTimeImmutable(self::NOW))->format('Y-m-d H:i:s');
-            $parameters["consent{$i}"] = $stamp;
-            $parameters["created{$i}"] = $stamp;
-            $parameters["updated{$i}"] = $stamp;
-            $parameters["changed{$i}"] = $stamp;
+                $values[] = "(:ref{$i}, 'brows', :state{$i}, :start{$i}, :end{$i}, 'Europe/Paris',"
+                    . " :name{$i}, 'cliente@example.test', NULL, NULL, :consent{$i},"
+                    . ($cancelled ? ':cancelled' . $i : 'NULL')
+                    . ', NULL, :created' . $i . ', :updated' . $i . ', :changed' . $i . ')';
+
+                $parameters["ref{$i}"] = $reference;
+                $parameters["state{$i}"] = $state;
+                $parameters["start{$i}"] = $start;
+                $parameters["end{$i}"] = $end;
+                $parameters["name{$i}"] = $row['name'] ?? 'Cliente';
+                $parameters["consent{$i}"] = $stamp;
+                if ($cancelled) {
+                    $parameters["cancelled{$i}"] = $stamp;
+                }
+                $parameters["created{$i}"] = $stamp;
+                $parameters["updated{$i}"] = $stamp;
+                $parameters["changed{$i}"] = $stamp;
+
+                $references[] = $reference;
+            }
+
+            $this->database->run(
+                'INSERT INTO bookings (reference, service_key, state, starts_at_utc, ends_at_utc,'
+                . ' timezone_name, customer_name, customer_email, customer_phone, customer_note,'
+                . ' consent_at_utc, cancelled_at_utc, cancellation_reason, created_at, updated_at,'
+                . ' state_changed_at) VALUES ' . implode(', ', $values),
+                $parameters,
+            );
         }
 
-        $this->database->run(
-            'INSERT INTO bookings (reference, service_key, state, starts_at_utc, ends_at_utc,'
-            . ' timezone_name, customer_name, customer_email, customer_phone, customer_note,'
-            . ' consent_at_utc, cancelled_at_utc, cancellation_reason, created_at, updated_at,'
-            . ' state_changed_at) VALUES ' . implode(', ', $values),
-            $parameters,
+        return $references;
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function rangeRows(string $fromUtc, string $untilUtc): array
+    {
+        return $this->database->fetchAll(
+            'SELECT reference, state, starts_at_utc FROM bookings'
+            . ' WHERE starts_at_utc >= :from AND starts_at_utc < :until'
+            . ' ORDER BY starts_at_utc, reference',
+            ['from' => $fromUtc, 'until' => $untilUtc],
+        );
+    }
+
+    /**
+     * The old ESZ-085 read, reproduced as SQL: one overlap-predicate scan with
+     * a silent `LIMIT slotMaxResults`. The proof datasets below are ordered so
+     * this capped read cannot see confirmed rows that a page walk reaches.
+     *
+     * @return list<string> references the old read would have returned
+     */
+    private function oldCappedRead(string $fromUtc, string $untilUtc): array
+    {
+        $rows = $this->database->fetchAll(
+            'SELECT reference FROM bookings'
+            . ' WHERE starts_at_utc < :until AND ends_at_utc > :from'
+            . ' ORDER BY starts_at_utc, reference'
+            . ' LIMIT ' . $this->bookingContract->slotMaxResults,
+            ['from' => $fromUtc, 'until' => $untilUtc],
         );
 
-        $listed = $this->bookings->listBetween(
-            new \DateTimeImmutable('2026-06-01T00:00:00Z'),
-            new \DateTimeImmutable('2026-08-01T00:00:00Z'),
+        return array_column($rows, 'reference');
+    }
+
+    /**
+     * A range walk with >1000 rows in one valid admin window, a majority of
+     * them cancelled and ordered so the old 1000-row cap would hide every
+     * confirmed row. Proves the page walk has no duplicate and no gap — two
+     * bookings share the instant that falls exactly on a page boundary — that
+     * the whole range is obtainable, and that hasMore comes from a pageSize+1
+     * probe rather than from clipping.
+     */
+    public function testARangeWalkPagesPastTheOldCapWithoutDuplicatesOrGaps(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+
+        // 1000 cancelled rows first in start order (2026-07-01 06:00Z +
+        // minute), then 200 confirmed rows later the same way, then 5 more so
+        // the final page is short. Rows 199 and 200 (1-based) share one start
+        // instant: the pageSize boundary falls between two equal-instant rows,
+        // which is the case a reference tie-break exists for.
+        $rows = [];
+        for ($i = 0; $i < 1000; ++$i) {
+            $rows[] = [
+                'start' => $this->dbStart('2026-07-01T06:00:00Z', $i),
+                'state' => 'cancelled',
+            ];
+        }
+        // The equal-instant pair straddling the page 1/page 2 boundary.
+        $rows[199] = [
+            'start' => $this->dbStart('2026-07-01T06:00:00Z', 199),
+            'state' => 'cancelled',
+        ];
+        $rows[200] = [
+            'start' => $this->dbStart('2026-07-01T06:00:00Z', 199),
+            'state' => 'cancelled',
+        ];
+        for ($i = 1000; $i < 1200; ++$i) {
+            $rows[] = [
+                'start' => $this->dbStart('2026-07-03T06:00:00Z', $i - 1000),
+                'state' => 'confirmed',
+            ];
+        }
+        for ($i = 1200; $i < 1205; ++$i) {
+            $rows[] = [
+                'start' => $this->dbStart('2026-07-05T06:00:00Z', $i - 1200),
+                'state' => 'confirmed',
+            ];
+        }
+        $inserted = $this->insertRawBookings($rows);
+        $confirmedRefs = \array_slice($inserted, 1000);
+
+        $fromUtc = new \DateTimeImmutable('2026-07-01T00:00:00Z');
+        $untilUtc = new \DateTimeImmutable('2026-08-01T00:00:00Z');
+
+        // SQL truth for the whole window, and what the old capped read saw.
+        $truth = $this->rangeRows('2026-07-01 00:00:00.000', '2026-08-01 00:00:00.000');
+        self::assertCount(1205, $truth);
+        $oldCapped = $this->oldCappedRead('2026-07-01 00:00:00.000', '2026-08-01 00:00:00.000');
+        self::assertCount(1000, $oldCapped, 'the old read returned its cap, not the range');
+        foreach ($confirmedRefs as $reference) {
+            self::assertNotContains(
+                $reference,
+                $oldCapped,
+                'the old 1000-row cap hid a confirmed row the range holds',
+            );
+        }
+
+        // Walk every page exactly as the calendar client does, cursor in hand.
+        $pageSize = $this->bookingContract->adminRangePageSize;
+        $walked = [];
+        $anchorStart = null;
+        $anchorReference = null;
+        $pages = 0;
+        do {
+            $page = $this->bookings->pageBetween($fromUtc, $untilUtc, $anchorStart, $anchorReference, $pageSize);
+            ++$pages;
+            self::assertLessThanOrEqual($pageSize, \count($page['rows']), 'a page exceeded pageSize');
+
+            foreach ($page['rows'] as $booking) {
+                $walked[] = $booking->reference;
+                // Strictly increasing keys: the tie-break makes equal instants
+                // order, so no duplicate and no gap can slip across a boundary.
+                if (isset($previous)) {
+                    $later = $booking->startsAtUtc > $previous[0]
+                        || ($booking->startsAtUtc === $previous[0] && $booking->reference > $previous[1]);
+                    self::assertTrue($later, 'the walk went backwards or repeated a key');
+                }
+                $previous = [$booking->startsAtUtc, $booking->reference];
+            }
+
+            self::assertSame(
+                \count($page['rows']) === $pageSize && $pages * $pageSize < 1205,
+                $page['hasMore'],
+                'hasMore disagreed with the pageSize+1 probe on page ' . $pages,
+            );
+            if ($page['hasMore']) {
+                $last = $page['rows'][\count($page['rows']) - 1];
+                $anchorStart = $last->startsAtUtc;
+                $anchorReference = $last->reference;
+            } else {
+                $anchorStart = null;
+                $anchorReference = null;
+            }
+        } while ($page['hasMore']);
+
+        // Complete, duplicate-free and in exactly the SQL order.
+        self::assertCount(1205, $walked, 'the walk did not reach every row of the range');
+        self::assertSame(\array_column($truth, 'reference'), $walked, 'the walk order diverged from SQL order');
+        self::assertCount(\count(\array_unique($walked)), $walked, 'the walk duplicated a row across pages');
+        self::assertGreaterThan(1, $pages, 'the walk never needed a second page');
+        foreach ($confirmedRefs as $reference) {
+            self::assertContains($reference, $walked, 'a confirmed row was unreachable by paging');
+        }
+    }
+
+    /**
+     * The same keyset mechanics at page boundaries inside one equal instant,
+     * at a small page size, plus the refusal cases: a page size outside the
+     * contract bounds and a half-supplied cursor.
+     */
+    public function testKeysetPaginationSplitsEqualInstantsExactlyOnce(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+
+        $rows = [];
+        for ($i = 0; $i < 5; ++$i) {
+            $rows[] = [
+                'start' => '2026-07-01 06:00:00.000',
+                'reference' => 'bk_' . str_pad(dechex(1 + $i), 32, '0', STR_PAD_LEFT),
+                'name' => 'Cliente ' . ($i + 1),
+            ];
+        }
+        $rows[] = [
+            'start' => '2026-07-01 06:15:00.000',
+            'reference' => 'bk_' . str_pad(dechex(99), 32, '0', STR_PAD_LEFT),
+        ];
+        $rows[] = [
+            'start' => '2026-07-01 06:15:00.000',
+            'reference' => 'bk_' . str_pad(dechex(100), 32, '0', STR_PAD_LEFT),
+        ];
+        $rows[] = [
+            'start' => '2026-07-01 06:30:00.000',
+            'reference' => 'bk_' . str_pad(dechex(101), 32, '0', STR_PAD_LEFT),
+        ];
+        $inserted = $this->insertRawBookings($rows);
+
+        // pageSize 3 puts a boundary between hex-…-99 and hex-…-100, two rows
+        // at the same 06:15 instant.
+        $pageSize = 3;
+        $walked = [];
+        $anchor = null;
+        do {
+            $page = $this->bookings->pageBetween(
+                new \DateTimeImmutable('2026-07-01T00:00:00Z'),
+                new \DateTimeImmutable('2026-08-01T00:00:00Z'),
+                $anchor['start'] ?? null,
+                $anchor['reference'] ?? null,
+                $pageSize,
+            );
+            foreach ($page['rows'] as $booking) {
+                $walked[] = $booking->reference;
+            }
+            if ($page['hasMore']) {
+                $last = $page['rows'][\count($page['rows']) - 1];
+                $anchor = ['start' => $last->startsAtUtc, 'reference' => $last->reference];
+            }
+        } while ($page['hasMore']);
+
+        self::assertSame($inserted, $walked, 'equal instants were duplicated or skipped across pages');
+
+        try {
+            $this->bookings->pageBetween(
+                new \DateTimeImmutable('2026-07-01T00:00:00Z'),
+                new \DateTimeImmutable('2026-08-01T00:00:00Z'),
+                null,
+                null,
+                $this->bookingContract->adminRangePageSize + 1,
+            );
+            self::fail('a page size above the contract ceiling was accepted');
+        } catch (BookingValidationException $exception) {
+            self::assertSame('pageSize', $exception->field);
+        }
+
+        try {
+            $this->bookings->pageBetween(
+                new \DateTimeImmutable('2026-07-01T00:00:00Z'),
+                new \DateTimeImmutable('2026-08-01T00:00:00Z'),
+                '2026-07-01 06:00:00.000',
+                null,
+                5,
+            );
+            self::fail('a half-supplied cursor was accepted');
+        } catch (BookingValidationException $exception) {
+            self::assertSame('cursor', $exception->field);
+        }
+    }
+
+    /**
+     * The summary counts and the next confirmed instant are exact SQL
+     * aggregations over the whole window. Fixture: 1000 cancelled rows today,
+     * chronologically first so the old capped read cannot see any confirmed
+     * row, plus one confirmed today and 120 confirmed + 3 cancelled upcoming.
+     * The old summary derived its counts from that capped list; this one must
+     * equal SQL truth, keep cancelled rows out of the entries, bound the
+     * upcoming list at the contract ceiling and say it did.
+     */
+    public function testTheSummaryCountsAreExactWhileCancelledRowsNeverHideConfirmedOnes(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+
+        // "Today" is 2026-06-13 Paris (the frozen clock reads 14:00 Paris).
+        // 1000 cancelled rows occupy every minute from Paris 00:00 (22:00Z on
+        // the 12th) to 16:39, so the confirmed rows that follow are all beyond
+        // the old 1000-row cap in start order. Insertion order is cancelled
+        // first, then one confirmed today at 17:00 Paris, then 120 confirmed
+        // and 3 cancelled upcoming, so the reference slices below are exact.
+        $rows = [];
+        for ($i = 0; $i < 1000; ++$i) {
+            $rows[] = [
+                'start' => $this->dbStart('2026-06-12T22:00:00Z', $i),
+                'state' => 'cancelled',
+            ];
+        }
+        $rows[] = ['start' => '2026-06-13 15:00:00.000', 'state' => 'confirmed'];
+        for ($i = 0; $i < 120; ++$i) {
+            $rows[] = [
+                'start' => $this->dbStart('2026-06-15T06:00:00Z', $i),
+                'state' => 'confirmed',
+            ];
+        }
+        for ($i = 0; $i < 3; ++$i) {
+            $rows[] = [
+                'start' => $this->dbStart('2026-06-16T06:00:00Z', $i),
+                'state' => 'cancelled',
+            ];
+        }
+        $references = $this->insertRawBookings($rows);
+        $confirmedToday = $references[1000];
+        $upcomingConfirmedRefs = \array_slice($references, 1001, 120);
+        $upcomingCancelledRefs = \array_slice($references, 1121, 3);
+
+        // Old-cap evidence: a capped read of this window cannot see a single
+        // confirmed row, so the old summary would report no confirmed count,
+        // no entry and no next appointment.
+        $oldCapped = $this->oldCappedRead('2026-06-12 22:00:00.000', '2026-06-19 22:00:00.000');
+        self::assertCount(1000, $oldCapped);
+        foreach (array_merge([$confirmedToday], $upcomingConfirmedRefs) as $reference) {
+            self::assertNotContains($reference, $oldCapped, 'the old cap hid a confirmed row from the summary');
+        }
+
+        $summary = $this->bookingApi->adminSummary(['upcomingDays' => 7]);
+
+        self::assertSame(
+            [
+                'todayConfirmed' => 1,
+                'todayCancelled' => 1000,
+                'upcomingConfirmed' => 120,
+                'upcomingCancelled' => 3,
+            ],
+            $summary['counts'],
+            'summary counts disagreed with the SQL truth',
         );
 
-        self::assertCount(
-            $limit,
-            $listed,
-            'a ranged read returned more rows than the contract\'s own result ceiling',
+        // SQL truth, stated independently of the repository's own query.
+        $truth = $this->database->fetchAll(
+            'SELECT state, CASE WHEN starts_at_utc < :end_today THEN \'today\' ELSE \'upcoming\' END AS bucket,'
+            . ' COUNT(*) AS n FROM bookings'
+            . ' WHERE starts_at_utc >= :from AND starts_at_utc < :until GROUP BY state, bucket',
+            [
+                'from' => '2026-06-12 22:00:00.000',
+                'end_today' => $this->bookingTime->databaseUtc(
+                    $this->bookingTime->localToUtcWithFoldOffset('2026-06-14 00:00:00', null),
+                ),
+                'until' => '2026-06-19 22:00:00.000',
+            ],
         );
+        $truthCounts = [
+            'todayConfirmed' => 0,
+            'todayCancelled' => 0,
+            'upcomingConfirmed' => 0,
+            'upcomingCancelled' => 0,
+        ];
+        foreach ($truth as $row) {
+            $key = $row['bucket'] . ucfirst($row['state']);
+            $truthCounts[$key] = (int) $row['n'];
+        }
+        self::assertSame($truthCounts, $summary['counts']);
+
+        // The confirmed entries are listed earliest first and are exactly the
+        // confirmed rows SQL returns; cancelled rows never displace them.
+        self::assertSame([$confirmedToday], array_column($summary['today'], 'reference'));
+        self::assertSame('2026-06-13', $summary['today'][0]['localDate']);
+        self::assertSame('17:00', $summary['today'][0]['localStart']);
+        self::assertSame(
+            \array_slice($upcomingConfirmedRefs, 0, $this->bookingContract->adminSummaryListedEntriesMax),
+            array_column($summary['upcoming'], 'reference'),
+        );
+
+        // The bounded upcoming collection says it is incomplete; the exact
+        // count stays authoritative. The today collection is small and says so.
+        self::assertCount($this->bookingContract->adminSummaryListedEntriesMax, $summary['upcoming']);
+        self::assertTrue($summary['listings']['todayComplete']);
+        self::assertFalse($summary['listings']['upcomingComplete'], 'a truncated list claimed to be complete');
+        foreach ($upcomingCancelledRefs as $reference) {
+            self::assertNotContains($reference, array_column($summary['upcoming'], 'reference'));
+        }
+
+        // Next confirmed is exact over the whole window: the earliest
+        // confirmed start at or after now, which the old capped read could
+        // not see at all.
+        self::assertSame('2026-06-13T15:00:00.000Z', $summary['nextConfirmedStartsAtUtc']);
+    }
+
+    /**
+     * A cursor is continuation state the server validates: an admin range
+     * query refuses one whose instant lies outside the requested window, and
+     * reference mode stays an exact lookup.
+     */
+    public function testARangeQueryValidatesItsCursorAndReferenceModeStaysExact(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
+        $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
+        $reference = (string) $created['reference'];
+
+        $first = $this->bookingApi->adminQuery([
+            'mode' => 'range',
+            'fromDate' => '2026-06-15',
+            'untilDate' => '2026-06-15',
+        ]);
+        self::assertSame([$reference], array_column($first['bookings'], 'reference'));
+        self::assertFalse($first['page']['hasMore']);
+        self::assertNull($first['page']['nextCursor']);
+        self::assertSame($this->bookingContract->adminRangePageSize, $first['page']['pageSize']);
+
+        $byReference = $this->bookingApi->adminQuery(['mode' => 'reference', 'reference' => $reference]);
+        self::assertSame($reference, $byReference['bookings'][0]['reference']);
+        self::assertFalse($byReference['page']['hasMore']);
+
+        $outOfWindowCursors = [
+            // Before the window.
+            ['cursor' => ['startsAtUtc' => '2026-06-01T07:00:00.000Z', 'reference' => $reference]],
+            // At or after the window end.
+            ['cursor' => ['startsAtUtc' => '2026-06-16T00:00:00.000Z', 'reference' => $reference]],
+        ];
+        foreach ($outOfWindowCursors as $cursor) {
+            try {
+                $this->bookingApi->adminQuery([
+                    'mode' => 'range',
+                    'fromDate' => '2026-06-15',
+                    'untilDate' => '2026-06-15',
+                    ...$cursor,
+                ]);
+                self::fail('a cursor outside the requested window was accepted');
+            } catch (BookingValidationException $exception) {
+                self::assertSame('cursor', $exception->field);
+            }
+        }
+    }
+
+    /**
+     * A range read is start-anchored: a booking that began before the window
+     * is never part of it, whatever its end, because the calendar pages over
+     * the civil day of each start. The summary therefore excludes it too, and
+     * its counts cannot be polluted by yesterday's evening appointment.
+     */
+    public function testARangeReadIsStartAnchoredToTheRequestedWindow(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->confirmedAt('2026-06-14T18:00:00.000Z');
+
+        // A booking that began at 23:00 Paris on the 13th (21:00Z) and runs
+        // until 00:30 Paris on the 14th: its interval crosses into the 14th,
+        // so an overlap-predicate read of the 14th would list it — but its
+        // *start* is on the 13th, so the start-anchored range read of the
+        // 14th must not. It is cancelled so it cannot also disturb the
+        // summary assertions below — it still proves the point there: it is a
+        // today row (its start is today), counted as cancelled, and never
+        // listed.
+        $this->insertRawBookings([[
+            'start' => '2026-06-13 21:00:00.000',
+            'end' => '2026-06-13 22:30:00.000',
+            'state' => 'cancelled',
+        ]]);
+
+        $range = $this->bookingApi->adminQuery([
+            'mode' => 'range',
+            'fromDate' => '2026-06-14',
+            'untilDate' => '2026-06-14',
+        ]);
+        self::assertCount(1, $range['bookings']);
+        self::assertSame('2026-06-14T18:00:00.000Z', $range['bookings'][0]['startsAtUtc']);
+
+        // A booking that began yesterday evening (20:00 Paris on the 12th,
+        // 18:00Z) and ran past Paris midnight into the 13th used to reach the
+        // summary through its end instant and be mis-bucketed as upcoming.
+        // Start-anchored, it is outside the window entirely: it is neither
+        // today's nor upcoming's business, and it cannot move the counts.
+        $this->insertRawBookings([[
+            'start' => '2026-06-12 18:00:00.000',
+            'end' => '2026-06-13 02:00:00.000',
+            'state' => 'confirmed',
+        ]]);
+
+        $summary = $this->bookingApi->adminSummary(['upcomingDays' => 7]);
+        self::assertSame(0, $summary['counts']['todayConfirmed']);
+        self::assertSame(1, $summary['counts']['todayCancelled']);
+        self::assertSame(1, $summary['counts']['upcomingConfirmed']);
+        self::assertSame(
+            ['2026-06-14T18:00:00.000Z'],
+            array_column($summary['upcoming'], 'startsAtUtc'),
+        );
+        self::assertSame('2026-06-14T18:00:00.000Z', $summary['nextConfirmedStartsAtUtc']);
     }
 
     // --- ESZ-134: login is fail-closed after session rotation -----------------

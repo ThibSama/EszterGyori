@@ -35,6 +35,9 @@ final class BookingDomainContract
         public readonly int $slotGridMinutes,
         public readonly int $slotMaxHorizonDays,
         public readonly int $slotMaxResults,
+        public readonly int $adminRangePageSize,
+        public readonly int $adminRangeMaxPages,
+        public readonly int $adminSummaryListedEntriesMax,
         public readonly array $states,
         public readonly string $initialState,
         public readonly array $transitions,
@@ -53,6 +56,9 @@ final class BookingDomainContract
         $dst = self::block($timezone, 'dst');
         $duration = self::block($services, 'durationMinutes');
         $buffer = self::block($services, 'bufferMinutes');
+        $adminViews = self::block($document, 'adminViews');
+        $rangeRead = self::block($adminViews, 'rangeRead');
+        $summary = self::block($adminViews, 'summary');
 
         return new self(
             self::positiveInt($document, 'version'),
@@ -67,6 +73,9 @@ final class BookingDomainContract
             self::positiveInt($grid, 'minutes'),
             self::positiveInt($limits, 'maxHorizonDays'),
             self::positiveInt($limits, 'maxResults'),
+            self::positiveInt($rangeRead, 'pageSize'),
+            self::positiveInt($rangeRead, 'maxPages'),
+            self::positiveInt($summary, 'listedEntriesMax'),
             self::stringList($states, 'values'),
             self::string($states, 'initial'),
             self::transitionMap($states),

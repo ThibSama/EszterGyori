@@ -149,6 +149,14 @@ confirmes du jour et des sept prochains jours, prochain rendez-vous, et compteur
 rendez-vous annules sont comptes a part et n'apparaissent jamais dans un compteur actif
 ni dans une liste ; le partage entre confirme et annule est fait par le serveur.
 
+Depuis ESZ-144, aucune de ces vues ne peut confondre un sous-ensemble borne avec la
+reponse complete : le calendrier charge un mois comme une **marche de pages a curseur**
+(suite de requetes `mode=range` jusqu'a `hasMore: false`, pages de 200, ordre stable
+`(starts_at_utc, reference)`), et le resume repose sur des **comptages SQL dedies** sur
+toute la fenetre — les listes de rendez-vous confirmes affichees sont bornees cote
+serveur et le signalent explicitement (`Liste partielle…`) quand elles ne sont pas
+completes, sans jamais rendre le compteur inexact.
+
 Ce qui n'est toujours pas la : les notifications et la limitation des tentatives de
 connexion. Le parcours public de reservation couvre maintenant selection, coordonnees,
 verification, soumission et confirmation sans stockage navigateur des donnees cliente.

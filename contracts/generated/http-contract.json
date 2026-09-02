@@ -649,7 +649,9 @@
         ]
       },
       "move": "Authenticated move availability resolves the booking server-side and delegates to SlotEngine while excluding only itself. Mutation retains reference and service, requires confirmed state, and transactionally recomputes the submitted returned instant.",
-      "history": "Append-only created, moved, cancelled and customer_updated events; the bookings row remains authoritative current state."
+      "history": "Append-only created, moved, cancelled and customer_updated events; the bookings row remains authoritative current state.",
+      "adminQuery": "An authenticated read, no CSRF. mode=reference is an exact lookup. mode=range returns the bookings whose start falls in the requested Paris-civil window, deterministically ordered and paginated per adminViews.rangeRead: pageSize rows at most, a typed cursor for the next page, hasMore detected with a pageSize+1 probe — no row is silently clipped.",
+      "adminSummary": "An authenticated read, no CSRF. Counts and nextConfirmedStartsAtUtc are exact SQL aggregations over the whole window; the today/upcoming entry lists are confirmed-only and bounded at adminViews.summary.listedEntriesMax with listings.todayComplete/upcomingComplete stating whether each list is complete."
     },
     "availabilityAdministration": {
       "maxQueryRangeDays": 400,
@@ -678,7 +680,7 @@
       "exceptionRemoval": "Removing the exception restores the weekly behaviour for that date; it is the only way back and it deletes no booking.",
       "exceptionDst": "Each exception window boundary is converted with the Europe/Paris IANA rules at store time: a spring-forward gap is refused and an autumn fall-back overlap requires the explicit fold offset.",
       "destructiveConfirmation": "Closing a date and removing an exception are confirmed explicitly in the UI before they are sent.",
-      "summary": "The summary reads the same booking rows as the admin query and stores nothing of its own. Entries list confirmed bookings in ascending start order; cancelled bookings are reported in their own counts and never inflate a confirmed one."
+      "summary": "The operational summary stores nothing of its own. Counts and nextConfirmedStartsAtUtc are exact SQL aggregations over the whole window; listed entries are confirmed bookings in ascending start order, bounded at the domain's listedEntriesMax with the listings completeness flags, and cancelled bookings are reported in their own counts and never inflate a confirmed one."
     }
   },
   "errorCodes": [
@@ -3259,6 +3261,29 @@
       }
     },
     {
+      "id": "admin.bookings.query.post.malformedCursor",
+      "endpoint": "/api/admin/bookings/query",
+      "description": "A continuation cursor is typed and validated: a range request whose cursor names a malformed booking reference is refused by the schema before any read.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/bookings/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"range\",\"fromDate\":\"2026-06-15\",\"untilDate\":\"2026-06-15\",\"cursor\":{\"startsAtUtc\":\"2026-06-15T07:00:00.000Z\",\"reference\":\"not-a-booking\"}}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
       "id": "admin.bookings.moveAvailability.post.ok",
       "endpoint": "/api/admin/bookings/move-availability",
       "description": "Authenticated move availability is computed by the server while excluding the booking itself.",
@@ -4129,7 +4154,15 @@
     },
     {
       "id": "summary.cancelledNeverInflatesConfirmed",
-      "description": "The summary partitions the same rows the admin query returns by state. A cancelled booking appears only in a cancelled count, never in a confirmed count and never in a listed entry, so cancelling a booking always lowers the confirmed number."
+      "description": "The summary counts confirmed and cancelled bookings separately by SQL aggregation over the whole window. A cancelled booking appears only in a cancelled count, never in a confirmed count and never in a listed entry, so cancelling a booking always lowers the confirmed number."
+    },
+    {
+      "id": "adminViews.rangeReadsArePaginatedNotClipped",
+      "description": "An admin range read returns at most adminViews.rangeRead.pageSize rows in deterministic (starts_at_utc, reference) keyset order, detects a further page with a pageSize+1 probe and states hasMore plus a typed validated cursor. Rows beyond the old 1000-row cap are reached by paging, never by a silent clip: no range walk stops before hasMore=false except by the declared client page budget."
+    },
+    {
+      "id": "adminViews.summaryCountsAreAggregated",
+      "description": "The operational summary's counts and nextConfirmedStartsAtUtc are SQL aggregations over the whole window, never arithmetic over a capped detail list. today/upcoming entry collections are confirmed-only, bounded at adminViews.summary.listedEntriesMax, and listings.todayComplete/upcomingComplete state whether each collection is complete, so a bounded list is never read as the exhaustive answer."
     },
     {
       "id": "bootstrap.failureUsesFrozenEnvelope",

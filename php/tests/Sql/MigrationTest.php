@@ -68,7 +68,7 @@ final class MigrationTest extends TestCase
         self::assertSame($sorted, $applied);
 
         self::assertSame(
-            ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '0010', '0011'],
+            ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '0010', '0011', '0012'],
             $applied,
         );
     }
@@ -337,7 +337,7 @@ final class MigrationTest extends TestCase
                 ],
                 'bookings' => [
                     'PRIMARY', 'uq_bookings_reference', 'ix_bookings_service_start',
-                    'ix_bookings_state_start',
+                    'ix_bookings_starts_reference', 'ix_bookings_state_start',
                 ],
                 'booking_resource_locks' => ['PRIMARY'],
                 'booking_history' => ['PRIMARY', 'ix_booking_history_booking_order'],
@@ -879,6 +879,74 @@ final class MigrationTest extends TestCase
             ['t' => 'bookings', 'c' => 'customer_data_erased_at'],
         );
         self::assertSame(1, (int) $markers[0]['total']);
+    }
+
+    /**
+     * Migration 0012 is one guarded ADD KEY, and it obeys the same repeat-safe
+     * rule: a crash between the DDL and the registry insert leaves the index
+     * in place with 0012 pending, and re-running must be a no-op rather than a
+     * duplicate-index failure.
+     */
+    public function testMigration0012CompletesWhenRerunAfterAPartialApplication(): void
+    {
+        $this->migrator()->migrate();
+
+        $this->database->run(
+            'DELETE FROM ' . Migrator::TABLE . ' WHERE version = :version',
+            ['version' => '0012'],
+        );
+
+        self::assertSame(['0012'], $this->migrator()->migrate());
+        self::assertSame([], $this->migrator()->pendingVersions());
+
+        $indexes = $this->database->fetchAll(
+            'SELECT INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME FROM information_schema.statistics'
+            . ' WHERE table_schema = DATABASE() AND table_name = :t AND index_name = :i'
+            . ' ORDER BY SEQ_IN_INDEX',
+            ['t' => 'bookings', 'i' => 'ix_bookings_starts_reference'],
+        );
+        self::assertSame(
+            [
+                ['INDEX_NAME' => 'ix_bookings_starts_reference', 'SEQ_IN_INDEX' => 1, 'COLUMN_NAME' => 'starts_at_utc'],
+                ['INDEX_NAME' => 'ix_bookings_starts_reference', 'SEQ_IN_INDEX' => 2, 'COLUMN_NAME' => 'reference'],
+            ],
+            $indexes,
+            'the keyset index must cover exactly (starts_at_utc, reference)',
+        );
+    }
+
+    /**
+     * The keyset pagination index is what makes an ESZ-144 range page an
+     * index-range read: the probe query filters and orders on the same leading
+     * columns. Read from information_schema so the assertion is about what
+     * MySQL actually uses, not about a migration text.
+     */
+    public function testTheKeysetPaginationIndexMatchesTheRangeProbeQuery(): void
+    {
+        $this->migrator()->migrate();
+
+        $explain = $this->database->fetchAll(
+            'EXPLAIN SELECT id FROM bookings'
+            . ' WHERE starts_at_utc >= :from_utc AND starts_at_utc < :until_utc'
+            . ' ORDER BY starts_at_utc, reference LIMIT 201',
+            [
+                'from_utc' => '2026-06-01 00:00:00.000',
+                'until_utc' => '2026-08-01 00:00:00.000',
+            ],
+        );
+        $row = $explain[0] ?? [];
+        $type = $row['type'] ?? null;
+        self::assertSame(
+            'ix_bookings_starts_reference',
+            $row['key'] ?? null,
+            'the range page must be answered through the keyset index',
+        );
+        // On an empty table the planner's cheapest index access is a full index
+        // walk (`index`); on a busy one it narrows to `range`. What must never
+        // happen is `ALL` (a table scan) — and the index also pays for the
+        // ORDER BY, so there is no filesort either.
+        self::assertContains($type, ['range', 'index'], 'the range page must not be a table scan');
+        self::assertStringNotContainsString('filesort', (string) ($row['Extra'] ?? ''));
     }
 
     /**

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Eszter\Tests\Http;
 
+use Eszter\Booking\BookingDomainContract;
 use Eszter\Contract\ContentValidator;
 use Eszter\Contract\ContractArtifacts;
 use Eszter\Contract\StructuralValidator;
@@ -1266,16 +1267,30 @@ final class HttpContractConformanceTest extends TestCase
                         self::assertStringNotContainsString($field, $response->body);
                     }
                 }
+                if ($expected['body'] === 'adminBookingsResponse') {
+                    // ESZ-144: every admin booking read carries its pagination
+                    // facts, and the fixture is one complete page — hasMore
+                    // false must come with nextCursor null, never a dangling
+                    // continuation. The pageSize is the domain's own number,
+                    // read from the artifact the server itself reads.
+                    $pageSize = BookingDomainContract::fromArtifacts($artifacts)->adminRangePageSize;
+                    self::assertSame($pageSize, $body['page']['pageSize']);
+                    self::assertFalse($body['page']['hasMore']);
+                    self::assertNull($body['page']['nextCursor']);
+                }
                 if ($expected['body'] === 'adminBookingsSummaryResponse') {
                     // `summary.cancelledNeverInflatesConfirmed`, at the transport
                     // boundary: the listed entries are exactly the confirmed ones
                     // the counts claim, so a cancelled booking cannot be listed
-                    // without the count disagreeing with the list.
+                    // without the count disagreeing with the list. The fixture is
+                    // complete, so the listings flags must say so.
                     self::assertIsArray($body['today']);
                     self::assertIsArray($body['upcoming']);
                     self::assertIsArray($body['counts']);
                     self::assertCount((int) $body['counts']['todayConfirmed'], $body['today']);
                     self::assertCount((int) $body['counts']['upcomingConfirmed'], $body['upcoming']);
+                    self::assertTrue($body['listings']['todayComplete']);
+                    self::assertTrue($body['listings']['upcomingComplete']);
                 }
                 break;
 

@@ -190,15 +190,28 @@ The test also asserts that every declared query bound is finite and small enough
 actually bound something. A bound that is not enforced is not a bound, and one so
 large no caller could reach it is decoration.
 
-## Query bounds (ESZ-085 fix)
+## Query bounds (ESZ-085 fix, superseded by ESZ-144 pagination)
 
 `BookingRepository::listBetween()` bounded its date range and nothing else. A range
 is not a bound on rows: how many bookings fall inside 90 days is decided by how busy
 the site is, not by the query, so both the response size and the memory the method
-allocated were unbounded. It now carries `LIMIT booking.policy.limits.maxResults` —
-the same ceiling the slot engine applies to the other unbounded list on this
-surface, so the two cannot drift into different ideas of "too many". Proved by
-`sql:integration`.
+allocated were unbounded. Package 8.2 (ESZ-085) capped it with
+`LIMIT availability.limits.maxResults` — the same ceiling the slot engine applies to
+the other unbounded list on this surface — and that cap is what Package 9 (ESZ-144)
+removed because it was *silent*: past 1000 rows in one valid admin range the read
+clipped, cancelled rows could consume the cap and hide confirmed appointments, and
+the operational summary counted from that same capped list.
+
+ESZ-144 replaces the cap with explicit bounds instead of simply dropping it. Range
+reads paginate on `adminViews.rangeRead.pageSize` (200) in deterministic
+`(starts_at_utc, reference)` keyset order with a typed, validated cursor and
+`hasMore` decided by a `pageSize + 1` probe — a page is never silently clipped, and
+the calendar walks every page before showing a month. The summary's counts and
+`nextConfirmedStartsAtUtc` are dedicated SQL aggregations over the whole window, and
+its confirmed-entry lists are bounded at `adminViews.summary.listedEntriesMax` with
+explicit completeness flags. Migration 0012 adds the `(starts_at_utc, reference)`
+index so each page stays an index-range read. Proved by `sql:integration` and
+`sql:migrations` (EXPLAIN).
 
 ## What is still NOT RUN
 

@@ -134,14 +134,22 @@ export function AdminOperationsSummary() {
             {summary.today.length === 0 ? (
               <p className="mt-2 text-sm text-warm-600">Aucun rendez-vous aujourd’hui.</p>
             ) : (
-              <ul className="mt-2 space-y-1">
-                {summary.today.map((entry) => (
-                  <li key={entry.reference} className="text-sm text-warm-700">
-                    <span className="font-medium">{entry.localStart}</span> · {entry.customerName} ·{" "}
-                    {SERVICE_LABELS[entry.serviceKey] ?? entry.serviceKey}
-                  </li>
-                ))}
-              </ul>
+              <>
+                <ul className="mt-2 space-y-1">
+                  {summary.today.map((entry) => (
+                    <li key={entry.reference} className="text-sm text-warm-700">
+                      <span className="font-medium">{entry.localStart}</span> · {entry.customerName} ·{" "}
+                      {SERVICE_LABELS[entry.serviceKey] ?? entry.serviceKey}
+                    </li>
+                  ))}
+                </ul>
+                {!summary.listings.todayComplete && (
+                  <p role="note" className="mt-2 text-xs text-warm-500">
+                    Liste partielle : {summary.counts.todayConfirmed} rendez-vous confirmés
+                    aujourd’hui ; les {summary.today.length} premiers sont affichés.
+                  </p>
+                )}
+              </>
             )}
           </div>
           <div>
@@ -151,22 +159,30 @@ export function AdminOperationsSummary() {
                 Aucun rendez-vous sur les {UPCOMING_DAYS} prochains jours.
               </p>
             ) : (
-              <ul className="mt-2 space-y-1">
-                {summary.upcoming.slice(0, 6).map((entry) => (
-                  <li key={entry.reference} className="text-sm text-warm-700">
-                    <span className="font-medium">
-                      {entry.localDate.slice(8)}/{entry.localDate.slice(5, 7)} {entry.localStart}
-                    </span>{" "}
-                    · {entry.customerName} · {SERVICE_LABELS[entry.serviceKey] ?? entry.serviceKey}
-                  </li>
-                ))}
-                {summary.upcoming.length > 6 && (
-                  <li className="text-sm text-warm-500">
-                    + {summary.upcoming.length - 6} autre
-                    {summary.upcoming.length - 6 > 1 ? "s" : ""}
-                  </li>
+              <>
+                <ul className="mt-2 space-y-1">
+                  {summary.upcoming.slice(0, 6).map((entry) => (
+                    <li key={entry.reference} className="text-sm text-warm-700">
+                      <span className="font-medium">
+                        {entry.localDate.slice(8)}/{entry.localDate.slice(5, 7)} {entry.localStart}
+                      </span>{" "}
+                      · {entry.customerName} · {SERVICE_LABELS[entry.serviceKey] ?? entry.serviceKey}
+                    </li>
+                  ))}
+                  {summary.counts.upcomingConfirmed > 6 && (
+                    <li className="text-sm text-warm-500">
+                      + {summary.counts.upcomingConfirmed - 6} autre
+                      {summary.counts.upcomingConfirmed - 6 > 1 ? "s" : ""}
+                    </li>
+                  )}
+                </ul>
+                {!summary.listings.upcomingComplete && (
+                  <p role="note" className="mt-2 text-xs text-warm-500">
+                    Liste partielle : {summary.counts.upcomingConfirmed} rendez-vous confirmés à
+                    venir ; les {summary.upcoming.length} plus proches sont affichés.
+                  </p>
                 )}
-              </ul>
+              </>
             )}
           </div>
         </div>

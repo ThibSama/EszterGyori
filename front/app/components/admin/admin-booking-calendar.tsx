@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { adminBookingMutationRequestSchema } from "@eszter/contracts";
 import { useAdminSession } from "./admin-session-provider";
-import type { AdminApiFailure, AdminBooking, AdminMoveAvailability } from "../../lib/admin-api";
+import {
+  loadBookingsRange,
+  type AdminApiFailure,
+  type AdminBooking,
+  type AdminMoveAvailability,
+} from "../../lib/admin-api";
 import {
   addCivilDays,
   bookingsForDate,
@@ -100,11 +105,12 @@ export function AdminBookingCalendar() {
 
   useEffect(() => {
     let active = true;
-    void api.queryBookings({
-      mode: "range",
-      fromDate: dates[0],
-      untilDate: dates[dates.length - 1],
-    }).then((result) => {
+    // ESZ-144: one month is one *walk*. The server pages a range on a fixed
+    // page size with typed cursors; this consumes every page before the month
+    // is shown, so a month with more rows than the old cap never renders as a
+    // silently clipped subset. loadBookingsRange guards the walk — cursor
+    // progress, malformed pages, and the declared page budget.
+    void loadBookingsRange(api, dates[0], dates[dates.length - 1]).then((result) => {
       if (!active) return;
       setLoading(false);
       if (!result.ok) return void handleFailure(result.failure);
@@ -123,7 +129,7 @@ export function AdminBookingCalendar() {
   const refreshOne = useCallback(async (reference: string) => {
     const result = await api.queryBookings({ mode: "reference", reference });
     if (!result.ok) return void handleFailure(result.failure);
-    if (result.value[0]) setBookings((current) => replaceBooking(current, result.value[0]));
+    if (result.value.bookings[0]) setBookings((current) => replaceBooking(current, result.value.bookings[0]));
   }, [api, handleFailure]);
 
   const loadMoveSlots = useCallback(async (booking: AdminBooking, date: string) => {

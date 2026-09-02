@@ -2,6 +2,8 @@ import { z } from "zod";
 import { isoTimestampSchema } from "./content-envelopes.js";
 import { SITE_CONTENT_SCHEMA_VERSION, siteContentSchema } from "./site-content.js";
 import {
+  BOOKING_ADMIN_RANGE_PAGE_SIZE,
+  BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES,
   BOOKING_DST_FOLD_OFFSETS,
   BOOKING_TIME_ZONE,
   bookableServiceKeys,
@@ -671,6 +673,40 @@ export const publicBookingResponseSchema = z
   })
   .strict();
 
+/**
+ * ESZ-144 — the typed continuation of one admin booking range read.
+ *
+ * The cursor names the keys of the last booking row the previous page ended
+ * on: `startsAtUtc` is the row's start instant and `reference` its booking
+ * reference. The next page begins strictly after those keys in
+ * (starts_at_utc, reference) order, which is what makes equal instants page
+ * without duplication or gaps. A cursor is opaque to the client — echo it,
+ * never build one — and the server re-validates it against the requested
+ * window before reading.
+ */
+export const adminBookingsCursorSchema = z
+  .object({
+    startsAtUtc: isoTimestampSchema,
+    reference: bookingReferenceSchema,
+  })
+  .strict();
+
+/**
+ * ESZ-144 — the pagination facts every admin booking read response carries.
+ *
+ * `pageSize` is the fixed server page capacity, `hasMore` is true exactly when
+ * another page of the same range exists, and `nextCursor` carries the typed
+ * cursor for that next page — null whenever `hasMore` is false. The server
+ * detects a further page by fetching pageSize+1 rows, never by clipping.
+ */
+export const adminBookingsPageSchema = z
+  .object({
+    pageSize: z.literal(BOOKING_ADMIN_RANGE_PAGE_SIZE),
+    hasMore: z.boolean(),
+    nextCursor: adminBookingsCursorSchema.nullable(),
+  })
+  .strict();
+
 export const adminBookingsQueryRequestSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("reference"), reference: bookingReferenceSchema }).strict(),
   z
@@ -678,6 +714,7 @@ export const adminBookingsQueryRequestSchema = z.discriminatedUnion("mode", [
       mode: z.literal("range"),
       fromDate: bookingLocalDateSchema,
       untilDate: bookingLocalDateSchema,
+      cursor: adminBookingsCursorSchema.optional(),
     })
     .strict(),
 ]);
@@ -720,7 +757,10 @@ export const adminBookingSchema = z
   .strict();
 
 export const adminBookingsResponseSchema = z
-  .object({ bookings: z.array(adminBookingSchema) })
+  .object({
+    bookings: z.array(adminBookingSchema),
+    page: adminBookingsPageSchema,
+  })
   .strict();
 
 export const adminBookingResponseSchema = z
@@ -929,6 +969,13 @@ export const adminBookingsSummaryRequestSchema = z
  * count. They are reported separately because "two cancellations today" is
  * operationally useful and silently dropping them would make the summary
  * disagree with the calendar the operator is looking at.
+ *
+ * ESZ-144: `counts` and `nextConfirmedStartsAtUtc` are exact over the whole
+ * window (dedicated SQL aggregation), while the `today`/`upcoming` entry
+ * collections are each bounded at the domain's `listedEntriesMax`. `listings`
+ * states whether each collection is complete, so a bounded list can never be
+ * read as the exhaustive answer — the operator is told when it is partial and
+ * the counts remain the authority.
  */
 export const adminBookingsSummaryResponseSchema = z
   .object({
@@ -949,8 +996,14 @@ export const adminBookingsSummaryResponseSchema = z
       })
       .strict(),
     nextConfirmedStartsAtUtc: isoTimestampSchema.nullable(),
-    today: z.array(adminBookingSummaryEntrySchema),
-    upcoming: z.array(adminBookingSummaryEntrySchema),
+    listings: z
+      .object({
+        todayComplete: z.boolean(),
+        upcomingComplete: z.boolean(),
+      })
+      .strict(),
+    today: z.array(adminBookingSummaryEntrySchema).max(BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES),
+    upcoming: z.array(adminBookingSummaryEntrySchema).max(BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES),
   })
   .strict();
 
@@ -989,7 +1042,7 @@ export const availabilityAdminPolicy = {
   destructiveConfirmation:
     "Closing a date and removing an exception are confirmed explicitly in the UI before they are sent.",
   summary:
-    "The summary reads the same booking rows as the admin query and stores nothing of its own. Entries list confirmed bookings in ascending start order; cancelled bookings are reported in their own counts and never inflate a confirmed one.",
+    "The operational summary stores nothing of its own. Counts and nextConfirmedStartsAtUtc are exact SQL aggregations over the whole window; listed entries are confirmed bookings in ascending start order, bounded at the domain's listedEntriesMax with the listings completeness flags, and cancelled bookings are reported in their own counts and never inflate a confirmed one.",
 } as const;
 
 export const bookingApiPolicy = {
@@ -1008,6 +1061,10 @@ export const bookingApiPolicy = {
     "Authenticated move availability resolves the booking server-side and delegates to SlotEngine while excluding only itself. Mutation retains reference and service, requires confirmed state, and transactionally recomputes the submitted returned instant.",
   history:
     "Append-only created, moved, cancelled and customer_updated events; the bookings row remains authoritative current state.",
+  adminQuery:
+    "An authenticated read, no CSRF. mode=reference is an exact lookup. mode=range returns the bookings whose start falls in the requested Paris-civil window, deterministically ordered and paginated per adminViews.rangeRead: pageSize rows at most, a typed cursor for the next page, hasMore detected with a pageSize+1 probe — no row is silently clipped.",
+  adminSummary:
+    "An authenticated read, no CSRF. Counts and nextConfirmedStartsAtUtc are exact SQL aggregations over the whole window; the today/upcoming entry lists are confirmed-only and bounded at adminViews.summary.listedEntriesMax with listings.todayComplete/upcomingComplete stating whether each list is complete.",
 } as const;
 
 /**
@@ -3812,6 +3869,21 @@ export const httpContractCases: HttpContractCase[] = [
     expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
   },
   {
+    id: "admin.bookings.query.post.malformedCursor",
+    endpoint: ADMIN_BOOKINGS_QUERY_PATH,
+    description:
+      "A continuation cursor is typed and validated: a range request whose cursor names a malformed booking reference is refused by the schema before any read.",
+    request: {
+      method: "POST",
+      path: ADMIN_BOOKINGS_QUERY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody:
+        '{"mode":"range","fromDate":"2026-06-15","untilDate":"2026-06-15","cursor":{"startsAtUtc":"2026-06-15T07:00:00.000Z","reference":"not-a-booking"}}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
     id: "admin.bookings.moveAvailability.post.ok",
     endpoint: ADMIN_BOOKING_MOVE_AVAILABILITY_PATH,
     description: "Authenticated move availability is computed by the server while excluding the booking itself.",
@@ -4448,7 +4520,17 @@ export const httpContractInvariants = [
   {
     id: "summary.cancelledNeverInflatesConfirmed",
     description:
-      "The summary partitions the same rows the admin query returns by state. A cancelled booking appears only in a cancelled count, never in a confirmed count and never in a listed entry, so cancelling a booking always lowers the confirmed number.",
+      "The summary counts confirmed and cancelled bookings separately by SQL aggregation over the whole window. A cancelled booking appears only in a cancelled count, never in a confirmed count and never in a listed entry, so cancelling a booking always lowers the confirmed number.",
+  },
+  {
+    id: "adminViews.rangeReadsArePaginatedNotClipped",
+    description:
+      "An admin range read returns at most adminViews.rangeRead.pageSize rows in deterministic (starts_at_utc, reference) keyset order, detects a further page with a pageSize+1 probe and states hasMore plus a typed validated cursor. Rows beyond the old 1000-row cap are reached by paging, never by a silent clip: no range walk stops before hasMore=false except by the declared client page budget.",
+  },
+  {
+    id: "adminViews.summaryCountsAreAggregated",
+    description:
+      "The operational summary's counts and nextConfirmedStartsAtUtc are SQL aggregations over the whole window, never arithmetic over a capped detail list. today/upcoming entry collections are confirmed-only, bounded at adminViews.summary.listedEntriesMax, and listings.todayComplete/upcomingComplete state whether each collection is complete, so a bounded list is never read as the exhaustive answer.",
   },
   {
     id: "bootstrap.failureUsesFrozenEnvelope",

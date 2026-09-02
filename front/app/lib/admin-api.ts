@@ -15,6 +15,7 @@ import {
   AUTH_SESSION_PATH,
   CONTENT_REVISION_HEADER,
   CSRF_HEADER,
+  BOOKING_ADMIN_RANGE_MAX_PAGES,
   authSessionResponseSchema,
   errorEnvelopeSchema,
   MEDIA_UPLOAD_FIELD_NAME,
@@ -42,9 +43,22 @@ import {
 import { z } from "zod";
 
 export type AdminBooking = z.infer<typeof adminBookingResponseSchema>["booking"];
+export type AdminBookingsCursor = { startsAtUtc: string; reference: string };
+export type AdminBookingsPage = z.infer<typeof adminBookingsResponseSchema>["page"];
 export type AdminBookingsQuery =
   | { mode: "reference"; reference: string }
-  | { mode: "range"; fromDate: string; untilDate: string };
+  | {
+      mode: "range";
+      fromDate: string;
+      untilDate: string;
+      // Absent on the first page, a typed keyset cursor after it. Never null:
+      // the wire schema has no null cursor, so the type does not either.
+      cursor?: AdminBookingsCursor;
+    };
+export type AdminBookingsQueryResult = {
+  bookings: AdminBooking[];
+  page: AdminBookingsPage;
+};
 export type AdminBookingMutation =
   | { action: "move"; reference: string; startsAtUtc: string }
   | { action: "cancel"; reference: string; reason: string | null }
@@ -132,7 +146,13 @@ export type AdminApiFailure =
   /** Media only: the asset is still used by the draft or the published site. */
   | { kind: "media-referenced"; message: string }
   /** Media only: no asset under that id. The library on screen is stale. */
-  | { kind: "not-found"; message: string };
+  | { kind: "not-found"; message: string }
+  /**
+   * Calendar range loads only: a whole month's walk hit the declared page
+   * budget. The data that did arrive is genuine but partial, and the message
+   * says so — an honest incompleteness instead of a silent clip.
+   */
+  | { kind: "range-incomplete"; message: string };
 
 export type AdminApiResult<T> =
   | { ok: true; value: T }
@@ -169,7 +189,7 @@ export interface AdminApiClient {
     csrfToken: string,
   ): Promise<AdminApiResult<MediaAssetMetadata>>;
   deleteMedia(id: string, csrfToken: string): Promise<AdminApiResult<null>>;
-  queryBookings(input: AdminBookingsQuery): Promise<AdminApiResult<AdminBooking[]>>;
+  queryBookings(input: AdminBookingsQuery): Promise<AdminApiResult<AdminBookingsQueryResult>>;
   moveAvailability(input: {
     reference: string;
     fromDate: string;
@@ -237,6 +257,8 @@ export const ADMIN_API_MESSAGES = {
     "Ce média est encore utilisé par le brouillon ou par le site publié. Retirez-le du contenu, puis réessayez : rien n’a été supprimé.",
   mediaNotFound:
     "Ce média n’existe plus sur le serveur. La médiathèque a été rechargée.",
+  bookingsRangeIncomplete:
+    "La période contient plus de rendez-vous qu’un chargement complet ne peut en réunir. Le calendrier affiche les rendez-vous reçus, sans garantir qu’ils sont tous là : rechargez la page pour relire la période.",
 } as const;
 
 function failure(failure: AdminApiFailure): { ok: false; failure: AdminApiFailure } {
@@ -542,8 +564,9 @@ export function createAdminApiClient(
         body: JSON.stringify(input),
       });
       if (!response.ok) return response;
-      const bookings = parsed(adminBookingsResponseSchema, response.body);
-      return bookings.ok ? { ok: true, value: bookings.value.bookings } : bookings;
+      // The page envelope stays attached: hasMore/nextCursor are contract
+      // facts the caller (or loadBookingsRange) must see, never stripped.
+      return parsed(adminBookingsResponseSchema, response.body);
     },
 
     async moveAvailability(input) {
@@ -604,4 +627,91 @@ export function createAdminApiClient(
       return parsed(adminAvailabilityExceptionResponseSchema, response.body);
     },
   };
+}
+
+/**
+ * ESZ-144 — one complete, guarded walk of an admin booking range.
+ *
+ * The calendar asks for a whole month in one logical read and must not treat a
+ * page as the month. This follows the server's typed cursors until `hasMore`
+ * is false, and it refuses to hang or to lie:
+ *
+ * - a page that ends with `hasMore` must carry a strictly advancing cursor
+ *   (an equal or backward cursor is a broken server, surfaced as
+ *   malformed-response, never followed into a loop);
+ * - an empty page may only mean the range is exhausted;
+ * - the whole walk is bounded by the contract's own page budget, and hitting
+ *   it is an explicit `range-incomplete` failure — the operator is told the
+ *   calendar may be missing rows rather than shown a silently partial month.
+ *
+ * The walk is page-by-page sequential on purpose: each page is a fresh
+ * authenticated read, and the calendar shows the month only once every page
+ * of it has arrived.
+ */
+export async function loadBookingsRange(
+  api: AdminApiClient,
+  fromDate: string,
+  untilDate: string,
+): Promise<AdminApiResult<AdminBooking[]>> {
+  const collected: AdminBooking[] = [];
+  let cursor: AdminBookingsCursor | null = null;
+
+  for (let pageIndex = 0; pageIndex < BOOKING_ADMIN_RANGE_MAX_PAGES; pageIndex += 1) {
+    // The request schema makes the cursor optional, not nullable: an absent
+    // key is the first page, and a typed cursor every page after it.
+    const result = await api.queryBookings({
+      mode: "range",
+      fromDate,
+      untilDate,
+      ...(cursor === null ? {} : { cursor }),
+    });
+    if (!result.ok) return result;
+
+    const { bookings, page } = result.value;
+
+    if (bookings.length === 0) {
+      // An empty page is the server saying the range is exhausted — but only
+      // when it also clears hasMore. An empty page that claims a further page
+      // exists cannot advance and must not be followed.
+      if (page.hasMore) {
+        return failure({
+          kind: "malformed-response",
+          message: ADMIN_API_MESSAGES.malformedResponse,
+        });
+      }
+      return { ok: true, value: collected };
+    }
+
+    collected.push(...bookings);
+
+    if (!page.hasMore) {
+      return { ok: true, value: collected };
+    }
+    if (page.nextCursor === null) {
+      return failure({
+        kind: "malformed-response",
+        message: ADMIN_API_MESSAGES.malformedResponse,
+      });
+    }
+    if (cursor !== null && !advances(cursor, page.nextCursor)) {
+      return failure({
+        kind: "malformed-response",
+        message: ADMIN_API_MESSAGES.malformedResponse,
+      });
+    }
+    cursor = page.nextCursor;
+  }
+
+  return failure({
+    kind: "range-incomplete",
+    message: ADMIN_API_MESSAGES.bookingsRangeIncomplete,
+  });
+}
+
+/** Strict keyset progress: the next cursor must be strictly after the last one. */
+function advances(previous: AdminBookingsCursor, next: AdminBookingsCursor): boolean {
+  return (
+    next.startsAtUtc > previous.startsAtUtc ||
+    (next.startsAtUtc === previous.startsAtUtc && next.reference > previous.reference)
+  );
 }

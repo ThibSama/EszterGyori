@@ -53,37 +53,233 @@ final class BookingRepository
         return $row === null ? null : Booking::fromRow($row, $this->contract);
     }
 
-    /** @return list<Booking> */
-    public function listBetween(\DateTimeImmutable $fromUtc, \DateTimeImmutable $untilUtc): array
-    {
+    /**
+     * ESZ-144 — one explicit page of an admin range read.
+     *
+     * Rows are start-anchored: a booking is in the window when its
+     * `starts_at_utc` falls in `[fromUtc, untilUtc)`, which is exactly the set
+     * of bookings whose Paris-local start date lies inside the requested civil
+     * dates. Pagination is deterministic keyset order on
+     * `(starts_at_utc, reference)` — the reference tie-break is what keeps two
+     * bookings at the same instant from duplicating or skipping across pages —
+     * and the anchor names the strictly-later continuation point.
+     *
+     * `pageSize` is validated against the domain's own ceiling, and the query
+     * fetches at most `pageSize + 1` rows so `hasMore` is detected from the
+     * surplus row: a page is never silently clipped at some other cap, because
+     * there is no other cap left — the old ESZ-085 `LIMIT maxResults` clip is
+     * gone with the whole method that carried it.
+     *
+     * @param string|null $afterStartsAtUtc Continuation keys in database form
+     *     (`Y-m-d H:i:s.v`), both or neither.
+     * @return array{rows: list<Booking>, hasMore: bool}
+     */
+    public function pageBetween(
+        \DateTimeImmutable $fromUtc,
+        \DateTimeImmutable $untilUtc,
+        ?string $afterStartsAtUtc,
+        ?string $afterReference,
+        int $pageSize,
+    ): array {
         if ($untilUtc <= $fromUtc) {
             throw new BookingValidationException('untilUtc', 'Booking query range must be increasing.');
         }
+        if ($pageSize < 1 || $pageSize > $this->contract->adminRangePageSize) {
+            throw new BookingValidationException('pageSize', 'Booking page size is outside the contract bounds.');
+        }
+        if (($afterStartsAtUtc === null) !== ($afterReference === null)) {
+            throw new BookingValidationException('cursor', 'Booking cursor keys must be provided together.');
+        }
 
-        return array_map(
-            fn (array $row): Booking => Booking::fromRow($row, $this->contract),
-            $this->database->fetchAll(
-                'SELECT ' . self::SELECT_COLUMNS . ' FROM bookings'
-                . ' WHERE starts_at_utc < :until_utc AND ends_at_utc > :from_utc'
-                . ' ORDER BY starts_at_utc, reference'
-                // ESZ-085: a row cap as well as a date range.
-                //
-                // The callers bound the range — 90 days at most — and until Package
-                // 8.2 that was the only bound there was. A range is not a bound on
-                // *rows*: how many bookings fall inside 90 days is decided by how
-                // busy the site is, not by the query, so the response size and the
-                // memory this method allocates had no ceiling at all. The cap is far
-                // above what one practitioner can physically book in a quarter, so
-                // it is a guard rather than pagination, and it is the same ceiling
-                // the slot engine already applies to the other unbounded list on
-                // this surface.
-                . ' LIMIT ' . $this->contract->slotMaxResults,
-                [
-                    'from_utc' => $this->time->databaseUtc($fromUtc),
-                    'until_utc' => $this->time->databaseUtc($untilUtc),
-                ],
-            ),
+        $after = $afterStartsAtUtc !== null
+            ? ' AND (starts_at_utc > :anchor_gt'
+                . ' OR (starts_at_utc = :anchor_eq AND reference > :anchor_reference))'
+            : '';
+        $parameters = [
+            'from_utc' => $this->time->databaseUtc($fromUtc),
+            'until_utc' => $this->time->databaseUtc($untilUtc),
+        ];
+        if ($afterStartsAtUtc !== null && $afterReference !== null) {
+            // Native prepares bind each named marker once, so the anchor
+            // instant is bound twice under two names rather than reused.
+            $parameters['anchor_gt'] = $afterStartsAtUtc;
+            $parameters['anchor_eq'] = $afterStartsAtUtc;
+            $parameters['anchor_reference'] = $afterReference;
+        }
+
+        $rows = $this->database->fetchAll(
+            'SELECT ' . self::SELECT_COLUMNS . ' FROM bookings'
+            . ' WHERE starts_at_utc >= :from_utc AND starts_at_utc < :until_utc'
+            . $after
+            . ' ORDER BY starts_at_utc, reference'
+            . ' LIMIT ' . ($pageSize + 1),
+            $parameters,
         );
+
+        $hasMore = \count($rows) > $pageSize;
+
+        return [
+            'rows' => array_map(
+                fn (array $row): Booking => Booking::fromRow($row, $this->contract),
+                \array_slice($rows, 0, $pageSize),
+            ),
+            'hasMore' => $hasMore,
+        ];
+    }
+
+    /**
+     * ESZ-144 — exact operational counts for the summary window.
+     *
+     * A dedicated aggregation, partitioned the same way the entries are: a
+     * start is "today" while it precedes the end of the Paris-local today
+     * (`$endOfTodayUtc`), otherwise "upcoming", inside the half-open
+     * `[fromUtc, untilUtc)` window. The summary never counts over a detail
+     * list, so no bounded list can make a count wrong and cancelled rows can
+     * never hide a confirmed one from the confirmed numbers.
+     *
+     * @return array{todayConfirmed: int, todayCancelled: int, upcomingConfirmed: int, upcomingCancelled: int}
+     */
+    public function summaryCountsBetween(
+        \DateTimeImmutable $fromUtc,
+        \DateTimeImmutable $endOfTodayUtc,
+        \DateTimeImmutable $untilUtc,
+    ): array {
+        $rows = $this->database->fetchAll(
+            'SELECT state,'
+            . ' CASE WHEN starts_at_utc < :end_today THEN \'today\' ELSE \'upcoming\' END AS bucket,'
+            . ' COUNT(*) AS n'
+            . ' FROM bookings'
+            . ' WHERE starts_at_utc >= :from_utc AND starts_at_utc < :until_utc'
+            . " AND state IN ('confirmed', 'cancelled')"
+            . ' GROUP BY state, bucket',
+            [
+                'from_utc' => $this->time->databaseUtc($fromUtc),
+                'end_today' => $this->time->databaseUtc($endOfTodayUtc),
+                'until_utc' => $this->time->databaseUtc($untilUtc),
+            ],
+        );
+
+        $counts = [
+            'todayConfirmed' => 0,
+            'todayCancelled' => 0,
+            'upcomingConfirmed' => 0,
+            'upcomingCancelled' => 0,
+        ];
+
+        foreach ($rows as $row) {
+            $state = $row['state'] ?? null;
+            $bucket = $row['bucket'] ?? null;
+            $n = $row['n'] ?? null;
+            if (!\is_string($state) || !\is_string($bucket) || (!\is_int($n) && !\is_string($n))) {
+                throw new \RuntimeException('Summary aggregation row is malformed.');
+            }
+            $n = (int) $n;
+
+            if ($bucket === 'today') {
+                if ($state === 'confirmed') {
+                    $counts['todayConfirmed'] += $n;
+                } elseif ($state === 'cancelled') {
+                    $counts['todayCancelled'] += $n;
+                } else {
+                    throw new \RuntimeException("Summary aggregation met an unexpected {$state} state.");
+                }
+
+                continue;
+            }
+
+            if ($bucket === 'upcoming') {
+                if ($state === 'confirmed') {
+                    $counts['upcomingConfirmed'] += $n;
+                } elseif ($state === 'cancelled') {
+                    $counts['upcomingCancelled'] += $n;
+                } else {
+                    throw new \RuntimeException("Summary aggregation met an unexpected {$state} state.");
+                }
+
+                continue;
+            }
+
+            throw new \RuntimeException("Summary aggregation returned an unexpected {$bucket} bucket.");
+        }
+
+        return $counts;
+    }
+
+    /**
+     * ESZ-144 — one bounded confirmed-entry collection for the summary.
+     *
+     * Only `state = 'confirmed'` rows are ever listed, so a cancelled booking
+     * cannot occupy a place a confirmed entry should hold. The read fetches
+     * `$max + 1` rows: `complete` is false exactly when a further confirmed
+     * entry exists past the bound, and the caller then says so on the wire
+     * instead of letting the collection masquerade as the whole answer.
+     *
+     * @return array{
+     *     rows: list<array{
+     *         reference: string,
+     *         service_key: string,
+     *         starts_at_utc: string,
+     *         ends_at_utc: string,
+     *         customer_name: string
+     *     }>,
+     *     complete: bool
+     * }
+     */
+    public function summaryConfirmedEntries(
+        \DateTimeImmutable $fromUtc,
+        \DateTimeImmutable $untilUtc,
+        int $max,
+    ): array {
+        if ($max < 1 || $max > $this->contract->adminSummaryListedEntriesMax) {
+            throw new BookingValidationException('max', 'Summary listing bound is outside the contract bounds.');
+        }
+
+        $rows = $this->database->fetchAll(
+            'SELECT reference, service_key, starts_at_utc, ends_at_utc, customer_name'
+            . ' FROM bookings'
+            . ' WHERE starts_at_utc >= :from_utc AND starts_at_utc < :until_utc'
+            . " AND state = 'confirmed'"
+            . ' ORDER BY starts_at_utc, reference'
+            . ' LIMIT ' . ($max + 1),
+            [
+                'from_utc' => $this->time->databaseUtc($fromUtc),
+                'until_utc' => $this->time->databaseUtc($untilUtc),
+            ],
+        );
+
+        /** @var list<array{reference: string, service_key: string, starts_at_utc: string, ends_at_utc: string, customer_name: string}> $listed */
+        $listed = \array_slice($rows, 0, $max);
+
+        return ['rows' => $listed, 'complete' => \count($rows) <= $max];
+    }
+
+    /**
+     * ESZ-144 — the exact next confirmed booking of the summary window.
+     *
+     * A dedicated SQL minimum, so the answer is exact over the full period and
+     * cancelled rows preceding the next appointment can never hide it. Returns
+     * the raw database instant, or null when no confirmed booking starts at or
+     * after `nowUtc` inside the window.
+     */
+    public function nextConfirmedStartUtc(
+        \DateTimeImmutable $nowUtc,
+        \DateTimeImmutable $untilUtc,
+    ): ?string {
+        $row = $this->database->fetchOne(
+            'SELECT starts_at_utc FROM bookings'
+            . ' WHERE state = \'confirmed\''
+            . ' AND starts_at_utc >= :now_utc AND starts_at_utc < :until_utc'
+            . ' ORDER BY starts_at_utc, reference'
+            . ' LIMIT 1',
+            [
+                'now_utc' => $this->time->databaseUtc($nowUtc),
+                'until_utc' => $this->time->databaseUtc($untilUtc),
+            ],
+        );
+
+        $value = $row['starts_at_utc'] ?? null;
+
+        return \is_string($value) ? $value : null;
     }
 
     public function createConfirmed(

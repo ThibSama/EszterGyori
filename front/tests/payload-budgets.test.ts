@@ -6,6 +6,8 @@ import {
   ADMIN_AVAILABILITY_MAX_RANGE_DAYS,
   ADMIN_AVAILABILITY_MAX_WEEKLY_RULES,
   ADMIN_SUMMARY_MAX_UPCOMING_DAYS,
+  BOOKING_ADMIN_RANGE_PAGE_SIZE,
+  BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES,
   BOOKING_SLOT_MAX_HORIZON_DAYS,
   BOOKING_SLOT_MAX_RESULTS,
 } from "@eszter/contracts";
@@ -115,15 +117,23 @@ test("one slot stays small, because the horizon multiplies it", () => {
   budget("one availability slot", bytes(slot(0)), 160);
 });
 
-test("the admin booking list stays bounded across the widest range it accepts", () => {
-  // The admin query accepts up to `BOOKING_SLOT_MAX_HORIZON_DAYS`. Four bookings
-  // a day across that range is far past this practitioner's capacity and is the
-  // right shape for a ceiling.
-  const count = BOOKING_SLOT_MAX_HORIZON_DAYS * 4;
-  const response = { bookings: Array.from({ length: count }, (_, index) => booking(index)) };
+test("an admin booking page stays bounded at its declared page size", () => {
+  // ESZ-144: a range read is paginated, so no single response carries a whole
+  // 90-day range. The wire envelope's own ceiling is now one page at
+  // `BOOKING_ADMIN_RANGE_PAGE_SIZE`, plus the pagination facts the response
+  // always carries — that is the shape that must stay light, and it is.
+  const count = BOOKING_ADMIN_RANGE_PAGE_SIZE;
+  const response = {
+    bookings: Array.from({ length: count }, (_, index) => booking(index)),
+    page: {
+      pageSize: BOOKING_ADMIN_RANGE_PAGE_SIZE,
+      hasMore: true,
+      nextCursor: { startsAtUtc: "2026-11-01T00:00:00.000Z", reference: booking(0).reference },
+    },
+  };
 
-  budget("admin bookings at four per day for 90 days (raw)", bytes(response), 250_000);
-  budget("admin bookings at four per day for 90 days (gzip)", gzippedBytes(response), 20_000);
+  budget("admin bookings page at full page size (raw)", bytes(response), 250_000);
+  budget("admin bookings page at full page size (gzip)", gzippedBytes(response), 20_000);
   budget("one admin booking entry", bytes(booking(0)), 700);
 });
 
@@ -133,22 +143,30 @@ test("the operations summary stays small regardless of its window", () => {
     serviceKey: "brows",
     startsAtUtc: "2026-08-24T07:15:00.000Z",
     endsAtUtc: "2026-08-24T09:15:00.000Z",
+    localDate: "2026-08-24",
+    localStart: "09:15",
     customerName: "Marie-Christine de la Fontaine-Dupont",
   };
 
+  // ESZ-144: each confirmed-entry collection is capped at the domain's
+  // listedEntriesMax and the response states whether it is complete, so the
+  // worst legitimate response is both collections at their cap — still a
+  // bounded document however wide the requested window.
   const response = {
     timezone: "Europe/Paris",
-    generatedAtUtc: "2026-08-21T09:00:00.000Z",
+    todayDate: "2026-08-24",
+    untilDate: "2026-11-21",
     upcomingDays: ADMIN_SUMMARY_MAX_UPCOMING_DAYS,
     counts: {
-      todayConfirmed: 8,
+      todayConfirmed: BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES,
       todayCancelled: 1,
       upcomingConfirmed: 360,
       upcomingCancelled: 12,
     },
     nextConfirmedStartsAtUtc: "2026-08-24T07:15:00.000Z",
-    today: Array.from({ length: 8 }, () => entry),
-    upcoming: Array.from({ length: ADMIN_SUMMARY_MAX_UPCOMING_DAYS * 4 }, () => entry),
+    listings: { todayComplete: false, upcomingComplete: false },
+    today: Array.from({ length: BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES }, () => entry),
+    upcoming: Array.from({ length: BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES }, () => entry),
   };
 
   budget("operations summary at its maximum window (raw)", bytes(response), 90_000);

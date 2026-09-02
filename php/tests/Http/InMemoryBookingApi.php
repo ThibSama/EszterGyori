@@ -89,7 +89,14 @@ final class InMemoryBookingApi implements BookingApi
     /** @return array<string, mixed> */
     public function adminQuery(array $request): array
     {
-        return ['bookings' => [$this->adminBooking('confirmed', '2026-06-15T07:00:00.000Z')]];
+        return [
+            'bookings' => [$this->adminBooking('confirmed', '2026-06-15T07:00:00.000Z')],
+            'page' => [
+                'pageSize' => $this->contract->adminRangePageSize,
+                'hasMore' => false,
+                'nextCursor' => null,
+            ],
+        ];
     }
 
     /**
@@ -126,6 +133,10 @@ final class InMemoryBookingApi implements BookingApi
                 'upcomingCancelled' => 0,
             ],
             'nextConfirmedStartsAtUtc' => '2026-06-15T07:00:00.000Z',
+            'listings' => [
+                'todayComplete' => true,
+                'upcomingComplete' => true,
+            ],
             'today' => [[
                 'reference' => self::REFERENCE,
                 'serviceKey' => 'brows',

@@ -41,10 +41,14 @@ import {
   notificationStatuses,
   notificationTerminalStatuses,
   customerDataRetentionPolicy,
+  BOOKING_ADMIN_RANGE_PAGE_SIZE,
+  BOOKING_ADMIN_RANGE_MAX_PAGES,
+  BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES,
   BOOKING_SLOT_MAX_HORIZON_DAYS,
   BOOKING_SLOT_MAX_RESULTS,
   BOOKING_TIME_ZONE,
   bookableServiceKeys,
+  bookingDomainContract,
   bookingStateTransitions,
   bookingStates,
 } from "../booking.js";
@@ -127,6 +131,11 @@ test("the generated booking domain freezes service identity, timezone and states
       transitions: Record<string, string[]>;
       rules: string[];
     };
+    adminViews: {
+      rangeRead: { pageSize: number; maxPages: number; hasMore: string };
+      summary: { listedEntriesMax: number; counts: string };
+    };
+    version: number;
   };
 
   assert.deepEqual(booking.services.keys, [...bookableServiceKeys]);
@@ -146,6 +155,19 @@ test("the generated booking domain freezes service identity, timezone and states
   assert.equal(booking.states.initial, "confirmed");
   assert.deepEqual(booking.states.transitions, bookingStateTransitions);
   assert.ok(booking.states.rules.some((rule) => /never physically deletes/.test(rule)));
+
+  // ESZ-144: the whole adminViews block freezes byte-for-byte, the way PHP
+  // reads it — the numbers are what the repository and the summary enforce.
+  assert.deepEqual(booking.adminViews, bookingDomainContract.adminViews);
+  assert.equal(booking.adminViews.rangeRead.pageSize, BOOKING_ADMIN_RANGE_PAGE_SIZE);
+  assert.equal(booking.adminViews.rangeRead.maxPages, BOOKING_ADMIN_RANGE_MAX_PAGES);
+  assert.equal(
+    booking.adminViews.summary.listedEntriesMax,
+    BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES,
+  );
+  assert.match(booking.adminViews.rangeRead.hasMore, /pageSize\+1/);
+  assert.match(booking.adminViews.summary.counts, /aggregation/);
+  assert.equal(booking.version, 5, "adding an adminViews policy block is a domain version bump");
 });
 
 test("the generated booking domain freezes the Package 7.1 notification policy", async () => {
@@ -158,7 +180,7 @@ test("the generated booking domain freezes the Package 7.1 notification policy",
   // The whole block, byte for byte. PHP reads this file rather than a second
   // copy of these constants, so anything that drifts here drifts everywhere.
   assert.deepEqual(document.notifications, notificationPolicy);
-  assert.equal(document.version, 4, "adding a policy block is a domain version bump");
+  assert.equal(document.version, 5, "adding a policy block is a domain version bump");
 
   // ESZ-140: the customer-data retention policy (cutoffs, placeholders, code,
   // archive ceiling) is frozen in the same artifact the PHP sweep reads.
@@ -398,10 +420,11 @@ test("the generated HTTP contract freezes availability administration and the su
   const contract = JSON.parse(await readGenerated("http-contract.json")) as {
     booking?: {
       paths?: Record<string, string>;
+      policy?: typeof bookingApiPolicy;
       availabilityAdministration?: typeof availabilityAdminPolicy;
     };
     cases: Array<{ id: string; auth?: { session?: string; csrf?: string }; expect: { status: number } }>;
-    invariants: Array<{ id: string }>;
+    invariants: Array<{ id: string; description: string }>;
   };
 
   assert.deepEqual(contract.booking?.availabilityAdministration, availabilityAdminPolicy);
@@ -434,9 +457,26 @@ test("the generated HTTP contract freezes availability administration and the su
     "availability.exceptionRemovalRestoresWeekly",
     "availability.exceptionWindowsAreDstChecked",
     "summary.cancelledNeverInflatesConfirmed",
+    "adminViews.rangeReadsArePaginatedNotClipped",
+    "adminViews.summaryCountsAreAggregated",
   ]) {
     assert.ok(invariantIds.includes(id), `${id} is missing from the generated invariants`);
   }
+
+  // ESZ-144: the summary's own invariant no longer rests on the shared capped
+  // read — aggregation over the whole window is what keeps the counts exact.
+  const summaryInvariant = contract.invariants.find(
+    (invariant) => invariant.id === "summary.cancelledNeverInflatesConfirmed",
+  );
+  assert.match(summaryInvariant?.description ?? "", /SQL aggregation/);
+  assert.ok(
+    contract.booking?.policy?.adminQuery?.includes("pageSize+1"),
+    "the booking policy must state how hasMore is detected",
+  );
+  assert.ok(
+    contract.booking?.policy?.adminSummary?.includes("listedEntriesMax"),
+    "the booking policy must state the summary entry bound",
+  );
 
   // Every one of the four new routes is proved to refuse an anonymous caller,
   // and every state-changing one is proved to refuse a session without CSRF.

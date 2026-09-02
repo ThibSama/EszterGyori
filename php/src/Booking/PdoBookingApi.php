@@ -168,13 +168,20 @@ final class PdoBookingApi implements BookingApi
     public function adminQuery(array $request): array
     {
         $mode = self::requiredString($request, 'mode');
+
         if ($mode === 'reference') {
             $booking = $this->bookings->find(self::requiredString($request, 'reference'));
             if ($booking === null) {
                 throw new BookingNotFoundException(self::requiredString($request, 'reference'));
             }
-            $bookings = [$booking];
-        } elseif ($mode === 'range') {
+
+            return [
+                'bookings' => [$this->adminBookingPayload($booking)],
+                'page' => $this->pageMeta(false, null),
+            ];
+        }
+
+        if ($mode === 'range') {
             $from = self::date(self::requiredString($request, 'fromDate'), 'fromDate');
             $until = self::date(self::requiredString($request, 'untilDate'), 'untilDate');
             $days = (int) $from->diff($until)->format('%r%a') + 1;
@@ -182,12 +189,73 @@ final class PdoBookingApi implements BookingApi
                 throw new BookingValidationException('untilDate', 'Admin booking range is invalid or too large.');
             }
             [$fromUtc, $untilUtc] = $this->utcRange($from->format('Y-m-d'), $until->format('Y-m-d'));
-            $bookings = $this->bookings->listBetween($fromUtc, $untilUtc);
-        } else {
-            throw new BookingValidationException('mode', 'Unknown admin booking query mode.');
+
+            // ESZ-144: the typed keyset cursor. The schema already guarantees
+            // both keys exist and are well-formed; the domain re-validates that
+            // the continuation actually points inside this window, so a cursor
+            // from another range cannot restart or truncate this walk. The row
+            // strictly after the cursor keys is where the next page begins.
+            $cursor = $request['cursor'] ?? null;
+            $anchorStart = null;
+            $anchorReference = null;
+            if ($cursor !== null) {
+                if (!\is_array($cursor)) {
+                    throw new BookingValidationException('cursor', 'Booking cursor is malformed.');
+                }
+                /** @var array<string, mixed> $cursor */
+                $cursorInstant = self::timestamp($cursor, 'startsAtUtc');
+                $cursorReference = self::requiredString($cursor, 'reference');
+                if ($cursorInstant < $fromUtc || $cursorInstant >= $untilUtc) {
+                    throw new BookingValidationException(
+                        'cursor',
+                        'Booking cursor is outside the requested range.',
+                    );
+                }
+                $anchorStart = $this->time->databaseUtc($cursorInstant);
+                $anchorReference = $cursorReference;
+            }
+
+            $page = $this->bookings->pageBetween(
+                $fromUtc,
+                $untilUtc,
+                $anchorStart,
+                $anchorReference,
+                $this->contract->adminRangePageSize,
+            );
+            $bookings = $page['rows'];
+
+            // hasMore was decided by the pageSize+1 probe; the next cursor is
+            // the last returned row's own keys, which is what makes the walk
+            // strictly advance until the range is exhausted.
+            $nextCursor = null;
+            if ($page['hasMore'] && $bookings !== []) {
+                $last = $bookings[\count($bookings) - 1];
+                $nextCursor = [
+                    'startsAtUtc' => IsoTimestamp::format(self::databaseInstant($last->startsAtUtc)),
+                    'reference' => $last->reference,
+                ];
+            }
+
+            return [
+                'bookings' => array_map($this->adminBookingPayload(...), $bookings),
+                'page' => $this->pageMeta($page['hasMore'], $nextCursor),
+            ];
         }
 
-        return ['bookings' => array_map($this->adminBookingPayload(...), $bookings)];
+        throw new BookingValidationException('mode', 'Unknown admin booking query mode.');
+    }
+
+    /**
+     * @param array{startsAtUtc: string, reference: string}|null $nextCursor
+     * @return array{pageSize: int, hasMore: bool, nextCursor: array{startsAtUtc: string, reference: string}|null}
+     */
+    private function pageMeta(bool $hasMore, ?array $nextCursor): array
+    {
+        return [
+            'pageSize' => $this->contract->adminRangePageSize,
+            'hasMore' => $hasMore,
+            'nextCursor' => $hasMore ? $nextCursor : null,
+        ];
     }
 
     /** @return array<string, mixed> */
@@ -235,12 +303,17 @@ final class PdoBookingApi implements BookingApi
     }
 
     /**
-     * ESZ-065 — the operational summary.
+     * ESZ-065/ESZ-144 — the operational summary.
      *
-     * One bounded read of the same rows `adminQuery` returns, partitioned by
-     * Paris-local date and by state. Cancelled bookings are counted in their own
-     * fields and never appear in a listed entry, so the confirmed numbers can
-     * only ever go down when something is cancelled.
+     * Counts and the next confirmed instant are exact SQL aggregations over
+     * the whole `[today, untilDate]` window — never arithmetic over a detail
+     * list, so no bounded list can make a count wrong and cancelled rows can
+     * never hide a confirmed appointment. The confirmed-entry collections are
+     * each bounded at the domain's `adminSummaryListedEntriesMax`; the
+     * `listings` flags say whether each collection is complete, so the
+     * operator always knows the counts are authoritative and the list may not
+     * be. Cancelled bookings are counted in their own fields and never appear
+     * in a listed entry.
      *
      * @return array<string, mixed>
      */
@@ -258,58 +331,41 @@ final class PdoBookingApi implements BookingApi
             ->modify('+' . ($upcomingDays - 1) . ' days')
             ->format('Y-m-d');
         [$fromUtc, $untilUtc] = $this->utcRange($today, $untilDate);
+        // The partition boundary between "today" and "upcoming" is the end of
+        // the Paris-local today: the same civil cut the entries use.
+        $endOfTodayUtc = $this->time->localToUtcWithFoldOffset(
+            self::date($today, 'todayDate')->modify('+1 day')->format('Y-m-d') . ' 00:00:00',
+            null,
+        );
+        $maxListed = $this->contract->adminSummaryListedEntriesMax;
 
-        $todayConfirmed = 0;
-        $todayCancelled = 0;
-        $upcomingConfirmed = 0;
-        $upcomingCancelled = 0;
-        $todayEntries = [];
-        $upcomingEntries = [];
-        $next = null;
+        $counts = $this->bookings->summaryCountsBetween($fromUtc, $endOfTodayUtc, $untilUtc);
+        $todayListed = $this->bookings->summaryConfirmedEntries($fromUtc, $endOfTodayUtc, $maxListed);
+        $upcomingListed = $this->bookings->summaryConfirmedEntries($endOfTodayUtc, $untilUtc, $maxListed);
 
-        foreach ($this->bookings->listBetween($fromUtc, $untilUtc) as $booking) {
-            $start = self::databaseInstant($booking->startsAtUtc);
-            $isToday = $start->setTimezone($zone)->format('Y-m-d') === $today;
-
-            if ($booking->state->value !== 'confirmed') {
-                if ($isToday) {
-                    ++$todayCancelled;
-                } else {
-                    ++$upcomingCancelled;
-                }
-
-                continue;
-            }
-
-            if ($isToday) {
-                ++$todayConfirmed;
-                $todayEntries[] = $this->summaryEntry($booking, $zone);
-            } else {
-                ++$upcomingConfirmed;
-                $upcomingEntries[] = $this->summaryEntry($booking, $zone);
-            }
-
-            // `listBetween` is ordered by start, so the first confirmed booking
-            // that has not already begun is the next one.
-            if ($next === null && $start >= $now) {
-                $next = IsoTimestamp::format($start);
-            }
-        }
+        $nextStored = $this->bookings->nextConfirmedStartUtc($now, $untilUtc);
 
         return [
             'timezone' => $this->contract->timezone,
             'todayDate' => $today,
             'untilDate' => $untilDate,
             'upcomingDays' => $upcomingDays,
-            'counts' => [
-                'todayConfirmed' => $todayConfirmed,
-                'todayCancelled' => $todayCancelled,
-                'upcomingConfirmed' => $upcomingConfirmed,
-                'upcomingCancelled' => $upcomingCancelled,
+            'counts' => $counts,
+            'nextConfirmedStartsAtUtc' => $nextStored === null
+                ? null
+                : IsoTimestamp::format(self::databaseInstant($nextStored)),
+            'listings' => [
+                'todayComplete' => $todayListed['complete'],
+                'upcomingComplete' => $upcomingListed['complete'],
             ],
-            'nextConfirmedStartsAtUtc' => $next,
-            'today' => $todayEntries,
-            'upcoming' => $upcomingEntries,
+            'today' => array_map(
+                fn (array $row): array => $this->summaryEntryFromRow($row, $zone),
+                $todayListed['rows'],
+            ),
+            'upcoming' => array_map(
+                fn (array $row): array => $this->summaryEntryFromRow($row, $zone),
+                $upcomingListed['rows'],
+            ),
         ];
     }
 
@@ -483,20 +539,29 @@ final class PdoBookingApi implements BookingApi
         return $windows;
     }
 
-    /** @return array<string, mixed> */
-    private function summaryEntry(Booking $booking, \DateTimeZone $zone): array
+    /**
+     * @param array{
+     *     reference: string,
+     *     service_key: string,
+     *     starts_at_utc: string,
+     *     ends_at_utc: string,
+     *     customer_name: string
+     * } $row
+     * @return array<string, mixed>
+     */
+    private function summaryEntryFromRow(array $row, \DateTimeZone $zone): array
     {
-        $start = self::databaseInstant($booking->startsAtUtc);
+        $start = self::databaseInstant($row['starts_at_utc']);
         $local = $start->setTimezone($zone);
 
         return [
-            'reference' => $booking->reference,
-            'serviceKey' => $booking->serviceKey,
+            'reference' => $row['reference'],
+            'serviceKey' => $row['service_key'],
             'startsAtUtc' => IsoTimestamp::format($start),
-            'endsAtUtc' => IsoTimestamp::format(self::databaseInstant($booking->endsAtUtc)),
+            'endsAtUtc' => IsoTimestamp::format(self::databaseInstant($row['ends_at_utc'])),
             'localDate' => $local->format('Y-m-d'),
             'localStart' => $local->format('H:i'),
-            'customerName' => $booking->customerName,
+            'customerName' => $row['customer_name'],
         ];
     }
 

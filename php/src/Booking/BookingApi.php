@@ -41,8 +41,10 @@ interface BookingApi
     public function adminMutate(array $request): array;
 
     /**
-     * The operational summary (ESZ-065). A read over the same booking rows the
-     * admin query returns; it stores nothing of its own.
+     * The operational summary (ESZ-065/ESZ-144). Exact SQL aggregations over
+     * the whole window for counts and the next confirmed instant; listed
+     * entries are bounded and advertise their completeness. It stores nothing
+     * of its own.
      *
      * @param array<string, mixed> $request
      * @return array<string, mixed>

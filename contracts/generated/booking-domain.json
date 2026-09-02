@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "scope": "Package 4.1/4.2 booking domain and dynamic slot computation; no booking HTTP API.",
   "services": {
     "keys": [
@@ -73,6 +73,24 @@
       "No UI value, elapsed clock time or read operation changes state.",
       "Cancellation sets cancelled_at_utc and never physically deletes the booking."
     ]
+  },
+  "adminViews": {
+    "rangeRead": {
+      "pageSize": 200,
+      "membership": "A range read returns the bookings whose start instant falls in the half-open Paris-civil window [fromDate 00:00, (untilDate+1) 00:00). A booking that began before the window is never in it, however late it ends: the calendar shows bookings on the civil day of their start, and pagination pages over starts, so the two cannot disagree.",
+      "ordering": "Deterministic keyset order on (starts_at_utc, reference), the stable tie-break for equal instants.",
+      "cursor": "A typed continuation cursor {startsAtUtc, reference} naming the last returned row's keys. The server validates the cursor's shape, parses its instant and refuses one that does not lie inside the requested window; the row strictly after the cursor keys is where the next page begins, so re-sending a cursor cannot loop and equal instants cannot duplicate or skip.",
+      "hasMore": "The server fetches pageSize+1 rows and reports hasMore from the surplus row; a page is never silently clipped to a smaller answer than the range holds.",
+      "maxPages": 250,
+      "termination": "A client may walk at most the maxPages pages per range before it must stop and report the range as incomplete; a correct server always terminates earlier because every page strictly advances the cursor.",
+      "exactReference": "mode=reference stays an exact lookup by booking reference and is unaffected by pagination."
+    },
+    "summary": {
+      "counts": "today/upcoming confirmed and cancelled counts are dedicated SQL aggregations over the whole window, never arithmetic over a capped detail list, so a bounded list cannot make a count wrong.",
+      "nextConfirmed": "nextConfirmedStartsAtUtc is the SQL minimum confirmed start instant at or after now within the window: exact over the full period, and never hidden by cancelled rows preceding it.",
+      "listedEntriesMax": 100,
+      "listedEntries": "today and upcoming carry only confirmed entries, earliest first, each collection capped at listedEntriesMax. listings.todayComplete / listings.upcomingComplete state whether that partition was fully listed; when false the operator is told the list is partial and the counts remain the authority. Cancelled rows never appear in either list and cannot displace a confirmed entry from it."
+    }
   },
   "notifications": {
     "scope": "Package 7.1 durable notification jobs, one CLI cron runner and catch-up policy. No HTTP surface.",

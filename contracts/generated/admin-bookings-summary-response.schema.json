@@ -67,7 +67,24 @@
         }
       ]
     },
+    "listings": {
+      "type": "object",
+      "properties": {
+        "todayComplete": {
+          "type": "boolean"
+        },
+        "upcomingComplete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "todayComplete",
+        "upcomingComplete"
+      ],
+      "additionalProperties": false
+    },
     "today": {
+      "maxItems": 100,
       "type": "array",
       "items": {
         "type": "object",
@@ -118,6 +135,7 @@
       }
     },
     "upcoming": {
+      "maxItems": 100,
       "type": "array",
       "items": {
         "type": "object",
@@ -175,6 +193,7 @@
     "upcomingDays",
     "counts",
     "nextConfirmedStartsAtUtc",
+    "listings",
     "today",
     "upcoming"
   ],

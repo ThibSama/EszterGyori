@@ -5,8 +5,15 @@ import { serviceItemIds } from "./site-content.js";
  *
  * Version 4 (ESZ-140) adds the V1 customer-data retention policy and the
  * `retired` notification status the retention sweep writes.
+ *
+ * Version 5 (ESZ-144) replaces the silent row cap on admin booking reads with
+ * explicit administration bounds: range reads paginate on a fixed page size
+ * with a typed keyset cursor, and the operational summary counts by dedicated
+ * SQL aggregation while its detail collections are bounded and advertise their
+ * own completeness. No admin surface may read a capped collection as if it
+ * were exhaustive.
  */
-export const BOOKING_DOMAIN_VERSION = 4;
+export const BOOKING_DOMAIN_VERSION = 5;
 
 /**
  * The business operates in metropolitan France. Rules are authored as local
@@ -27,6 +34,46 @@ export const BOOKING_SLOT_GRID_MINUTES = 15;
 export const BOOKING_SLOT_MAX_HORIZON_DAYS = 90;
 export const BOOKING_SLOT_MAX_RESULTS = 1000;
 export const BOOKING_DST_FOLD_OFFSETS = ["+01:00", "+02:00"] as const;
+
+/**
+ * ESZ-144 — the fixed page capacity of one admin booking range read.
+ *
+ * The server returns at most this many rows per request and always states
+ * `hasMore` and the typed continuation cursor, so no caller can mistake a page
+ * for the whole range. 200 keeps one page small enough to parse and render
+ * while making a busy month a handful of round trips. It is deliberately not a
+ * client parameter: a page size a caller could raise is a bound the caller
+ * could remove.
+ */
+export const BOOKING_ADMIN_RANGE_PAGE_SIZE = 200;
+
+/**
+ * ESZ-144 — how many pages one range walk may fetch before the client must
+ * stop and report the range as incomplete.
+ *
+ * A correct server always terminates a walk earlier than this — every page
+ * strictly advances the keyset cursor and the last one clears `hasMore` — so
+ * the budget exists to turn a pathological range or a misbehaving server into
+ * an explicit, visible failure instead of an infinite request loop. 250 pages
+ * at 200 rows each is far beyond what one practitioner can hold in a 90-day
+ * window; reaching it is an error, not a workload.
+ */
+export const BOOKING_ADMIN_RANGE_MAX_PAGES = 250;
+
+/**
+ * ESZ-144 — the bound on each confirmed-entry detail collection of the
+ * operational summary.
+ *
+ * Counts are exact over the whole window by SQL aggregation; only the *listed*
+ * entries are bounded, and the response says whether each partition is
+ * complete so the operator always knows the count is authoritative and the
+ * list may not be. The value sits above the busiest realistic day — 100 would
+ * need a grid-aligned confirmed day beyond what the domain allows — so an
+ * ordinary summary is complete; the bound exists to keep a pathological
+ * horizon (a 90-day window can hold thousands of rows) from becoming one
+ * unbounded array, and the completeness flags keep that bound honest.
+ */
+export const BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES = 100;
 
 /**
  * Smallest V1 appointment lifecycle. Completion and no-show are intentionally
@@ -439,6 +486,43 @@ export const bookingDomainContract = {
       "No UI value, elapsed clock time or read operation changes state.",
       "Cancellation sets cancelled_at_utc and never physically deletes the booking.",
     ],
+  },
+  /**
+   * ESZ-144 — how the admin booking surfaces stay bounded without ever hiding
+   * data silently. The pre-ESZ-144 read applied the public slot-engine result
+   * cap (`availability.limits.maxResults`) to `bookings` rows: >1000 rows in a
+   * valid range were clipped with nothing saying so, cancelled rows could
+   * consume the cap and hide confirmed appointments, and the summary counted
+   * from that same capped mixed-state list. Every bound below is therefore
+   * explicit on the wire, and no consumer may treat a bounded collection as
+   * exhaustive.
+   */
+  adminViews: {
+    rangeRead: {
+      pageSize: BOOKING_ADMIN_RANGE_PAGE_SIZE,
+      membership:
+        "A range read returns the bookings whose start instant falls in the half-open Paris-civil window [fromDate 00:00, (untilDate+1) 00:00). A booking that began before the window is never in it, however late it ends: the calendar shows bookings on the civil day of their start, and pagination pages over starts, so the two cannot disagree.",
+      ordering:
+        "Deterministic keyset order on (starts_at_utc, reference), the stable tie-break for equal instants.",
+      cursor:
+        "A typed continuation cursor {startsAtUtc, reference} naming the last returned row's keys. The server validates the cursor's shape, parses its instant and refuses one that does not lie inside the requested window; the row strictly after the cursor keys is where the next page begins, so re-sending a cursor cannot loop and equal instants cannot duplicate or skip.",
+      hasMore:
+        "The server fetches pageSize+1 rows and reports hasMore from the surplus row; a page is never silently clipped to a smaller answer than the range holds.",
+      maxPages: BOOKING_ADMIN_RANGE_MAX_PAGES,
+      termination:
+        "A client may walk at most the maxPages pages per range before it must stop and report the range as incomplete; a correct server always terminates earlier because every page strictly advances the cursor.",
+      exactReference:
+        "mode=reference stays an exact lookup by booking reference and is unaffected by pagination.",
+    },
+    summary: {
+      counts:
+        "today/upcoming confirmed and cancelled counts are dedicated SQL aggregations over the whole window, never arithmetic over a capped detail list, so a bounded list cannot make a count wrong.",
+      nextConfirmed:
+        "nextConfirmedStartsAtUtc is the SQL minimum confirmed start instant at or after now within the window: exact over the full period, and never hidden by cancelled rows preceding it.",
+      listedEntriesMax: BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES,
+      listedEntries:
+        "today and upcoming carry only confirmed entries, earliest first, each collection capped at listedEntriesMax. listings.todayComplete / listings.upcomingComplete state whether that partition was fully listed; when false the operator is told the list is partial and the counts remain the authority. Cancelled rows never appear in either list and cannot displace a confirmed entry from it.",
+    },
   },
   notifications: notificationPolicy,
   customerDataRetention: customerDataRetentionPolicy,

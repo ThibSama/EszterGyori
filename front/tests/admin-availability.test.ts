@@ -69,6 +69,7 @@ test("availability reads carry no CSRF and mutations carry it on the frozen path
       upcomingDays: 7,
       counts: { todayConfirmed: 0, todayCancelled: 0, upcomingConfirmed: 0, upcomingCancelled: 0 },
       nextConfirmedStartsAtUtc: null,
+      listings: { todayComplete: true, upcomingComplete: true },
       today: [],
       upcoming: [],
     },
@@ -549,6 +550,14 @@ test("the summary is read-only, server-counted and never lists a cancellation", 
     !/state === "cancelled"/.test(source),
     "the summary re-derives state instead of trusting the server partition",
   );
+
+  // ESZ-144: the "+N autres" count comes from the exact aggregated count, and
+  // a server-bounded list says it is partial instead of masquerading as the
+  // whole answer — with the count remaining the authority in both cases.
+  assert.match(source, /summary\.counts\.upcomingConfirmed - 6/);
+  assert.match(source, /Liste partielle :/);
+  assert.match(source, /summary\.listings\.todayComplete/);
+  assert.match(source, /summary\.listings\.upcomingComplete/);
 
   assert.match(source, /markExpired\(\)/);
   assert.match(source, /role="status"/);
