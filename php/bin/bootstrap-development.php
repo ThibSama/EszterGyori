@@ -12,6 +12,7 @@ use Eszter\Booking\AvailabilityRepository;
 use Eszter\Booking\AvailabilityWindow;
 use Eszter\Booking\BookableServiceRepository;
 use Eszter\Booking\BookingDomainContract;
+use Eszter\Booking\BookingSerializationLock;
 use Eszter\Booking\BookingTimePolicy;
 use Eszter\Booking\WeeklyAvailabilityRule;
 use Eszter\Config\Configuration;
@@ -68,7 +69,12 @@ function bootstrapDevelopmentMain(array $arguments): int
             $sessions->destroyForAccount($provisioned['account']->id);
         }
 
-        $services = new BookableServiceRepository($database, $clock, $bookingContract);
+        $services = new BookableServiceRepository(
+            $database,
+            $clock,
+            $bookingContract,
+            new BookingSerializationLock($database),
+        );
         foreach (bootstrapDevelopmentServices() as $service) {
             $services->provision(
                 $service['key'],
@@ -85,6 +91,7 @@ function bootstrapDevelopmentMain(array $arguments): int
             $clock,
             $bookingContract,
             $bookingTime,
+            new BookingSerializationLock($database),
         );
         $rules = [];
         for ($weekday = 1; $weekday <= 6; $weekday++) {

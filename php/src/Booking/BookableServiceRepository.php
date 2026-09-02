@@ -14,6 +14,7 @@ final class BookableServiceRepository
         private readonly Database $database,
         private readonly Clock $clock,
         private readonly BookingDomainContract $contract,
+        private readonly BookingSerializationLock $serialization,
     ) {
     }
 
@@ -55,6 +56,14 @@ final class BookableServiceRepository
      * implicitly: an operator or a future authenticated admin action must supply
      * every value deliberately.
      *
+     * Provisioning rewrites exactly the facts a slot validation reads —
+     * `is_active`, duration and both buffers — so it takes the booking
+     * serialization boundary first, inside its transaction (ESZ-146): a
+     * concurrent create/move is ordered by whoever acquires
+     * `booking_resource_locks.primary` first, and one that starts behind a
+     * committed disable or shape change re-reads the service and can confirm
+     * only a slot the new shape still offers.
+     *
      * @return array{service: BookableService, created: bool}
      */
     public function provision(
@@ -76,6 +85,7 @@ final class BookableServiceRepository
             $bufferAfterMinutes,
             $active,
         ): array {
+            $this->serialization->acquire();
             $existing = $this->find($key);
             $now = $this->clock->nowIso();
 

@@ -1027,7 +1027,12 @@ final class BackupRestoreSqlTest extends TestCase
             $this->clock,
             $contract,
             $time,
-            new \Eszter\Booking\BookableServiceRepository($this->source, $this->clock, $contract),
+            new \Eszter\Booking\BookableServiceRepository(
+                $this->source,
+                $this->clock,
+                $contract,
+                new \Eszter\Booking\BookingSerializationLock($this->source),
+            ),
             new \Eszter\Booking\BookingStateMachine($contract),
         );
 

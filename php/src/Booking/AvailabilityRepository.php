@@ -17,6 +17,7 @@ final class AvailabilityRepository
         private readonly Clock $clock,
         private readonly BookingDomainContract $contract,
         private readonly BookingTimePolicy $time,
+        private readonly BookingSerializationLock $serialization,
     ) {
     }
 
@@ -315,6 +316,20 @@ final class AvailabilityRepository
     }
 
     /**
+     * Every availability write funnels through here, and every one takes the
+     * booking serialization boundary first (ESZ-146).
+     *
+     * The optimistic-concurrency revision lock alone cannot serialize against
+     * booking create/move, which never read the revision: an in-flight create
+     * could validate a slot from before this mutation committed and confirm it
+     * anyway. Taking `booking_resource_locks.primary` inside the same
+     * transaction and before the revision row lock makes the first acquirer
+     * the linearization point for both sides, so a create/move that starts
+     * behind a committed weekly replacement or date exception re-reads the new
+     * schedule and can confirm only a still-valid slot. ESZ-137 is preserved:
+     * a stale `expectedRevision` still fails deterministically, writing
+     * nothing, after the boundary has been acquired.
+     *
      * @template T
      * @param \Closure(): T $change
      * @return array{revision: int, value: T}
@@ -326,6 +341,7 @@ final class AvailabilityRepository
         }
 
         return $this->database->transactional(function () use ($expectedRevision, $change): array {
+            $this->serialization->acquire();
             $now = $this->clock->nowIso();
             $this->database->run(
                 'INSERT IGNORE INTO system_settings (setting_key, value_json, created_at, updated_at)'

@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "scope": "Package 4.1/4.2 booking domain and dynamic slot computation; no booking HTTP API.",
   "services": {
     "keys": [
@@ -234,6 +234,19 @@
       "erasure": "When customer-data retention erases a booking (ESZ-140), every non-terminal job of that booking is retired to the terminal `retired` status with the reserved code `customer_data_erased`, under the same transaction as the erasure, so no job survives that could deliver after the erasure. Terminal jobs — sent, failed, skipped — are delivery evidence and are never rewritten.",
       "factResolution": "Notification delivery resolves the current customer e-mail from bookings at delivery time. A booking whose customer data has been erased is refused: the provider throws a permanent delivery failure with the code `customer_data_erased`, so even a job that somehow survived erasure can never deliver from the erased row."
     }
+  },
+  "serialization": {
+    "boundary": "The singleton row booking_resource_locks.primary, taken with SELECT ... FOR UPDATE as the first statement of the owning MySQL transaction. A plain InnoDB row lock: no Redis, daemon or process-local mutex, so it serializes across every PHP process and host of a shared-hosting deployment.",
+    "members": [
+      "booking create, move and cancel",
+      "weekly availability replacement",
+      "date exception open, close and remove",
+      "service provisioning that changes is_active, duration, buffer-before or buffer-after"
+    ],
+    "lockOrder": "booking_resource_locks.primary, acquired inside the owning transaction and before any other mutable row lock, then the availability revision / service / booking rows, then writes.",
+    "linearization": "The operation that acquires the boundary first is ordered first. If a bookability mutation commits first, a create/move that started concurrently acquires the boundary only afterwards, re-reads the new service/availability state and may confirm only if the requested slot is still valid. If create/move owns the boundary first it may commit first, and the mutation then follows; both sides finish without deadlock because the boundary is their only shared lock order.",
+    "optimisticConcurrency": "ESZ-137 is preserved: a stale expectedRevision still fails deterministically with a revision conflict and writes nothing, after the boundary has been acquired.",
+    "scope": "Package 4.2/6.2/ESZ-146 concurrency invariant of the booking domain; no HTTP response shape is affected."
   },
   "customerDataRetention": {
     "confirmedExpiryDaysAfterEndsAtUtc": 90,

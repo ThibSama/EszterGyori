@@ -39,6 +39,7 @@ final class PdoBookingApi implements BookingApi
         private readonly BookingHistoryRepository $history,
         private readonly SlotEngine $slots,
         private readonly BookingNotificationProducer $notifications,
+        private readonly BookingSerializationLock $serialization,
     ) {
     }
 
@@ -50,7 +51,8 @@ final class PdoBookingApi implements BookingApi
         ?BookingNotificationProducer $notificationProducer = null,
     ): self {
         $time = new BookingTimePolicy($contract);
-        $services = new BookableServiceRepository($database, $clock, $contract);
+        $serialization = new BookingSerializationLock($database);
+        $services = new BookableServiceRepository($database, $clock, $contract, $serialization);
         $bookings = new BookingRepository(
             $database,
             $clock,
@@ -76,11 +78,12 @@ final class PdoBookingApi implements BookingApi
             $contract,
             $time,
             $services,
-            new AvailabilityRepository($database, $clock, $contract, $time),
+            new AvailabilityRepository($database, $clock, $contract, $time, $serialization),
             $bookings,
             new BookingHistoryRepository($database, $clock),
             new SlotEngine($contract, $time),
             $notificationProducer ?? new DurableBookingNotificationProducer($scheduler, $jobs, $clock),
+            $serialization,
         );
     }
 
@@ -755,14 +758,18 @@ final class PdoBookingApi implements BookingApi
         }
     }
 
+    /**
+     * ESZ-146 — booking create, move and cancel take the one authoritative
+     * serialization boundary first, inside their transaction and before any
+     * booking-row lock or state read. The same boundary guards every
+     * bookability mutation (availability replacement/date exceptions and
+     * service provisioning), so the first acquirer is ordered first and a
+     * create/move that starts behind a committed mutation re-reads the new
+     * service/availability state before it may confirm anything.
+     */
     private function lockResource(): void
     {
-        $row = $this->database->fetchOne(
-            "SELECT resource_key FROM booking_resource_locks WHERE resource_key = 'primary' FOR UPDATE",
-        );
-        if (($row['resource_key'] ?? null) !== 'primary') {
-            throw new \RuntimeException('The booking serialization row is missing.');
-        }
+        $this->serialization->acquire();
     }
 
     /** @return array<string, mixed> */

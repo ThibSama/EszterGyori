@@ -12,8 +12,16 @@ import { serviceItemIds } from "./site-content.js";
  * SQL aggregation while its detail collections are bounded and advertise their
  * own completeness. No admin surface may read a capped collection as if it
  * were exhaustive.
+ *
+ * Version 6 (ESZ-146) freezes one authoritative booking serialization
+ * boundary: booking create/move/cancel and every bookability mutation (weekly
+ * availability replacement, date exception open/close/remove, service
+ * provisioning that changes `is_active`, duration or buffers) take the same
+ * singleton MySQL row lock first, inside their own transaction, so no
+ * create/move can confirm a slot from state a concurrently committed mutation
+ * has already invalidated.
  */
-export const BOOKING_DOMAIN_VERSION = 5;
+export const BOOKING_DOMAIN_VERSION = 6;
 
 /**
  * The business operates in metropolitan France. Rules are authored as local
@@ -359,6 +367,39 @@ export const notificationPolicy = {
 } as const;
 
 /**
+ * ESZ-146 — the one authoritative serialization boundary of booking and
+ * bookability.
+ *
+ * Before ESZ-146, booking create and move locked the singleton
+ * `booking_resource_locks.primary` row first and then re-read service and
+ * availability state inside their transaction, but the bookability mutations —
+ * weekly availability replacement, date exception open/close/remove, and
+ * service provisioning changing `is_active`, duration or buffers — only took
+ * their own revision/row locks. An in-flight create/move could therefore
+ * validate a slot from pre-mutation state while one of those mutations
+ * committed concurrently, and confirm a booking the mutation had just made
+ * invalid.
+ */
+export const bookingSerializationPolicy = {
+  boundary:
+    "The singleton row booking_resource_locks.primary, taken with SELECT ... FOR UPDATE as the first statement of the owning MySQL transaction. A plain InnoDB row lock: no Redis, daemon or process-local mutex, so it serializes across every PHP process and host of a shared-hosting deployment.",
+  members: [
+    "booking create, move and cancel",
+    "weekly availability replacement",
+    "date exception open, close and remove",
+    "service provisioning that changes is_active, duration, buffer-before or buffer-after",
+  ],
+  lockOrder:
+    "booking_resource_locks.primary, acquired inside the owning transaction and before any other mutable row lock, then the availability revision / service / booking rows, then writes.",
+  linearization:
+    "The operation that acquires the boundary first is ordered first. If a bookability mutation commits first, a create/move that started concurrently acquires the boundary only afterwards, re-reads the new service/availability state and may confirm only if the requested slot is still valid. If create/move owns the boundary first it may commit first, and the mutation then follows; both sides finish without deadlock because the boundary is their only shared lock order.",
+  optimisticConcurrency:
+    "ESZ-137 is preserved: a stale expectedRevision still fails deterministically with a revision conflict and writes nothing, after the boundary has been acquired.",
+  scope:
+    "Package 4.2/6.2/ESZ-146 concurrency invariant of the booking domain; no HTTP response shape is affected.",
+} as const;
+
+/**
  * ESZ-140 — the V1 customer-data retention policy.
  *
  * This is a product policy of this application, frozen as a contract so the
@@ -525,5 +566,6 @@ export const bookingDomainContract = {
     },
   },
   notifications: notificationPolicy,
+  serialization: bookingSerializationPolicy,
   customerDataRetention: customerDataRetentionPolicy,
 } as const;

@@ -11,10 +11,12 @@ use Eszter\Auth\Session;
 use Eszter\Booking\BookableServiceNotFoundException;
 use Eszter\Booking\BookableServiceRepository;
 use Eszter\Booking\AvailabilityRepository;
-use Eszter\Booking\Booking;
+use Eszter\Booking\AvailabilityRevisionConflictException;
 use Eszter\Booking\AvailabilityWindow;
+use Eszter\Booking\Booking;
 use Eszter\Booking\BookingDomainContract;
 use Eszter\Booking\BookingRepository;
+use Eszter\Booking\BookingSerializationLock;
 use Eszter\Booking\BookingStateMachine;
 use Eszter\Booking\BookingTimePolicy;
 use Eszter\Booking\BookingValidationException;
@@ -133,6 +135,7 @@ final class SqlIntegrationTest extends TestCase
             $this->database,
             $this->clock,
             $this->bookingContract,
+            new BookingSerializationLock($this->database),
         );
         $this->bookings = new BookingRepository(
             $this->database,
@@ -147,6 +150,7 @@ final class SqlIntegrationTest extends TestCase
             $this->clock,
             $this->bookingContract,
             $this->bookingTime,
+            new BookingSerializationLock($this->database),
         );
         $this->slots = new SlotEngine($this->bookingContract, $this->bookingTime);
         $this->bookingApi = PdoBookingApi::createDefault(
@@ -1263,6 +1267,497 @@ final class SqlIntegrationTest extends TestCase
         self::assertSame(['email', 'email'], array_column($notifications, 'channel'));
         self::assertSame(['pending', 'pending'], array_column($notifications, 'status'));
         self::assertCount(2, array_unique(array_column($notifications, 'idempotency_key')));
+    }
+
+    // --- ESZ-146: one serialization boundary for booking and bookability ----
+    //
+    // Create and move already lock the singleton `booking_resource_locks.primary`
+    // row before re-reading service/availability state. ESZ-146 makes every
+    // bookability mutation — weekly replacement, date exception open/close/remove,
+    // service provisioning that changes is_active/duration/buffers — take the same
+    // boundary first, inside its own transaction. The first acquirer is ordered
+    // first; a create/move that starts behind a committed mutation re-reads the
+    // new state and can confirm only a still-valid slot.
+    //
+    // The proofs below are deterministic, with no timing sleep as the primary
+    // correctness argument. Two parent connections hold chosen row locks; the
+    // worker processes signal readiness, then block on the real MySQL row locks.
+    // Releasing the parent locks in the chosen order forces the two linearization
+    // orders: mutation-first (the mutation owns the boundary, the create/move
+    // waits behind it) and booking-first (the create/move owns the boundary, the
+    // mutation waits behind it). Final DB state is asserted, not only exit codes.
+
+    private const ESZ146_SLOT = '2026-06-15T07:00:00.000Z';
+    private const ESZ146_MOVE_TARGET = '2026-06-15T07:30:00.000Z';
+
+    /** Leaves the wrapper, truncates and commits the canonical ESZ-146 fixture. */
+    private function esz146Seed(): void
+    {
+        $this->database->rollBack();
+        TestDatabase::truncateData($this->database);
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
+    }
+
+    /** @return array{reference: string} */
+    private function esz146SeedSourceBooking(): array
+    {
+        $booking = $this->bookingApi->create($this->publicBookingRequest('brows', self::ESZ146_SLOT));
+
+        return ['reference' => $booking['reference']];
+    }
+
+    /** Holds the availability revision row on $connection (the mutation's pause). */
+    private function esz146PauseOnRevision(Database $connection): void
+    {
+        $row = $connection->fetchOne(
+            "SELECT setting_key FROM system_settings WHERE setting_key = 'availability.revision' FOR UPDATE",
+        );
+        self::assertSame('availability.revision', $row['setting_key'] ?? null);
+    }
+
+    /** Holds the brows service row on $connection (create/provision's pause). */
+    private function esz146PauseOnService(Database $connection): void
+    {
+        $row = $connection->fetchOne(
+            'SELECT service_key FROM booking_services WHERE service_key = :key FOR UPDATE',
+            ['key' => 'brows'],
+        );
+        self::assertSame('brows', $row['service_key'] ?? null);
+    }
+
+    /** Holds one booking row on $connection (move's pause, after the boundary). */
+    private function esz146PauseOnBooking(Database $connection, string $reference): void
+    {
+        $row = $connection->fetchOne(
+            'SELECT id FROM bookings WHERE reference = :reference FOR UPDATE',
+            ['reference' => $reference],
+        );
+        self::assertNotNull($row);
+    }
+
+    private function esz146LockSingleton(Database $connection): void
+    {
+        $row = $connection->fetchOne(
+            "SELECT resource_key FROM booking_resource_locks WHERE resource_key = 'primary' FOR UPDATE",
+        );
+        self::assertSame('primary', $row['resource_key'] ?? null);
+    }
+
+    /**
+     * Spawns one worker process that signals readiness and then blocks on the
+     * booking serialization boundary or on the parent-held pause row.
+     *
+     * @param list<string> $arguments Worker arguments after the script name;
+     *     the readiness path is appended by the helper.
+     * @return array{process: resource, pipes: array<int, resource>, ready: string}
+     */
+    private function esz146Spawn(string $script, string $tag, array $arguments): array
+    {
+        $ready = $this->root . "/esz146-{$tag}.ready";
+        $pipes = [];
+        $process = proc_open(
+            [PHP_BINARY, __DIR__ . '/' . $script, ...$arguments, $ready],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+        );
+        self::assertIsResource($process);
+        fclose($pipes[0]);
+
+        return ['process' => $process, 'pipes' => $pipes, 'ready' => $ready];
+    }
+
+    /** @param array{process: resource, pipes: array<int, resource>, ready: string} $worker */
+    private function esz146AwaitReady(array $worker, string $label, float $seconds = 20.0): void
+    {
+        $deadline = microtime(true) + $seconds;
+        do {
+            if (is_file($worker['ready'])) {
+                return;
+            }
+            usleep(10_000);
+        } while (microtime(true) < $deadline);
+        self::fail("worker {$label} never signalled readiness");
+    }
+
+    /**
+     * Reads a worker to EOF (its exit), then reaps it.
+     *
+     * @param array{process: resource, pipes: array<int, resource>, ready: string} $worker
+     * @return array{int, string, string} exit code, stdout, stderr
+     */
+    private function esz146Reap(array $worker, string $label, float $seconds = 60.0): array
+    {
+        // stream_get_contents blocks until the child closes its stdout, i.e.
+        // until it exits, so a worker still parked on a row lock would hang
+        // here; the tests release every parent-held lock before reaping.
+        $deadline = microtime(true) + $seconds;
+        $status = proc_get_status($worker['process']);
+        while ($status['running']) {
+            if (microtime(true) > $deadline) {
+                proc_terminate($worker['process']);
+                self::fail("worker {$label} did not finish within {$seconds}s");
+            }
+            usleep(20_000);
+            $status = proc_get_status($worker['process']);
+        }
+
+        $stdout = trim((string) stream_get_contents($worker['pipes'][1]));
+        $stderr = trim((string) stream_get_contents($worker['pipes'][2]));
+        fclose($worker['pipes'][1]);
+        fclose($worker['pipes'][2]);
+
+        return [proc_close($worker['process']), $stdout, $stderr];
+    }
+
+    /** Rolls back every connection that still holds a lock. */
+    private function esz146Release(Database ...$connections): void
+    {
+        foreach ($connections as $connection) {
+            if ($connection->inTransaction()) {
+                $connection->rollBack();
+            }
+        }
+    }
+
+    public function testEs146CreateCannotConfirmBehindACommittedClose(): void
+    {
+        // Mutation-first: the close owns the serialization boundary while the
+        // create waits behind it, then commits; the create re-reads the closed
+        // day and cannot confirm.
+        $this->esz146Seed();
+        $pause = TestDatabase::connectSeparately();
+        $pause->beginTransaction();
+        $this->esz146PauseOnRevision($pause);
+
+        $this->database->beginTransaction();
+        $this->esz146LockSingleton($this->database);
+        $mutation = $this->esz146Spawn('BookabilityMutationWorker.php', 't1-m', ['close', '2026-06-15']);
+        $this->esz146AwaitReady($mutation, 'close');
+        $this->database->rollBack(); // the close alone acquires the boundary
+        $booking = $this->esz146Spawn('BookingMutationWorker.php', 't1-b', ['create', 'brows', self::ESZ146_SLOT]);
+        $this->esz146AwaitReady($booking, 'create'); // blocked behind the close
+
+        $pause->rollBack(); // the close commits; only then can the create run
+        [$exit, $out, $err] = $this->esz146Reap($mutation, 'close');
+        self::assertSame(0, $exit, $err);
+        self::assertStringContainsString('OK close', $out);
+
+        [$exit, $out, $err] = $this->esz146Reap($booking, 'create');
+        self::assertSame(1, $exit, $err);
+        self::assertStringContainsString('SlotUnavailableException', $out);
+
+        $this->esz146Release($pause);
+        self::assertSame(
+            '0',
+            (string) ($this->database->fetchOne('SELECT COUNT(*) AS n FROM bookings')['n'] ?? ''),
+            'no booking may exist on a day that was closed before the create ran',
+        );
+        $exception = $this->database->fetchOne(
+            "SELECT exception_kind FROM availability_exceptions WHERE exception_date = '2026-06-15'",
+        );
+        self::assertSame('closed', $exception['exception_kind'] ?? null);
+    }
+
+    public function testEs146CreateCannotConfirmBehindAWeeklyReplacementRemovingTheSlot(): void
+    {
+        $this->esz146Seed();
+        $pause = TestDatabase::connectSeparately();
+        $pause->beginTransaction();
+        $this->esz146PauseOnRevision($pause);
+
+        $this->database->beginTransaction();
+        $this->esz146LockSingleton($this->database);
+        $mutation = $this->esz146Spawn(
+            'BookabilityMutationWorker.php',
+            't2-m',
+            ['replace-weekly', '2', '09:00', '11:00'], // Tuesday only: the Monday slot disappears
+        );
+        $this->esz146AwaitReady($mutation, 'replace-weekly');
+        $this->database->rollBack();
+        $booking = $this->esz146Spawn('BookingMutationWorker.php', 't2-b', ['create', 'brows', self::ESZ146_SLOT]);
+        $this->esz146AwaitReady($booking, 'create');
+
+        $pause->rollBack();
+        [$exit, $out, $err] = $this->esz146Reap($mutation, 'replace-weekly');
+        self::assertSame(0, $exit, $err);
+        self::assertStringContainsString('OK replace-weekly', $out);
+
+        [$exit, $out, $err] = $this->esz146Reap($booking, 'create');
+        self::assertSame(1, $exit, $err);
+        self::assertStringContainsString('SlotUnavailableException', $out);
+
+        $this->esz146Release($pause);
+        self::assertSame(
+            '0',
+            (string) ($this->database->fetchOne('SELECT COUNT(*) AS n FROM bookings')['n'] ?? ''),
+        );
+        $weekdays = array_column(
+            $this->database->fetchAll('SELECT weekday_iso FROM availability_rules'),
+            'weekday_iso',
+        );
+        self::assertSame([2], $weekdays, 'the replacement set is the only schedule left');
+    }
+
+    public function testEs146CreateCannotConfirmBehindAServiceDisable(): void
+    {
+        $this->esz146Seed();
+        $pause = TestDatabase::connectSeparately();
+        $pause->beginTransaction();
+        $this->esz146PauseOnService($pause);
+
+        $this->database->beginTransaction();
+        $this->esz146LockSingleton($this->database);
+        $mutation = $this->esz146Spawn(
+            'BookabilityMutationWorker.php',
+            't3-m',
+            ['provision', 'brows', '30', '0', '0', '0'],
+        );
+        $this->esz146AwaitReady($mutation, 'provision');
+        $this->database->rollBack();
+        $booking = $this->esz146Spawn('BookingMutationWorker.php', 't3-b', ['create', 'brows', self::ESZ146_SLOT]);
+        $this->esz146AwaitReady($booking, 'create');
+
+        $pause->rollBack();
+        [$exit, $out, $err] = $this->esz146Reap($mutation, 'provision');
+        self::assertSame(0, $exit, $err);
+        self::assertStringContainsString('OK provision', $out);
+
+        [$exit, $out, $err] = $this->esz146Reap($booking, 'create');
+        self::assertSame(1, $exit, $err);
+        self::assertStringContainsString('BookingValidationException', $out);
+        self::assertStringContainsString('not actively bookable', $err);
+
+        $this->esz146Release($pause);
+        self::assertSame(
+            '0',
+            (string) ($this->database->fetchOne('SELECT COUNT(*) AS n FROM bookings')['n'] ?? ''),
+        );
+        self::assertSame(
+            '0',
+            (string) ($this->database->fetchOne(
+                'SELECT is_active FROM booking_services WHERE service_key = :key',
+                ['key' => 'brows'],
+            )['is_active'] ?? ''),
+            'the disable committed before the create could confirm',
+        );
+    }
+
+    public function testEs146CreateCannotConfirmBehindADurationChangeInvalidatingTheSlot(): void
+    {
+        // 150 minutes no longer fits the 09:00-11:00 window, so the Monday
+        // slot the create asks for ceases to exist the moment the provisioning
+        // commits.
+        $this->esz146Seed();
+        $pause = TestDatabase::connectSeparately();
+        $pause->beginTransaction();
+        $this->esz146PauseOnService($pause);
+
+        $this->database->beginTransaction();
+        $this->esz146LockSingleton($this->database);
+        $mutation = $this->esz146Spawn(
+            'BookabilityMutationWorker.php',
+            't4-m',
+            ['provision', 'brows', '150', '0', '0', '1'],
+        );
+        $this->esz146AwaitReady($mutation, 'provision');
+        $this->database->rollBack();
+        $booking = $this->esz146Spawn('BookingMutationWorker.php', 't4-b', ['create', 'brows', self::ESZ146_SLOT]);
+        $this->esz146AwaitReady($booking, 'create');
+
+        $pause->rollBack();
+        [$exit, $out, $err] = $this->esz146Reap($mutation, 'provision');
+        self::assertSame(0, $exit, $err);
+        self::assertStringContainsString('OK provision', $out);
+
+        [$exit, $out, $err] = $this->esz146Reap($booking, 'create');
+        self::assertSame(1, $exit, $err);
+        self::assertStringContainsString('SlotUnavailableException', $out);
+
+        $this->esz146Release($pause);
+        self::assertSame(
+            '0',
+            (string) ($this->database->fetchOne('SELECT COUNT(*) AS n FROM bookings')['n'] ?? ''),
+        );
+        self::assertSame(
+            '150',
+            (string) ($this->database->fetchOne(
+                'SELECT duration_minutes FROM booking_services WHERE service_key = :key',
+                ['key' => 'brows'],
+            )['duration_minutes'] ?? ''),
+        );
+    }
+
+    public function testEs146MoveCannotConfirmBehindAnAvailabilityMutation(): void
+    {
+        $this->esz146Seed();
+        $source = $this->esz146SeedSourceBooking(); // confirmed booking at 07:00
+        $pause = TestDatabase::connectSeparately();
+        $pause->beginTransaction();
+        $this->esz146PauseOnRevision($pause);
+
+        $this->database->beginTransaction();
+        $this->esz146LockSingleton($this->database);
+        $mutation = $this->esz146Spawn('BookabilityMutationWorker.php', 't5-m', ['close', '2026-06-15']);
+        $this->esz146AwaitReady($mutation, 'close');
+        $this->database->rollBack();
+        $mover = $this->esz146Spawn(
+            'BookingMutationWorker.php',
+            't5-mv',
+            ['move', $source['reference'], self::ESZ146_MOVE_TARGET],
+        );
+        $this->esz146AwaitReady($mover, 'move');
+
+        $pause->rollBack();
+        [$exit, $out, $err] = $this->esz146Reap($mutation, 'close');
+        self::assertSame(0, $exit, $err);
+        self::assertStringContainsString('OK close', $out);
+
+        [$exit, $out, $err] = $this->esz146Reap($mover, 'move');
+        self::assertSame(1, $exit, $err);
+        self::assertStringContainsString('SlotUnavailableException', $out);
+
+        $this->esz146Release($pause);
+        $stored = $this->database->fetchOne(
+            'SELECT starts_at_utc FROM bookings WHERE reference = :reference',
+            ['reference' => $source['reference']],
+        );
+        self::assertSame(
+            '2026-06-15 07:00:00.000',
+            $stored['starts_at_utc'] ?? null,
+            'the move must not have happened',
+        );
+        $exception = $this->database->fetchOne(
+            "SELECT exception_kind FROM availability_exceptions WHERE exception_date = '2026-06-15'",
+        );
+        self::assertSame('closed', $exception['exception_kind'] ?? null);
+    }
+
+    public function testEs146BookingFirstCreateCommitsBeforeTheCloseWithoutDeadlock(): void
+    {
+        // Booking-first: the create owns the boundary; the close waits behind
+        // it and commits only after the booking exists. The booking row on the
+        // closed day is the observable proof of the order: had the close gone
+        // first, the create would have been refused.
+        $this->esz146Seed();
+        $pause = TestDatabase::connectSeparately();
+        $pause->beginTransaction();
+        $this->esz146PauseOnService($pause); // parks the create after its boundary
+
+        $this->database->beginTransaction();
+        $this->esz146LockSingleton($this->database);
+        $booking = $this->esz146Spawn('BookingMutationWorker.php', 't6-b', ['create', 'brows', self::ESZ146_SLOT]);
+        $this->esz146AwaitReady($booking, 'create');
+        $this->database->rollBack(); // the create alone acquires the boundary
+        $mutation = $this->esz146Spawn('BookabilityMutationWorker.php', 't6-m', ['close', '2026-06-15']);
+        $this->esz146AwaitReady($mutation, 'close'); // waits behind the create
+
+        $pause->rollBack(); // the create commits; only then the close
+        [$exit, $out, $err] = $this->esz146Reap($booking, 'create');
+        self::assertSame(0, $exit, $err);
+        self::assertStringContainsString('CONFIRMED ', $out);
+
+        [$exit, $out, $err] = $this->esz146Reap($mutation, 'close');
+        self::assertSame(0, $exit, $err);
+        self::assertStringContainsString('OK close', $out);
+
+        $this->esz146Release($pause);
+        $bookingRow = $this->database->fetchOne(
+            "SELECT starts_at_utc FROM bookings WHERE starts_at_utc = '2026-06-15 07:00:00.000'",
+        );
+        self::assertNotNull($bookingRow, 'the booking committed before the close');
+        $exception = $this->database->fetchOne(
+            "SELECT exception_kind FROM availability_exceptions WHERE exception_date = '2026-06-15'",
+        );
+        self::assertSame('closed', $exception['exception_kind'] ?? null, 'the close followed the booking');
+    }
+
+    public function testEs146BookingFirstMoveCommitsBeforeTheCloseWithoutDeadlock(): void
+    {
+        $this->esz146Seed();
+        $source = $this->esz146SeedSourceBooking();
+        $pause = TestDatabase::connectSeparately();
+        $pause->beginTransaction();
+        $this->esz146PauseOnBooking($pause, $source['reference']); // parks the move after its boundary
+
+        $this->database->beginTransaction();
+        $this->esz146LockSingleton($this->database);
+        $mover = $this->esz146Spawn(
+            'BookingMutationWorker.php',
+            't7-mv',
+            ['move', $source['reference'], self::ESZ146_MOVE_TARGET],
+        );
+        $this->esz146AwaitReady($mover, 'move');
+        $this->database->rollBack(); // the move alone acquires the boundary
+        $mutation = $this->esz146Spawn('BookabilityMutationWorker.php', 't7-m', ['close', '2026-06-15']);
+        $this->esz146AwaitReady($mutation, 'close');
+
+        $pause->rollBack();
+        [$exit, $out, $err] = $this->esz146Reap($mover, 'move');
+        self::assertSame(0, $exit, $err);
+        self::assertStringContainsString('MOVED ', $out);
+
+        [$exit, $out, $err] = $this->esz146Reap($mutation, 'close');
+        self::assertSame(0, $exit, $err);
+        self::assertStringContainsString('OK close', $out);
+
+        $this->esz146Release($pause);
+        $stored = $this->database->fetchOne(
+            'SELECT starts_at_utc FROM bookings WHERE reference = :reference',
+            ['reference' => $source['reference']],
+        );
+        self::assertSame('2026-06-15 07:30:00.000', $stored['starts_at_utc'] ?? null, 'the move committed first');
+        $exception = $this->database->fetchOne(
+            "SELECT exception_kind FROM availability_exceptions WHERE exception_date = '2026-06-15'",
+        );
+        self::assertSame('closed', $exception['exception_kind'] ?? null);
+    }
+
+    public function testEs146KeepsEs137StaleWritersAndRepeatedProvisioningIntact(): void
+    {
+        // ESZ-137 regression: after the boundary is acquired, a stale
+        // expectedRevision is still a deterministic conflict that writes
+        // nothing — and provisioning, which now shares the boundary, stays
+        // repeat-safe.
+        $this->database->rollBack();
+        TestDatabase::truncateData($this->database);
+
+        $first = $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        self::assertTrue($first['created']);
+        $second = $this->bookingServices->provision('brows', 'Sourcils premium', 30, 5, 5, true);
+        self::assertFalse($second['created']);
+        self::assertSame(30, $second['service']->durationMinutes);
+        self::assertSame(5, $second['service']->bufferBeforeMinutes);
+
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
+        self::assertSame(1, $this->availabilityHead());
+
+        // A stale weekly writer (revision 0 against current 1) is refused and
+        // leaves the schedule byte-for-byte as it was.
+        $refused = false;
+        try {
+            $this->availability->replaceWeeklyRules(0, [$this->weeklyRule(2, '10:00', '12:00')]);
+        } catch (AvailabilityRevisionConflictException $conflict) {
+            $refused = true;
+            self::assertSame(0, $conflict->expectedRevision);
+            self::assertSame(1, $conflict->currentRevision);
+        }
+        self::assertTrue($refused, 'a stale writer must fail deterministically');
+        self::assertSame(1, $this->availabilityHead());
+        $weekdays = array_column(
+            $this->database->fetchAll('SELECT weekday_iso FROM availability_rules'),
+            'weekday_iso',
+        );
+        self::assertSame([1], $weekdays, 'the refused replacement wrote nothing');
+
+        // The same holds for a stale cross-kind writer: a close submitted
+        // against an older revision is refused even though the date it names
+        // is still open.
+        $this->availability->putClosedException($this->availabilityHead(), '2026-06-15', 'holiday');
+        self::assertSame(2, $this->availabilityHead());
+
+        $this->expectException(AvailabilityRevisionConflictException::class);
+        $this->availability->putClosedException(1, '2026-06-16', 'stale close'); // current revision is 2
     }
 
     // --- ESZ-063 / ESZ-064 / ESZ-065: availability administration -----------

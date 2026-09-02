@@ -49,6 +49,7 @@ import {
   BOOKING_TIME_ZONE,
   bookableServiceKeys,
   bookingDomainContract,
+  bookingSerializationPolicy,
   bookingStateTransitions,
   bookingStates,
 } from "../booking.js";
@@ -135,6 +136,14 @@ test("the generated booking domain freezes service identity, timezone and states
       rangeRead: { pageSize: number; maxPages: number; hasMore: string };
       summary: { listedEntriesMax: number; counts: string };
     };
+    serialization: {
+      boundary: string;
+      members: string[];
+      lockOrder: string;
+      linearization: string;
+      optimisticConcurrency: string;
+      scope: string;
+    };
     version: number;
   };
 
@@ -167,7 +176,20 @@ test("the generated booking domain freezes service identity, timezone and states
   );
   assert.match(booking.adminViews.rangeRead.hasMore, /pageSize\+1/);
   assert.match(booking.adminViews.summary.counts, /aggregation/);
-  assert.equal(booking.version, 5, "adding an adminViews policy block is a domain version bump");
+  assert.equal(booking.version, 6, "adding an adminViews policy block is a domain version bump");
+
+  // ESZ-146: the serialization block freezes byte-for-byte, the way the SQL
+  // layer enforces it — booking create/move/cancel, every availability
+  // mutation and bookability-affecting provisioning share the singleton
+  // boundary first, and a stale expectedRevision stays a deterministic
+  // no-write conflict.
+  assert.deepEqual(booking.serialization, bookingSerializationPolicy);
+  assert.match(booking.serialization.boundary, /SELECT \.\.\. FOR UPDATE/);
+  assert.match(booking.serialization.lockOrder, /before any other mutable row lock/);
+  assert.ok(booking.serialization.members.some((member) => /booking create/.test(member)));
+  assert.ok(booking.serialization.members.some((member) => /service provisioning/.test(member)));
+  assert.match(booking.serialization.linearization, /re-reads the new service\/availability state/);
+  assert.match(booking.serialization.optimisticConcurrency, /writes nothing/);
 });
 
 test("the generated booking domain freezes the Package 7.1 notification policy", async () => {
@@ -180,7 +202,7 @@ test("the generated booking domain freezes the Package 7.1 notification policy",
   // The whole block, byte for byte. PHP reads this file rather than a second
   // copy of these constants, so anything that drifts here drifts everywhere.
   assert.deepEqual(document.notifications, notificationPolicy);
-  assert.equal(document.version, 5, "adding a policy block is a domain version bump");
+  assert.equal(document.version, 6, "adding a policy block is a domain version bump");
 
   // ESZ-140: the customer-data retention policy (cutoffs, placeholders, code,
   // archive ceiling) is frozen in the same artifact the PHP sweep reads.

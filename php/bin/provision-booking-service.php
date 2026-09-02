@@ -17,6 +17,7 @@ namespace Eszter\Bin;
 
 use Eszter\Booking\BookableServiceRepository;
 use Eszter\Booking\BookingDomainContract;
+use Eszter\Booking\BookingSerializationLock;
 use Eszter\Config\Configuration;
 use Eszter\Contract\ContractArtifacts;
 use Eszter\Database\Database;
@@ -58,10 +59,12 @@ function bookingServiceMain(array $arguments): int
         $artifacts = new ContractArtifacts($config->contractsDir);
         $artifacts->verifyAll();
         $clock = new SystemClock();
+        $database = new Database($config->requireDatabase(), $config->lockDir);
         $repository = new BookableServiceRepository(
-            new Database($config->requireDatabase(), $config->lockDir),
+            $database,
             $clock,
             BookingDomainContract::fromArtifacts($artifacts),
+            new BookingSerializationLock($database),
         );
 
         $result = $repository->provision(
