@@ -39,7 +39,12 @@ interface SessionStore
     /**
      * Deletes sessions past either deadline.
      *
-     * @return int Sessions deleted.
+     * A pass is bounded: implementations must remove at most a fixed number of
+     * rows (an implementation-chosen batch, per deadline), so a backlog larger
+     * than one pass drains over successive calls, and must never delete a row
+     * {@see find()} would have returned live.
+     *
+     * @return int Sessions deleted by this pass.
      */
     public function collectGarbage(): int;
 }

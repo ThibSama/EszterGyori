@@ -304,6 +304,46 @@ test("an expired session is classified as expiry on any admin call", async () =>
   }
 });
 
+test("a 429 RATE_LIMITED session read is a rate-limited value, never an auth result", async () => {
+  // ESZ-130: the anonymous session bootstrap can be throttled before any
+  // session exists, so a 429 says nothing about who the caller is. The client
+  // must classify it as recoverable rate-limiting — the session provider turns
+  // it into the unavailable state with a manual retry, never into signed-in or
+  // signed-out, and nothing here retries automatically.
+  const { calls, fetchImpl } = stubFetch([
+    { status: 429, body: errorBody("RATE_LIMITED") },
+  ]);
+  const api = createAdminApiClient(fetchImpl);
+
+  const result = await api.readSession();
+
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.failure.kind, "rate-limited");
+  assert.equal(result.failure.message, ADMIN_API_MESSAGES.rateLimited);
+
+  // The request was a plain cookie-less GET on the session path — nothing that
+  // could be mistaken for a login or a state-changing call.
+  assert.equal(calls[0]?.path, AUTH_SESSION_PATH);
+  assert.equal(calls[0]?.method, "GET");
+  assert.equal(calls[0]?.headers.get(CSRF_HEADER), null);
+});
+
+test("a 429 on a login is reported as rate-limiting too", async () => {
+  const { fetchImpl } = stubFetch([
+    { status: 429, body: errorBody("RATE_LIMITED") },
+  ]);
+  const result = await createAdminApiClient(fetchImpl).login(
+    { email: "admin@example.com", password: "whatever" },
+    "token",
+  );
+
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.failure.kind, "rate-limited");
+  assert.equal(result.failure.message, ADMIN_API_MESSAGES.rateLimited);
+});
+
 test("publish sends the precondition and no content at all", async () => {
   const { calls, fetchImpl } = stubFetch([
     { status: 200, body: publishedEnvelope(8) },

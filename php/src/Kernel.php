@@ -693,6 +693,31 @@ final class Kernel
             // slot computation — happens strictly after the charge.
             $this->rateLimits?->assert($request, $requestId);
 
+            // ESZ-130: the anonymous session read is the one GET the limiter
+            // guards. `GET /api/auth/session` with no live session (no cookie,
+            // or a missing, malformed, invented or expired one) is what opens a
+            // durable anonymous row and mints a CSRF token, so it is charged to
+            // `auth.session.bootstrap.address` *before* the route can create
+            // anything — a refusal therefore creates no session, no token and
+            // no cookie. A read that found a live session is never charged.
+            //
+            // Between the charge and the row creation the session store runs a
+            // bounded, index-backed expiry sweep, so the admission that pays for
+            // a new anonymous row also pays for deleting the expired ones. The
+            // sweep runs on no other path: it is deliberately deterministic on
+            // this one rather than probabilistic, and a sweep failure refuses
+            // the request through the catch below without a row having been
+            // created.
+            $anonymousBootstrap = $request->method === 'GET'
+                && $request->path === AuthSessionEndpoint::PATH
+                && $this->sessions !== null
+                && $this->sessions->current() === null;
+
+            if ($anonymousBootstrap) {
+                $this->rateLimits?->assertSessionBootstrap($request, $requestId);
+                $this->sessions->collectGarbage();
+            }
+
             $response = $this->router->dispatch($request);
         } catch (HttpException $exception) {
             $response = $this->errorResponse(

@@ -133,6 +133,23 @@ final class SessionManager
     }
 
     /**
+     * Runs the store's bounded expiry sweep (ESZ-130).
+     *
+     * {@see \Eszter\Kernel::handle()} calls this once per admitted anonymous
+     * session read, between the bootstrap charge and the creation of the new
+     * row — the one request that pays for a fresh anonymous session is the one
+     * that pays for deleting the expired ones. The store decides what one pass
+     * removes and how it is bounded; this method exists so the request layer
+     * can trigger the sweep without reaching past the manager for the store.
+     *
+     * @return int Sessions deleted by this pass.
+     */
+    public function collectGarbage(): int
+    {
+        return $this->store->collectGarbage();
+    }
+
+    /**
      * Replaces the current session with a new one under a new id.
      *
      * Called on successful login and nowhere else. The old row is deleted first,

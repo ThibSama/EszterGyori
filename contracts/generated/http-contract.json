@@ -72,6 +72,14 @@
         "burst": 10,
         "guards": "Distributed guessing against one account. Deliberately wide: a narrow per-identity budget would let an anonymous caller lock the site's only administrator out."
       },
+      "auth.session.bootstrap.address": {
+        "scope": "auth.session.bootstrap.address",
+        "subject": "client address",
+        "limit": 30,
+        "periodSeconds": 3600,
+        "burst": 10,
+        "guards": "Repeated anonymous reads of GET /api/auth/session from one origin, each of which would otherwise mint a durable session row."
+      },
       "booking.create.address": {
         "scope": "booking.create.address",
         "subject": "client address",
@@ -101,6 +109,8 @@
     "requirements": [
       "A refusal is decided before the route performs any work.",
       "A throttled login is byte-identical whether or not the submitted address names an account.",
+      "An anonymous GET /api/auth/session (no live session found) is charged to auth.session.bootstrap.address before any session row or CSRF token exists; the refusal is 429 RATE_LIMITED with Retry-After and creates no session, no token and no cookie. A read that found a live session is never charged.",
+      "A bounded, index-backed sweep of expired sessions runs between an admitted anonymous session read and the creation of its row, never on a request that found a live session, and never deletes a live row; a request whose sweep fails creates no row and is refused through the same opaque error path as any other internal failure.",
       "The response is the frozen error envelope plus Retry-After; it names no bucket, no limit and no remaining allowance.",
       "The limiter stores no address, e-mail or other personal datum in clear.",
       "An inbound X-Forwarded-For, X-Real-IP or Forwarded header never changes which bucket a request is charged to.",

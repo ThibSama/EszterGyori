@@ -29,6 +29,19 @@ final class PdoSessionStore implements SessionStore
     private const COLUMNS =
         'id, account_id, csrf_token, created_at, last_seen_at, expires_at, absolute_expires_at';
 
+    /**
+     * The most rows one pass removes per deadline.
+     *
+     * The sweep is called once per admitted anonymous-session read (ESZ-130),
+     * on the request's own path, so a pass must be cheap: each of the two
+     * bounded DELETEs below is an index-range delete of at most this many rows,
+     * which keeps the housekeeping from becoming the request. A backlog larger
+     * than one pass drains across successive admissions, and because each pass
+     * only ever removes rows already past a deadline, repeated passes converge
+     * to deleting nothing.
+     */
+    private const GC_BATCH = 200;
+
     public function __construct(
         private readonly Database $database,
         private readonly Clock $clock,
@@ -103,14 +116,46 @@ final class PdoSessionStore implements SessionStore
         )->rowCount();
     }
 
+    /**
+     * Deletes expired sessions in two bounded, index-backed passes (ESZ-130).
+     *
+     * One pass removes at most {@see GC_BATCH} idle-expired rows and at most
+     * {@see GC_BATCH} absolute-expired rows, each DELETEd through its own
+     * index (`expires_at` / `absolute_expires_at`) with `ORDER BY` on the same
+     * column, so MySQL answers the delete as an index-range scan rather than a
+     * table sweep. Both bounded statements together keep one call cheap enough
+     * to sit on a request path; a backlog drains over successive calls and the
+     * passes converge to zero changes because every removed row was already
+     * past its deadline under the current clock.
+     *
+     * Neither pass can delete a live row: the two predicates are the same
+     * deadline comparisons {@see find()} applies, so a row deleted here is
+     * exactly a row no read could have found live.
+     *
+     * Unlike the rate-limit bucket sweep this is never probabilistic — the
+     * kernel calls it deterministically on every admitted anonymous-session
+     * read — and a failure here is *not* swallowed: it propagates so the
+     * request fails through the kernel's opaque error path before a new
+     * anonymous row can be created.
+     *
+     * @return int Sessions deleted by this pass.
+     */
     public function collectGarbage(): int
     {
         $now = $this->clock->nowIso();
 
-        return $this->database->run(
-            'DELETE FROM admin_sessions'
-            . ' WHERE expires_at <= :idle_now OR absolute_expires_at <= :absolute_now',
-            ['idle_now' => $now, 'absolute_now' => $now],
+        $idleExpired = $this->database->run(
+            'DELETE FROM admin_sessions WHERE expires_at <= :idle_now'
+            . ' ORDER BY expires_at LIMIT ' . self::GC_BATCH,
+            ['idle_now' => $now],
         )->rowCount();
+
+        $absoluteExpired = $this->database->run(
+            'DELETE FROM admin_sessions WHERE absolute_expires_at <= :absolute_now'
+            . ' ORDER BY absolute_expires_at LIMIT ' . self::GC_BATCH,
+            ['absolute_now' => $now],
+        )->rowCount();
+
+        return $idleExpired + $absoluteExpired;
     }
 }

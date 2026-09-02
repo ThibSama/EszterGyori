@@ -236,6 +236,111 @@ final class RateLimitGuardTest extends TestCase
         }
     }
 
+    // --- ESZ-130: the anonymous session read --------------------------------
+
+    /**
+     * The anonymous session read is the one GET the limiter guards, and it is
+     * charged to its own address bucket and nothing else.
+     */
+    public function testTheAnonymousSessionReadIsChargedToItsOwnAddressBucket(): void
+    {
+        $request = new Request('GET', '/api/auth/session', [], '', [], self::ADDRESS);
+
+        // The ordinary assert() charges POST routes only; this GET pays nothing
+        // through it.
+        $plain = new RecordingRateLimiter();
+        $this->guard($plain)->assert($request, 'req_11');
+        self::assertSame([], $plain->charges);
+
+        $limiter = new RecordingRateLimiter();
+        $this->guard($limiter)->assertSessionBootstrap($request, 'req_12');
+
+        self::assertSame(
+            [RateLimitPolicy::SCOPE_SESSION_BOOTSTRAP_ADDRESS],
+            $limiter->scopes(),
+        );
+        self::assertSame(self::ADDRESS, $limiter->charges[0]['subject']);
+    }
+
+    /**
+     * Only the anonymous GET of the session endpoint is charged by the
+     * bootstrap entry: the same endpoint under another method, and any other
+     * GET, pay nothing.
+     */
+    public function testOnlyTheAnonymousSessionGetIsChargedByTheBootstrapEntry(): void
+    {
+        foreach (
+            [
+                new Request('POST', '/api/auth/session', [], '{}', [], self::ADDRESS),
+                new Request('GET', '/api/auth/login', [], '', [], self::ADDRESS),
+                new Request('GET', '/api/health', [], '', [], self::ADDRESS),
+                new Request('GET', '/api/bookings', [], '', [], self::ADDRESS),
+            ] as $request
+        ) {
+            $limiter = new RecordingRateLimiter();
+            $this->guard($limiter)->assertSessionBootstrap($request, 'req_13');
+            self::assertSame([], $limiter->charges, $request->method . ' ' . $request->path);
+        }
+    }
+
+    /**
+     * A request with no peer address is charged to the shared bucket rather
+     * than skipping the limiter, exactly like the POST charges.
+     */
+    public function testAnAnonymousSessionReadWithNoPeerAddressIsStillCharged(): void
+    {
+        $limiter = new RecordingRateLimiter();
+
+        $this->guard($limiter)->assertSessionBootstrap(
+            new Request('GET', '/api/auth/session'),
+            'req_14',
+        );
+
+        self::assertSame('unknown', $limiter->charges[0]['subject']);
+    }
+
+    /** The bootstrap charge obeys the same forwarding-header rule as every other. */
+    public function testAForwardingHeaderNeverChangesTheSessionBootstrapSubject(): void
+    {
+        $limiter = new RecordingRateLimiter();
+
+        $this->guard($limiter)->assertSessionBootstrap(
+            new Request(
+                'GET',
+                '/api/auth/session',
+                [
+                    'x-forwarded-for' => '198.51.100.1',
+                    'x-real-ip' => '198.51.100.2',
+                    'forwarded' => 'for=198.51.100.3',
+                ],
+                '',
+                [],
+                self::ADDRESS,
+            ),
+            'req_15',
+        );
+
+        self::assertSame(self::ADDRESS, $limiter->charges[0]['subject']);
+    }
+
+    /** A refused bootstrap is the frozen 429 and says nothing else. */
+    public function testARefusedSessionBootstrapCarriesRetryAfterAndNothingElse(): void
+    {
+        $limiter = new RecordingRateLimiter([RateLimitPolicy::SCOPE_SESSION_BOOTSTRAP_ADDRESS]);
+
+        try {
+            $this->guard($limiter)->assertSessionBootstrap(
+                new Request('GET', '/api/auth/session', [], '', [], self::ADDRESS),
+                'req_16',
+            );
+            self::fail('a refused session read was admitted');
+        } catch (HttpException $refusal) {
+            self::assertSame(429, $refusal->status);
+            self::assertSame('RATE_LIMITED', $refusal->errorCode);
+            self::assertSame(['Retry-After' => '30'], $refusal->headers);
+        }
+    }
+
     private function guard(RecordingRateLimiter $limiter): RateLimitGuard
     {
         return new RateLimitGuard(

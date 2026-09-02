@@ -37,8 +37,11 @@ use Eszter\Notification\NotificationJobRepository;
 use Eszter\Notification\PermanentDeliveryException;
 use Eszter\Retention\BookingRetentionService;
 use Eszter\Retention\RetentionPolicy;
+use Eszter\Security\RateLimitPolicy;
+use Eszter\Support\Clock;
 use Eszter\Support\FrozenClock;
 use Eszter\Support\IsoTimestamp;
+use Eszter\Tests\MovableClock;
 use Eszter\Tests\TestEnvironment;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
@@ -99,6 +102,9 @@ final class SqlIntegrationTest extends TestCase
      * interfere even if one were ever left behind.
      */
     private const REHASH_NOW = '2098-06-13T12:00:00.000Z';
+
+    /** ESZ-130 fixtures: the abusing client address (documentation range). */
+    private const ESZ130_ADDRESS = '203.0.113.130';
 
     private static bool $migrated = false;
 
@@ -3892,6 +3898,335 @@ final class SqlIntegrationTest extends TestCase
         self::assertStringContainsString('Logout completed', $log);
     }
 
+    // --- ESZ-130: the anonymous session bootstrap is bounded -----------------
+
+    /**
+     * ESZ-130, proof 1: repeated no-cookie reads of `GET /api/auth/session`
+     * from one address admit exactly the burst (10), then refuse with the
+     * frozen 429 — and every refused call adds zero `admin_sessions` rows and
+     * sets no cookie. The refusals also carry `Retry-After` in whole seconds
+     * and a body that names no session, no token and no address.
+     */
+    public function testEs130RepeatedNoCookieSessionReadsHitTheBurstThenRefuse(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $kernel = $this->bootProductionKernel($this->root, new FrozenClock(self::NOW));
+
+        $ids = [];
+        for ($i = 0; $i < 10; ++$i) {
+            $response = $kernel->handle($this->esz130Read());
+            self::assertSame(200, $response->status, 'admitted no-cookie read #' . ($i + 1));
+            self::assertNotNull($response->header('Set-Cookie'), 'an admitted bootstrap must set the cookie');
+            $ids[] = self::cookieValue($response);
+        }
+
+        self::assertSame(10, $this->esz130SessionCount());
+
+        $refused = $kernel->handle($this->esz130Read());
+        /** @var array<string, mixed> $body */
+        $body = $refused->decodedBody();
+
+        self::assertSame(429, $refused->status);
+        self::assertSame('RATE_LIMITED', $body['error']['code']);
+        self::assertSame('120', $refused->header('Retry-After'));
+        self::assertNull($refused->header('Set-Cookie'), 'a refused bootstrap set a cookie');
+        self::assertSame(10, $this->esz130SessionCount(), 'a refused bootstrap created a session row');
+
+        // The refusal leaks nothing: no session id, no CSRF token, no address.
+        self::assertStringNotContainsString(self::ESZ130_ADDRESS, (string) $refused->body);
+        foreach ($ids as $id) {
+            self::assertStringNotContainsString($id, (string) $refused->body);
+        }
+    }
+
+    /**
+     * ESZ-130: "no live session" means exactly what {@see SessionManager::load()}
+     * says — an invented id, a malformed cookie value and an expired id are all
+     * charged like the absence of a cookie, and none of the supplied ids is ever
+     * adopted (the session-fixation floor).
+     */
+    public function testEs130InventedMalformedAndExpiredCookiesAreEachANewBootstrap(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $kernel = $this->bootProductionKernel($this->root, new FrozenClock(self::NOW));
+
+        $invented = str_repeat('ab', 32);
+        $response = $kernel->handle($this->esz130Read($invented));
+        self::assertSame(200, $response->status);
+        self::assertNotSame($invented, self::cookieValue($response), 'an invented id was adopted');
+        self::assertSame(1, $this->esz130SessionCount());
+
+        // A malformed cookie value never reaches the store: SessionCookie::read()
+        // rejects the shape and the request is a plain anonymous bootstrap.
+        $malformed = $kernel->handle($this->esz130Read("' OR 1=1 --"));
+        self::assertSame(200, $malformed->status);
+        self::assertSame(2, $this->esz130SessionCount());
+
+        // An expired id: the row is dead, so the read is a new bootstrap; the
+        // sweep that runs on admission removes the expired row before the new
+        // one is created, so the table grows by zero and the old id is gone.
+        $expired = $this->session(null, '-1 second', '+12 hours');
+        $this->sessions->save($expired);
+        self::assertSame(3, $this->esz130SessionCount());
+
+        $response = $kernel->handle($this->esz130Read($expired->id));
+        self::assertSame(200, $response->status);
+        self::assertNotSame($expired->id, self::cookieValue($response), 'an expired id was adopted');
+        self::assertSame(3, $this->esz130SessionCount(), 'the expired row was not swept or the new one not created');
+        self::assertNull($this->sessions->find($expired->id), 'the expired row survived the bootstrap sweep');
+    }
+
+    /**
+     * ESZ-130, proof 2: retaining the cookie reuses and touches one anonymous
+     * session, repeated reads with it spend none of the new-bootstrap allowance
+     * (14 requests, two charges — a charged-read implementation would have
+     * refused the second bootstrap), and a live-session read keeps answering
+     * 200 even while the same address's bootstrap budget is empty.
+     */
+    public function testEs130RetainingTheCookieReusesOneSessionAndSpendsNoAllowance(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $clock = new MovableClock(self::NOW);
+        $kernel = $this->bootProductionKernel($this->root, $clock);
+
+        $first = $kernel->handle($this->esz130Read());
+        self::assertSame(200, $first->status);
+        $sessionId = self::cookieValue($first);
+        /** @var array<string, mixed> $firstBody */
+        $firstBody = $first->decodedBody();
+        $token = (string) $firstBody['csrfToken'];
+        self::assertSame(1, $this->esz130SessionCount());
+
+        $clock->advanceMinutes(2);
+
+        for ($i = 0; $i < 12; ++$i) {
+            $reuse = $kernel->handle($this->esz130Read($sessionId));
+            self::assertSame(200, $reuse->status, 'live-session read #' . ($i + 1));
+            self::assertNull($reuse->header('Set-Cookie'), 'a live-session read re-sent the cookie');
+            /** @var array<string, mixed> $reuseBody */
+            $reuseBody = $reuse->decodedBody();
+            self::assertSame($token, $reuseBody['csrfToken'], 'the reuse minted a fresh token');
+        }
+
+        // One row, touched (its idle deadline slid) — never duplicated.
+        self::assertSame(1, $this->esz130SessionCount());
+        $row = $this->database->fetchOne(
+            'SELECT last_seen_at, expires_at FROM admin_sessions WHERE id = :id',
+            ['id' => $sessionId],
+        );
+        self::assertIsArray($row);
+        self::assertSame('2026-06-13T12:02:00.000Z', $row['last_seen_at'], 'the retained session was not touched');
+
+        // A second no-cookie read is still admitted after twelve cookie reads:
+        // the cookie reads were never charged.
+        $second = $kernel->handle($this->esz130Read());
+        self::assertSame(200, $second->status);
+        self::assertSame(2, $this->esz130SessionCount());
+
+        // Exhaust the remaining bootstrap allowance. Two minutes elapsed
+        // between the first charge and the rest, which restores exactly one
+        // emission interval of allowance: eleven charges fit between T0 and
+        // T0+2m (the burst of ten plus the one unit the elapsed interval
+        // refilled), and the twelfth is refused.
+        for ($i = 0; $i < 9; ++$i) {
+            self::assertSame(200, $kernel->handle($this->esz130Read())->status);
+        }
+        self::assertSame(11, $this->esz130SessionCount());
+        self::assertSame(429, $kernel->handle($this->esz130Read())->status);
+        self::assertSame(11, $this->esz130SessionCount(), 'the refused read created a row');
+
+        // ...and the retained cookie still reads fine: live sessions are never
+        // charged, so an empty bootstrap budget cannot lock a real browser out.
+        $live = $kernel->handle($this->esz130Read($sessionId));
+        self::assertSame(200, $live->status);
+        self::assertSame(11, $this->esz130SessionCount());
+    }
+
+    /**
+     * ESZ-130, proof 5: the session sweep runs through the real bootstrap
+     * wiring, removes idle-expired and absolute-expired rows in bounded
+     * batches, leaves every live row alone, and repeated passes converge to
+     * zero changes.
+     */
+    public function testEs130TheBootstrapSweepIsBoundedAndConverges(): void
+    {
+        $this->leaveTheWrapperTransaction();
+
+        $live = [];
+        for ($i = 0; $i < 3; ++$i) {
+            $live[] = $this->session(null, '+1 hour', '+12 hours');
+            $this->sessions->save($live[$i]);
+        }
+        $this->insertDeadSessions(450, 'idle');
+        $this->insertDeadSessions(450, 'absolute');
+        self::assertSame(903, $this->esz130SessionCount());
+
+        $kernel = $this->bootProductionKernel($this->root, new FrozenClock(self::NOW));
+
+        // One pass per deadline removes at most 200 rows; three passes drain
+        // the 900 dead rows (400 + 400 + 100), a fourth changes nothing.
+        $expected = [400, 400, 100, 0];
+        foreach ($expected as $pass => $deleted) {
+            $before = $this->esz130DeadCount();
+            $response = $kernel->handle($this->esz130Read());
+            self::assertSame(200, $response->status, 'sweep pass #' . ($pass + 1));
+            $after = $this->esz130DeadCount();
+            self::assertSame($deleted, $before - $after, 'sweep pass #' . ($pass + 1) . ' deleted the wrong number');
+        }
+
+        self::assertSame(0, $this->esz130DeadCount());
+        self::assertSame(7, $this->esz130SessionCount(), 'the sweep removed or duplicated a live row');
+
+        foreach ($live as $session) {
+            self::assertNotNull($this->sessions->find($session->id), 'a live seeded session was swept');
+        }
+    }
+
+    /**
+     * ESZ-130: when the sweep itself fails — a real MySQL trigger SIGNAL on the
+     * DELETE — the request fails through the existing opaque error path and no
+     * anonymous session row, token or cookie is created. Once the cause is
+     * removed the same request succeeds and the sweep completes.
+     */
+    public function testEs130AFailedSweepCreatesNoRowAndAnswersOpaquely(): void
+    {
+        $this->leaveTheWrapperTransaction();
+
+        $expired = $this->session(null, '-1 second', '+12 hours');
+        $this->sessions->save($expired);
+        $this->installEs130SweepFailureTrigger();
+
+        try {
+            $kernel = $this->bootProductionKernel($this->root, new FrozenClock(self::NOW), 'debug');
+            $response = $kernel->handle($this->esz130Read());
+            /** @var array<string, mixed> $body */
+            $body = $response->decodedBody();
+
+            self::assertSame(500, $response->status);
+            self::assertSame('INTERNAL_ERROR', $body['error']['code']);
+            self::assertNull($response->header('Set-Cookie'), 'the failed sweep published a cookie');
+            self::assertSame(1, $this->esz130SessionCount(), 'the failed sweep still created an anonymous row');
+            self::assertStringNotContainsString($expired->id, (string) $response->body);
+            self::assertStringNotContainsString(self::ESZ130_ADDRESS, (string) $response->body);
+        } finally {
+            $this->removeEs130SweepFailureTrigger();
+        }
+
+        // Once the store recovers, the very next read sweeps the expired row
+        // and creates exactly one anonymous session in its place.
+        $retry = $kernel->handle($this->esz130Read());
+        self::assertSame(200, $retry->status);
+        self::assertSame(1, $this->esz130SessionCount());
+        self::assertNull($this->sessions->find($expired->id));
+        $remaining = $this->database->fetchOne('SELECT id FROM admin_sessions');
+        self::assertIsArray($remaining);
+        self::assertSame(self::cookieValue($retry), $remaining['id']);
+    }
+
+    /**
+     * ESZ-130, proof 4: the anonymous cookie and CSRF token an admitted
+     * bootstrap issues still log in through the real production wiring; a
+     * cookie paired with another session's token is refused; and a live
+     * authenticated read is never charged.
+     */
+    public function testEs130AnAdmittedBootstrapCookieAndTokenStillLogInAndDoNotCrossPair(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $this->accounts->provision($this->email(self::EMAIL), self::PASSWORD, true);
+
+        $kernel = $this->bootProductionKernel($this->root, new FrozenClock(self::NOW));
+
+        $first = $kernel->handle($this->esz130Read());
+        $firstId = self::cookieValue($first);
+        /** @var array<string, mixed> $firstBody */
+        $firstBody = $first->decodedBody();
+        $firstToken = (string) $firstBody['csrfToken'];
+
+        $second = $kernel->handle($this->esz130Read());
+        $secondId = self::cookieValue($second);
+        /** @var array<string, mixed> $secondBody */
+        $secondBody = $second->decodedBody();
+        $secondToken = (string) $secondBody['csrfToken'];
+
+        // Cross-paired cookie and token: 403 on both pairings, rows untouched.
+        foreach ([[$firstId, $secondToken], [$secondId, $firstToken]] as [$id, $token]) {
+            $refused = $this->login($kernel, $id, $token, self::PASSWORD);
+            self::assertSame(403, $refused->status, 'a cross-paired token logged in');
+        }
+        self::assertSame(2, $this->esz130SessionCount());
+
+        // The correct pairing logs in and rotates onto a fresh session id.
+        $accepted = $this->login($kernel, $firstId, $firstToken, self::PASSWORD);
+        /** @var array<string, mixed> $acceptedBody */
+        $acceptedBody = $accepted->decodedBody();
+        self::assertSame(200, $accepted->status);
+        self::assertTrue($acceptedBody['authenticated']);
+        self::assertSame(self::EMAIL, $acceptedBody['account']['email']);
+        $rotated = self::cookieValue($accepted);
+        self::assertNotSame($firstId, $rotated);
+
+        // The authenticated session reads fine afterwards — a live-session read,
+        // uncharged even though the address has already spent two allowances.
+        $live = $kernel->handle($this->esz130Read($rotated));
+        self::assertSame(200, $live->status);
+        /** @var array<string, mixed> $liveBody */
+        $liveBody = $live->decodedBody();
+        self::assertTrue($liveBody['authenticated']);
+    }
+
+    /**
+     * ESZ-130, proof 6: the limiter's storage holds no raw address for the
+     * bootstrap bucket, and the application log exposes no session id, no CSRF
+     * token and no address — even at debug level with refusals logged.
+     */
+    public function testEs130TheBootstrapLeavesNoAddressOrSessionSecretInLimiterOrLogs(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $kernel = $this->bootProductionKernel($this->root, new FrozenClock(self::NOW), 'debug');
+
+        $ids = [];
+        $tokens = [];
+        for ($i = 0; $i < 10; ++$i) {
+            $response = $kernel->handle($this->esz130Read());
+            self::assertSame(200, $response->status);
+            $ids[] = self::cookieValue($response);
+            /** @var array<string, mixed> $body */
+            $body = $response->decodedBody();
+            $tokens[] = (string) $body['csrfToken'];
+            self::assertStringNotContainsString(
+                self::cookieValue($response),
+                (string) $response->body,
+                'a 200 body leaked the session id',
+            );
+        }
+        self::assertSame(429, $kernel->handle($this->esz130Read())->status);
+
+        $rows = $this->database->fetchAll('SELECT * FROM rate_limit_buckets');
+        self::assertNotEmpty($rows);
+        $dump = (string) json_encode($rows, JSON_PARTIAL_OUTPUT_ON_ERROR);
+        self::assertStringNotContainsString(self::ESZ130_ADDRESS, $dump);
+        self::assertStringNotContainsString('editor@example.test', $dump);
+        foreach ($rows as $row) {
+            self::assertSame(32, \strlen((string) $row['bucket_key']), 'the bootstrap key is not a raw sha256');
+            self::assertSame(
+                RateLimitPolicy::SCOPE_SESSION_BOOTSTRAP_ADDRESS,
+                $row['scope'],
+                'the bootstrap bucket row carries a different scope',
+            );
+        }
+
+        $log = (string) @file_get_contents($this->root . '/var/log/app.log');
+        self::assertStringContainsString('Request refused by a rate limit.', $log);
+        self::assertStringContainsString(RateLimitPolicy::SCOPE_SESSION_BOOTSTRAP_ADDRESS, $log);
+        self::assertStringNotContainsString(self::ESZ130_ADDRESS, $log);
+        foreach ($ids as $id) {
+            self::assertStringNotContainsString($id, $log, 'a log line exposed a session id');
+        }
+        foreach ($tokens as $token) {
+            self::assertStringNotContainsString($token, $log, 'a log line exposed a CSRF token');
+        }
+    }
+
     // --- ESZ-140: customer-data retention ----------------------------------
 
     /**
@@ -4591,10 +4926,14 @@ final class SqlIntegrationTest extends TestCase
      * The full production wiring: Kernel::boot over a deployment configuration
      * pointing at the disposable MySQL, with no seams. The kernel opens its own
      * connection, exactly as public/api/index.php would.
+     *
+     * @param Clock $clock Any Clock; {@see MovableClock} is used by the ESZ-130
+     *        proofs that must let time pass between requests (idle sliding,
+     *        allowance refill).
      */
     private function bootProductionKernel(
         string $root,
-        FrozenClock $clock,
+        Clock $clock,
         string $logLevel = 'error',
     ): Kernel {
         $settings = TestDatabase::settings();
@@ -4765,6 +5104,107 @@ final class SqlIntegrationTest extends TestCase
         $this->database->executeRaw(
             'DROP TRIGGER IF EXISTS esz101_session_delete_failure',
             'drop esz101 delete trigger',
+        );
+    }
+
+    // --- ESZ-130 helpers ----------------------------------------------------
+
+    /** One anonymous-session read from the ESZ-130 client address. */
+    private function esz130Read(?string $cookie = null): Request
+    {
+        $headers = $cookie === null
+            ? []
+            : ['cookie' => $this->cookieName() . '=' . $cookie];
+
+        return new Request('GET', '/api/auth/session', $headers, '', [], self::ESZ130_ADDRESS);
+    }
+
+    private function esz130SessionCount(): int
+    {
+        return (int) ($this->database->fetchOne(
+            'SELECT COUNT(*) AS n FROM admin_sessions',
+        )['n'] ?? 0);
+    }
+
+    /** Rows past either deadline — the ones a sweep pass is allowed to remove. */
+    private function esz130DeadCount(): int
+    {
+        $now = $this->clock->nowIso();
+
+        return (int) ($this->database->fetchOne(
+            'SELECT COUNT(*) AS n FROM admin_sessions'
+            . ' WHERE expires_at <= :idle_now OR absolute_expires_at <= :absolute_now',
+            ['idle_now' => $now, 'absolute_now' => $now],
+        )['n'] ?? 0);
+    }
+
+    /**
+     * Bulk-inserts dead session rows for the bounded-sweep proof.
+     *
+     * `idle` rows are past only their idle deadline; `absolute` rows are past
+     * only their absolute one — the two classes are disjoint so each sweep pass
+     * removes exactly its batch from the class it targets and the per-deadline
+     * bound is observable. Deadlines are derived from the suite clock, which is
+     * the clock the ESZ-130 kernels boot with.
+     */
+    private function insertDeadSessions(int $count, string $mode): void
+    {
+        $now = $this->clock->nowIso();
+        $past = $this->at('-1 minute');
+        $future = $this->at('+2 hours');
+        [$idleDeadline, $absoluteDeadline] = $mode === 'idle'
+            ? [$past, $future]
+            : [$future, $past];
+
+        $columns = '(id, account_id, csrf_token, created_at, last_seen_at, expires_at, absolute_expires_at)';
+        $chunks = array_chunk(range(1, $count), 100);
+
+        foreach ($chunks as $chunk) {
+            $values = [];
+            $params = [];
+
+            foreach ($chunk as $index) {
+                $values[] = '(:id' . $index . ', NULL, :csrf' . $index . ', :created' . $index
+                    . ', :seen' . $index . ', :idle' . $index . ', :absolute' . $index . ')';
+                $params['id' . $index] = Session::newId();
+                $params['csrf' . $index] = Session::newCsrfToken();
+                $params['created' . $index] = $now;
+                $params['seen' . $index] = $now;
+                $params['idle' . $index] = $idleDeadline;
+                $params['absolute' . $index] = $absoluteDeadline;
+            }
+
+            $this->database->run(
+                'INSERT INTO admin_sessions ' . $columns . ' VALUES ' . implode(', ', $values),
+                $params,
+            );
+        }
+    }
+
+    /**
+     * A real MySQL fault injection for ESZ-130: every session-row deletion
+     * fails, exactly what the bootstrap sweep performs on its first admitted
+     * read.
+     */
+    private function installEs130SweepFailureTrigger(): void
+    {
+        $this->database->executeRaw(
+            'DROP TRIGGER IF EXISTS esz130_sweep_delete_failure',
+            'reset esz130 sweep trigger',
+        );
+        $this->database->executeRaw(
+            'CREATE TRIGGER esz130_sweep_delete_failure BEFORE DELETE ON admin_sessions'
+            . ' FOR EACH ROW'
+            . " SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'esz130 forced sweep failure';",
+            'create esz130 sweep trigger',
+        );
+    }
+
+    private function removeEs130SweepFailureTrigger(): void
+    {
+        $this->database->executeRaw(
+            'DROP TRIGGER IF EXISTS esz130_sweep_delete_failure',
+            'drop esz130 sweep trigger',
         );
     }
 }

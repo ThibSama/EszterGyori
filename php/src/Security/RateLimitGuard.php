@@ -6,6 +6,7 @@ namespace Eszter\Security;
 
 use Eszter\Admin\AdminEmail;
 use Eszter\Http\Endpoint\AuthLoginEndpoint;
+use Eszter\Http\Endpoint\AuthSessionEndpoint;
 use Eszter\Http\Endpoint\PublicBookingAvailabilityEndpoint;
 use Eszter\Http\Endpoint\PublicBookingCreateEndpoint;
 use Eszter\Http\HttpException;
@@ -50,6 +51,15 @@ use Eszter\Support\Logger;
  * one, and `auth.loginFailure` exists to make those two indistinguishable. A body
  * with no usable address is charged to the per-address bucket alone and then
  * fails validation in the endpoint, exactly as it did before this class existed.
+ *
+ * ## The one GET that is charged (ESZ-130)
+ *
+ * Every charge above keys on `POST`. The single exception is
+ * `GET /api/auth/session` when no live session was loaded — the anonymous
+ * session read that opens a durable row and a CSRF token — charged through
+ * {@see assertSessionBootstrap()} to `auth.session.bootstrap.address` before
+ * the route can create anything. All other reads stay uncharged, and in
+ * particular a session read that found a live session is never charged.
  */
 final class RateLimitGuard
 {
@@ -74,22 +84,70 @@ final class RateLimitGuard
                 continue;
             }
 
-            // The one place the scope and the caller are written down together.
-            // It is a log line, not a response: an operator needs to know which
-            // rule fired and against whom, and the caller must learn neither.
-            $this->logger->warn('Request refused by a rate limit.', [
-                'requestId' => $requestId,
-                'scope' => $scope,
-                'path' => $request->path,
-                'retryAfterSeconds' => $decision->retryAfterSeconds,
-            ]);
-
-            throw HttpException::rateLimited(
-                $this->policy->retryAfterHeader,
-                $decision->retryAfterSeconds,
-                "Rate limit `{$scope}` refused the request.",
-            );
+            $this->refuse($request, $requestId, $scope, $decision);
         }
+    }
+
+    /**
+     * The one GET the limiter guards (ESZ-130): the anonymous session read.
+     *
+     * `GET /api/auth/session` answers 200 to everyone and, when the caller has
+     * no live session, opens a durable anonymous row carrying a CSRF token —
+     * which is why it is the only read on the surface worth bounding: a caller
+     * who never keeps the cookie could otherwise mint a row per request
+     * forever. {@see \Eszter\Kernel::handle()} calls this only when the
+     * request found no live session; the method re-checks method and path so
+     * that no future caller can widen the charge by accident.
+     *
+     * The charge happens before the route runs, so a refusal creates no
+     * session row, no CSRF token and no cookie, and the refusal reveals
+     * nothing about any account or session.
+     *
+     * @throws HttpException 429 RATE_LIMITED when the bucket refuses.
+     */
+    public function assertSessionBootstrap(Request $request, string $requestId): void
+    {
+        if ($request->method !== 'GET' || $request->path !== AuthSessionEndpoint::PATH) {
+            return;
+        }
+
+        $scope = RateLimitPolicy::SCOPE_SESSION_BOOTSTRAP_ADDRESS;
+        $decision = $this->limiter->charge($scope, $request->rateLimitAddress());
+
+        if ($decision->allowed) {
+            return;
+        }
+
+        $this->refuse($request, $requestId, $scope, $decision);
+    }
+
+    /**
+     * The shared refusal: one log line and one frozen 429 envelope.
+     *
+     * The one place the scope and the caller are written down together. It is a
+     * log line, not a response: an operator needs to know which rule fired and
+     * against whom, and the caller must learn neither.
+     *
+     * @throws HttpException 429 RATE_LIMITED
+     */
+    private function refuse(
+        Request $request,
+        string $requestId,
+        string $scope,
+        RateLimitDecision $decision,
+    ): never {
+        $this->logger->warn('Request refused by a rate limit.', [
+            'requestId' => $requestId,
+            'scope' => $scope,
+            'path' => $request->path,
+            'retryAfterSeconds' => $decision->retryAfterSeconds,
+        ]);
+
+        throw HttpException::rateLimited(
+            $this->policy->retryAfterHeader,
+            $decision->retryAfterSeconds,
+            "Rate limit `{$scope}` refused the request.",
+        );
     }
 
     /**

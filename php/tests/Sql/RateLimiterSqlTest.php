@@ -38,6 +38,8 @@ final class RateLimiterSqlTest extends TestCase
 {
     private const NOW = '2026-06-13T12:00:00.000Z';
     private const SUBJECT = '203.0.113.42';
+    /** ESZ-130: the subject racing the anonymous-session bootstrap bucket. */
+    private const ESZ130_SUBJECT = '203.0.113.130';
 
     private static bool $migrated = false;
 
@@ -347,6 +349,118 @@ final class RateLimiterSqlTest extends TestCase
 
         // Time for both to actually block on the UPDATE rather than merely having
         // started. Without it the test could pass by serialising them.
+        usleep(300_000);
+        $holder->rollBack();
+
+        $outcomes = [];
+        foreach ($workers as $worker) {
+            $stdout = trim((string) stream_get_contents($worker['pipes'][1]));
+            $stderr = trim((string) stream_get_contents($worker['pipes'][2]));
+            fclose($worker['pipes'][1]);
+            fclose($worker['pipes'][2]);
+            self::assertSame(0, proc_close($worker['process']), $stderr);
+            $outcomes[] = $stdout;
+        }
+        sort($outcomes);
+
+        self::assertSame(['ALLOWED', 'REFUSED'], $outcomes);
+    }
+
+    // --- ESZ-130: the anonymous-session bootstrap bucket --------------------
+
+    /**
+     * The bootstrap bucket is a contract-owned rule like any other: 30 per
+     * hour with burst 10 admits exactly ten charges at one instant, refuses
+     * the eleventh, and is answered through the same store and the same 429
+     * decision path as the POST buckets.
+     */
+    public function testTheSessionBootstrapBucketHasTheFrozenRateAndBurst(): void
+    {
+        $rule = $this->policy->rule(RateLimitPolicy::SCOPE_SESSION_BOOTSTRAP_ADDRESS);
+
+        self::assertSame(30, $rule->limit);
+        self::assertSame(3600, $rule->periodSeconds);
+        self::assertSame(10, $rule->burst);
+        self::assertSame(120_000, $rule->emissionIntervalMs);
+
+        $admitted = 0;
+        for ($i = 0; $i <= $rule->burst; ++$i) {
+            if ($this->limiter->charge($rule->scope, self::ESZ130_SUBJECT)->allowed) {
+                ++$admitted;
+            }
+        }
+
+        self::assertSame($rule->burst, $admitted);
+        self::assertFalse($this->limiter->charge($rule->scope, self::ESZ130_SUBJECT)->allowed);
+
+        // Allowance comes back at the declared rate: one emission interval
+        // later exactly one charge is admitted again.
+        $this->advanceMs($rule->emissionIntervalMs);
+        self::assertTrue($this->limiter->charge($rule->scope, self::ESZ130_SUBJECT)->allowed);
+        self::assertFalse($this->limiter->charge($rule->scope, self::ESZ130_SUBJECT)->allowed);
+    }
+
+    /**
+     * ESZ-130, proof 3: the last bootstrap allowance cannot be taken twice.
+     *
+     * Two independent operating-system processes race the same conditional
+     * UPDATE on the `auth.session.bootstrap.address` row — the exact shape two
+     * simultaneous no-cookie session reads take on a host where every request
+     * is its own process. Exactly one may win.
+     */
+    public function testTwoIndependentProcessesCannotBothTakeTheLastBootstrapAllowance(): void
+    {
+        $rule = $this->policy->rule(RateLimitPolicy::SCOPE_SESSION_BOOTSTRAP_ADDRESS);
+
+        // Spend everything but one unit, using the real clock the workers will
+        // read rather than the movable one.
+        $realLimiter = new PdoRateLimiter(
+            $this->database,
+            $this->policy,
+            new \Eszter\Support\SystemClock(),
+            new Logger($this->root . '/limiter-real.log', 'error', $this->clock),
+        );
+
+        for ($i = 0; $i < $rule->burst - 1; ++$i) {
+            self::assertTrue($realLimiter->charge($rule->scope, self::ESZ130_SUBJECT)->allowed);
+        }
+
+        // Hold the row from a third connection so both workers block on the
+        // same UPDATE rather than being serialised by arriving at different
+        // times.
+        $holder = TestDatabase::connectSeparately();
+        $holder->beginTransaction();
+        $holder->fetchOne(
+            'SELECT tat_ms FROM rate_limit_buckets WHERE scope = :scope FOR UPDATE',
+            ['scope' => $rule->scope],
+        );
+
+        $workers = [];
+        foreach ([0, 1] as $index) {
+            $ready = $this->root . "/bootstrap-worker-{$index}.ready";
+            $pipes = [];
+            $process = proc_open(
+                [PHP_BINARY, __DIR__ . '/RateLimiterWorker.php', $ready, $rule->scope, self::ESZ130_SUBJECT],
+                [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                $pipes,
+            );
+            self::assertIsResource($process);
+            fclose($pipes[0]);
+            $workers[] = ['process' => $process, 'pipes' => $pipes, 'ready' => $ready];
+        }
+
+        $deadline = microtime(true) + 10.0;
+        do {
+            $ready = array_filter($workers, static fn (array $worker): bool => is_file($worker['ready']));
+            if (\count($ready) === 2) {
+                break;
+            }
+            usleep(10_000);
+        } while (microtime(true) < $deadline);
+        self::assertCount(2, $ready, 'both workers did not reach the charge');
+
+        // Time for both to actually block on the UPDATE rather than merely
+        // having started. Without it the test could pass by serialising them.
         usleep(300_000);
         $holder->rollBack();
 

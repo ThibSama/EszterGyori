@@ -1081,6 +1081,14 @@ export const bookingApiPolicy = {
  * bounded: password guessing was limited only by network bandwidth, and one
  * script could fill a real person's calendar in a second.
  *
+ * ESZ-130 adds a fourth: `GET /api/auth/session` with no live session opens a
+ * durable anonymous row carrying a CSRF token, which is how a caller obtains the
+ * token a later login needs — so a caller who never keeps the cookie could make
+ * `admin_sessions` grow by one row per request forever. Unlike the three POST
+ * routes its cost is storage, not computation, and the bound on it is the
+ * `auth.session.bootstrap.address` bucket below, charged only for that
+ * anonymous read.
+ *
  * ## Deterministic, and never process-local
  *
  * The target is Hetzner shared hosting, where every request is a *new PHP
@@ -1134,6 +1142,29 @@ export const bookingApiPolicy = {
  * failing logins on their behalf. The per-identity budget is therefore wide
  * enough that reaching it means a real attack rather than a nuisance, and the
  * narrow per-address bucket is what actually bounds guessing.
+ *
+ * ## The anonymous session read is bounded at its own smaller rate (ESZ-130)
+ *
+ * `GET /api/auth/session` answers 200 normally and keeps doing so — nothing in
+ * this ticket changes the happy path, the body or the 200 cases below. What
+ * changes is who may *open* a session. A read that found a live session (any
+ * live session, anonymous or signed-in) is free and never charged. A read with
+ * no live session — no cookie, or a missing, malformed, invented or expired
+ * one — is charged to `auth.session.bootstrap.address` (30 per hour, burst 10)
+ * **before** the route creates the anonymous row and its CSRF token, so a
+ * refused read creates no session, no token and no cookie, and its 429 body is
+ * the frozen envelope plus `Retry-After`: it names no session, no account and
+ * no address.
+ *
+ * Between an admitted anonymous read and the creation of its row the server
+ * runs a bounded sweep of the session table, so the admission that pays for a
+ * new row also pays for deleting the expired ones; the sweep never runs on a
+ * request that found a live session, and it is the only production caller of
+ * session garbage collection. The sweep is index-backed and bounded per pass
+ * (the migrations add the `absolute_expires_at` index beside the existing
+ * idle-expiry one), never probabilistic, and never deletes a live row — a
+ * request whose sweep fails is refused through the same opaque error path and
+ * creates no row.
  */
 export const RATE_LIMIT_RETRY_AFTER_HEADER = "Retry-After";
 
@@ -1174,6 +1205,22 @@ export const rateLimitPolicy = {
       guards:
         "Distributed guessing against one account. Deliberately wide: a narrow per-identity budget would let an anonymous caller lock the site's only administrator out.",
     },
+    // ESZ-130. The one GET the limiter guards. `GET /api/auth/session` with no
+    // live session opens a durable anonymous row and a CSRF token (the token a
+    // later login needs), so a caller who simply never keeps the cookie could
+    // make the table grow by one row per request forever. Charged only for that
+    // anonymous read — a read with a live session reuses the existing row and
+    // is never charged — and charged before the row exists, so a refusal
+    // creates no session, no token and no cookie.
+    "auth.session.bootstrap.address": {
+      scope: "auth.session.bootstrap.address",
+      subject: "client address",
+      limit: 30,
+      periodSeconds: 3600,
+      burst: 10,
+      guards:
+        "Repeated anonymous reads of GET /api/auth/session from one origin, each of which would otherwise mint a durable session row.",
+    },
     "booking.create.address": {
       scope: "booking.create.address",
       subject: "client address",
@@ -1206,6 +1253,8 @@ export const rateLimitPolicy = {
   requirements: [
     "A refusal is decided before the route performs any work.",
     "A throttled login is byte-identical whether or not the submitted address names an account.",
+    "An anonymous GET /api/auth/session (no live session found) is charged to auth.session.bootstrap.address before any session row or CSRF token exists; the refusal is 429 RATE_LIMITED with Retry-After and creates no session, no token and no cookie. A read that found a live session is never charged.",
+    "A bounded, index-backed sweep of expired sessions runs between an admitted anonymous session read and the creation of its row, never on a request that found a live session, and never deletes a live row; a request whose sweep fails creates no row and is refused through the same opaque error path as any other internal failure.",
     "The response is the frozen error envelope plus Retry-After; it names no bucket, no limit and no remaining allowance.",
     "The limiter stores no address, e-mail or other personal datum in clear.",
     "An inbound X-Forwarded-For, X-Real-IP or Forwarded header never changes which bucket a request is charged to.",

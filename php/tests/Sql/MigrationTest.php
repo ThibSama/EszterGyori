@@ -68,7 +68,7 @@ final class MigrationTest extends TestCase
         self::assertSame($sorted, $applied);
 
         self::assertSame(
-            ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '0010', '0011', '0012'],
+            ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '0010', '0011', '0012', '0013'],
             $applied,
         );
     }
@@ -913,6 +913,88 @@ final class MigrationTest extends TestCase
             $indexes,
             'the keyset index must cover exactly (starts_at_utc, reference)',
         );
+    }
+
+    /**
+     * Migration 0013 is one guarded ADD KEY, and it obeys the same repeat-safe
+     * rule: a crash between the DDL and the registry insert leaves the index in
+     * place with 0013 pending, and re-running must be a no-op rather than a
+     * duplicate-index failure.
+     */
+    public function testMigration0013CompletesWhenRerunAfterAPartialApplication(): void
+    {
+        $this->migrator()->migrate();
+
+        $this->database->run(
+            'DELETE FROM ' . Migrator::TABLE . ' WHERE version = :version',
+            ['version' => '0013'],
+        );
+
+        self::assertSame(['0013'], $this->migrator()->migrate());
+        self::assertSame([], $this->migrator()->pendingVersions());
+
+        $indexes = $this->database->fetchAll(
+            'SELECT INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME FROM information_schema.statistics'
+            . ' WHERE table_schema = DATABASE() AND table_name = :t AND index_name = :i'
+            . ' ORDER BY SEQ_IN_INDEX',
+            ['t' => 'admin_sessions', 'i' => 'ix_admin_sessions_absolute_expires_at'],
+        );
+        self::assertSame(
+            [
+                [
+                    'INDEX_NAME' => 'ix_admin_sessions_absolute_expires_at',
+                    'SEQ_IN_INDEX' => 1,
+                    'COLUMN_NAME' => 'absolute_expires_at',
+                ],
+            ],
+            $indexes,
+            'the GC index must cover exactly absolute_expires_at',
+        );
+    }
+
+    /**
+     * The ESZ-130 GC index is what makes each pass of the session sweep an
+     * index-range delete: each bounded DELETE filters and orders on the same
+     * column, so MySQL answers it through that column's index. The idle index
+     * has existed since 0002; the absolute one is added by 0013. Read from
+     * information_schema and EXPLAIN so the assertion is about what MySQL
+     * actually uses, not about a migration text.
+     */
+    public function testTheSessionSweepIsAnswerableThroughBothDeadlineIndexes(): void
+    {
+        $this->migrator()->migrate();
+
+        foreach (
+            [
+                'ix_admin_sessions_expires_at' => 'expires_at',
+                'ix_admin_sessions_absolute_expires_at' => 'absolute_expires_at',
+            ] as $index => $column
+        ) {
+            $found = $this->database->fetchAll(
+                'SELECT INDEX_NAME FROM information_schema.statistics'
+                . ' WHERE table_schema = DATABASE() AND table_name = :t AND index_name = :i',
+                ['t' => 'admin_sessions', 'i' => $index],
+            );
+            self::assertCount(1, $found, "the {$index} index is missing after the migrations");
+
+            $explain = $this->database->fetchAll(
+                'EXPLAIN SELECT id FROM admin_sessions'
+                . ' WHERE ' . $column . ' <= :now ORDER BY ' . $column . ' LIMIT 200',
+                ['now' => '2026-06-13T12:00:00.000Z'],
+            );
+            $row = $explain[0] ?? [];
+            self::assertSame(
+                $index,
+                $row['key'] ?? null,
+                "the {$column} sweep pass must be answered through its own index",
+            );
+            self::assertContains(
+                $row['type'] ?? null,
+                ['range', 'index'],
+                "the {$column} sweep pass must not be a table scan",
+            );
+            self::assertStringNotContainsString('filesort', (string) ($row['Extra'] ?? ''));
+        }
     }
 
     /**

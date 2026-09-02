@@ -118,7 +118,11 @@ créer un deuxième cron concurrent pour compenser.
 
 Vérifier le service actif, les horaires/exceptions de la date, le fuseau Paris, les
 réservations et buffers voisins, puis les limites anti-abus (`429` demande
-d’attendre). Un `409 SLOT_UNAVAILABLE` signifie qu’un autre client a pris ou rendu
+d’attendre). L’ouverture de session anonyme est aussi bornée : une adresse qui répète
+`GET /api/auth/session` sans conserver le cookie finit par recevoir `429`
+`RATE_LIMITED` (délai indiqué par `Retry-After`) ; conserver le cookie n’est jamais
+facturé, et chaque nouvelle admission déclenche le nettoyage borné des sessions
+expirées. Un `409 SLOT_UNAVAILABLE` signifie qu’un autre client a pris ou rendu
 indisponible le créneau : recharger les disponibilités. En cas de `500`, noter
 l’identifiant de requête et l’heure, ne pas multiplier les essais, puis consulter le
 journal et l’état MySQL. Ne jamais créer le rendez-vous directement en base.

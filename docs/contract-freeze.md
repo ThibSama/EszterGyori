@@ -69,7 +69,7 @@ running service, rather than a description that can quietly drift.
 | `/api/health` | `GET` | 200, 400, 405 |
 | `/api/content` | `GET` | 200, 304, 400, 405, 500 |
 | `/` | `GET`, `HEAD` | 200, 304, 400, 405 |
-| `/api/auth/session` | `GET` | 200, 400, 405 |
+| `/api/auth/session` | `GET` | 200, 400, 405, 429 |
 | `/api/auth/login` | `POST` | 200, 400, 401, 403, 405 |
 | `/api/auth/logout` | `POST` | 204, 400, 401, 403, 405 |
 | anything else | any | 404 |
@@ -85,7 +85,12 @@ running service, rather than a description that can quietly drift.
   "Bootstrap failure" below.
 - `GET /api/auth/session` has no **401**: it reports authentication state rather than
   requiring it, which is what lets a caller obtain a CSRF token before it has anything
-  else. `POST /api/auth/login` has no 404 for an unknown address — that is a **401**,
+  else. Since ESZ-130 it can answer **429** `RATE_LIMITED` with `Retry-After` — but
+  only for a read that found no live session: the anonymous bootstrap is charged to
+  `auth.session.bootstrap.address` *before* any row or token is created, a refused
+  read creates no session, no token and no cookie, and the normal 200 cases are
+  unchanged. A read that found a live session is never charged and never 429s for
+  this reason. `POST /api/auth/login` has no 404 for an unknown address — that is a **401**,
   identical to a wrong password and to a disabled account, because any difference
   between the three is an account enumeration oracle.
 - On `/api/auth/logout`, authentication is resolved **before** CSRF: a caller with

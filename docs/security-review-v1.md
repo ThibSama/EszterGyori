@@ -282,6 +282,7 @@ writes nothing at all, so hammering a full bucket cannot lengthen the penalty.
 |---|---|---|---|---|
 | `auth.login.address` | client address | 10 | 15 min | 5 |
 | `auth.login.identity` | submitted e-mail | 30 | 15 min | 10 |
+| `auth.session.bootstrap.address` | client address | 30 | 1 h | 10 |
 | `booking.create.address` | client address | 5 | 1 h | 3 |
 | `booking.create.global` | constant `all` | 60 | 1 h | 20 |
 | `booking.availability.address` | client address | 120 | 1 h | 30 |
@@ -301,6 +302,22 @@ Otherwise the narrow bucket would be pointless — reaching it would already hav
 burned the wide one. Same reasoning puts per-address booking ahead of the global
 ceiling: one abusive source must not spend the allowance that exists to absorb a
 distributed attack.
+
+**The anonymous session read is a fourth anonymous surface (ESZ-130).** The three
+routes above are POSTs; the limiter ignores every other method. `GET /api/auth/session`
+with no live session opens a durable anonymous row carrying a CSRF token, so a caller
+who never keeps the cookie could mint a row per request forever — the first read on
+this surface whose cost is storage rather than computation. It is charged to
+`auth.session.bootstrap.address` (30 per hour, burst 10) only when `load()` found no
+live session — missing, malformed, invented and expired cookies all count — and only
+*before* the route creates the row, so a refusal is 429 `RATE_LIMITED` with
+`Retry-After` and creates no session, token or cookie. A read that found a live
+session is never charged, which is what keeps a real browser's repeated polls free.
+Between an admitted anonymous read and the creation of its row the server runs the
+bounded session sweep (`PdoSessionStore::collectGarbage()`, migration 0013 added the
+`absolute_expires_at` index beside the 0002 idle one): each pass deletes at most 200
+rows per deadline through the deadline's own index, never a live row, and a sweep
+failure refuses the request through the ordinary opaque 500 with no row created.
 
 ### The bypass that is closed
 

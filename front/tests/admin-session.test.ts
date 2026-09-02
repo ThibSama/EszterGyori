@@ -86,6 +86,22 @@ test("a failed session read leaves the admin area unavailable, not signed in", (
   assert.equal(state.message, "injoignable");
 });
 
+test("a rate-limited session read leaves the admin area unavailable, never signed in or out", () => {
+  // ESZ-130: a 429 on the anonymous bootstrap means \"ask again later\", not
+  // \"you have no session\" — the caller may simply have no cookie yet. The
+  // provider renders this as the unavailable notice with a manual retry
+  // button; there is no automatic retry anywhere on this path.
+  const state = sessionStateFromFailure({
+    kind: "rate-limited",
+    message: ADMIN_SESSION_MESSAGES.signedOut,
+  });
+
+  assert.equal(state.status, "unavailable");
+  if (state.status !== "unavailable") return;
+  assert.equal(state.message, ADMIN_SESSION_MESSAGES.signedOut);
+  assert.equal(isSessionExpiry({ kind: "rate-limited", message: "x" }), false);
+});
+
 test("the post-login destination cannot leave the admin area", () => {
   assert.equal(resolveAdminRedirect("/admin/preview"), "/admin/preview");
   assert.equal(resolveAdminRedirect("/admin"), ADMIN_HOME_PATH);

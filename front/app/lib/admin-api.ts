@@ -129,6 +129,14 @@ export type AdminApiFailure =
   | { kind: "forbidden"; message: string }
   /** Login only: unknown e-mail, wrong password or disabled account, indistinguishably. */
   | { kind: "invalid-credentials"; message: string }
+  /**
+   * 429 `RATE_LIMITED` (ESZ-130): the server refused the request to bound
+   * abuse. Recoverable by waiting, never a sign about the session: the
+   * anonymous `GET /api/auth/session` bootstrap can be throttled without the
+   * caller having any session at all, so this must never be read as an auth
+   * result and never retried in a tight loop.
+   */
+  | { kind: "rate-limited"; message: string }
   /** The body failed contract validation server-side. Storage is unchanged. */
   | { kind: "validation"; message: string }
   /**
@@ -241,6 +249,8 @@ export const ADMIN_API_MESSAGES = {
     "La requête a été refusée pour raison de sécurité. Rechargez la page puis réessayez.",
   invalidCredentials:
     "Adresse email ou mot de passe incorrect.",
+  rateLimited:
+    "Trop de demandes ont été envoyées. Attendez quelques instants avant de réessayer.",
   validation:
     "Le contenu envoyé a été refusé par le serveur. Rien n’a été enregistré.",
   conflict:
@@ -309,6 +319,8 @@ function failureFromResponse(
         kind: "invalid-credentials",
         message: ADMIN_API_MESSAGES.invalidCredentials,
       };
+    case "RATE_LIMITED":
+      return { kind: "rate-limited", message: ADMIN_API_MESSAGES.rateLimited };
     case "CSRF_TOKEN_INVALID":
       return { kind: "forbidden", message: ADMIN_API_MESSAGES.forbidden };
     case "REVISION_CONFLICT":

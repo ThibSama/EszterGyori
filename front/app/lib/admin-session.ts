@@ -27,7 +27,12 @@ export type AdminSessionState =
       email: string;
       lastLoginAt: string | null;
     }
-  /** The session endpoint itself could not be reached or understood. */
+  /**
+   * The session endpoint itself could not be reached or understood — including
+   * a 429 `RATE_LIMITED` bootstrap refusal (ESZ-130), which is recoverable by
+   * waiting and is rendered exactly like the other unavailability cases, with
+   * a manual retry and no automatic retry loop.
+   */
   | { status: "unavailable"; message: string };
 
 /** Where the login form sends a signed-in admin when `?next` names nothing usable. */

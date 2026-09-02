@@ -24,6 +24,7 @@ final class RateLimitPolicy
 {
     public const SCOPE_LOGIN_ADDRESS = 'auth.login.address';
     public const SCOPE_LOGIN_IDENTITY = 'auth.login.identity';
+    public const SCOPE_SESSION_BOOTSTRAP_ADDRESS = 'auth.session.bootstrap.address';
     public const SCOPE_BOOKING_CREATE_ADDRESS = 'booking.create.address';
     public const SCOPE_BOOKING_CREATE_GLOBAL = 'booking.create.global';
     public const SCOPE_BOOKING_AVAILABILITY_ADDRESS = 'booking.availability.address';
@@ -116,6 +117,7 @@ final class RateLimitPolicy
         return [
             self::SCOPE_LOGIN_ADDRESS,
             self::SCOPE_LOGIN_IDENTITY,
+            self::SCOPE_SESSION_BOOTSTRAP_ADDRESS,
             self::SCOPE_BOOKING_CREATE_ADDRESS,
             self::SCOPE_BOOKING_CREATE_GLOBAL,
             self::SCOPE_BOOKING_AVAILABILITY_ADDRESS,
