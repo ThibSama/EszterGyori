@@ -114,6 +114,19 @@ before the media-content boundary — so there is no inverse order to deadlock o
 This removes the obvious barrier/transaction, boundary and barrier/content/media
 deadlock cycles.
 
+The one deliberate domain-order inversion is ESZ-147's managed-reference check:
+a draft save or publish verifies, inside its exclusive `content.lock`
+acquisition and still under the shared boundary, that the managed media src
+values it is about to commit are all catalogued, and that catalogue read takes
+`media.lock` **shared after** `content.lock`. It cannot deadlock with the
+delete's `media.lock` → `content.lock` order because the delete — the only
+exclusive `media.lock` holder that also waits on `content.lock` — needs the
+boundary exclusively, while every content writer holds it shared across its
+whole check-to-commit critical section, so the two critical sections can never
+overlap; and no other `media.lock` holder ever takes `content.lock` or the
+boundary. The two one-way edges sit on mutually exclusive sides of the boundary
+and can never co-activate into a cycle.
+
 Archive publication remains separate from snapshot capture. The destination file
 is reserved as `<final>.partial` and restricted to `0600` before any customer data
 is written; only a completed archive is atomically renamed to its final name. Any

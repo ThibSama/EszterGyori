@@ -58,7 +58,13 @@ use Eszter\Support\Clock;
  * acquires the boundary first is ordered first. Uploads take no boundary — they
  * never read content — and the lock order stays
  * `application-snapshot → media-content → media.lock → content.lock`, with no
- * inverse path.
+ * inverse path between delete and content writers: a delete reads content under
+ * `media.lock` (media-then-content), while the ESZ-147 catalogue membership
+ * read a save or publish makes takes `media.lock` shared inside its exclusive
+ * `content.lock` — an inversion that cannot deadlock because the delete, the
+ * only exclusive `media.lock` holder that waits on `content.lock`, needs the
+ * boundary exclusively and therefore can never overlap a content writer
+ * holding it shared (see {@see \Eszter\Storage\MediaContentLock}).
  *
  * ## Finalisation order
  *
@@ -226,6 +232,63 @@ final class MediaLibrary
         $this->ensureDirectory($this->intakeDirectory());
 
         return $this->intakeDirectory() . \DIRECTORY_SEPARATOR . bin2hex(random_bytes(16));
+    }
+
+    /**
+     * Which of $publicPaths the catalogue carries no entry for, ESZ-147.
+     *
+     * Membership is decided by **exact public path** — the string a document
+     * actually references is the string compared, so a valid id under the
+     * wrong extension or the wrong path spelling is a different value and
+     * fails. The comparison reads the validated catalogue under the shared
+     * `media.lock`, and the catalogue is authoritative: a file present under
+     * `media/` with no entry is not part of the library and cannot be
+     * referenced, and an entry whose bytes are missing still names what the
+     * record says exists. The filesystem is never probed, because it is not
+     * the registry.
+     *
+     * Callers are the content writers that can make a media reference
+     * durable; they invoke this while holding the
+     * {@see \Eszter\Storage\MediaContentLock} boundary shared across their
+     * whole commit, which is what makes the read — and the exact comparison —
+     * atomic with respect to a media delete.
+     *
+     * @param list<string> $publicPaths
+     * @return list<string> The inputs with no catalogue match, in input order.
+     */
+    public function missingCataloguedPaths(array $publicPaths): array
+    {
+        /** @var list<string> $missing */
+        $missing = $this->lock->withLock(false, function () use ($publicPaths): array {
+            if ($publicPaths === []) {
+                return [];
+            }
+
+            $catalogued = [];
+
+            foreach ($this->readIndex()['assets'] as $asset) {
+                /** @var mixed $path */
+                $path = $asset['path'] ?? null;
+
+                // Unreachable for a schema-valid entry; a non-string is simply
+                // not a path that can be matched.
+                if (\is_string($path) && $path !== '') {
+                    $catalogued[$path] = true;
+                }
+            }
+
+            $missing = [];
+
+            foreach ($publicPaths as $path) {
+                if (!isset($catalogued[$path])) {
+                    $missing[] = $path;
+                }
+            }
+
+            return $missing;
+        });
+
+        return $missing;
     }
 
     /**

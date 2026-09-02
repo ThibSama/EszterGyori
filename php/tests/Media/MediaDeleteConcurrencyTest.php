@@ -16,8 +16,8 @@ use Eszter\Tests\TestEnvironment;
 use PHPUnit\Framework\TestCase;
 
 /**
- * ESZ-100 — content save vs media delete, both linearization orders, in real
- * processes.
+ * ESZ-100 / ESZ-147 — content save/publish vs media delete, both linearization
+ * orders, in real processes.
  *
  * The delete holds the {@see \Eszter\Storage\MediaContentLock} boundary
  * exclusively from its reference check to its catalogue commit; every content
@@ -30,10 +30,19 @@ use PHPUnit\Framework\TestCase;
  *    boundary shared; the delete, started while that hold is in place, waits and
  *    then observes the committed reference and refuses — the asset is untouched.
  *  - **delete first**: the delete completes its whole check-to-commit critical
- *    section under the exclusive boundary while the save waits on it; only after
- *    the deletion is done can the save commit. The save's document lands whole,
- *    after the delete — the reference it carries is the ESZ-147 question, not
- *    one this delete may half-observe.
+ *    section under the exclusive boundary while the save waits on it. Since
+ *    ESZ-147 the save that follows is then **refused** by the managed-reference
+ *    guard — the document would persist a managed src the catalogue no longer
+ *    names — so the deletion is never half-observed and no dangling reference
+ *    becomes durable.
+ *  - **publish vs delete, both orders** (ESZ-147): a publish that commits a
+ *    reference while holding the boundary shared makes a concurrent delete wait
+ *    and then refuse with the reference visible in the published document; a
+ *    delete that holds the boundary exclusively while a publish waits either
+ *    refuses first (the stored draft already references the asset) and lets the
+ *    publish land whole afterwards. Neither order can produce a published
+ *    document that names an asset the catalogue does not carry, and neither
+ *    deadlocks.
  *
  * Determinism comes from the choreography (marker and release files), never from
  * timing sleeps: the assertions are about which side completed first and about
@@ -144,7 +153,13 @@ final class MediaDeleteConcurrencyTest extends TestCase
         }
     }
 
-    // ── Delete first: the save waits behind the whole deletion ──────────────
+    // ── Delete first: the save waits behind the whole deletion, then refuses ──
+    //
+    // ESZ-100 proved the delete's whole check-to-commit critical section runs
+    // under the exclusive boundary. ESZ-147 gives the save that follows its
+    // verdict: the asset is gone, so the save — whose document would reference
+    // it — is refused by the managed-reference guard instead of committing a
+    // dangling reference.
 
     public function testEs100DeleteFirstBlocksTheSaveUntilTheDeletionIsCommitted(): void
     {
@@ -187,14 +202,16 @@ final class MediaDeleteConcurrencyTest extends TestCase
 
             [$saveExit, $saveOut, $saveErr] = $this->reap($saver, 'save worker');
             self::assertSame(0, $saveExit, $saveErr);
-            self::assertStringContainsString('SAVED', $saveOut);
+            // ESZ-147: the deletion is committed, so the managed-reference guard
+            // refuses the save — no write crossed the delete, and the document
+            // that would have referenced the deleted asset never becomes durable.
+            self::assertStringContainsString('REFUSED', $saveOut);
 
             // Linearization: the save attempted while the delete held the
-            // boundary, and its commit landed only after the deletion finished —
-            // no write crossed the delete, and the save's document is whole.
+            // boundary, and its refusal came only after the deletion finished.
             self::assertTrue(
-                $this->logIndex('delete-done:DELETED') < $this->logIndex('save-returned:'),
-                'the save committed before the deletion had finished',
+                $this->logIndex('delete-done:DELETED') < $this->logIndex('save-returned:REFUSED'),
+                'the save returned before the deletion had finished',
             );
             self::assertSame([], $this->assetsOf($kernel->handle($this->listRequest())));
             self::assertSame([], $this->deletingLeftovers($this->publicMedia()));
@@ -202,12 +219,152 @@ final class MediaDeleteConcurrencyTest extends TestCase
             self::assertFileDoesNotExist($this->publicMedia() . '/' . basename($path));
             self::assertFileDoesNotExist($this->originals() . '/' . basename($path));
 
-            // The save landed whole, at the next revision, after the delete.
+            // The refused save left the draft at its seeded head, unreferenced.
             $draft = $kernel->storage->readDraft();
-            self::assertSame(1, $draft['revision']);
-            self::assertTrue(
+            self::assertSame(0, $draft['revision']);
+            self::assertFalse(
                 MediaReferences::isReferenced((array) $draft['content'], $path),
-                'the post-delete save did not persist its full document',
+                'the refused save still persisted its reference',
+            );
+        }
+    }
+
+    // ── Publish vs delete, both orders (ESZ-147) ──────────────────────────
+    //
+    // A publish commits the stored draft into published.json; the draft already
+    // references the asset, so whichever side acquires the boundary first
+    // decides the outcome, and neither outcome may leave a published document
+    // naming an asset the catalogue does not carry.
+
+    public function testEs147PublishFirstTheDeleteObservesThePublishedReferenceAndRefuses(): void
+    {
+        if (!\function_exists('proc_open')) {
+            self::markTestSkipped('proc_open is unavailable; real concurrency cannot be exercised.');
+        }
+
+        for ($iteration = 0; $iteration < self::REPEATS; ++$iteration) {
+            $this->startIteration($iteration);
+            $kernel = $this->boot();
+            $asset = $this->uploadAsset($kernel);
+            $id = (string) $asset['id'];
+            $path = (string) $asset['path'];
+            $this->saveDraftReferencing($kernel, $path);
+            $revision = $kernel->storage->draftRevision();
+            $markerPublish = $this->root . '/marker-publish';
+            $markerDelete = $this->root . '/marker-delete';
+            $releasePublish = $this->root . '/release-publish';
+
+            // The publish takes the boundary shared, commits the reference into
+            // published.json, and keeps holding the boundary.
+            $publisher = $this->spawn('MediaPublishWorker.php', [
+                $this->configPath, (string) $revision, 'hold-publish', $this->logPath, $markerPublish, $releasePublish,
+            ]);
+            $this->awaitFile($markerPublish, 'publish worker');
+            $this->awaitLog('publish-committed:' . $revision, 'publish worker');
+
+            // The delete starts while the publish still holds the boundary; it
+            // can only proceed once the publish releases, and must then see the
+            // committed reference in the published document.
+            $deleter = $this->spawn('MediaDeleteWorker.php', [
+                $this->configPath, $id, 'delete', $this->logPath, $markerDelete,
+            ]);
+            $this->awaitFile($markerDelete, 'delete worker');
+
+            touch($releasePublish);
+
+            [$publishExit, $publishOut, $publishErr] = $this->reap($publisher, 'publish worker');
+            self::assertSame(0, $publishExit, $publishErr);
+            self::assertStringContainsString('PUBLISHED-HOLD', $publishOut);
+
+            [$deleteExit, $deleteOut, $deleteErr] = $this->reap($deleter, 'delete worker');
+            self::assertSame(0, $deleteExit, $deleteErr);
+            self::assertStringContainsString('REFUSED', $deleteOut);
+
+            // Linearization: the publish committed before the delete returned,
+            // and the delete refused — the asset is exactly as it was.
+            self::assertTrue(
+                $this->logIndex('publish-committed:') < $this->logIndex('delete-returned:REFUSED'),
+                'the delete returned before the publish that referenced the asset had committed',
+            );
+            self::assertSame([$asset], $this->assetsOf($kernel->handle($this->listRequest())));
+            self::assertFileExists($this->publicMedia() . '/' . basename($path));
+            self::assertFileExists($this->originals() . '/' . basename($path));
+            self::assertSame([], $this->deletingLeftovers($this->publicMedia()));
+            self::assertSame([], $this->deletingLeftovers($this->originals()));
+
+            // The published document now carries the reference the delete saw.
+            $published = $kernel->storage->readPublished();
+            self::assertSame($revision, $published['revision']);
+            self::assertTrue(
+                MediaReferences::isReferenced((array) $published['content'], $path),
+                'the publish that refused the delete did not persist its reference',
+            );
+        }
+    }
+
+    public function testEs147DeleteFirstThePublishWaitsThenLandsWholeAgainstTheRefusal(): void
+    {
+        if (!\function_exists('proc_open')) {
+            self::markTestSkipped('proc_open is unavailable; real concurrency cannot be exercised.');
+        }
+
+        for ($iteration = 0; $iteration < self::REPEATS; ++$iteration) {
+            $this->startIteration($iteration);
+            $kernel = $this->boot();
+            $asset = $this->uploadAsset($kernel);
+            $id = (string) $asset['id'];
+            $path = (string) $asset['path'];
+            $this->saveDraftReferencing($kernel, $path);
+            $revision = $kernel->storage->draftRevision();
+            $markerDelete = $this->root . '/marker-delete';
+            $markerPublish = $this->root . '/marker-publish';
+            $releaseDelete = $this->root . '/release-delete';
+
+            // The delete owns the boundary exclusively and runs its reference
+            // check first: the stored draft already references the asset, so it
+            // refuses — then keeps holding the boundary.
+            $deleter = $this->spawn('MediaDeleteWorker.php', [
+                $this->configPath, $id, 'hold-delete', $this->logPath, $markerDelete, $releaseDelete,
+            ]);
+            $this->awaitFile($markerDelete, 'delete worker');
+            $this->awaitLog('delete-done:REFUSED', 'delete worker');
+
+            // The publish starts while the delete still holds the boundary; it
+            // must not commit until the deletion's refusal is complete.
+            $publisher = $this->spawn('MediaPublishWorker.php', [
+                $this->configPath, (string) $revision, 'publish', $this->logPath, $markerPublish, '',
+            ]);
+            $this->awaitFile($markerPublish, 'publish worker');
+
+            touch($releaseDelete);
+
+            [$deleteExit, $deleteOut, $deleteErr] = $this->reap($deleter, 'delete worker');
+            self::assertSame(0, $deleteExit, $deleteErr);
+            self::assertStringContainsString('REFUSED-HOLD', $deleteOut);
+
+            [$publishExit, $publishOut, $publishErr] = $this->reap($publisher, 'publish worker');
+            self::assertSame(0, $publishExit, $publishErr);
+            self::assertStringContainsString('PUBLISHED', $publishOut);
+
+            // Linearization: the delete's refusal completed before the publish
+            // returned — no publish crossed the delete's critical section.
+            self::assertTrue(
+                $this->logIndex('delete-done:REFUSED') < $this->logIndex('publish-returned:'),
+                'the publish returned before the delete had finished',
+            );
+            self::assertSame([$asset], $this->assetsOf($kernel->handle($this->listRequest())));
+            self::assertFileExists($this->publicMedia() . '/' . basename($path));
+            self::assertSame([], $this->deletingLeftovers($this->publicMedia()));
+            self::assertSame([], $this->deletingLeftovers($this->originals()));
+
+            // The publish landed whole afterwards, and the published document
+            // references an asset the catalogue still carries: no dangling
+            // published reference, no deadlock.
+            $published = $kernel->storage->readPublished();
+            self::assertSame($revision, $published['revision']);
+            self::assertTrue(
+                MediaReferences::isReferenced((array) $published['content'], $path),
+                'the post-refusal publish did not persist its full document',
             );
         }
     }
@@ -260,6 +417,28 @@ final class MediaDeleteConcurrencyTest extends TestCase
 
         /** @var array<string, mixed> */
         return $body['asset'];
+    }
+
+    /**
+     * Saves a draft whose hero visual points at the catalogued $publicPath.
+     *
+     * Goes through the real storage save, which since ESZ-147 runs the
+     * managed-reference guard: the asset was uploaded first, so the save is
+     * accepted and the head moves to 1.
+     */
+    private function saveDraftReferencing(Kernel $kernel, string $publicPath): void
+    {
+        $content = TestEnvironment::artifacts()->canonicalSiteContent();
+        /** @var array<string, mixed> $hero */
+        $hero = $content['hero'];
+        /** @var array<string, mixed> $visual */
+        $visual = $hero['visual'];
+        $visual['src'] = $publicPath;
+        $hero['visual'] = $visual;
+        $content['hero'] = $hero;
+
+        $saved = $kernel->storage->saveDraft(0, $content);
+        self::assertSame(1, $saved['revision']);
     }
 
     private function listRequest(): Request

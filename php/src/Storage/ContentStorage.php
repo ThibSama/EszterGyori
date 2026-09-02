@@ -55,6 +55,19 @@ use Eszter\Support\Clock;
  * can never be crossed by a content write between its reference check and its
  * commit. Seeding stays outside the boundary: it writes canonical,
  * reference-free defaults, so it has nothing to serialise against a delete.
+ *
+ * Since ESZ-147, save and publish additionally verify — inside their
+ * exclusive `content.lock` acquisition and therefore still under the shared
+ * boundary — that every managed media src about to become durable exactly
+ * matches a catalogued public path (the injected
+ * {@see \Eszter\Media\ManagedMediaReferenceGuard}). The guard's catalogue
+ * read takes `media.lock` shared *after* `content.lock`; that inverted domain
+ * order is deadlock-free because the media delete — the only exclusive
+ * `media.lock` holder that also waits on `content.lock` — requires the
+ * boundary exclusively and so can never overlap a content writer holding it
+ * shared. Save refusals surface as the caller's 400 at the endpoint; a
+ * publish refusal on a stored draft is a service fault and answers the opaque
+ * 500.
  */
 final class ContentStorage implements PublishedContentReader
 {
@@ -90,6 +103,20 @@ final class ContentStorage implements PublishedContentReader
     private readonly ApplicationSnapshotLock $snapshotLock;
     private readonly MediaContentLock $mediaContentLock;
 
+    /**
+     * ESZ-147: the managed-reference check run by save and publish.
+     *
+     * The storage layer cannot build it itself — it would need the media
+     * contract and the catalogue, which are the media domain's — so it is
+     * injected as a plain callable and the media domain stays on the other
+     * side of the boundary. Null means this instance was built without a
+     * media catalogue (fixtures, workers): the reference-free paths it serves
+     * are unaffected, and no enforcement is silently implied.
+     *
+     * @var (callable(array<string, mixed>): void)|null
+     */
+    private readonly mixed $assertManagedReferencesResolvable;
+
     public function __construct(
         private readonly string $contentDirectory,
         private readonly string $tmpDirectory,
@@ -97,12 +124,14 @@ final class ContentStorage implements PublishedContentReader
         private readonly ContractArtifacts $artifacts,
         private readonly ContentValidator $validator,
         private readonly Clock $clock,
+        ?callable $assertManagedReferencesResolvable = null,
     ) {
         $this->writer = new AtomicJsonFile($this->tmpDirectory);
         $this->lock = new FileLock($lockDirectory . \DIRECTORY_SEPARATOR . 'content.lock');
         $this->snapshotLock = new ApplicationSnapshotLock($lockDirectory);
         $this->mediaContentLock = new MediaContentLock($lockDirectory);
         $this->maxFileBytes = $artifacts->storageLimitBytes('contentFileLimitBytes');
+        $this->assertManagedReferencesResolvable = $assertManagedReferencesResolvable;
     }
 
     /** The content read guard in force, from the frozen contract. */
@@ -277,6 +306,9 @@ final class ContentStorage implements PublishedContentReader
      * @param array<string, mixed> $content A complete, contract-valid SiteContent.
      * @return array<string, mixed> The stored draft envelope at its new revision.
      * @throws RevisionConflictException Before anything is written.
+     * @throws \Eszter\Media\DanglingMediaReferenceException When a managed
+     *         media src in $content is absent from the catalogue; nothing is
+     *         written and the revision does not move (ESZ-147).
      */
     public function saveDraft(int $expectedRevision, array $content): array
     {
@@ -299,6 +331,13 @@ final class ContentStorage implements PublishedContentReader
         return $this->lock->withLock(true, function () use ($expectedRevision, $content): array {
             $head = $this->revisionOf($this->readOrSeedLocked(self::ROLE_DRAFT), self::ROLE_DRAFT);
             $this->assertRevisionMatches($expectedRevision, $head);
+
+            // ESZ-147: the submitted document's managed media src values must
+            // all be catalogued before this save may commit. Still inside the
+            // shared media/content boundary, so a delete cannot land between
+            // this check and the write; on a refusal nothing is written and
+            // the head does not move.
+            $this->enforceManagedReferences($content);
 
             $this->writeEnvelope(self::ROLE_DRAFT, [
                 'schemaVersion' => $this->artifacts->contentSchemaVersion(),
@@ -333,6 +372,10 @@ final class ContentStorage implements PublishedContentReader
      *
      * @return array<string, mixed> The stored published envelope.
      * @throws RevisionConflictException Before anything is written.
+     * @throws \Eszter\Media\DanglingMediaReferenceException When the stored
+     *         draft carries a managed media src the catalogue does not name;
+     *         the previous published envelope stays readable and byte-identical
+     *         (ESZ-147).
      */
     public function publishDraft(int $expectedRevision): array
     {
@@ -370,6 +413,14 @@ final class ContentStorage implements PublishedContentReader
                     self::ROLE_DRAFT,
                 );
             }
+
+            /** @var array<string, mixed> $content */
+
+            // ESZ-147: re-check the *exact stored draft* being published. Its
+            // managed src values must all be catalogued at this moment — still
+            // under the shared media/content boundary — or published.json stays
+            // byte-identical and the fault answers 500 STORAGE_FAILURE.
+            $this->enforceManagedReferences($content);
 
             $this->writeEnvelope(self::ROLE_PUBLISHED, [
                 'schemaVersion' => $this->artifacts->contentSchemaVersion(),
@@ -479,6 +530,28 @@ final class ContentStorage implements PublishedContentReader
         }
 
         return $this->readEnvelope($role);
+    }
+
+    /**
+     * Runs the injected ESZ-147 managed-reference guard on $content, if any.
+     *
+     * Invoked from inside the exclusive `content.lock` acquisition of the
+     * operation committing $content — still under the shared
+     * {@see MediaContentLock} boundary — immediately before the write, so the
+     * verdict and the commit share one lock hold and a refusal writes
+     * nothing. Whatever the guard throws propagates: on save the endpoint
+     * answers the caller's 400, on publish the HTTP layer answers the opaque
+     * 500.
+     *
+     * @param array<string, mixed> $content
+     */
+    private function enforceManagedReferences(array $content): void
+    {
+        if ($this->assertManagedReferencesResolvable === null) {
+            return;
+        }
+
+        ($this->assertManagedReferencesResolvable)($content);
     }
 
     /**

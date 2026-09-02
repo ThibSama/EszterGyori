@@ -135,6 +135,21 @@ final class MediaContract
         return preg_match('#' . $this->assetIdPattern . '#', $id) === 1;
     }
 
+    /**
+     * Whether $path is a *managed* public path: one this application created
+     * and catalogued, i.e. a value matching the frozen `publicPathPattern`.
+     *
+     * ESZ-147 draws the line for reference integrity here: only values inside
+     * this namespace are checked against the catalogue, and HTTP(S) URLs,
+     * other contract-valid public paths and `null` are untouched by
+     * definition. The pattern is read from the generated artifact, never
+     * restated, so the allowlist and the reference rule cannot disagree.
+     */
+    public function isManagedPublicPath(string $path): bool
+    {
+        return preg_match('#' . $this->publicPathPattern . '#', $path) === 1;
+    }
+
     /** Mints a fresh id: the frozen prefix plus 128 bits from the CSPRNG. */
     public function newAssetId(): string
     {

@@ -8,6 +8,7 @@ use Eszter\Contract\ContentValidator;
 use Eszter\Http\HttpException;
 use Eszter\Http\Request;
 use Eszter\Http\Response;
+use Eszter\Media\DanglingMediaReferenceException;
 
 /**
  * `PUT /api/admin/content/draft` (ESZ-031).
@@ -64,7 +65,20 @@ final class AdminDraftSaveEndpoint extends AdminContentEndpoint
         }
 
         /** @var array<string, mixed> $content */
-        $envelope = $this->storage->saveDraft($this->expectedRevision($body), $content);
+        try {
+            $envelope = $this->storage->saveDraft($this->expectedRevision($body), $content);
+        } catch (DanglingMediaReferenceException $dangling) {
+            // ESZ-147: the caller submitted a managed media src the catalogue
+            // does not carry. Like any other document the caller sent, that is
+            // the caller's 400 — checked under the shared media/content
+            // boundary, so nothing was written and the head did not move.
+            $this->logger->info(
+                'Draft save refused: a managed media reference is not catalogued.',
+                ['detail' => $dangling->getMessage()],
+            );
+
+            throw HttpException::validationFailed($dangling->getMessage());
+        }
 
         $this->logger->info('Draft saved.', ['revision' => $this->revisionOf($envelope)]);
 

@@ -3,13 +3,14 @@
 declare(strict_types=1);
 
 use Eszter\Kernel;
+use Eszter\Media\DanglingMediaReferenceException;
 use Eszter\Storage\MediaContentLock;
 use Eszter\Tests\TestEnvironment;
 
 require_once __DIR__ . '/../../vendor/autoload.php';
 
 /**
- * ESZ-100 worker: commits a draft save that references one media asset.
+ * ESZ-100 / ESZ-147 worker: commits a draft save that references one media asset.
  *
  * Invoked as an independent process by MediaDeleteConcurrencyTest so the save
  * contends for the media/content boundary through real flock(2), like a real
@@ -22,8 +23,12 @@ require_once __DIR__ . '/../../vendor/autoload.php';
  *              waiting on the boundary cannot proceed while this save is in
  *              flight.
  *
+ * A save refused by the ESZ-147 managed-reference guard (the saved document
+ * would persist a managed src the catalogue does not name) is an expected
+ * outcome, reported as `REFUSED` with exit 0; any other failure is an error.
+ *
  * Events are appended to the shared log file: `save-attempting`,
- * `save-committed:<revision>`, `save-released`.
+ * `save-committed:<revision>`, `save-released`, `save-returned:<revision|REFUSED>`.
  */
 
 /** @var list<string> $argv */
@@ -77,9 +82,17 @@ try {
     if ($mode === 'save') {
         file_put_contents($markerPath, '1');
         saveWorkerEvent($logPath, 'save-attempting');
-        $saved = $storage->saveDraft((int) $expectedRevision, saveWorkerContent($assetPath));
-        saveWorkerEvent($logPath, 'save-returned:' . $saved['revision']);
-        fwrite(STDOUT, 'SAVED rev=' . $saved['revision'] . "\n");
+
+        try {
+            $saved = $storage->saveDraft((int) $expectedRevision, saveWorkerContent($assetPath));
+            saveWorkerEvent($logPath, 'save-returned:' . $saved['revision']);
+            fwrite(STDOUT, 'SAVED rev=' . $saved['revision'] . "\n");
+        } catch (DanglingMediaReferenceException) {
+            // ESZ-147: the asset this save would reference was deleted before
+            // the save acquired the boundary — an expected refusal.
+            saveWorkerEvent($logPath, 'save-returned:REFUSED');
+            fwrite(STDOUT, "REFUSED\n");
+        }
         exit(0);
     }
 
@@ -97,8 +110,13 @@ try {
         ): void {
             file_put_contents($markerPath, '1');
             saveWorkerEvent($logPath, 'save-inside');
-            $saved = $storage->saveDraft((int) $expectedRevision, saveWorkerContent($assetPath));
-            saveWorkerEvent($logPath, 'save-committed:' . $saved['revision']);
+
+            try {
+                $saved = $storage->saveDraft((int) $expectedRevision, saveWorkerContent($assetPath));
+                saveWorkerEvent($logPath, 'save-committed:' . $saved['revision']);
+            } catch (DanglingMediaReferenceException) {
+                saveWorkerEvent($logPath, 'save-committed:REFUSED');
+            }
 
             $deadline = microtime(true) + 30.0;
             while (!is_file($releasePath)) {

@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace Eszter\Http\Endpoint;
 
+use Eszter\Http\ErrorCatalog;
+use Eszter\Http\HttpException;
 use Eszter\Http\Request;
 use Eszter\Http\Response;
+use Eszter\Media\DanglingMediaReferenceException;
 
 /**
  * `POST /api/admin/content/publish` (ESZ-032).
@@ -55,7 +58,29 @@ final class AdminPublishEndpoint extends AdminContentEndpoint
     protected function handle(Request $request): Response
     {
         $body = $this->validatedAgainstSchema($request, 'admin-publish-request.schema.json');
-        $envelope = $this->storage->publishDraft($this->expectedRevision($body));
+
+        try {
+            $envelope = $this->storage->publishDraft($this->expectedRevision($body));
+        } catch (DanglingMediaReferenceException $dangling) {
+            // ESZ-147: the *stored* draft — a document already on disk, not
+            // something this caller sent — carries a managed media src the
+            // catalogue does not name. That is a fault of the service and is
+            // answered exactly like every other storage fault: the opaque 500
+            // STORAGE_FAILURE, with published.json untouched and the detail in
+            // the log only.
+            $this->logger->error(
+                'Content publish refused: the stored draft carries a managed media reference '
+                    . 'the catalogue does not name.',
+                ['detail' => $dangling->getMessage()],
+            );
+
+            throw new HttpException(
+                500,
+                ErrorCatalog::STORAGE_FAILURE,
+                [],
+                $dangling->getMessage(),
+            );
+        }
 
         $revision = $this->revisionOf($envelope);
         $this->logger->info('Content published.', ['revision' => $revision]);

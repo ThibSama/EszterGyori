@@ -56,6 +56,7 @@ use Eszter\Http\RequestId;
 use Eszter\Http\Response;
 use Eszter\Http\Router;
 use Eszter\Media\ImagePipeline;
+use Eszter\Media\ManagedMediaReferenceGuard;
 use Eszter\Media\MediaContract;
 use Eszter\Media\MediaIngest;
 use Eszter\Media\MediaLibrary;
@@ -199,19 +200,11 @@ final class Kernel
         $structural = new StructuralValidator($artifacts);
         $media = MediaContract::fromArtifacts($artifacts);
 
-        $storage = new ContentStorage(
-            $config->contentDir,
-            $config->tmpDir,
-            $config->lockDir,
-            $artifacts,
-            $validator,
-            $clock,
-        );
-
         // Constructed unconditionally, like `ContentStorage`: it opens nothing,
         // creates nothing and touches no disk until a media route calls it. A
         // public-surface request therefore pays for it exactly as much as it pays
-        // for the content storage it also does not use.
+        // for the content storage it also does not use. Built before the content
+        // storage so the ESZ-147 guard can borrow its catalogue.
         $mediaLibrary = new MediaLibrary(
             $media,
             $config->contentDir,
@@ -222,6 +215,27 @@ final class Kernel
             $artifacts,
             $structural,
             $clock,
+        );
+
+        $mediaReferenceGuard = new ManagedMediaReferenceGuard($media, $mediaLibrary);
+
+        // ESZ-147: every save and publish commit verifies, under the shared
+        // media/content boundary, that the managed media src values it is
+        // about to persist are all catalogued. ContentStorage cannot build
+        // this itself — the media domain owns the contract and the
+        // catalogue — so the kernel composes it, exactly as it composes
+        // every other production dependency. The guard's own method is the
+        // callable, so the two signatures cannot drift.
+        $assertManagedReferencesResolvable = $mediaReferenceGuard->assertResolvable(...);
+
+        $storage = new ContentStorage(
+            $config->contentDir,
+            $config->tmpDir,
+            $config->lockDir,
+            $artifacts,
+            $validator,
+            $clock,
+            $assertManagedReferencesResolvable,
         );
 
         // Constructing `Database` opens no connection, so a public-surface

@@ -1420,6 +1420,7 @@ export const adminDraftSaveOutcome = {
     "The 1 MB storage size cap and the request body limit both still apply; neither is relaxed for this route.",
     "Saving a draft never reads, writes or invalidates published content. The public site is unaffected.",
     "The response is the stored envelope at its new revision, so the client does not have to re-read to stay in sync.",
+    "Every managed MediaAsset.src in the submitted content must exactly match a catalogued public path before the write; otherwise 400 VALIDATION_FAILED with no write and no revision bump (mediaReferenceIntegrity).",
   ],
 } as const;
 
@@ -1463,6 +1464,7 @@ export const adminPublishOutcome = {
     "The published envelope's content is byte-equal to the draft content that was re-read under the lock.",
     "A failure leaves the previous published envelope readable and unchanged; no partial state is ever observable.",
     "A stored draft that fails re-validation is 500 STORAGE_FAILURE, opaque in the body and detailed in the log.",
+    "The stored draft's managed src values are re-checked against the catalogue inside the same lock acquisition; a dangling managed reference is 500 STORAGE_FAILURE and published.json stays readable and byte-identical (mediaReferenceIntegrity).",
     "The published ETag follows from the new revision automatically; there is no separate invalidation step to forget.",
     "Publishing does not modify the draft.",
   ],
@@ -1958,6 +1960,72 @@ export const mediaDeleteOutcome = {
     "Every media response carries Cache-Control: no-store, errors included.",
     "Deleting never modifies draft.json or published.json, and never moves either revision.",
     "The response names no filesystem path, in success or in refusal.",
+  ],
+} as const;
+
+/**
+ * Managed-reference integrity for content writes (ESZ-147).
+ *
+ * `MediaAsset.src` accepts any contract-valid public path plus absolute
+ * HTTP(S) URLs. The *managed* namespace is the one the server controls —
+ * values matching `MEDIA_PUBLIC_PATH_PATTERN` — and a document that names a
+ * managed path the catalogue does not carry would render a broken image that
+ * no editor can tell apart from a working one until it is too late. Every
+ * content write that can make such a reference durable therefore verifies,
+ * under the ESZ-100 media/content boundary, that each managed `src` it is
+ * about to persist **exactly equals** a catalogued public path.
+ *
+ * ## Enforcement points and outcomes
+ *
+ *  - **Draft save** (`PUT /api/admin/content/draft`): the *submitted*
+ *    document's managed src values are checked against the catalogue before
+ *    the write, inside the same shared boundary acquisition that spans the
+ *    whole commit. A managed path with no catalogue entry is 400
+ *    `VALIDATION_FAILED` — the caller sent a document nothing in the library
+ *    can satisfy — and no write happens and no revision moves.
+ *  - **Publish** (`POST /api/admin/content/publish`): the *stored* draft is
+ *    the document under test, re-read under the exclusive lock. A stored
+ *    draft whose managed src values no longer resolve is a fault of the
+ *    service rather than of the caller, and answers 500 `STORAGE_FAILURE`
+ *    with `published.json` byte-identical.
+ *
+ * Nothing else changes: HTTP(S) URLs, non-managed public paths and `null`
+ * stay valid, and a src that does not match the managed pattern is by
+ * definition outside this rule. Membership is decided by exact path
+ * comparison against the catalogue (`media-library.json`), which is
+ * authoritative; the filesystem is never probed, because bytes and catalogue
+ * entries can disagree and the catalogue is the record that decides what may
+ * be referenced. No new public error code is introduced: the two outcomes
+ * reuse `VALIDATION_FAILED` and `STORAGE_FAILURE`.
+ */
+export const mediaReferenceIntegrity = {
+  scope:
+    "every managed MediaAsset.src a content write persists — string values matching MEDIA_PUBLIC_PATH_PATTERN",
+  invariant:
+    "a managed src becomes durable only when it exactly equals a catalogued public path at commit time",
+  compareBy: "exact public path, never the id alone: a valid id under the wrong path or extension is a different string and fails",
+  authority:
+    "the media catalogue (media-library.json), read under the shared ESZ-100 boundary; never a filesystem probe",
+  outsideThisRule: [
+    "absolute HTTP(S) URLs",
+    "public paths that do not match MEDIA_PUBLIC_PATH_PATTERN",
+    "null",
+  ],
+  boundary:
+    "the check runs inside the media-content boundary acquisition the write already holds shared across its whole commit, so a delete holding that boundary exclusively can never land between the check and the write",
+  enforcement: [
+    {
+      operation: "draft save",
+      route: `PUT ${ADMIN_CONTENT_DRAFT_PATH}`,
+      checkedDocument: "the submitted content, before the write",
+      outcome: "400 VALIDATION_FAILED; no write, no revision bump",
+    },
+    {
+      operation: "publish",
+      route: `POST ${ADMIN_CONTENT_PUBLISH_PATH}`,
+      checkedDocument: "the stored draft, re-read under the exclusive lock",
+      outcome: "500 STORAGE_FAILURE; published.json readable and byte-identical",
+    },
   ],
 } as const;
 
@@ -4481,6 +4549,16 @@ export const httpContractInvariants = [
     id: "media.libraryIsTheOnlyRegistry",
     description:
       "The catalogue records what exists; the content document records what is used. Selecting an asset writes a path into the working draft through the ordinary draft save, so there is one content authority and the library never becomes a second one.",
+  },
+  {
+    id: "media.savedReferencesMustResolve",
+    description:
+      "A draft save whose content carries a managed src absent from the catalogue is refused 400 VALIDATION_FAILED before anything is written, leaving draft.json and both revisions unchanged. HTTP(S) URLs, non-managed public paths and null remain valid; a valid-looking id under the wrong path or extension fails because membership is compared by exact public path against the catalogue, never by probing the filesystem.",
+  },
+  {
+    id: "media.publishNeverPersistsDanglingReferences",
+    description:
+      "Publish re-checks the exact stored draft's managed src values against the catalogue inside the same shared boundary acquisition that spans the commit; a stored draft whose managed reference no longer resolves answers 500 STORAGE_FAILURE with published.json readable and byte-identical, so no publish can make a managed path durable that the catalogue does not name.",
   },
   {
     id: "booking.availabilityUsesTheSlotEngine",

@@ -42,9 +42,33 @@ namespace Eszter\Storage;
  *
  * A media delete that reads content for its reference check therefore holds
  * `media.lock` then `content.lock`, the established media-then-content order,
- * and no path acquires the boundary after a domain lock, so no inverse path
- * exists. Backups and restores take the snapshot barrier exclusively and never
- * take this lock; they are already excluded from every participant above.
+ * and no path acquires the boundary after a domain lock — the boundary is
+ * always the outer acquisition. Backups and restores take the snapshot barrier
+ * exclusively and never take this lock; they are already excluded from every
+ * participant above.
+ *
+ * ## The ESZ-147 catalogue read is the one deliberate domain inversion
+ *
+ * Since ESZ-147, a draft save and a publish also verify that the managed media
+ * src values they are about to commit are all catalogued. The catalogue lives
+ * behind `media.lock`, and the document being checked is only known behind
+ * `content.lock`, so that read necessarily takes `media.lock` **shared after**
+ * `content.lock` — inside the writer's exclusive `content.lock` acquisition,
+ * still under the shared boundary. That is not the media-then-content order
+ * the delete uses, and it cannot deadlock with it, for two reasons that hold
+ * together:
+ *
+ *  - the delete — the only exclusive `media.lock` holder that also waits on
+ *    `content.lock` — requires the boundary **exclusively**, and every content
+ *    writer holds it **shared** across its whole check-to-commit critical
+ *    section, so a delete and a content writer can never be inside their
+ *    critical sections at the same time;
+ *  - the only other `media.lock` holders are uploads and the media read
+ *    endpoints, and none of them ever takes `content.lock` or the boundary.
+ *
+ * The two one-way edges (delete: `media.lock` → `content.lock`; content
+ * writers: `content.lock` → `media.lock`) therefore sit on mutually exclusive
+ * sides of the boundary and can never co-activate into a cycle.
  *
  * Instances for the same path share one process-local acquisition, exactly like
  * {@see ApplicationSnapshotLock}: a logical operation may enter through
