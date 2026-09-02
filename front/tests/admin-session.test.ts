@@ -2,8 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ADMIN_HOME_PATH,
+  ADMIN_SESSION_MESSAGES,
+  canStartLogout,
+  INITIAL_LOGOUT_UI_STATE,
   isSessionExpiry,
   loginPathFor,
+  logoutUiReducer,
+  outcomeOfLogout,
   resolveAdminRedirect,
   sessionStateFromFailure,
   toSessionState,
@@ -108,4 +113,90 @@ test("the login link carries only a destination it would accept back", () => {
     `/admin/login?next=${encodeURIComponent("/admin/preview")}`,
   );
   assert.equal(loginPathFor("https://evil.example/"), "/admin/login");
+});
+
+// --- ESZ-101: failure-honest sign-out -------------------------------------
+
+test("a confirmed logout leaves the authenticated surface", () => {
+  assert.deepEqual(outcomeOfLogout({ ok: true, value: null }), {
+    action: "leave",
+    reason: "server-confirmed",
+  });
+});
+
+test("an already-401 logout reconciles as signed out and leaves", () => {
+  // The server said there is no live session to revoke: the state the admin
+  // asked for is already the server-side state, so leaving is not a lie.
+  assert.deepEqual(
+    outcomeOfLogout({
+      ok: false,
+      failure: { kind: "unauthenticated", message: "session expirée" },
+    }),
+    { action: "leave", reason: "already-signed-out" },
+  );
+});
+
+test("an unconfirmed logout stays and never claims a signed-out state", () => {
+  // Every failure that is not a 401 means the server did not confirm the
+  // revocation. The only honest answers are "stay" — no navigation, no
+  // signed-out screen, no claim that anything was revoked.
+  for (const failure of [
+    { kind: "network", message: "injoignable" },
+    { kind: "server", message: "erreur", status: 500 },
+    { kind: "forbidden", message: "csrf" },
+    { kind: "malformed-response", message: "inexploitable" },
+    { kind: "conflict", message: "conflit", currentRevision: null },
+    { kind: "validation", message: "refusé" },
+  ] as const) {
+    assert.equal(outcomeOfLogout({ ok: false, failure }).action, "stay");
+  }
+});
+
+test("the retryable failure copy never claims the session was revoked", () => {
+  assert.equal(
+    ADMIN_SESSION_MESSAGES.logoutFailed,
+    "La déconnexion n’a pas abouti. Ne considérez pas cette session comme révoquée : réessayez, ou continuez à travailler.",
+  );
+  // The visible controls the failure surface offers: retry, or go back to work.
+  assert.equal(ADMIN_SESSION_MESSAGES.logoutRetry, "Réessayer la déconnexion");
+  assert.equal(ADMIN_SESSION_MESSAGES.logoutDismiss, "Continuer à travailler");
+  assert.equal(ADMIN_SESSION_MESSAGES.logoutFailedTitle, "Déconnexion impossible");
+});
+
+test("a sign-out attempt already in flight is never doubled", () => {
+  const inFlight = logoutUiReducer(INITIAL_LOGOUT_UI_STATE, {
+    type: "logout-attempt",
+  });
+  assert.equal(inFlight.status, "in-flight");
+  assert.equal(canStartLogout(inFlight), false);
+
+  // A second attempt while the first is running changes nothing: the reducer
+  // returns the very same state, so the caller has nothing new to act on.
+  assert.strictEqual(
+    logoutUiReducer(inFlight, { type: "logout-attempt" }),
+    inFlight,
+  );
+});
+
+test("a failed logout surfaces a retryable error and a fresh retry is allowed", () => {
+  const failed = logoutUiReducer(
+    logoutUiReducer(INITIAL_LOGOUT_UI_STATE, { type: "logout-attempt" }),
+    { type: "logout-failed" },
+  );
+  assert.equal(failed.status, "failed");
+  // The failure state is not "in-flight", so the retry control can act.
+  assert.equal(canStartLogout(failed), true);
+
+  const retried = logoutUiReducer(failed, { type: "logout-attempt" });
+  assert.equal(retried.status, "in-flight");
+});
+
+test("dismissing a failed logout returns to a quiet state", () => {
+  const failed = logoutUiReducer(
+    logoutUiReducer(INITIAL_LOGOUT_UI_STATE, { type: "logout-attempt" }),
+    { type: "logout-failed" },
+  );
+  const dismissed = logoutUiReducer(failed, { type: "logout-dismissed" });
+  assert.equal(dismissed.status, "idle");
+  assert.equal(canStartLogout(dismissed), true);
 });

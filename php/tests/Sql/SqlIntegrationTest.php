@@ -81,6 +81,11 @@ final class SqlIntegrationTest extends TestCase
     private const OLD_PHONE = '+33 6 11 22 33 44';
     private const OLD_NOTE = 'note sensible';
 
+    /** ESZ-101 fixtures: the neighbour account and the rotated credential. */
+    private const SECOND_EMAIL = 'second-editor@example.test';
+    private const SECOND_PASSWORD = 'second-correct-horse';
+    private const ROTATED_PASSWORD = 'rotated-esz101-password';
+
     /**
      * The frozen clock the ESZ-134 production-wiring kernels boot with, and the
      * value their recordLogin writes. Distinct from the suite's 2026 clock, so
@@ -3545,6 +3550,348 @@ final class SqlIntegrationTest extends TestCase
         }
     }
 
+    // --- ESZ-101: password-rotation revocation and honest logout ------------
+
+    /**
+     * ESZ-101, proofs 1 and 2: an explicit password change on an existing
+     * account revokes every live session of *that* account and no other. The
+     * rotation runs through the real operator CLI against this MySQL: two
+     * sessions for the account are both gone afterwards, the old password
+     * fails and the new one succeeds, and another account's sessions survive.
+     */
+    public function testEs101PasswordRotationRevokesEveryLiveSessionAndNoOthers(): void
+    {
+        $this->leaveTheWrapperTransaction();
+
+        $first = $this->accounts->provision($this->email(self::EMAIL), self::PASSWORD, true)['account'];
+        $second = $this->accounts->provision($this->email(self::SECOND_EMAIL), self::SECOND_PASSWORD, true)['account'];
+
+        // Two live sessions for the rotated account, one for the neighbour —
+        // each the shape an earlier login leaves behind.
+        $firstSession = $this->session($first->id, '+1 hour', '+12 hours');
+        $secondSession = $this->session($first->id, '+1 hour', '+12 hours');
+        $neighbourSession = $this->session($second->id, '+1 hour', '+12 hours');
+        $this->sessions->save($firstSession);
+        $this->sessions->save($secondSession);
+        $this->sessions->save($neighbourSession);
+        $rotatedA = $firstSession->id;
+        $rotatedB = $secondSession->id;
+        $neighbour = $neighbourSession->id;
+
+        $config = $this->provisionCliConfig();
+        [$exit, $stdout, $stderr] = $this->runProvisionAdmin($config, self::EMAIL, self::ROTATED_PASSWORD);
+
+        self::assertSame(0, $exit, $stderr);
+        self::assertSame('', $stderr);
+        self::assertStringContainsString('Updated ' . self::EMAIL, $stdout);
+        self::assertStringContainsString('password set', $stdout);
+        self::assertStringContainsString('Signed out of 2 existing session(s).', $stdout);
+
+        // Counts and statuses only on the wire: no password, hash or session id.
+        foreach ([self::PASSWORD, self::ROTATED_PASSWORD, $rotatedA, $rotatedB, $neighbour] as $secret) {
+            self::assertStringNotContainsString($secret, $stdout . $stderr);
+        }
+
+        // Both sessions of the rotated account are gone from MySQL...
+        self::assertSame(0, $this->sessionCountFor($first->id));
+        // ...and the neighbour account's session survived untouched.
+        self::assertSame(1, $this->sessionCountFor($second->id));
+        self::assertNotNull($this->sessions->find($neighbour));
+
+        // The stored credential is the new one: the old password fails against
+        // the production wiring, the new one succeeds.
+        $kernel = $this->bootProductionKernel($this->root, new FrozenClock(self::NOW));
+        $anonymous = $kernel->handle(new Request('GET', '/api/auth/session'));
+        /** @var array<string, mixed> $anonymousBody */
+        $anonymousBody = $anonymous->decodedBody();
+        $sessionId = self::cookieValue($anonymous);
+        $token = (string) $anonymousBody['csrfToken'];
+
+        $old = $this->login($kernel, $sessionId, $token, self::PASSWORD);
+        self::assertSame(401, $old->status, 'the old password still signs in after the rotation');
+
+        $accepted = $this->login($kernel, $sessionId, $token, self::ROTATED_PASSWORD);
+        /** @var array<string, mixed> $acceptedBody */
+        $acceptedBody = $accepted->decodedBody();
+        self::assertSame(200, $accepted->status);
+        self::assertTrue($acceptedBody['authenticated']);
+    }
+
+    /**
+     * ESZ-101, proof 3: hash update and session revocation are one MySQL
+     * transaction. A forced revocation failure (a real trigger SIGNAL on the
+     * session delete) rolls the new hash back with it, and the retry after the
+     * cause is removed converges — sessions revoked, new password live.
+     */
+    public function testEs101ARotationWhoseSessionRevocationFailsIsAtomic(): void
+    {
+        $this->leaveTheWrapperTransaction();
+
+        $account = $this->accounts->provision($this->email(self::EMAIL), self::PASSWORD, true)['account'];
+        $sessionOne = $this->session($account->id, '+1 hour', '+12 hours');
+        $sessionTwo = $this->session($account->id, '+1 hour', '+12 hours');
+        $this->sessions->save($sessionOne);
+        $this->sessions->save($sessionTwo);
+        $originalHash = (string) $this->database->fetchOne(
+            'SELECT password_hash FROM admin_accounts WHERE id = :id',
+            ['id' => $account->id],
+        )['password_hash'];
+
+        $this->installSessionDeleteFailureTrigger();
+
+        try {
+            $config = $this->provisionCliConfig();
+            [$exit, $stdout, $stderr] = $this->runProvisionAdmin($config, self::EMAIL, self::ROTATED_PASSWORD);
+
+            // CLI failure, not a silent success, and no trace of the new secret.
+            self::assertNotSame(0, $exit);
+            self::assertNotSame('', $stderr);
+            self::assertStringNotContainsString('password set', $stdout);
+            self::assertStringNotContainsString(self::ROTATED_PASSWORD, $stdout . $stderr);
+            self::assertStringNotContainsString(self::PASSWORD, $stdout . $stderr);
+
+            // Atomicity: the account keeps its old hash and every old session.
+            $accountRow = $this->database->fetchOne(
+                'SELECT password_hash FROM admin_accounts WHERE id = :id',
+                ['id' => $account->id],
+            );
+            self::assertIsArray($accountRow);
+            self::assertSame($originalHash, $accountRow['password_hash']);
+            self::assertTrue(password_verify(self::PASSWORD, $accountRow['password_hash']));
+            self::assertSame(2, $this->sessionCountFor($account->id));
+            self::assertNotNull($this->sessions->find($sessionOne->id));
+            self::assertNotNull($this->sessions->find($sessionTwo->id));
+        } finally {
+            $this->removeSessionDeleteFailureTrigger();
+        }
+
+        // The same rotation, once the cause is gone, commits: sessions revoked,
+        // new password live, operator told the count.
+        [$exit, $stdout, $stderr] = $this->runProvisionAdmin(
+            $this->provisionCliConfig(),
+            self::EMAIL,
+            self::ROTATED_PASSWORD,
+        );
+        self::assertSame(0, $exit, $stderr);
+        self::assertStringContainsString('Signed out of 2 existing session(s).', $stdout);
+        self::assertSame(0, $this->sessionCountFor($account->id));
+
+        $accountRow = $this->database->fetchOne(
+            'SELECT password_hash FROM admin_accounts WHERE id = :id',
+            ['id' => $account->id],
+        );
+        self::assertIsArray($accountRow);
+        self::assertNotSame($originalHash, $accountRow['password_hash']);
+        self::assertFalse(password_verify(self::PASSWORD, $accountRow['password_hash']));
+        self::assertTrue(password_verify(self::ROTATED_PASSWORD, $accountRow['password_hash']));
+    }
+
+    /**
+     * ESZ-101, proof 4: the automatic login-time rehash is maintenance, not a
+     * credential rotation. It upgrades the stored hash and revokes nothing —
+     * neither the session the login just rotated onto nor an older live
+     * session of the same account.
+     */
+    public function testEs101ALoginTimeRehashIsMaintenanceAndRevokesNothing(): void
+    {
+        $this->leaveTheWrapperTransaction();
+
+        $legacy = $this->insertLegacyHashAccount(self::PASSWORD);
+        self::assertTrue(AdminAccountRepository::needsRehash($legacy));
+        $accountId = (int) $this->database->fetchOne(
+            'SELECT id FROM admin_accounts WHERE email = :email',
+            ['email' => self::EMAIL],
+        )['id'];
+
+        // A session an earlier login (under the then-current hash) left behind,
+        // still live under the login clock this test boots its kernel with.
+        $rehashClock = new FrozenClock(self::REHASH_NOW);
+        $older = new Session(
+            Session::newId(),
+            $accountId,
+            Session::newCsrfToken(),
+            IsoTimestamp::format($rehashClock->now()),
+            IsoTimestamp::format($rehashClock->now()),
+            IsoTimestamp::format($rehashClock->now()->modify('+1 hour')),
+            IsoTimestamp::format($rehashClock->now()->modify('+12 hours')),
+        );
+        $this->sessions->save($older);
+
+        $kernel = $this->bootProductionKernel($this->root, $rehashClock);
+        $anonymous = $kernel->handle(new Request('GET', '/api/auth/session'));
+        /** @var array<string, mixed> $anonymousBody */
+        $anonymousBody = $anonymous->decodedBody();
+        $accepted = $this->login(
+            $kernel,
+            self::cookieValue($anonymous),
+            (string) $anonymousBody['csrfToken'],
+            self::PASSWORD,
+        );
+        /** @var array<string, mixed> $body */
+        $body = $accepted->decodedBody();
+
+        self::assertSame(200, $accepted->status);
+        self::assertTrue($body['authenticated']);
+        $rotatedId = self::cookieValue($accepted);
+
+        // The hash was upgraded as part of the login transition.
+        $account = $this->database->fetchOne(
+            'SELECT password_hash FROM admin_accounts WHERE email = :email',
+            ['email' => self::EMAIL],
+        );
+        self::assertIsArray($account);
+        self::assertNotSame($legacy, $account['password_hash']);
+        self::assertFalse(AdminAccountRepository::needsRehash($account['password_hash']));
+        self::assertTrue(password_verify(self::PASSWORD, $account['password_hash']));
+
+        // Maintenance revoked nothing: both session rows survive — the one the
+        // login just rotated onto and the one that predates the upgrade.
+        $rows = $this->database->fetchAll(
+            'SELECT id FROM admin_sessions WHERE account_id = :account_id',
+            ['account_id' => $accountId],
+        );
+        self::assertCount(2, $rows);
+        $surviving = array_column($rows, 'id');
+        self::assertContains($rotatedId, $surviving);
+        self::assertContains($older->id, $surviving);
+
+        // Both still authorise: the rehash did not kill the session it just
+        // authenticated, and did not sweep the older one either.
+        foreach ([$rotatedId, $older->id] as $id) {
+            $probe = $kernel->handle(new Request(
+                'GET',
+                '/api/auth/session',
+                ['cookie' => $this->cookieName() . '=' . $id],
+            ));
+            /** @var array<string, mixed> $probeBody */
+            $probeBody = $probe->decodedBody();
+            self::assertTrue($probeBody['authenticated'], "session {$id} was revoked by the rehash");
+        }
+    }
+
+    /**
+     * ESZ-101, proof 5: a successful logout destroys the server-side row before
+     * the cookie is expired — the 204 carries the expired cookie and the old id
+     * can no longer authorise anything.
+     */
+    public function testEs101LogoutDestroysTheRowBeforeTheCookieExpires(): void
+    {
+        $this->accounts->provision($this->email(self::EMAIL), self::PASSWORD, true);
+        $kernel = $this->bootAgainstMysql();
+
+        $anonymous = $kernel->handle(new Request('GET', '/api/auth/session'));
+        /** @var array<string, mixed> $anonymousBody */
+        $anonymousBody = $anonymous->decodedBody();
+        $accepted = $this->login(
+            $kernel,
+            self::cookieValue($anonymous),
+            (string) $anonymousBody['csrfToken'],
+            self::PASSWORD,
+        );
+        $sessionId = self::cookieValue($accepted);
+        /** @var array<string, mixed> $acceptedBody */
+        $acceptedBody = $accepted->decodedBody();
+        self::assertNotNull($this->sessions->find($sessionId));
+
+        $loggedOut = $this->logout($kernel, $sessionId, (string) $acceptedBody['csrfToken']);
+
+        self::assertSame(204, $loggedOut->status);
+        // The row is gone from MySQL — deletion is the mechanism.
+        self::assertNull($this->sessions->find($sessionId), 'logout left the session row in MySQL');
+
+        // The cookie on the same response is the expiry, not a fresh session.
+        $cookie = (string) $loggedOut->header('Set-Cookie');
+        self::assertStringContainsString('Max-Age=0', $cookie);
+        self::assertStringContainsString('Expires=Thu, 01 Jan 1970 00:00:00 GMT', $cookie);
+        self::assertStringNotContainsString($sessionId, $cookie);
+
+        // Replaying the exact pre-logout cookie is anonymous...
+        $replayed = $kernel->handle(new Request(
+            'GET',
+            '/api/auth/session',
+            ['cookie' => $this->cookieName() . '=' . $sessionId],
+        ));
+        /** @var array<string, mixed> $replayedBody */
+        $replayedBody = $replayed->decodedBody();
+        self::assertFalse($replayedBody['authenticated']);
+
+        // ...and the old id cannot authorise a privileged route.
+        $privileged = $kernel->handle(new Request(
+            'GET',
+            '/api/admin/content/draft',
+            ['cookie' => $this->cookieName() . '=' . $sessionId],
+        ));
+        self::assertSame(401, $privileged->status);
+    }
+
+    /**
+     * ESZ-101, proof 6: a logout whose server-side record deletion fails is a
+     * failure, honestly reported — 500, no successful cookie clear, no
+     * logout-success log — and the session it failed to destroy keeps
+     * authorising until a retry succeeds.
+     */
+    public function testEs101ALogoutWhoseStoreDeletionFailsAnswersFiveHundred(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $this->accounts->provision($this->email(self::EMAIL), self::PASSWORD, true);
+
+        // Booted at debug level so the proof can assert on log *presence* (the
+        // success line) as well as absence; the default error level only lets
+        // it assert absence.
+        $kernel = $this->bootProductionKernel($this->root, new FrozenClock(self::NOW), 'debug');
+        $anonymous = $kernel->handle(new Request('GET', '/api/auth/session'));
+        /** @var array<string, mixed> $anonymousBody */
+        $anonymousBody = $anonymous->decodedBody();
+        $accepted = $this->login(
+            $kernel,
+            self::cookieValue($anonymous),
+            (string) $anonymousBody['csrfToken'],
+            self::PASSWORD,
+        );
+        $sessionId = self::cookieValue($accepted);
+        /** @var array<string, mixed> $acceptedBody */
+        $acceptedBody = $accepted->decodedBody();
+
+        $this->installSessionDeleteFailureTrigger();
+
+        try {
+            $response = $this->logout($kernel, $sessionId, (string) $acceptedBody['csrfToken']);
+            /** @var array<string, mixed> $body */
+            $body = $response->decodedBody();
+
+            // An error status, never a 204 — and no successful cookie clear.
+            self::assertSame(500, $response->status);
+            self::assertSame('INTERNAL_ERROR', $body['error']['code']);
+            self::assertNull($response->header('Set-Cookie'), 'the failed logout cleared the session cookie');
+
+            // No logout-success log line: the record was not deleted.
+            $log = (string) @file_get_contents($this->root . '/var/log/app.log');
+            self::assertStringNotContainsString('Logout completed', $log);
+
+            // The session the logout failed to destroy still authorises.
+            self::assertNotNull($this->sessions->find($sessionId), 'the failed logout deleted the row');
+            $probe = $kernel->handle(new Request(
+                'GET',
+                '/api/auth/session',
+                ['cookie' => $this->cookieName() . '=' . $sessionId],
+            ));
+            /** @var array<string, mixed> $probeBody */
+            $probeBody = $probe->decodedBody();
+            self::assertTrue($probeBody['authenticated'], 'the session stopped authorising after a failed logout');
+        } finally {
+            $this->removeSessionDeleteFailureTrigger();
+        }
+
+        // Once the store recovers, the retry of the same logout succeeds: the
+        // failure consumed nothing, and the success is now logged.
+        $retry = $this->logout($kernel, $sessionId, (string) $acceptedBody['csrfToken']);
+        self::assertSame(204, $retry->status);
+        self::assertNull($this->sessions->find($sessionId));
+        self::assertStringContainsString('Max-Age=0', (string) $retry->header('Set-Cookie'));
+        $log = (string) @file_get_contents($this->root . '/var/log/app.log');
+        self::assertStringContainsString('Logout completed', $log);
+    }
+
     // --- ESZ-140: customer-data retention ----------------------------------
 
     /**
@@ -4245,10 +4592,14 @@ final class SqlIntegrationTest extends TestCase
      * pointing at the disposable MySQL, with no seams. The kernel opens its own
      * connection, exactly as public/api/index.php would.
      */
-    private function bootProductionKernel(string $root, FrozenClock $clock): Kernel
-    {
+    private function bootProductionKernel(
+        string $root,
+        FrozenClock $clock,
+        string $logLevel = 'error',
+    ): Kernel {
         $settings = TestDatabase::settings();
         $configPath = TestEnvironment::writeDeployment($root, [
+            'logLevel' => $logLevel,
             'database' => [
                 'dsn' => $settings->dsn,
                 'username' => $settings->username,
@@ -4329,5 +4680,91 @@ final class SqlIntegrationTest extends TestCase
     private function removeRehashFailureTrigger(): void
     {
         $this->database->executeRaw('DROP TRIGGER IF EXISTS esz134_rehash_failure', 'drop esz134 rehash trigger');
+    }
+
+    // --- ESZ-101 helpers -----------------------------------------------------
+
+    /**
+     * A deployment configuration pointing at the disposable MySQL, for operator
+     * CLIs (provision-admin) that open their own connection and commit.
+     */
+    private function provisionCliConfig(): string
+    {
+        $settings = TestDatabase::settings();
+
+        return TestEnvironment::writeDeployment($this->root, [
+            'database' => [
+                'dsn' => $settings->dsn,
+                'username' => $settings->username,
+                'password' => $settings->password,
+                'connectTimeoutSeconds' => $settings->connectTimeoutSeconds,
+            ],
+        ]);
+    }
+
+    /**
+     * Drives the real provision-admin CLI with a piped password, the same shape
+     * an operator automation uses (ESZ-132: no `--password` argument anywhere).
+     *
+     * @return array{int, string, string}
+     */
+    private function runProvisionAdmin(string $config, string $email, string $password): array
+    {
+        $pipes = [];
+        $process = proc_open(
+            [
+                PHP_BINARY,
+                TestEnvironment::repositoryRoot() . '/php/bin/provision-admin.php',
+                '--config=' . $config,
+                '--email=' . $email,
+                '--set-password',
+            ],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            TestEnvironment::repositoryRoot(),
+        );
+        self::assertIsResource($process);
+        fwrite($pipes[0], $password . "\n");
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        return [proc_close($process), (string) $stdout, (string) $stderr];
+    }
+
+    private function sessionCountFor(int $accountId): int
+    {
+        return (int) ($this->database->fetchOne(
+            'SELECT COUNT(*) AS n FROM admin_sessions WHERE account_id = :account_id',
+            ['account_id' => $accountId],
+        )['n'] ?? 0);
+    }
+
+    /**
+     * A real MySQL fault injection for ESZ-101: every session-row deletion
+     * fails, exactly what a revocation or a logout needs to perform.
+     */
+    private function installSessionDeleteFailureTrigger(): void
+    {
+        $this->database->executeRaw(
+            'DROP TRIGGER IF EXISTS esz101_session_delete_failure',
+            'reset esz101 delete trigger',
+        );
+        $this->database->executeRaw(
+            'CREATE TRIGGER esz101_session_delete_failure BEFORE DELETE ON admin_sessions'
+            . ' FOR EACH ROW'
+            . " SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'esz101 forced session delete failure';",
+            'create esz101 delete trigger',
+        );
+    }
+
+    private function removeSessionDeleteFailureTrigger(): void
+    {
+        $this->database->executeRaw(
+            'DROP TRIGGER IF EXISTS esz101_session_delete_failure',
+            'drop esz101 delete trigger',
+        );
     }
 }

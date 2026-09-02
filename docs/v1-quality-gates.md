@@ -352,9 +352,9 @@ SMS and live-provider receipt remain separate work.
 ## 5. Runtime smoke and deployment-owned gates
 
 Each gate below is declared in `scripts/validate.mjs`. The repository-local PHP smoke
-and focused admin-preview CSP and media-pipeline browser proofs are executable; checks
-that require a deployed origin or the broader browser workflows remain NOT RUN with
-their reason, so the gap is inspectable rather than absent.
+and the focused admin-preview CSP, media-pipeline and admin-auth browser proofs are
+executable; checks that require a deployed origin or the broader browser workflows
+remain NOT RUN with their reason, so the gap is inspectable rather than absent.
 
 ### Stage 8 — HTTP smoke
 
@@ -398,6 +398,18 @@ the public page decodes the same path with the published alt text. Before the ed
 also checks all eleven null fallbacks and a deliberately broken Hero source. The gate
 removes its container, credential, profile, content and uploaded derivative on every
 outcome; it does not use the ordinary development database or browser profile.
+
+`browser:admin-auth` runs the same isolated stack (temporary MySQL container, real PHP
+built-in server over the static export, generated development credential, headless
+Chrome) for the ESZ-101 sign-out and rotation semantics. It proves three scenarios:
+an operator password rotation revokes the signed-in browser's session — the editor
+reloads to the signed-out screen, the old credential is refused indistinguishably and
+the new one signs in; a logout whose server-side record deletion fails (a real MySQL
+trigger SIGNAL) keeps the browser on the authenticated admin surface with the retryable
+error and no signed-out claim, while the captured session id keeps authorising until
+the retry completes once the trigger is removed; and a clean logout lands on
+`/admin/login` with the session row gone and the pre-logout cookie unable to authorise.
+The gate removes its container, profile and credentials on every outcome.
 
 Those focused proofs do not implement the broader `browser:admin` contract below.
 Critical paths only — enough to catch a broken release, few enough to stay trustworthy:

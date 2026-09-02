@@ -58,16 +58,27 @@ function bootstrapDevelopmentMain(array $arguments): int
         $existing = $accounts->findByEmail($adminEmail->value);
         $passwordNeedsUpdate = $existing === null
             || !password_verify($credentials['password'], $existing->passwordHash);
-        $provisioned = $accounts->provision(
-            $adminEmail,
-            $passwordNeedsUpdate ? $credentials['password'] : null,
-            true,
+        $provisioned = $database->transactional(
+            function () use ($accounts, $sessions, $adminEmail, $credentials, $passwordNeedsUpdate): array {
+                $result = $accounts->provision(
+                    $adminEmail,
+                    $passwordNeedsUpdate ? $credentials['password'] : null,
+                    true,
+                );
+
+                if ($result['passwordChanged'] && !$result['created']) {
+                    // A credentials file regenerated after a reset becomes
+                    // authoritative. Old sessions must not outlive the old
+                    // development credential — and the hash update and the
+                    // revocation must be one transaction, so a revocation
+                    // failure cannot leave the new hash in place with the old
+                    // sessions still live (ESZ-101).
+                    $sessions->destroyForAccount($result['account']->id);
+                }
+
+                return $result;
+            },
         );
-        if ($provisioned['passwordChanged'] && !$provisioned['created']) {
-            // A credentials file regenerated after a reset becomes authoritative.
-            // Old sessions must not outlive the old development credential.
-            $sessions->destroyForAccount($provisioned['account']->id);
-        }
 
         $services = new BookableServiceRepository(
             $database,

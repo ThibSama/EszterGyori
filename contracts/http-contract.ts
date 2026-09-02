@@ -4411,6 +4411,11 @@ export const httpContractInvariants = [
       "After logout, replaying the exact pre-logout session cookie is anonymous. Invalidation is the destruction of the server-side record, not the expiry of the cookie, so a client that ignores Set-Cookie gains nothing.",
   },
   {
+    id: "auth.logoutFailureIsNotASuccess",
+    description:
+      "A logout whose server-side session destruction fails answers an error status, publishes no successful cookie clear and records no logout success; the session it failed to destroy keeps authorising, so no client is ever told it is signed out when the server did not revoke. Only a destroyed record arms the cookie expiry.",
+  },
+  {
     id: "auth.failureModesAreIndistinguishable",
     description:
       "Unknown address, wrong password and disabled account produce byte-identical responses apart from the request id, and all three perform a password verification so their timing does not separate them either.",
@@ -4434,6 +4439,11 @@ export const httpContractInvariants = [
     id: "csrf.readsAreExempt",
     description:
       "GET /api/auth/session and the public read-only surface answer normally with no CSRF token, so a client can always obtain one without already having one.",
+  },
+  {
+    id: "adminSessions.passwordRotationRevokesEverySession",
+    description:
+      "Changing an existing admin account's password is a credential rotation: it revokes every session of that account, and the hash update and the revocation commit in one MySQL transaction or both roll back — a revocation failure leaves the old hash and the old sessions in place, and an account update failure revokes nothing. The automatic login-time password_needs_rehash() upgrade is maintenance, not a rotation, and must not revoke the session it just authenticated. Disabling an account continues to revoke all of its sessions.",
   },
   {
     id: "adminContent.revisionSequenceIsShared",

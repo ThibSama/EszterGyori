@@ -1,5 +1,9 @@
 import type { AuthSessionResponse } from "@eszter/contracts";
-import { ADMIN_API_MESSAGES, type AdminApiFailure } from "./admin-api";
+import {
+  ADMIN_API_MESSAGES,
+  type AdminApiFailure,
+  type AdminApiResult,
+} from "./admin-api";
 
 /**
  * Session state as the browser is allowed to know it (ESZ-034).
@@ -34,6 +38,20 @@ export const ADMIN_SESSION_MESSAGES = {
     "Vous n’êtes pas connecté. Connectez-vous pour ouvrir l’éditeur.",
   expired: ADMIN_API_MESSAGES.unauthenticated,
   loading: "Vérification de la session…",
+  /**
+   * ESZ-101: the surface shown when the server did not confirm a logout.
+   *
+   * The wording never claims the session was revoked — in every failure that
+   * reaches this surface (network, server error, refused CSRF) the revocation
+   * did not happen or was not confirmed, and the admin must not walk away from
+   * a device believing a session that may still authorise was ended.
+   */
+  logoutFailedTitle: "Déconnexion impossible",
+  logoutFailed:
+    "La déconnexion n’a pas abouti. Ne considérez pas cette session comme révoquée : réessayez, ou continuez à travailler.",
+  logoutRetry: "Réessayer la déconnexion",
+  logoutDismiss: "Continuer à travailler",
+  logoutPending: "Déconnexion en cours…",
 } as const;
 
 /**
@@ -108,4 +126,80 @@ export function loginPathFor(currentPath: string): string {
   return next === ADMIN_HOME_PATH
     ? "/admin/login"
     : `/admin/login?next=${encodeURIComponent(next)}`;
+}
+
+// --- ESZ-101: failure-honest sign-out -------------------------------------
+
+/**
+ * What the UI may conclude from one `POST /api/auth/logout` result.
+ *
+ * Only two answers exist. The server confirmed the session is over — either by
+ * revoking it (2xx) or by saying there was nothing to revoke (401) — and the UI
+ * leaves the authenticated surface. Everything else (network, server failure,
+ * refused CSRF, an unreadable response) means the server did **not** confirm a
+ * revocation, and the only honest UI is to stay signed in and offer a retry:
+ * navigating away would tell the admin a session that may still authorise was
+ * ended, and a subsequent 401 on the login page's own reads would make the
+ * signed-out claim retroactively true without the server ever having revoked.
+ */
+export type LogoutOutcome =
+  | { action: "leave"; reason: "server-confirmed" | "already-signed-out" }
+  | { action: "stay" };
+
+export function outcomeOfLogout(result: AdminApiResult<null>): LogoutOutcome {
+  if (result.ok) return { action: "leave", reason: "server-confirmed" };
+
+  // 401 `UNAUTHENTICATED` is the server saying no live session existed: the
+  // logout the admin asked for is already the server-side state, so the client
+  // reconciles itself as signed out rather than reporting an error.
+  if (result.failure.kind === "unauthenticated") {
+    return { action: "leave", reason: "already-signed-out" };
+  }
+
+  return { action: "stay" };
+}
+
+/**
+ * The client-side lifecycle of one sign-out request.
+ *
+ * `in-flight` exists so that two clicks cannot race two logout requests — a
+ * duplicate submission is not a second chance at a first failure, and a
+ * revocation racing a revocation is how a session id comes back to life.
+ */
+export type AdminLogoutUiState =
+  | { status: "idle" }
+  | { status: "in-flight" }
+  | { status: "failed" };
+
+export type AdminLogoutAction =
+  | { type: "logout-attempt" }
+  | { type: "logout-failed" }
+  | { type: "logout-dismissed" };
+
+export const INITIAL_LOGOUT_UI_STATE: AdminLogoutUiState = { status: "idle" };
+
+export function logoutUiReducer(
+  state: AdminLogoutUiState,
+  action: AdminLogoutAction,
+): AdminLogoutUiState {
+  switch (action.type) {
+    case "logout-attempt":
+      // An attempt already in flight is never doubled: the second click leaves
+      // the first request running instead of starting a second one.
+      return state.status === "in-flight" ? state : { status: "in-flight" };
+
+    case "logout-failed":
+      return { status: "failed" };
+
+    case "logout-dismissed":
+      return { status: "idle" };
+
+    default:
+      return state;
+  }
+}
+
+/** Whether a logout request may be started at all. */
+export function canStartLogout(state: AdminLogoutUiState): boolean {
+  return state.status !== "in-flight";
 }

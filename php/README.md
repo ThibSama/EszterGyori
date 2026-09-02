@@ -373,6 +373,11 @@ composer run contracts:check   # fail if that copy is stale
 php bin/generate-htaccess.php  # re-render public/.htaccess from the routing table
 
 # Operator commands (ESZ-023 / ESZ-024). Both are safe to run twice.
+# `--set-password` on an existing account is a credential rotation (ESZ-101):
+# it revokes every session of that account in the same MySQL transaction as
+# the hash update, so a revocation failure rolls the new hash back and the
+# command exits 1. The login-time algorithm rehash is maintenance and revokes
+# nothing; `--disable` keeps signing every existing session of the account out.
 php bin/migrate.php --config=config/config.php --status
 php bin/migrate.php --config=config/config.php
 php bin/provision-admin.php --config=config/config.php --list

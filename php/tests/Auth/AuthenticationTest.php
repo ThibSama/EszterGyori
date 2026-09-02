@@ -39,6 +39,7 @@ final class AuthenticationTest extends TestCase
         'auth.sessionIdRotatesOnLogin' => 'testTheSessionIdRotatesOnLogin',
         'auth.csrfTokenRotatesWithTheSession' => 'testTheCsrfTokenRotatesWithTheSession',
         'auth.logoutInvalidatesServerSide' => 'testLogoutInvalidatesTheSessionServerSide',
+        'auth.logoutFailureIsNotASuccess' => 'testALogoutWhoseDestructionFailsIsNotASuccess',
         'auth.failureModesAreIndistinguishable' => 'testTheThreeLoginFailuresAreIndistinguishable',
         'auth.disabledAccountIsRejectedOnEveryRequest' => 'testDisablingAnAccountEndsItsLiveSession',
         'auth.sessionCookieCarriesItsAttributes' => 'testTheSessionCookieCarriesItsAttributes',
@@ -166,6 +167,44 @@ final class AuthenticationTest extends TestCase
         // And the replay does not resurrect the id: a fresh anonymous session is
         // minted under a new one.
         self::assertNotSame($signedIn['sessionId'], self::cookieValue($replayed));
+    }
+
+    /**
+     * ESZ-101, `auth.logoutFailureIsNotASuccess`: a logout whose server-side
+     * destruction fails must answer an error, publish no successful cookie clear
+     * and record no logout success — the client is never told it is signed out
+     * when the server did not revoke.
+     */
+    public function testALogoutWhoseDestructionFailsIsNotASuccess(): void
+    {
+        $signedIn = $this->signIn();
+
+        $this->sessions->throwOnDestroy = true;
+        $response = $this->logout($signedIn['sessionId'], $signedIn['csrfToken']);
+        /** @var array<string, mixed> $body */
+        $body = $response->decodedBody();
+
+        // An error response, never a false success — and no cookie clear on it:
+        // the row was not destroyed, so nothing may act as though it was.
+        self::assertSame(500, $response->status);
+        self::assertSame('INTERNAL_ERROR', $body['error']['code']);
+        self::assertNull($response->header('Set-Cookie'), 'the failure response cleared the session cookie');
+
+        // No logout-success log line: the record was not deleted, so the logout
+        // is not reported as completed anywhere.
+        $log = (string) @file_get_contents($this->root . '/var/log/app.log');
+        self::assertStringNotContainsString('Logout completed', $log);
+
+        // The session the logout failed to destroy keeps authorising.
+        $state = $this->sessionState($signedIn['sessionId']);
+        self::assertTrue($state['authenticated']);
+        self::assertArrayHasKey($signedIn['sessionId'], $this->sessions->sessions);
+
+        // Once the store recovers, the same session logs out cleanly: the
+        // failure consumed nothing.
+        $this->sessions->throwOnDestroy = false;
+        self::assertSame(204, $this->logout($signedIn['sessionId'], $signedIn['csrfToken'])->status);
+        self::assertArrayNotHasKey($signedIn['sessionId'], $this->sessions->sessions);
     }
 
     /**

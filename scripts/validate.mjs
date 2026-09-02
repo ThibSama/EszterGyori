@@ -435,10 +435,19 @@ const gates = [
       "Public site: page renders published content, navigation deep links land below the fixed navbar, gallery and Instagram links resolve, layout holds at phone/tablet/desktop widths.",
   },
   {
+    id: "browser:admin-auth",
+    stage: "9. Browser scenarios",
+    cwd: ".",
+    command: ["node", "scripts/browser-admin-auth.mjs"],
+    proves:
+      "ESZ-101 in a real browser against an isolated full stack (real PHP, disposable MySQL, headless Chrome): an operator password rotation signs an authenticated browser out server-side — the editor reloads to the signed-out screen, the old credential is refused and the new one signs in; a logout whose server-side record deletion fails (real MySQL trigger) stays on the authenticated admin surface with a retryable error and never claims a signed-out state, while the session keeps authorising until the retry succeeds once the cause is removed; and a clean logout lands on /admin/login with the server row gone and the pre-logout cookie no longer authorising anything.",
+  },
+  {
     id: "browser:admin",
     stage: "9. Browser scenarios",
     status: NOT_RUN,
-    reason: "The focused ESZ-095 and ESZ-096 runners cover preview CSP and the media pipeline only. No deployed origin or project-owned runner covers this full authenticated workflow.",
+    reason:
+      "The focused ESZ-095, ESZ-096 and ESZ-101 runners cover preview CSP, the media pipeline and the authenticated sign-out workflow only. No deployed origin or project-owned runner covers this full authenticated editing workflow.",
     proves:
       "Admin: unauthenticated deep link redirects to login, login succeeds and rejects bad credentials, an edit saves to the server draft, publish updates the public site, and logout invalidates the session server-side.",
   },
