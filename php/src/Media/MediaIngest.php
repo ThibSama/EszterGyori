@@ -36,6 +36,23 @@ use Eszter\Support\Logger;
  */
 final class MediaIngest
 {
+    /**
+     * The one mode an intake file may carry (ESZ-103): the caller's unverified
+     * bytes are private to the application user until they are verified, at
+     * 0600 like PHP's own upload temp files (the explicit restriction is what
+     * keeps that true for a copy-based transport or a future host).
+     */
+    public const INTAKE_MODE = 0o600;
+
+    /**
+     * @param \Closure(string, int): bool|null $setFileMode Narrowest test seam
+     *        for the intake mode restriction: when provided it replaces **only**
+     *        the `chmod(2)` call. Production passes null and gets the real
+     *        chmod. The effective-mode verification that follows is never
+     *        seam-injectable — an intake file is only accepted when
+     *        `fileperms()` shows {@see INTAKE_MODE} — so a seam can force a
+     *        refusal but cannot make an unverified restriction look applied.
+     */
     public function __construct(
         private readonly MediaContract $contract,
         private readonly ImagePipeline $images,
@@ -44,6 +61,7 @@ final class MediaIngest
         private readonly UploadTransport $transport,
         private readonly Clock $clock,
         private readonly Logger $logger,
+        private readonly ?\Closure $setFileMode = null,
     ) {
     }
 
@@ -233,7 +251,43 @@ final class MediaIngest
             );
         }
 
-        @chmod($intakePath, 0o600);
+        // The intake file is the caller's unverified bytes and must not be
+        // readable by group or others. The restriction is verified, not assumed;
+        // when it cannot be established the ingest stops here and the `finally`
+        // removes the intake file, so an unrestricted upload is never verified,
+        // stored or catalogued.
+        if (!$this->restrictTo($intakePath, self::INTAKE_MODE)) {
+            throw new StorageException(
+                StorageException::WRITE_FAILED,
+                \sprintf(
+                    'Could not restrict the intake file %s to mode %04o.',
+                    $intakePath,
+                    self::INTAKE_MODE,
+                ),
+                MediaLibrary::METADATA_ROLE,
+            );
+        }
+    }
+
+    /**
+     * Applies $mode to $path and verifies the effective mode.
+     *
+     * A `chmod` call alone is not proof that the restriction took effect; the
+     * restriction only counts when `fileperms()` shows the requested mode.
+     */
+    private function restrictTo(string $path, int $mode): bool
+    {
+        $applied = $this->setFileMode === null
+            ? @chmod($path, $mode)
+            : ($this->setFileMode)($path, $mode);
+
+        if ($applied !== true) {
+            return false;
+        }
+
+        $actual = @fileperms($path);
+
+        return $actual !== false && ($actual & 0o777) === $mode;
     }
 
     /**

@@ -307,6 +307,21 @@ const gates = [
       "ESZ-083's archive format and integrity record, offline. Entries round-trip byte for byte through the hand-written ustar writer, GNU tar reads what it produces, writing is deterministic so two backups of an unchanged deployment agree, and a truncated archive, a corrupted header, an unsupported entry type and any path that would escape the destination are each refused. The manifest catches a missing entry, an altered one, an entry of the wrong length, an undeclared extra file, a rewritten digest and an unknown format version.",
   },
   {
+    id: "security:filesystem",
+    stage: "6. PHP validation",
+    cwd: "php",
+    command: [
+      "vendor/bin/phpunit",
+      "--no-progress",
+      "--testsuite",
+      "eszter",
+      "--filter",
+      "AtomicJsonFileTest|LoggerTest|MediaIngestFileModeTest|MediaLibraryFileModeTest",
+    ],
+    proves:
+      "ESZ-103's sensitive-file permission boundary, on real temporary-filesystem modes and with negative injection, requiring no network, MySQL or browser: atomic JSON finals are published at 0640 and a write whose mode restriction fails — or was accepted but did not take effect — leaves the previous target byte-identical with no temp residue; upload intake is restricted to 0600 and a failed restriction catalogues nothing and converges; private originals are 0640 and served derivatives stay the intentional 0644, with each failed restriction unwinding every placed file and refusing the catalogue entry; log files are born and corrected to 0600 under a hostile process umask, which is restored on every path, and a log whose restriction cannot be established degrades to silence instead of crashing the caller or knowingly writing into a wider file; a pre-existing over-permissive target is corrected when possible and otherwise follows the component's fail/degrade contract.",
+  },
+  {
     id: "php:notifications",
     stage: "6. PHP validation",
     cwd: "php",

@@ -97,27 +97,55 @@ final class BackupWriter
         $path = rtrim($destinationDirectory, '/\\') . \DIRECTORY_SEPARATOR . $this->fileName();
         $temporary = $path . '.partial';
 
-        $empty = @fopen($temporary, 'x');
-        if ($empty === false) {
-            throw new BackupException("Could not reserve the partial archive: {$temporary}");
-        }
-        fclose($empty);
+        // The archive must be born 0600, not chmodded to it after the fact.
+        // `fopen('x')` reserves the name and `TarArchive::write()` re-creates
+        // the file through `gzopen('wb9')`, and both apply the process umask —
+        // so under a permissive umask the partial would be group/world-readable
+        // from its first customer-data byte. The umask is restricted around both
+        // creations and restored in `finally` on every path.
+        $previousUmask = umask(0o077);
 
-        if (!@chmod($temporary, 0o600)) {
+        try {
+            $empty = @fopen($temporary, 'x');
+            if ($empty === false) {
+                throw new BackupException("Could not reserve the partial archive: {$temporary}");
+            }
+            fclose($empty);
+
+            TarArchive::write($temporary, $archive, $this->clock->now()->getTimestamp());
+        } catch (\Throwable $failure) {
             @unlink($temporary);
-            throw new BackupException("Could not restrict the partial archive to mode 0600: {$temporary}");
-        }
 
-        TarArchive::write($temporary, $archive, $this->clock->now()->getTimestamp());
+            throw $failure;
+        } finally {
+            umask($previousUmask);
+        }
 
         // 0600 before the rename, not after: the archive holds every booking and
         // every customer's contact details, and the window between "readable" and
         // "restricted" is a window in which another account on a shared host can
-        // read all of it.
-        @chmod($temporary, 0o600);
+        // read all of it. The restriction is verified, not assumed — a chmod
+        // that did not take effect must not be published as a completed backup.
+        if (!$this->restrictTo0600($temporary)) {
+            @unlink($temporary);
 
-        if ($this->beforePublish !== null) {
-            ($this->beforePublish)();
+            throw new BackupException(
+                "Could not restrict the finished archive to mode 0600: {$temporary}",
+            );
+        }
+
+        try {
+            if ($this->beforePublish !== null) {
+                ($this->beforePublish)();
+            }
+        } catch (\Throwable $failure) {
+            // A failure to publish leaves no final archive *and* no `.partial`
+            // behind: an interrupted backup leaves no file at all rather than a
+            // short one (see the class docblock), so the finished archive is
+            // never reported as written and the residue is removed.
+            @unlink($temporary);
+
+            throw $failure;
         }
 
         if (!@rename($temporary, $path)) {
@@ -129,6 +157,24 @@ final class BackupWriter
         $bytes = filesize($path);
 
         return ['path' => $path, 'manifest' => $manifest, 'bytes' => $bytes === false ? 0 : $bytes];
+    }
+
+    /**
+     * Applies mode 0600 to the finished archive and verifies the effective mode.
+     *
+     * A `chmod` call alone is not proof that the archive stopped being readable
+     * by group or others; only a file whose effective mode is 0600 may be
+     * renamed onto the final name.
+     */
+    private function restrictTo0600(string $path): bool
+    {
+        if (!@chmod($path, 0o600)) {
+            return false;
+        }
+
+        $actual = @fileperms($path);
+
+        return $actual !== false && ($actual & 0o777) === 0o600;
     }
 
     /** @return array<string, string> */

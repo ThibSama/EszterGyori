@@ -118,6 +118,24 @@ final class MediaUploadTest extends TestCase
         self::assertFileExists($this->publicMedia() . '/' . basename((string) $second['path']));
     }
 
+    public function testStoredFilesCarryThePolicyModes(): void
+    {
+        // ESZ-103, through the real route: the private boundary (verified
+        // original and authoritative catalogue at 0640, empty intake) and the
+        // public boundary (served derivative at the intentional 0644).
+        $kernel = $this->boot();
+        $asset = $this->assetFrom($this->upload($kernel, MediaFixtures::jpeg()));
+        $fileName = basename((string) $asset['path']);
+
+        self::assertSame(0o640, fileperms($this->originals() . '/' . $fileName) & 0o777);
+        self::assertSame(
+            0o640,
+            fileperms($this->root . '/data/content/' . MediaLibrary::INDEX_FILE) & 0o777,
+        );
+        self::assertSame([], $this->entriesOf($this->intake()));
+        self::assertSame(0o644, fileperms($this->publicMedia() . '/' . $fileName) & 0o777);
+    }
+
     public function testTheStoredBytesAreTheServersOwnEncoding(): void
     {
         // `media.storedBytesAreTheServersOwnEncoding`. Two probes, because they

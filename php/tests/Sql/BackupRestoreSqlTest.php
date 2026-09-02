@@ -935,7 +935,7 @@ final class BackupRestoreSqlTest extends TestCase
         );
     }
 
-    public function testFailedPublicationLeavesOnlyARestrictedPartialAndReleasesEverything(): void
+    public function testFailedPublicationLeavesNoFinalArchiveAndNoPartialResidue(): void
     {
         $this->seedRealisticSource();
         $writer = new BackupWriter(
@@ -957,10 +957,12 @@ final class BackupRestoreSqlTest extends TestCase
             self::assertSame('controlled publication failure', $failure->getMessage());
         }
 
+        // ESZ-103 failure semantics: an archive that could not be published is
+        // never reported as a success, and the `.partial` it was assembled as is
+        // removed — an interrupted backup leaves no file at all rather than a
+        // short one (BackupWriter's class docblock).
         self::assertSame([], glob($this->backupsRoot . '/*.tar.gz') ?: []);
-        $partials = glob($this->backupsRoot . '/*.partial') ?: [];
-        self::assertCount(1, $partials);
-        self::assertSame(0o600, fileperms($partials[0]) & 0o777);
+        self::assertSame([], glob($this->backupsRoot . '/*.partial') ?: []);
         self::assertFalse($this->source->inTransaction());
         self::assertSame(
             'released',
@@ -968,6 +970,25 @@ final class BackupRestoreSqlTest extends TestCase
                 static fn (): string => 'released',
             ),
         );
+    }
+
+    public function testTheFinishedArchiveIs0600UnderAHostileUmask(): void
+    {
+        $this->seedRealisticSource();
+        $previousUmask = umask(0o000);
+
+        try {
+            $path = $this->writeBackup();
+        } finally {
+            umask($previousUmask);
+        }
+
+        // The archive is born 0600 under the writer's own umask restriction, so
+        // even a process-wide umask of 0000 leaves the finished archive at the
+        // documented mode — and the process umask is restored.
+        self::assertSame(0o600, fileperms($path) & 0o777);
+        self::assertSame($previousUmask, umask(), 'the process umask was not restored');
+        self::assertSame([], glob($this->backupsRoot . '/*.partial') ?: []);
     }
 
     // --- fixture ------------------------------------------------------------

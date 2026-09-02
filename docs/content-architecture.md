@@ -232,8 +232,12 @@ au semis et a l'ecriture, et le semis reverifie l'etat sous ce verrou. Le paquet
 prenait le verrou exclusif inconditionnellement au demarrage, ce qui serialisait chaque
 requete derriere une ecriture qui n'a presque jamais lieu.
 
-Les ecritures restent atomiques : fichier temporaire, `fflush`, `fsync`, `chmod 0640`,
-`rename()` sur le meme systeme de fichiers. Un document requis malforme, trop gros ou
+Les ecritures restent atomiques : fichier temporaire ne a `0600` (le umask du
+processus est restreint autour de sa creation puis retabli), `fflush`, `fsync`,
+`chmod 0640` **verifie**, `rename()` sur le meme systeme de fichiers. Une
+restriction de mode qui ne peut pas etre appliquee ou verifiee refuse la
+publication : le fichier precedent reste byte-identique et le temporaire est
+supprime. Un document requis malforme, trop gros ou
 invalide interrompt le traitement ; il n'est jamais repare, remplace ni contourne.
 
 ### Conformite

@@ -30,6 +30,10 @@ final class FakeUploadTransport implements UploadTransport
     {
         $path = $directory . \DIRECTORY_SEPARATOR . 'upload-' . bin2hex(random_bytes(8));
         file_put_contents($path, $contents);
+        // PHP's own upload temp files are mode 0600; the staged double mirrors
+        // that so a rename-based move observes the same birth mode production
+        // does (ESZ-103).
+        chmod($path, 0o600);
         $this->registered[$path] = true;
 
         return $path;

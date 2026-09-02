@@ -106,4 +106,109 @@ final class AtomicJsonFileTest extends TestCase
 
         self::assertFileExists($target);
     }
+
+    // ── ESZ-103: permission boundary ───────────────────────────────────────
+
+    public function testThePublishedFileKeepsPolicyModeUnderAHostileUmaskAndRestoresIt(): void
+    {
+        $target = $this->root . '/content/x.json';
+        $previous = umask(0o000);
+
+        try {
+            $this->writer()->write($target, ['a' => 1]);
+        } finally {
+            umask($previous);
+        }
+
+        // The temp is born 0600 under the class's own umask restriction, then
+        // restricted to FILE_MODE before the rename — so even with the widest
+        // possible process umask the final file carries the policy mode and the
+        // process-global umask is back where it was.
+        self::assertSame(AtomicJsonFile::FILE_MODE, fileperms($target) & 0o777);
+        self::assertSame($previous, umask(), 'the process umask was not restored');
+        self::assertSame([], glob($this->root . '/tmp/*') ?: []);
+    }
+
+    public function testAFailedModeRestrictionLeavesThePreviousTargetUntouchedAndNoResidue(): void
+    {
+        $target = $this->root . '/content/x.json';
+        $this->writer()->write($target, ['a' => 1]);
+        $before = (string) file_get_contents($target);
+
+        // The seam refuses the chmod; the write must fail closed instead of
+        // publishing a file whose restriction could not be established.
+        $failing = new AtomicJsonFile(
+            $this->root . '/tmp',
+            static fn (string $path, int $mode): bool => false,
+        );
+
+        try {
+            $failing->write($target, ['a' => 2]);
+            self::fail('a refused mode restriction published the document');
+        } catch (StorageException $exception) {
+            self::assertSame(StorageException::WRITE_FAILED, $exception->storageCode);
+        }
+
+        self::assertSame($before, file_get_contents($target));
+        self::assertSame([], glob($this->root . '/tmp/*') ?: [], 'a temp file survived the refusal');
+    }
+
+    public function testAModeThatWasAcceptedButDidNotTakeEffectIsRefusedByTheVerification(): void
+    {
+        $target = $this->root . '/content/x.json';
+
+        // Simulates a filesystem or wrapper that accepts chmod() and leaves the
+        // file wider. The seam reports success; the hard fileperms verification
+        // is what must refuse — a chmod call alone is not proof.
+        $lying = new AtomicJsonFile(
+            $this->root . '/tmp',
+            static fn (string $path, int $mode): bool => true,
+        );
+
+        try {
+            $lying->write($target, ['a' => 1]);
+            self::fail('an unverified mode restriction published the document');
+        } catch (StorageException $exception) {
+            self::assertSame(StorageException::WRITE_FAILED, $exception->storageCode);
+        }
+
+        self::assertFileDoesNotExist($target);
+        self::assertSame([], glob($this->root . '/tmp/*') ?: [], 'a temp file survived the refusal');
+    }
+
+    public function testTheProcessUmaskIsRestoredWhenAWriteFails(): void
+    {
+        $target = $this->root . '/content/x.json';
+        $original = umask(0o077);
+        chmod($this->root . '/tmp', 0o500);
+
+        try {
+            try {
+                $this->writer()->write($target, ['a' => 1]);
+                self::markTestSkipped('The filesystem allowed a write into a read-only directory.');
+            } catch (StorageException $exception) {
+                self::assertSame(StorageException::WRITE_FAILED, $exception->storageCode);
+                self::assertFileDoesNotExist($target);
+            } finally {
+                self::assertSame(0o077, umask(), 'the umask was not restored after the failure');
+            }
+        } finally {
+            chmod($this->root . '/tmp', 0o700);
+            umask($original);
+        }
+    }
+
+    public function testAWriteOntoAPreExistingOverPermissiveTargetCorrectsItsMode(): void
+    {
+        // A rename replaces the target's inode, so a successful write also
+        // replaces an over-permissive pre-existing file with one at FILE_MODE.
+        $target = $this->root . '/content/x.json';
+        file_put_contents($target, "{}\n");
+        chmod($target, 0o666);
+
+        $this->writer()->write($target, ['a' => 1]);
+
+        self::assertSame(AtomicJsonFile::FILE_MODE, fileperms($target) & 0o777);
+        self::assertSame("{\n  \"a\": 1\n}\n", file_get_contents($target));
+    }
 }

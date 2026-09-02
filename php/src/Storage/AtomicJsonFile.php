@@ -11,10 +11,16 @@ namespace Eszter\Storage;
  * leave the previous version intact. That needs four steps in order, and skipping
  * any one of them silently reintroduces the failure it prevents:
  *
- *  1. write to a unique temp file in `var/tmp/`;
+ *  1. write to a unique temp file in `var/tmp/`, **born** mode 0600 — `fopen()`
+ *     applies the process umask (0666 & ~umask), so the umask itself is
+ *     restricted around the creation and restored afterwards, and the temp is
+ *     never group/world-readable for the write that follows;
  *  2. `fflush()` then `fsync()` — without the fsync the rename can land before
  *     the data does, and a power loss leaves an empty file where content was;
- *  3. `chmod` before publishing, so the file is never briefly world-readable;
+ *  3. `chmod` to `FILE_MODE` and **verify the effective mode** — a restriction
+ *     that cannot be applied or verified refuses the publish (the previous
+ *     target, if any, is left byte-identical and the temp is removed), because
+ *     a `chmod` call alone is not proof that the file stopped being readable;
  *  4. `rename()` onto the target, which POSIX guarantees is atomic *within a
  *     single filesystem*.
  *
@@ -24,10 +30,31 @@ namespace Eszter\Storage;
  */
 final class AtomicJsonFile
 {
+    /**
+     * The one mode an authoritative/private JSON final may carry (ESZ-103):
+     * draft, published and the media catalogue are all at most 0640. A rename
+     * replaces the target's inode, so a successful write also corrects a
+     * pre-existing wider file; a write that cannot restrict its temp refuses
+     * instead.
+     */
     public const FILE_MODE = 0o640;
 
-    public function __construct(private readonly string $tmpDirectory)
-    {
+    /**
+     * @param string $tmpDirectory The directory temp files are staged in; it
+     *        must share a filesystem with every target {@see replace()} publishes
+     *        onto.
+     * @param \Closure(string, int): bool|null $setFileMode Narrowest test seam
+     *        for the mode restriction: when provided it replaces **only** the
+     *        `chmod(2)` call. Production passes null and gets the real chmod.
+     *        The effective-mode verification that follows is never
+     *        seam-injectable — a file is published only when `fileperms()`
+     *        shows `FILE_MODE` — so a seam can force a refusal but cannot make
+     *        an unverified restriction look applied.
+     */
+    public function __construct(
+        private readonly string $tmpDirectory,
+        private readonly ?\Closure $setFileMode = null,
+    ) {
     }
 
     /**
@@ -105,17 +132,26 @@ final class AtomicJsonFile
             bin2hex(random_bytes(8)),
         );
 
-        $handle = @fopen($temporaryPath, 'xb');
-
-        if ($handle === false) {
-            throw new StorageException(
-                StorageException::WRITE_FAILED,
-                "Could not create temporary file {$temporaryPath}.",
-                $fileRole,
-            );
-        }
+        // The temp file must be born restricted, not restricted a moment later:
+        // fopen() creates at 0666 & ~umask, so under a permissive process umask
+        // the file would be group/world-readable from its first byte onwards.
+        // The umask is process-global, so it is restored in `finally` even on
+        // an exception. PHP's request model is one process per request and the
+        // CLI is single-threaded, so the window is safe.
+        $previousUmask = umask(0o077);
+        $handle = false;
 
         try {
+            $handle = @fopen($temporaryPath, 'xb');
+
+            if ($handle === false) {
+                throw new StorageException(
+                    StorageException::WRITE_FAILED,
+                    "Could not create temporary file {$temporaryPath}.",
+                    $fileRole,
+                );
+            }
+
             if (@fwrite($handle, $contents) !== \strlen($contents)) {
                 throw new StorageException(
                     StorageException::WRITE_FAILED,
@@ -142,14 +178,35 @@ final class AtomicJsonFile
                 );
             }
         } catch (\Throwable $error) {
-            fclose($handle);
+            if ($handle !== false) {
+                fclose($handle);
+            }
+
             @unlink($temporaryPath);
 
             throw $error;
+        } finally {
+            umask($previousUmask);
         }
 
         fclose($handle);
-        @chmod($temporaryPath, self::FILE_MODE);
+
+        // Restrict before publishing, and only publish a restriction that is
+        // verified. A chmod that was accepted but did not take effect must not
+        // reach the target under the old, wider mode.
+        if (!$this->restrict($temporaryPath)) {
+            @unlink($temporaryPath);
+
+            throw new StorageException(
+                StorageException::WRITE_FAILED,
+                \sprintf(
+                    'Could not restrict temporary file %s to mode %04o; refusing to publish it.',
+                    $temporaryPath,
+                    self::FILE_MODE,
+                ),
+                $fileRole,
+            );
+        }
 
         if (!@rename($temporaryPath, $targetPath)) {
             @unlink($temporaryPath);
@@ -161,6 +218,29 @@ final class AtomicJsonFile
                 $fileRole,
             );
         }
+    }
+
+    /**
+     * Applies {@see FILE_MODE} to $path and verifies the effective mode.
+     *
+     * A `chmod` call alone is not proof: a filesystem or wrapper can accept it
+     * and leave the file wider. The restriction only counts when `fileperms()`
+     * shows the requested mode, so this returns false both when the mode cannot
+     * be applied and when it was applied but did not take effect.
+     */
+    private function restrict(string $path): bool
+    {
+        $applied = $this->setFileMode === null
+            ? @chmod($path, self::FILE_MODE)
+            : ($this->setFileMode)($path, self::FILE_MODE);
+
+        if ($applied !== true) {
+            return false;
+        }
+
+        $actual = @fileperms($path);
+
+        return $actual !== false && ($actual & 0o777) === self::FILE_MODE;
     }
 
     private function ensureDirectory(string $directory, ?string $fileRole): void

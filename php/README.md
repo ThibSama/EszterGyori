@@ -259,9 +259,13 @@ is 39 cases and not 38.
 revision semantics unchanged: `revision` is a non-negative integer and the **only**
 input to the `"published-<revision>"` ETag.
 
-- **Atomic writes** — temp file in `var/tmp/` → `fflush` → `fsync` → `chmod 0640`
-  → `rename()`. Skipping the fsync makes the rename durable while the bytes are
-  not; a power loss then leaves an empty file where content was.
+- **Atomic writes** — a temp file in `var/tmp/` is born `0600` (the process umask
+  is restricted around its creation and restored immediately), then `fflush` →
+  `fsync` → `chmod 0640`, **verified**, → `rename()`. A restriction that cannot
+  be applied or verified refuses the publish: the previous file is left
+  byte-identical and the temp is removed. Skipping the fsync makes the rename
+  durable while the bytes are not; a power loss then leaves an empty file where
+  content was.
 - **Same filesystem** — `rename()` is only atomic within one filesystem, so
   bootstrap `stat`s both directories and refuses to start if they differ.
 - **Locking** — advisory `flock()` on `data/locks/content.lock`. Reads take

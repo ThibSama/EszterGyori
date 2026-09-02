@@ -115,6 +115,22 @@ final class MediaLibrary
     private const STAGING_PREFIX = '.staging-';
 
     /**
+     * The one mode a stored private original may carry (ESZ-103): the caller's
+     * verified bytes stay outside the document root at 0640, the same mode as
+     * the authoritative JSON finals. Renamed from intake (0600) and restricted
+     * again here, so the restriction is verified on the final name too.
+     */
+    public const PRIVATE_ORIGINAL_MODE = 0o640;
+
+    /**
+     * The one mode a served derivative may carry (ESZ-103): public by design at
+     * 0644, because Apache usually runs as a different user and must be able to
+     * read what it serves. This is the intentional exception to the private
+     * boundary.
+     */
+    public const PUBLIC_DERIVATIVE_MODE = 0o644;
+
+    /**
      * The staging prefix a delete renames a managed file to before removing it.
      *
      * Distinct from the upload {@see STAGING_PREFIX} so a file waiting out a
@@ -129,6 +145,21 @@ final class MediaLibrary
     private readonly ApplicationSnapshotLock $snapshotLock;
     private readonly MediaContentLock $mediaContentLock;
 
+    /**
+     * @param string $contentDirectory Directory holding the media catalogue.
+     * @param string $originalsDirectory Private originals tree (with the
+     *        `.intake/` child); never web-reachable.
+     * @param string $publicMediaDirectory Served derivatives directory.
+     * @param string $tmpDirectory Atomic-write staging, same filesystem as
+     *        $contentDirectory.
+     * @param \Closure(string, int): bool|null $setFileMode Narrowest test seam
+     *        for the mode restrictions of {@see publishAsset()}: when provided it
+     *        replaces **only** the `chmod(2)` calls. Production passes null and
+     *        gets the real chmod. The effective-mode verification that follows
+     *        is never seam-injectable — a file is only kept when `fileperms()`
+     *        shows the requested mode — so a seam can force a refusal but cannot
+     *        make an unverified restriction look applied.
+     */
     public function __construct(
         private readonly MediaContract $contract,
         private readonly string $contentDirectory,
@@ -139,6 +170,7 @@ final class MediaLibrary
         private readonly ContractArtifacts $artifacts,
         private readonly StructuralValidator $structural,
         private readonly Clock $clock,
+        private readonly ?\Closure $setFileMode = null,
     ) {
         $this->writer = new AtomicJsonFile($this->tmpDirectory);
         $this->lock = new FileLock($lockDirectory . \DIRECTORY_SEPARATOR . 'media.lock');
@@ -413,7 +445,24 @@ final class MediaLibrary
                     );
                 }
                 $placed[] = $originalTarget;
-                @chmod($originalTarget, AtomicJsonFile::FILE_MODE);
+
+                // Verified restrictions, both of them: the original stays private
+                // at PRIVATE_ORIGINAL_MODE and the derivative is made public at
+                // PUBLIC_DERIVATIVE_MODE (Apache usually runs as a different
+                // user). A mode that cannot be established unwinds everything
+                // placed so far — nothing is catalogued over an unverifiable
+                // file, in either direction.
+                if (!$this->restrictTo($originalTarget, self::PRIVATE_ORIGINAL_MODE)) {
+                    throw new StorageException(
+                        StorageException::WRITE_FAILED,
+                        \sprintf(
+                            'Could not restrict the stored original %s to mode %04o.',
+                            $originalTarget,
+                            self::PRIVATE_ORIGINAL_MODE,
+                        ),
+                        self::METADATA_ROLE,
+                    );
+                }
 
                 if (!@rename($verifiedDerivativePath, $publicTarget)) {
                     throw new StorageException(
@@ -423,9 +472,18 @@ final class MediaLibrary
                     );
                 }
                 $placed[] = $publicTarget;
-                // 0644, not the 0640 the catalogue uses: this one is served by
-                // Apache, which usually runs as a different user.
-                @chmod($publicTarget, 0o644);
+
+                if (!$this->restrictTo($publicTarget, self::PUBLIC_DERIVATIVE_MODE)) {
+                    throw new StorageException(
+                        StorageException::WRITE_FAILED,
+                        \sprintf(
+                            'Could not restrict the served derivative %s to mode %04o.',
+                            $publicTarget,
+                            self::PUBLIC_DERIVATIVE_MODE,
+                        ),
+                        self::METADATA_ROLE,
+                    );
+                }
 
                 $index['assets'][] = $metadata;
                 $this->writeIndex($index);
@@ -790,6 +848,27 @@ final class MediaLibrary
     public function artifacts(): ContractArtifacts
     {
         return $this->artifacts;
+    }
+
+    /**
+     * Applies $mode to $path and verifies the effective mode.
+     *
+     * A `chmod` call alone is not proof that the restriction took effect; the
+     * restriction only counts when `fileperms()` shows the requested mode.
+     */
+    private function restrictTo(string $path, int $mode): bool
+    {
+        $applied = $this->setFileMode === null
+            ? @chmod($path, $mode)
+            : ($this->setFileMode)($path, $mode);
+
+        if ($applied !== true) {
+            return false;
+        }
+
+        $actual = @fileperms($path);
+
+        return $actual !== false && ($actual & 0o777) === $mode;
     }
 
     private function ensureDirectory(string $directory): void

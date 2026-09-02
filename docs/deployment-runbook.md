@@ -62,8 +62,12 @@ eszter/
 └── backups/                     private retention location
 ```
 
-Keep directories `0750` and private files `0640`; `config/` is `0700` and
-`config/config.php` must be `0600`. `public_html/` directories/files are `0755`/`0644`.
+Keep directories `0750` and private files `0640` — the content JSON finals
+(`draft.json`, `published.json`, `media-library.json`) and the stored media
+originals. `config/` is `0700` and `config/config.php` must be `0600`. The
+upload intake and the application log file (`var/log/app.log`) are `0600`, as
+are the backup archives. `public_html/` directories/files are `0755`/`0644`,
+served media derivatives included.
 The hosting account's PHP process must own, or have write permission to,
 `public_html/media`, `data/content`, `data/media-originals`, `data/locks`, `var/log`,
 and `var/tmp`.
