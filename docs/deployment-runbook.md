@@ -86,6 +86,11 @@ bounded timeout, and canonical customer instructions/contact. No Hetzner endpoin
 credential or mail tariff is assumed. Production configuration validation refuses
 empty values, placeholders, insecure session cookies, an unreadable/over-permissive
 config file, invalid paths, invalid database settings and incomplete SMTP settings.
+SMTP encryption is part of that boundary: production accepts `starttls` (mandatory
+STARTTLS — never an opportunistic downgrade to plaintext) or `smtps` (implicit TLS)
+only, and a production `notifications.email.encryption = none` is refused at
+configuration load, before the runner can claim or deliver anything. `none` exists
+for development/test relays only, where plaintext SMTP is deliberate.
 
 ## 3. Provision or update the database
 

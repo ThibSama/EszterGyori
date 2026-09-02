@@ -597,6 +597,75 @@ final class ConfigurationTest extends TestCase
         self::assertSame($this->root . '/public_html/contracts', $config->contractsDir);
     }
 
+    /**
+     * ESZ-102: production mail must be encrypted on the wire. A production
+     * configuration asking for plaintext SMTP is refused during configuration,
+     * and the refusal names the setting — never the credentials beside it.
+     */
+    public function testProductionRejectsPlaintextSmtpNamingTheSettingWithoutSecrets(): void
+    {
+        $raw = $this->valid();
+        /** @var array<string, mixed> $email */
+        $email = $raw['notifications']['email'];
+        $email['encryption'] = 'none';
+        $raw['notifications']['email'] = $email;
+
+        try {
+            Configuration::fromArray($raw, $this->root);
+            self::fail('production accepted plaintext SMTP');
+        } catch (ConfigurationException $exception) {
+            self::assertSame(
+                ['notifications.email.encryption'],
+                array_column($exception->issues(), 'path'),
+            );
+            $message = $exception->getMessage();
+            self::assertStringContainsString('notifications.email.encryption', $message);
+            self::assertStringContainsString('starttls', $message);
+            self::assertStringContainsString('smtps', $message);
+
+            // Proof: the refusal names the setting and never leaks the
+            // configured username, password, host or any other value.
+            self::assertStringNotContainsString('mailer', $message);
+            self::assertStringNotContainsString('smtp-secret', $message);
+            self::assertStringNotContainsString('smtp.example.test', $message);
+        }
+    }
+
+    /** ESZ-102: plaintext SMTP stays legal outside production. */
+    public function testPlaintextSmtpRemainsLegalOutsideProduction(): void
+    {
+        foreach (['development', 'test'] as $environment) {
+            $raw = $this->valid();
+            /** @var array<string, mixed> $email */
+            $email = $raw['notifications']['email'];
+            $email['encryption'] = 'none';
+            $raw['notifications']['email'] = $email;
+            $raw['environment'] = $environment;
+
+            $config = Configuration::fromArray($raw, $this->root);
+
+            self::assertFalse($config->isProduction());
+            self::assertSame('none', $config->requireSmtp()->encryption);
+        }
+    }
+
+    /** ESZ-102: production accepts the two encrypted modes and only those. */
+    public function testProductionAcceptsTheTwoEncryptedSmtpModes(): void
+    {
+        foreach (['starttls', 'smtps'] as $encryption) {
+            $raw = $this->valid();
+            /** @var array<string, mixed> $email */
+            $email = $raw['notifications']['email'];
+            $email['encryption'] = $encryption;
+            $raw['notifications']['email'] = $email;
+
+            $config = Configuration::fromArray($raw, $this->root);
+
+            self::assertTrue($config->isProduction());
+            self::assertSame($encryption, $config->requireSmtp()->encryption);
+        }
+    }
+
     private function propertyFor(string $key): string
     {
         return match ($key) {

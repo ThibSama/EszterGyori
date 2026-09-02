@@ -242,6 +242,23 @@ final class Configuration
             'starttls',
             $issues,
         );
+
+        // ESZ-102. Production mail must never leave the host in plaintext, and
+        // no fallback from an encrypted mode to a plaintext one exists. `none`
+        // stays legal in development/test, where an operator may point the
+        // runner at a deliberately controlled plaintext relay, but a production
+        // configuration that asks for it is refused here — during
+        // configuration/preflight, before any SMTP transport, queue claim or
+        // delivery exists to act on the setting. The value is never echoed;
+        // the issue names the setting, not the credentials beside it.
+        if ($isProduction && $encryption === 'none') {
+            $issues[] = [
+                'path' => 'notifications.email.encryption',
+                'message' => 'is restricted to starttls or smtps in production; '
+                    . 'none is a development/test setting for deliberately controlled plaintext SMTP.',
+            ];
+        }
+
         /** @var mixed $authenticationRequired */
         $authenticationRequired = $email['authenticationRequired'] ?? null;
         if (!\is_bool($authenticationRequired)) {

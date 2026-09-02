@@ -801,7 +801,9 @@ strictly worse and is a fallback, not a plan.
 - Mail is **queued to SQL and sent by the cron runner**, never sent inline during a web
   request. A slow or down mail server must not make a booking form hang or a booking be
   lost after it was accepted. Package 7.2 implements this with Symfony Mailer. Host,
-  port, encryption (`none`, required STARTTLS or implicit TLS), optional authentication,
+  port, encryption (`starttls` or `smtps` in production — mandatory STARTTLS
+  or implicit TLS from the first byte; plaintext `none` is development/test-only
+  and refused in production), optional authentication,
   sender identity and a 1–30 second socket timeout are deployment configuration; no
   Hetzner value is assumed. Provider messages and credentials never enter job errors or logs.
 - Create, move and cancel enqueue their e-mail in the same transaction as booking and

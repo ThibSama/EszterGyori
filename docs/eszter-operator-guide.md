@@ -63,6 +63,12 @@ serveur travaillent en Europe/Paris ; ne convertir aucune heure à la main en UT
 
 ## E-mails et SMS
 
+En production, `notifications.email.encryption` doit être `starttls` (TLS
+obligatoire après le dialogue SMTP) ou `smtps` (TLS implicite dès la connexion).
+Le mode `none` — SMTP en clair — est réservé au développement et aux tests, où un
+relais local en clair est un choix délibéré ; la configuration de production le
+refuse au chargement, avant tout envoi.
+
 Une réservation crée une confirmation et un rappel ; un déplacement rend l’ancien
 rappel obsolète et en planifie un nouveau ; une annulation retire les rappels et
 planifie l’annulation. Le cron SMTP doit tourner chaque minute. Un e-mail peut être

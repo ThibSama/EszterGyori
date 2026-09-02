@@ -107,7 +107,11 @@ return [
         'email' => [
             'host' => 'smtp.example.invalid',
             'port' => 587,
-            // none | starttls | smtps
+            // starttls | smtps — the only modes production accepts: mandatory
+            // STARTTLS (never an opportunistic downgrade) or implicit TLS from
+            // the first byte. `none` (plaintext) is a development/test setting
+            // for deliberately controlled plaintext relays only; production
+            // refuses it during configuration/preflight.
             'encryption' => 'starttls',
             'authenticationRequired' => true,
             'username' => 'CHANGE_ME',
