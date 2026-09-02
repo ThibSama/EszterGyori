@@ -226,9 +226,9 @@ export const semanticRules: SemanticRule[] = [
     id: "media.sourceProtocol",
     source: "site-content.ts:mediaSourceSchema",
     lostBecause:
-      "The URL branch restricts protocol to http/https after parsing; `format: uri` does not.",
+      "The shared httpsUrlSchema restricts the external-URL branch to https after parsing; `format: uri` does not. The URL policy lives in one schema reused by Instagram links and media sources alike.",
     description:
-      "Media sources are a rooted public path, an http(s) URL, or null. Other protocols are rejected.",
+      "Media sources are a rooted public path, an HTTPS URL, or null; http: and every other protocol are rejected.",
   },
 ];
 
@@ -662,6 +662,25 @@ export const parityCases: ParityCase[] = [
     target: "siteContent",
     description: "A protocol-relative //host path is rejected.",
     patch: [{ op: "replace", path: "/hero/visual/src", value: "//evil.example/x.png" }],
+    expectedIssuePaths: ["/hero/visual/src"],
+  },
+  {
+    id: "media.sourceProtocol.httpsAccepted",
+    rule: "media.sourceProtocol",
+    expect: "valid",
+    target: "siteContent",
+    description:
+      "An HTTPS external media source is accepted, because the CMS accepts arbitrary HTTPS origins and the production CSP allows the `https:` scheme.",
+    patch: [{ op: "replace", path: "/hero/visual/src", value: "https://images.example.com/hero.webp" }],
+  },
+  {
+    id: "media.sourceProtocol.httpRejected",
+    rule: "media.sourceProtocol",
+    expect: "invalid",
+    target: "siteContent",
+    description:
+      "An HTTP external media source is rejected everywhere: it would be browser-blocked by the production `img-src 'self' data: https:` policy and is an active downgrade vector.",
+    patch: [{ op: "replace", path: "/hero/visual/src", value: "http://images.example.com/hero.webp" }],
     expectedIssuePaths: ["/hero/visual/src"],
   },
 ];

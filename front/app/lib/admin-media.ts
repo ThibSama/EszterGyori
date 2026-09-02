@@ -291,6 +291,51 @@ export function isManagedMediaPath(source: string | null): boolean {
 }
 
 /**
+ * The copy of the media-source field and its preview (ESZ-104).
+ *
+ * Exported so the unit tests assert the exact strings the editor renders, and
+ * so the field and the preview cannot drift into describing two different URL
+ * policies. HTTPS-only, matching the contract (`mediaSourceSchema` accepts a
+ * rooted path, an HTTPS URL or null) and the production CSP
+ * (`img-src 'self' https:`): an `http:` source is invalid everywhere and is
+ * never described as acceptable here.
+ */
+export const MEDIA_SOURCE_FIELD_MESSAGES = {
+  placeholder: "Ex. /media/med_… ou https://…",
+  helpManaged: "Média de la médiathèque. Vider ce champ ne supprime pas le fichier.",
+  helpExternal:
+    "Saisir une URL HTTPS, un chemin public commençant par /, ou choisir un média ci-dessous.",
+  previewUnavailable:
+    "Aperçu indisponible : saisir une URL HTTPS valide ou un chemin public commençant par /.",
+  previewEmpty:
+    "Aucune source renseignée. Le site public conserve son placeholder actuel.",
+} as const;
+
+/**
+ * Whether a typed source may be previewed as an image (ESZ-104).
+ *
+ * Rooted public paths always may; among absolute URLs only HTTPS may — the
+ * same boundary the contract enforces. An `http:` source is not previewed as
+ * valid: showing it as a loaded image would tell an editor a publication the
+ * server will refuse is fine, and the production CSP would block it anyway.
+ * The browser also never renders an `<img src="http://…">` from this
+ * decision, so an invalid source cannot leak into a request at all.
+ */
+export function isPreviewableImageSource(source: string): boolean {
+  const trimmed = source.trim();
+
+  if (trimmed.startsWith("/")) {
+    return true;
+  }
+
+  try {
+    return new URL(trimmed).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * A byte count as an editor should read it.
  *
  * Binary units with decimal-ish labels, matching what every operating system

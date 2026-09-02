@@ -18,10 +18,12 @@ import {
 } from "../app/lib/admin-server-draft";
 import {
   MEDIA_LIBRARY_MESSAGES,
+  MEDIA_SOURCE_FIELD_MESSAGES,
   canDelete,
   createInitialMediaLibraryState,
   formatMediaSize,
   isManagedMediaPath,
+  isPreviewableImageSource,
   mediaFailureMessage,
   mediaLibraryReducer,
   mediaUsagesIn,
@@ -582,4 +584,78 @@ test("a failed media call never advances the draft, even when it is a 409", () =
   assert.equal(draft.phase, "ready");
   assert.equal(draft.reportedServerRevision, null);
   assert.deepEqual(draft.conflicts, []);
+});
+
+// ── ESZ-104 — the media source policy the editor exposes ────────────────────
+
+test("media source previewability is HTTPS-only for external URLs", () => {
+  // Rooted public paths always preview…
+  assert.equal(isPreviewableImageSource("/media/med_abc.webp"), true);
+  assert.equal(isPreviewableImageSource("/some/public/path.png"), true);
+  // …HTTPS external URLs preview (the contract and CSP accept them)…
+  assert.equal(isPreviewableImageSource("https://images.example.com/hero.webp"), true);
+  assert.equal(isPreviewableImageSource("  https://images.example.com/hero.webp  "), true);
+  // …and HTTP external URLs never do: they are contract-invalid and
+  // CSP-blocked, so the editor must not present them as a valid preview.
+  assert.equal(isPreviewableImageSource("http://images.example.com/hero.webp"), false);
+  // Anything unparseable is not an image source.
+  assert.equal(isPreviewableImageSource("images.example.com/hero.webp"), false);
+  assert.equal(isPreviewableImageSource(""), false);
+  assert.equal(isPreviewableImageSource("javascript:alert(1)"), false);
+  assert.equal(isPreviewableImageSource("data:image/png;base64,iVBORw0KGgo="), false);
+});
+
+test("media source field copy exposes HTTPS external URLs only", () => {
+  // The placeholder names the two valid external forms: a rooted public path
+  // or an https:// URL. No string on the field ever advertises http://.
+  assert.equal(
+    MEDIA_SOURCE_FIELD_MESSAGES.placeholder,
+    "Ex. /media/med_… ou https://…",
+  );
+  assert.equal(MEDIA_SOURCE_FIELD_MESSAGES.placeholder.includes("http://"), false);
+
+  // The help text a non-managed field shows: HTTPS and rooted paths are the
+  // only absolute forms offered; the library choice is preserved.
+  assert.equal(
+    MEDIA_SOURCE_FIELD_MESSAGES.helpExternal,
+    "Saisir une URL HTTPS, un chemin public commençant par /, ou choisir un média ci-dessous.",
+  );
+  assert.equal(MEDIA_SOURCE_FIELD_MESSAGES.helpExternal.includes("http://"), false);
+  assert.equal(MEDIA_SOURCE_FIELD_MESSAGES.helpExternal.includes("http(s)"), false);
+
+  // The preview-unavailable message must not call HTTP a valid form either.
+  assert.equal(
+    MEDIA_SOURCE_FIELD_MESSAGES.previewUnavailable,
+    "Aperçu indisponible : saisir une URL HTTPS valide ou un chemin public commençant par /.",
+  );
+  assert.equal(
+    MEDIA_SOURCE_FIELD_MESSAGES.previewUnavailable.includes("http://"),
+    false,
+  );
+
+  // The managed-asset help and the empty-state copy are untouched by ESZ-104.
+  assert.equal(
+    MEDIA_SOURCE_FIELD_MESSAGES.helpManaged,
+    "Média de la médiathèque. Vider ce champ ne supprime pas le fichier.",
+  );
+  assert.equal(
+    MEDIA_SOURCE_FIELD_MESSAGES.previewEmpty,
+    "Aucune source renseignée. Le site public conserve son placeholder actuel.",
+  );
+});
+
+test("the preview decision and the copy agree on HTTP being invalid", () => {
+  // Whichever HTTP spelling an editor types, the message shown must be the
+  // unavailable one — never an <img> render of the invalid source.
+  for (const httpSource of [
+    "http://images.example.com/hero.webp",
+    "http://localhost/hero.webp",
+    "http://127.0.0.1:8080/hero.webp",
+  ]) {
+    assert.equal(isPreviewableImageSource(httpSource), false, httpSource);
+  }
+  assert.equal(
+    isPreviewableImageSource("https://images.example.com/hero.webp"),
+    true,
+  );
 });

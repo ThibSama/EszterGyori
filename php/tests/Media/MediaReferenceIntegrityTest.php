@@ -30,7 +30,10 @@ use PHPUnit\Framework\TestCase;
  *     refused;
  *  4. a deliberately prepared dangling stored draft cannot be published — the
  *     previous published bytes and revision survive byte-identical;
- *  5. HTTP(S), static/non-managed paths and null save without regression.
+ *  5. HTTPS, static/non-managed paths and null save without regression —
+ *     and, since ESZ-104, an `http:` media source is refused by the content
+ *     contract (400 VALIDATION_FAILED) before the catalogue guard is even
+ *     consulted, so the catalogue cannot make an invalid protocol valid.
  *
  * The HTTP semantics are part of the proof too: the save refusal is the
  * caller's 400 VALIDATION_FAILED (checked under the shared boundary, so no
@@ -227,16 +230,19 @@ final class MediaReferenceIntegrityTest extends TestCase
         self::assertStringNotContainsString('media', (string) json_encode($body['error'] ?? []));
     }
 
-    // ── Proof 5: HTTP(S), static paths and null save without regression ────
+    // ── Proof 5: HTTPS, static paths and null save without regression (ESZ-104) ──
 
-    public function testHttpStaticAndNullSourcesStillSave(): void
+    public function testHttpsStaticAndNullSourcesStillSave(): void
     {
         $asset = $this->uploadAsset();
         $this->initialize();
 
+        // ESZ-104 freeze: external media is HTTPS-only. Two different HTTPS
+        // hosts, a static non-managed path and null all save; the catalogue
+        // guard must not over-block them.
         $srcs = [
             'https://cdn.example.net/photo.jpg',
-            'http://cdn.example.net/photo.png',
+            'https://photos.example.org/gallery.png',
             '/assets/static/photo.webp',
             null,
         ];
@@ -251,6 +257,27 @@ final class MediaReferenceIntegrityTest extends TestCase
         $response = $this->saveRequestWith($content);
         self::assertSame(200, $response->status, (string) $response->body);
         self::assertSame(5, $this->kernel->storage->draftRevision());
+    }
+
+    public function testHttpMediaSourceIsRefusedByTheContractBeforeTheCatalogueGuard(): void
+    {
+        // ESZ-104: http: is invalid everywhere. The catalogue holds a real
+        // asset here, so the managed-reference guard would pass if it were
+        // reached — the refusal must come from the content contract first,
+        // through the ordinary validation envelope, and write nothing.
+        $this->uploadAsset();
+        $this->initialize();
+        $draftBefore = $this->rawDraft();
+        $publishedBefore = $this->rawPublished();
+
+        $response = $this->saveRequest('http://cdn.example.net/photo.png');
+
+        self::assertSame(400, $response->status, (string) $response->body);
+        self::assertSame('VALIDATION_FAILED', $this->errorCodeOf($response));
+        self::assertArrayNotHasKey('x-content-revision', $response->headers);
+        self::assertSame($draftBefore, $this->rawDraft());
+        self::assertSame($publishedBefore, $this->rawPublished());
+        self::assertSame(0, $this->kernel->storage->draftRevision());
     }
 
     // ── Save refusal at the HTTP layer, once, whole ────────────────────────

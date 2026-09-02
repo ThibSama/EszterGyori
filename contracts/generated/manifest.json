@@ -123,7 +123,7 @@
     },
     {
       "file": "parity-corpus.json",
-      "sha256": "9eb6a4c2f04222c8bf1c8733c817f42b0fa6c49b72cd901a805ea0ace2f8d27f"
+      "sha256": "ed1848f42f102ff516fb59834e09d660dd32e085e61a54f956472fe7489c8113"
     },
     {
       "file": "public-bookable-services-response.schema.json",
@@ -147,7 +147,7 @@
     },
     {
       "file": "semantic-rules.json",
-      "sha256": "953f61ab1e5aa97f9d83aaedda7cd7c674df0da2abf25b41c401cdb7655adf48"
+      "sha256": "07f6a14471e78272a52a82c0093d1c00c225cf4eed0b154b0338d0d9a6b2c481"
     },
     {
       "file": "server-draft-envelope.input.schema.json",

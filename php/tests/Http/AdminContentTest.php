@@ -499,6 +499,66 @@ final class AdminContentTest extends TestCase
         }
     }
 
+    // ── ESZ-104 — the media-source protocol policy on the write surface ─────
+
+    public function testSavingAnHttpMediaSourceIsRefusedThroughTheValidationEnvelope(): void
+    {
+        // The pre-save state: both heads at revision 0, canonical content.
+        $revision = $this->draftRevision();
+        $content = $this->contentWithCopy('http media must not save');
+        /** @var array<string, mixed> $hero */
+        $hero = $content['hero'];
+        $hero['visual']['src'] = 'http://images.example.com/hero.webp';
+        $content['hero'] = $hero;
+
+        $response = $this->save($revision, $content);
+
+        // The existing validation envelope and code — exactly what any other
+        // semantic refusal produces — and no new public error code.
+        self::assertSame(400, $response->status, (string) $response->body);
+        self::assertSame('VALIDATION_FAILED', $this->errorCode($response));
+
+        // Nothing was written: the refusal is not a partial save.
+        self::assertSame($revision, $this->draftRevision());
+        self::assertSame(0, $this->publishedRevision());
+        self::assertSame([], $this->temporaryFiles());
+    }
+
+    public function testSavingAnHttpsExternalMediaSourceIsAccepted(): void
+    {
+        // External HTTPS media is a frozen V1 source: the contract accepts it,
+        // so the write surface must too — the ESZ-147 catalogue guard applies
+        // to managed `/media/...` paths only.
+        $revision = $this->draftRevision();
+        $content = $this->contentWithCopy('https media may save');
+        /** @var array<string, mixed> $hero */
+        $hero = $content['hero'];
+        $hero['visual']['src'] = 'https://images.example.com/hero.webp';
+        $content['hero'] = $hero;
+
+        $this->assertOk($this->save($revision, $content));
+        self::assertSame($revision + 1, $this->draftRevision());
+
+        // And the published surface accepts the same document.
+        $this->assertOk($this->publish($revision + 1));
+        self::assertSame($revision + 1, $this->publishedRevision());
+    }
+
+    public function testARootRelativeMediaSourceStillSavesWithoutTheCatalogueGuard(): void
+    {
+        // Root-relative paths outside the managed prefix are ordinary public
+        // assets (ESZ-104 freeze): accepted without a catalogue entry.
+        $revision = $this->draftRevision();
+        $content = $this->contentWithCopy('root-relative media may save');
+        /** @var array<string, mixed> $hero */
+        $hero = $content['hero'];
+        $hero['visual']['src'] = '/assets/hero.jpg';
+        $content['hero'] = $hero;
+
+        $this->assertOk($this->save($revision, $content));
+        self::assertSame($revision + 1, $this->draftRevision());
+    }
+
     // ── Fixture ─────────────────────────────────────────────────────────────
 
     private function boot(): void

@@ -233,13 +233,15 @@
     {
       "id": "media.sourceProtocol",
       "source": "site-content.ts:mediaSourceSchema",
-      "lostBecause": "The URL branch restricts protocol to http/https after parsing; `format: uri` does not.",
-      "description": "Media sources are a rooted public path, an http(s) URL, or null. Other protocols are rejected.",
+      "lostBecause": "The shared httpsUrlSchema restricts the external-URL branch to https after parsing; `format: uri` does not. The URL policy lives in one schema reused by Instagram links and media sources alike.",
+      "description": "Media sources are a rooted public path, an HTTPS URL, or null; http: and every other protocol are rejected.",
       "parityCaseIds": [
         "media.sourceProtocol.javascriptRejected",
         "media.sourceProtocol.dataRejected",
         "media.sourceProtocol.publicPathValid",
-        "media.sourceProtocol.protocolRelativeRejected"
+        "media.sourceProtocol.protocolRelativeRejected",
+        "media.sourceProtocol.httpsAccepted",
+        "media.sourceProtocol.httpRejected"
       ]
     }
   ]

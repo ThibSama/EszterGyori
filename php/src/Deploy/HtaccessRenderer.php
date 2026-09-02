@@ -213,8 +213,20 @@ final class HtaccessRenderer
                 #                   ESZ-035's admin preview embeds this origin in a
                 #                   same-origin iframe, and 'none' would break it.
                 #
-                # Every subresource source remains same-origin. The sole frame the
-                # application intentionally loads is ESZ-035's own `/admin/preview`.
+                # Every subresource source remains same-origin except one
+                # deliberate, contract-driven exception: `img-src` admits the
+                # whole `https:` scheme (ESZ-104). The CMS accepts arbitrary
+                # HTTPS origins as external media sources, so the CSP mirrors
+                # the contract with a scheme-wide source rather than a host
+                # allowlist that would silently disagree with it — and those
+                # external hosts receive image requests by design. `http:` is
+                # in neither the contract nor the policy. `data:` was removed
+                # at the same time, proven unused: no image source in the
+                # export is a data URI and the content contract rejects
+                # `data:` media, so no current rendering path needs it.
+                #
+                # The sole frame the application intentionally loads is
+                # ESZ-035's own `/admin/preview`.
                 Header always set Content-Security-Policy "{$csp}"
 
                 # Powerful features this site never uses. Sent because the default
@@ -317,7 +329,7 @@ final class HtaccessRenderer
             // in which a nonce could be minted.
             "script-src 'self' 'unsafe-inline'",
             "style-src 'self' 'unsafe-inline'",
-            "img-src 'self' data:",
+            "img-src 'self' https:",
             "font-src 'self'",
             "connect-src 'self'",
             "object-src 'none'",

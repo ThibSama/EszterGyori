@@ -103,6 +103,50 @@ final class SecurityHeadersTest extends TestCase
     }
 
     /**
+     * `img-src` is the one directive the ESZ-104 policy deliberately widens,
+     * and it is asserted exactly: `'self' https:` and nothing else.
+     *
+     * `https:` is scheme-wide, not a host allowlist, because the CMS accepts
+     * arbitrary HTTPS origins as external media sources — the CSP mirrors the
+     * contract instead of maintaining a second list that could drift from it.
+     * `http:` is in neither; `data:` was removed with proof of disuse (no
+     * image source in the export is a data URI, and the content contract
+     * rejects `data:` media), so no current rendering path needs it.
+     */
+    public function testTheImageSourceIsExactlySelfAndHttps(): void
+    {
+        $policy = $this->directive('Content-Security-Policy');
+
+        self::assertSame(
+            1,
+            substr_count($policy, 'img-src'),
+            'img-src appears more than once in the policy',
+        );
+
+        self::assertSame(
+            0,
+            preg_match('/(?:^|;)\s*img-src\s+[^;]*data:[^;]*(?:;|$)/', $policy),
+            'img-src still admits data: URIs',
+        );
+
+        $sources = self::sourcesOf($policy, 'img-src');
+        self::assertSame(["'self'", 'https:'], $sources, 'img-src is not exactly \'self\' https:');
+    }
+
+    /** @return list<string> */
+    private static function sourcesOf(string $policy, string $directiveName): array
+    {
+        foreach (explode(';', $policy) as $part) {
+            $tokens = preg_split('/\s+/', trim($part)) ?: [];
+            if (($tokens[0] ?? '') === $directiveName) {
+                return \array_slice($tokens, 1);
+            }
+        }
+
+        self::fail("{$directiveName} is not present in the policy");
+    }
+
+    /**
      * The inline allowance is stated rather than hidden.
      *
      * It is real and it is unavoidable while the export emits inline hydration

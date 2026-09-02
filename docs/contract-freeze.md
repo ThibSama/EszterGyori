@@ -243,7 +243,7 @@ this project's real invariants live:
 - WCAG contrast floors between palette colours;
 - ISO-8601 round-trip exactness on timestamps;
 - `mailto:` and Instagram-host URL restrictions;
-- media source protocol restriction (`javascript:`, `data:`, `//host` rejected);
+- media source protocol restriction (rooted public path, HTTPS URL or `null` only — `http:`, `javascript:`, `data:`, `//host` rejected, ESZ-104);
 - hex uppercase normalisation and `appearance` default injection.
 
 A PHP service validating only against JSON Schema would accept a document that Zod

@@ -353,9 +353,10 @@ SMS and live-provider receipt remain separate work.
 ## 5. Runtime smoke and deployment-owned gates
 
 Each gate below is declared in `scripts/validate.mjs`. The repository-local PHP smoke
-and the focused admin-preview CSP, media-pipeline and admin-auth browser proofs are
-executable; checks that require a deployed origin or the broader browser workflows
-remain NOT RUN with their reason, so the gap is inspectable rather than absent.
+and the focused admin-preview CSP, media-pipeline, admin-auth and public browser proofs
+are executable; checks that require a deployed origin or the broader admin/booking
+browser workflows remain NOT RUN with their reason, so the gap is inspectable rather
+than absent.
 
 ### Stage 8 — HTTP smoke
 
@@ -412,12 +413,27 @@ the retry completes once the trigger is removed; and a clean logout lands on
 `/admin/login` with the session row gone and the pre-logout cookie unable to authorise.
 The gate removes its container, profile and credentials on every outcome.
 
-Those focused proofs do not implement the broader `browser:admin` contract below.
+`browser:public` runs the built export, the PHP front controller and an isolated
+MySQL under **Apache applying the committed generated `.htaccess`** (a disposable
+document root and containers; the same requirement set as the other browser gates,
+plus `openssl`). It proves the public scenario below end to end — published content
+renders, navigation clicks and direct deep links land below the fixed navbar, gallery
+and Instagram links resolve exactly as `/api/content` declares them, and the layout
+holds at phone, tablet and desktop widths — and adds the ESZ-104 image-policy proofs
+under the served CSP: a same-origin managed image loads and decodes with no CSP
+violation, a cross-origin HTTPS image from a local self-signed TLS fixture loads and
+decodes under scheme-wide `https:` (browser trust bypass scoped to the disposable
+Chrome profile), an `http:` media source is refused as contract-invalid through the
+real draft-save envelope (`400 VALIDATION_FAILED`, draft unchanged) before any
+publication, and an intentionally injected `http:` `<img>` is CSP-blocked while the
+same HTTP fixture origin demonstrably serves images outside the page. All fixtures
+are local; no request leaves `127.0.0.1`. The gate removes its containers, network,
+profile, credentials, TLS material and document root on every outcome.
+
+Those focused proofs do not implement the broader `browser:admin` and `browser:booking`
+contracts below.
 Critical paths only — enough to catch a broken release, few enough to stay trustworthy:
 
-- **Public**: published content renders; navigation deep links land below the fixed
-  navbar; gallery and Instagram links resolve; layout holds at phone, tablet and
-  desktop widths.
 - **Admin**: an unauthenticated deep link redirects to login; login succeeds and rejects
   bad credentials without enumerating users; an edit saves to the server draft; publish
   updates the public site; logout invalidates the session **server-side**.

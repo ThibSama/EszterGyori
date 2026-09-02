@@ -49,7 +49,14 @@ final class Links
         return $host === 'instagram.com' || str_ends_with($host, '.instagram.com');
     }
 
-    /** `mediaSourceSchema`: a rooted public path, an http(s) URL, or null. */
+    /**
+     * `mediaSourceSchema`: a rooted public path, an HTTPS URL, or null.
+     *
+     * HTTP is deliberately absent (ESZ-104): the reference accepts only the
+     * shared `httpsUrlSchema` for the external-URL branch, mirroring the
+     * production `img-src 'self' data: https:` policy under which an `http:`
+     * media source could never render.
+     */
     public static function isMediaSource(mixed $value): bool
     {
         if ($value === null) {
@@ -66,7 +73,7 @@ final class Links
 
         $parts = self::absoluteUrl($value);
 
-        return $parts !== null && \in_array($parts['scheme'], ['http', 'https'], true);
+        return $parts !== null && $parts['scheme'] === 'https';
     }
 
     /**

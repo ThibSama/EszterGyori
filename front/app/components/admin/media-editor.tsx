@@ -7,10 +7,12 @@ import {
 import type { MediaAsset } from "../../types/site-content";
 import {
   MEDIA_LIBRARY_MESSAGES,
+  MEDIA_SOURCE_FIELD_MESSAGES,
   canDelete,
   formatMediaDimensions,
   formatMediaSize,
   isManagedMediaPath,
+  isPreviewableImageSource,
 } from "../../lib/admin-media";
 import { Field, ReadOnlyId } from "./editor-fields";
 import { useMediaLibrary } from "./media-library-provider";
@@ -31,6 +33,9 @@ import { useMediaLibrary } from "./media-library-provider";
  * The manual field stays. It is how an external URL is set, it is the fallback
  * when the library cannot be read, and removing it would make an unreachable
  * `GET /api/admin/media` into an editor that cannot set an image at all.
+ * External URLs are HTTPS-only (ESZ-104), like the contract that validates
+ * them and the `img-src 'self' https:` policy that renders them: an `http:`
+ * source is never offered, previewed or saveable.
  *
  * ## Clearing a field deletes nothing
  *
@@ -43,21 +48,6 @@ import { useMediaLibrary } from "./media-library-provider";
 function normalizeOptionalSource(value: string): string | null {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
-}
-
-function isPreviewableImageSource(source: string): boolean {
-  const trimmed = source.trim();
-
-  if (trimmed.startsWith("/")) {
-    return true;
-  }
-
-  try {
-    const parsed = new URL(trimmed);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
 }
 
 const ACCEPTED_FILE_TYPES = mediaMimeTypes.join(",");
@@ -245,15 +235,15 @@ export function MediaEditor({
         id={`${idPrefix}-src`}
         label="Source de l'image"
         value={source}
-        placeholder="Ex. /media/med_… ou https://…"
+        placeholder={MEDIA_SOURCE_FIELD_MESSAGES.placeholder}
         onChange={(value) => {
           setFailedSource(null);
           onChange({ ...media, src: normalizeOptionalSource(value) });
         }}
         help={
           isManagedMediaPath(media.src)
-            ? "Média de la médiathèque. Vider ce champ ne supprime pas le fichier."
-            : "Saisir une URL http(s) ou choisir un média ci-dessous."
+            ? MEDIA_SOURCE_FIELD_MESSAGES.helpManaged
+            : MEDIA_SOURCE_FIELD_MESSAGES.helpExternal
         }
       />
       <MediaLibraryPanel
@@ -285,8 +275,8 @@ export function MediaEditor({
         ) : (
           <div className="flex h-28 items-center justify-center px-4 text-center text-sm text-warm-500">
             {hasSource
-              ? "Aperçu indisponible : saisir une URL http(s) valide ou un chemin public commençant par /."
-              : "Aucune source renseignée. Le site public conserve son placeholder actuel."}
+              ? MEDIA_SOURCE_FIELD_MESSAGES.previewUnavailable
+              : MEDIA_SOURCE_FIELD_MESSAGES.previewEmpty}
           </div>
         )}
       </div>

@@ -444,10 +444,10 @@ const gates = [
   {
     id: "browser:public",
     stage: "9. Browser scenarios",
-    status: NOT_RUN,
-    reason: "No deployed origin or project-owned runner covers this broader public scenario.",
+    cwd: ".",
+    command: ["node", "scripts/browser-public.mjs"],
     proves:
-      "Public site: page renders published content, navigation deep links land below the fixed navbar, gallery and Instagram links resolve, layout holds at phone/tablet/desktop widths.",
+      "ESZ-104 in a real browser under Apache applying the committed generated .htaccess: the public page renders the published content — hero and gallery media decode from their published sources, and the nav, gallery, contact and footer links resolve exactly as /api/content declares them; navigation clicks and direct deep links land below the fixed navbar; the layout holds at phone/tablet/desktop widths without horizontal overflow. ESZ-104 image policy: a same-origin managed image loads and decodes with no CSP violation, a cross-origin HTTPS image from a local TLS fixture loads and decodes under scheme-wide `https:`, an http: media source is refused as contract-invalid through the real draft-save envelope (400 VALIDATION_FAILED, draft unchanged) before any publication, and an intentionally injected http: <img> negative control is CSP-blocked while the same fixture origin demonstrably serves images outside the page. All fixtures are local; nothing leaves 127.0.0.1.",
   },
   {
     id: "browser:admin-auth",

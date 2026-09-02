@@ -119,6 +119,19 @@ function parseUrlSafely(value: string): URL | null {
   }
 }
 
+/**
+ * The one HTTPS-only URL rule, shared by every surface that accepts an external
+ * URL (ESZ-104). Reused rather than duplicated so the protocol policy cannot
+ * drift between call sites: Instagram links and external media sources both
+ * reach this schema, and a change here is a change to both.
+ *
+ * Why HTTPS is the only allowed scheme for external media: the CMS
+ * intentionally accepts arbitrary HTTPS origins (the CSP allows the whole
+ * `https:` scheme rather than a host allowlist), and an `http:` media source
+ * would therefore be browser-blocked by `img-src` — contract-valid but
+ * unrenderable, and an active downgrade vector for a page that will usually
+ * itself be served over HTTPS.
+ */
 const httpsUrlSchema = z
   .url("Doit etre une URL valide.")
   .refine((value) => parseUrlSafely(value)?.protocol === "https:", {
@@ -134,14 +147,11 @@ const publicAssetPathSchema = z
   .regex(/^\/(?!\/)[A-Za-z0-9._~!$&'()*+,;=:@/-]+$/, {
     message: "Doit etre un chemin public commencant par /.",
   });
+// Root-relative paths and null stay accepted; the external-URL branch is the
+// shared `httpsUrlSchema` and nothing else (ESZ-104).
 const mediaSourceSchema = z.union([
   publicAssetPathSchema,
-  z
-    .url("Doit etre une URL valide.")
-    .refine((value) => {
-      const protocol = parseUrlSafely(value)?.protocol;
-      return protocol === "http:" || protocol === "https:";
-    }, "Seules les URLs http(s) sont acceptees pour les medias."),
+  httpsUrlSchema,
   z.null(),
 ]);
 

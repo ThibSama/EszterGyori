@@ -22,7 +22,7 @@ const REFINEMENT_CENSUS: Record<
   string,
   { refine: number; superRefine: number; transform: number }
 > = {
-  "site-content.ts": { refine: 4, superRefine: 13, transform: 0 },
+  "site-content.ts": { refine: 3, superRefine: 13, transform: 0 },
   "appearance.ts": { refine: 0, superRefine: 1, transform: 1 },
   "content-envelopes.ts": { refine: 1, superRefine: 0, transform: 0 },
 };

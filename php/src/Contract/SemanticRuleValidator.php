@@ -597,7 +597,7 @@ final class SemanticRuleValidator
 
         $issues[] = new ValidationIssue(
             "{$mediaPath}/src",
-            'Doit etre un chemin public, une URL http(s) ou null.',
+            'Doit etre un chemin public, une URL HTTPS ou null.',
             'media.sourceProtocol',
         );
     }

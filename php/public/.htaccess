@@ -177,9 +177,21 @@ ErrorDocument 404 /404.html
     #                   ESZ-035's admin preview embeds this origin in a
     #                   same-origin iframe, and 'none' would break it.
     #
-    # Every subresource source remains same-origin. The sole frame the
-    # application intentionally loads is ESZ-035's own `/admin/preview`.
-    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; frame-src 'self'"
+    # Every subresource source remains same-origin except one
+    # deliberate, contract-driven exception: `img-src` admits the
+    # whole `https:` scheme (ESZ-104). The CMS accepts arbitrary
+    # HTTPS origins as external media sources, so the CSP mirrors
+    # the contract with a scheme-wide source rather than a host
+    # allowlist that would silently disagree with it — and those
+    # external hosts receive image requests by design. `http:` is
+    # in neither the contract nor the policy. `data:` was removed
+    # at the same time, proven unused: no image source in the
+    # export is a data URI and the content contract rejects
+    # `data:` media, so no current rendering path needs it.
+    #
+    # The sole frame the application intentionally loads is
+    # ESZ-035's own `/admin/preview`.
+    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' https:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; frame-src 'self'"
 
     # Powerful features this site never uses. Sent because the default
     # for most of them is "allow", so silence is a grant — and an
