@@ -97,7 +97,7 @@ function bootstrapDevelopmentMain(array $arguments): int
                 true,
             );
         }
-        $availability->replaceWeeklyRules($rules);
+        $availability->replaceWeeklyRules($availability->revision(), $rules);
 
         fwrite(STDOUT, "Development fixtures are ready.\n");
         fwrite(STDOUT, 'Admin: ' . DEVELOPMENT_ADMIN_EMAIL . "\n");

@@ -423,6 +423,7 @@ test("the generated HTTP contract freezes availability administration and the su
   const invariantIds = contract.invariants.map((invariant) => invariant.id);
   for (const id of [
     "availability.weeklyReplacementIsAllOrNothing",
+    "availability.globalOptimisticConcurrency",
     "availability.exceptionRemovalRestoresWeekly",
     "availability.exceptionWindowsAreDstChecked",
     "summary.cancelledNeverInflatesConfirmed",
@@ -448,6 +449,12 @@ test("the generated HTTP contract freezes availability administration and the su
     "admin.availability.exceptions.patch.csrfOmitted",
   ]) {
     assert.equal(byId.get(id)?.expect.status, 403, `${id} must be a 403`);
+  }
+  for (const id of [
+    "admin.availability.weekly.put.staleRevision",
+    "admin.availability.exceptions.patch.staleRevision",
+  ]) {
+    assert.equal(byId.get(id)?.expect.status, 409, `${id} must be a 409`);
   }
 
   // And the reads are exempt from CSRF, which is only meaningful if a passing
@@ -488,6 +495,7 @@ test("the wire type for civil time is the 24-hour clock, not a shape", async () 
   // The same verdicts through the schema an endpoint actually parses with, so
   // the constant and the schema cannot drift apart.
   const rule = (startLocal: string, endLocal: string) => ({
+    expectedRevision: 0,
     rules: [
       {
         weekdayIso: 2,

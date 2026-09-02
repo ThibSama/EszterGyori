@@ -10,6 +10,8 @@ use Eszter\Support\Clock;
 /** Canonical persistence for weekly rules and replacing date exceptions. */
 final class AvailabilityRepository
 {
+    private const REVISION_SETTING_KEY = 'availability.revision';
+
     public function __construct(
         private readonly Database $database,
         private readonly Clock $clock,
@@ -23,13 +25,21 @@ final class AvailabilityRepository
      *
      * @param list<WeeklyAvailabilityRule> $rules
      */
-    public function replaceWeeklyRules(array $rules): void
+    public function replaceWeeklyRules(int $expectedRevision, array $rules): void
+    {
+        $this->replaceWeeklyRulesWithRevision($rules, $expectedRevision);
+    }
+
+    /**
+     * @param list<WeeklyAvailabilityRule> $rules
+     * @return array{revision: int, value: list<WeeklyAvailabilityRule>}
+     */
+    public function replaceWeeklyRulesWithRevision(array $rules, int $expectedRevision): array
     {
         $this->assertWeeklyRules($rules);
 
         usort($rules, self::compareRules(...));
-        $this->database->transactional(function () use ($rules): void {
-            $this->database->fetchAll('SELECT id FROM availability_rules FOR UPDATE');
+        return $this->mutate($expectedRevision, function () use ($rules): array {
             $this->database->run('DELETE FROM availability_rules');
             $now = $this->clock->nowIso();
 
@@ -53,7 +63,39 @@ final class AvailabilityRepository
                     ],
                 );
             }
+
+            return $this->weeklyRules();
         });
+    }
+
+    /**
+     * Reads rules, exceptions and their shared revision from one repeatable-read
+     * snapshot, so the token can never describe a different schedule.
+     *
+     * @return array{revision: int, weeklyRules: list<WeeklyAvailabilityRule>, exceptions: list<AvailabilityException>}
+     */
+    public function stateBetween(string $fromDate, string $untilDate): array
+    {
+        self::dateRange($fromDate, $untilDate);
+        $read = fn (): array => [
+            'revision' => $this->revision(),
+            'weeklyRules' => $this->weeklyRules(),
+            'exceptions' => $this->exceptionsBetween($fromDate, $untilDate),
+        ];
+
+        return $this->database->inTransaction()
+            ? $read()
+            : $this->database->consistentSnapshot($read);
+    }
+
+    public function revision(): int
+    {
+        $row = $this->database->fetchOne(
+            'SELECT value_json FROM system_settings WHERE setting_key = :key',
+            ['key' => self::REVISION_SETTING_KEY],
+        );
+
+        return $row === null ? 0 : self::revisionFromRow($row);
     }
 
     /** @return list<WeeklyAvailabilityRule> */
@@ -70,18 +112,48 @@ final class AvailabilityRepository
     }
 
     /** @param list<AvailabilityWindow> $windows */
-    public function putOpenException(string $localDate, array $windows, ?string $note = null): AvailabilityException
-    {
+    public function putOpenException(
+        int $expectedRevision,
+        string $localDate,
+        array $windows,
+        ?string $note = null,
+    ): AvailabilityException {
         if ($windows === []) {
             throw new BookingValidationException('exceptionWindows', 'Open exception requires at least one window.');
         }
 
-        return $this->putException($localDate, 'open', $windows, $note);
+        return $this->putOpenExceptionWithRevision($localDate, $windows, $note, $expectedRevision)['value'];
     }
 
-    public function putClosedException(string $localDate, ?string $note = null): AvailabilityException
+    /**
+     * @param list<AvailabilityWindow> $windows
+     * @return array{revision: int, value: AvailabilityException}
+     */
+    public function putOpenExceptionWithRevision(
+        string $localDate,
+        array $windows,
+        ?string $note,
+        int $expectedRevision,
+    ): array {
+        if ($windows === []) {
+            throw new BookingValidationException('exceptionWindows', 'Open exception requires at least one window.');
+        }
+
+        return $this->putException($localDate, 'open', $windows, $note, $expectedRevision);
+    }
+
+    public function putClosedException(
+        int $expectedRevision,
+        string $localDate,
+        ?string $note = null,
+    ): AvailabilityException {
+        return $this->putClosedExceptionWithRevision($localDate, $note, $expectedRevision)['value'];
+    }
+
+    /** @return array{revision: int, value: AvailabilityException} */
+    public function putClosedExceptionWithRevision(string $localDate, ?string $note, int $expectedRevision): array
     {
-        return $this->putException($localDate, 'closed', [], $note);
+        return $this->putException($localDate, 'closed', [], $note, $expectedRevision);
     }
 
     /**
@@ -98,25 +170,23 @@ final class AvailabilityRepository
      * for a date to follow the weekly rules when it already does is a request
      * that is already satisfied.
      */
-    public function deleteException(string $localDate): bool
+    public function deleteException(int $expectedRevision, string $localDate): bool
+    {
+        return $this->deleteExceptionWithRevision($localDate, $expectedRevision)['value'];
+    }
+
+    /** @return array{revision: int, value: bool} */
+    public function deleteExceptionWithRevision(string $localDate, int $expectedRevision): array
     {
         self::date($localDate, 'localDate');
 
-        return $this->database->transactional(function () use ($localDate): bool {
-            $row = $this->database->fetchOne(
-                'SELECT id FROM availability_exceptions WHERE exception_date = :date FOR UPDATE',
-                ['date' => $localDate],
-            );
-            if ($row === null) {
-                return false;
-            }
-
-            $this->database->run(
+        return $this->mutate($expectedRevision, function () use ($localDate): bool {
+            $deleted = $this->database->run(
                 'DELETE FROM availability_exceptions WHERE exception_date = :date',
                 ['date' => $localDate],
-            );
+            )->rowCount() > 0;
 
-            return true;
+            return $deleted;
         });
     }
 
@@ -153,13 +223,15 @@ final class AvailabilityRepository
 
     /**
      * @param list<AvailabilityWindow> $windows
+     * @return array{revision: int, value: AvailabilityException}
      */
     private function putException(
         string $localDate,
         string $kind,
         array $windows,
         ?string $note,
-    ): AvailabilityException {
+        int $expectedRevision,
+    ): array {
         self::date($localDate, 'localDate');
         $note = self::optional($note);
         if ($note !== null && mb_strlen($note) > 255) {
@@ -178,7 +250,8 @@ final class AvailabilityRepository
             );
         }
 
-        return $this->database->transactional(
+        return $this->mutate(
+            $expectedRevision,
             function () use ($localDate, $kind, $windows, $note): AvailabilityException {
                 $first = $windows[0] ?? null;
                 $now = $this->clock->nowIso();
@@ -239,6 +312,75 @@ final class AvailabilityRepository
                 return $stored;
             },
         );
+    }
+
+    /**
+     * @template T
+     * @param \Closure(): T $change
+     * @return array{revision: int, value: T}
+     */
+    private function mutate(int $expectedRevision, \Closure $change): array
+    {
+        if ($expectedRevision < 0) {
+            throw new BookingValidationException('expectedRevision', 'Availability revision must be non-negative.');
+        }
+
+        return $this->database->transactional(function () use ($expectedRevision, $change): array {
+            $now = $this->clock->nowIso();
+            $this->database->run(
+                'INSERT IGNORE INTO system_settings (setting_key, value_json, created_at, updated_at)'
+                . ' VALUES (:key, :value, :created, :updated)',
+                [
+                    'key' => self::REVISION_SETTING_KEY,
+                    'value' => '{"revision":0}',
+                    'created' => $now,
+                    'updated' => $now,
+                ],
+            );
+            $row = $this->database->fetchOne(
+                'SELECT value_json FROM system_settings WHERE setting_key = :key FOR UPDATE',
+                ['key' => self::REVISION_SETTING_KEY],
+            );
+            if ($row === null) {
+                throw new \RuntimeException('Availability revision setting disappeared while being locked.');
+            }
+
+            $currentRevision = self::revisionFromRow($row);
+            if ($currentRevision !== $expectedRevision) {
+                throw new AvailabilityRevisionConflictException($expectedRevision, $currentRevision);
+            }
+
+            $value = $change();
+            $nextRevision = $currentRevision + 1;
+            $this->database->run(
+                'UPDATE system_settings SET value_json = :value, updated_at = :updated WHERE setting_key = :key',
+                [
+                    'key' => self::REVISION_SETTING_KEY,
+                    'value' => (string) json_encode(['revision' => $nextRevision], JSON_THROW_ON_ERROR),
+                    'updated' => $now,
+                ],
+            );
+
+            return ['revision' => $nextRevision, 'value' => $value];
+        });
+    }
+
+    /** @param array<string, mixed> $row */
+    private static function revisionFromRow(array $row): int
+    {
+        $json = $row['value_json'] ?? null;
+        if (!\is_string($json)) {
+            throw new \RuntimeException('Availability revision setting is malformed.');
+        }
+
+        /** @var mixed $decoded */
+        $decoded = json_decode($json, true, 2, JSON_THROW_ON_ERROR);
+        $revision = \is_array($decoded) ? ($decoded['revision'] ?? null) : null;
+        if (!\is_int($revision) || $revision < 0) {
+            throw new \RuntimeException('Availability revision setting is malformed.');
+        }
+
+        return $revision;
     }
 
     /** @param list<WeeklyAvailabilityRule> $rules */

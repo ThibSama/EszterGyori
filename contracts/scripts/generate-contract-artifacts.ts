@@ -760,14 +760,14 @@ function buildHttpContractDocument(): unknown {
       {
         path: ADMIN_AVAILABILITY_WEEKLY_PATH,
         methods: ["PUT"],
-        statuses: [200, 400, 401, 403, 405, 500],
+        statuses: [200, 400, 401, 403, 405, 409, 500],
         requestBodySchema: "admin-availability-weekly-replace-request.schema.json",
         successBodySchema: "admin-availability-weekly-response.schema.json",
       },
       {
         path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
         methods: ["PATCH"],
-        statuses: [200, 400, 401, 403, 405, 500],
+        statuses: [200, 400, 401, 403, 405, 409, 500],
         requestBodySchema: "admin-availability-exception-mutation-request.schema.json",
         successBodySchema: "admin-availability-exception-response.schema.json",
       },

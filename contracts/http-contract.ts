@@ -778,6 +778,7 @@ export const ADMIN_AVAILABILITY_NOTE_MAX_LENGTH = 255;
 export const ADMIN_SUMMARY_MIN_UPCOMING_DAYS = 1;
 export const ADMIN_SUMMARY_MAX_UPCOMING_DAYS = 90;
 export const ADMIN_SUMMARY_DEFAULT_UPCOMING_DAYS = 7;
+export const availabilityRevisionSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
 /**
  * One local civil window. `foldUtcOffset` is null for every ordinary time and is
@@ -814,6 +815,7 @@ export const adminAvailabilityWeeklyRuleSchema = z
 
 export const adminAvailabilityWeeklyReplaceRequestSchema = z
   .object({
+    expectedRevision: availabilityRevisionSchema,
     rules: z
       .array(adminAvailabilityWeeklyRuleInputSchema)
       .max(ADMIN_AVAILABILITY_MAX_WEEKLY_RULES),
@@ -823,6 +825,7 @@ export const adminAvailabilityWeeklyReplaceRequestSchema = z
 export const adminAvailabilityWeeklyResponseSchema = z
   .object({
     timezone: z.literal(BOOKING_TIME_ZONE),
+    revision: availabilityRevisionSchema,
     weeklyRules: z.array(adminAvailabilityWeeklyRuleSchema),
   })
   .strict();
@@ -849,6 +852,7 @@ export const adminAvailabilityResponseSchema = z
     timezone: z.literal(BOOKING_TIME_ZONE),
     fromDate: bookingLocalDateSchema,
     untilDate: bookingLocalDateSchema,
+    revision: availabilityRevisionSchema,
     weeklyRules: z.array(adminAvailabilityWeeklyRuleSchema),
     exceptions: z.array(adminAvailabilityExceptionSchema),
   })
@@ -857,6 +861,7 @@ export const adminAvailabilityResponseSchema = z
 const adminAvailabilityCloseSchema = z
   .object({
     action: z.literal("close"),
+    expectedRevision: availabilityRevisionSchema,
     localDate: bookingLocalDateSchema,
     note: z.string().trim().max(ADMIN_AVAILABILITY_NOTE_MAX_LENGTH).nullable(),
   })
@@ -865,6 +870,7 @@ const adminAvailabilityCloseSchema = z
 const adminAvailabilityOpenSchema = z
   .object({
     action: z.literal("open"),
+    expectedRevision: availabilityRevisionSchema,
     localDate: bookingLocalDateSchema,
     windows: z
       .array(availabilityWindowSchema)
@@ -877,6 +883,7 @@ const adminAvailabilityOpenSchema = z
 const adminAvailabilityRemoveSchema = z
   .object({
     action: z.literal("remove"),
+    expectedRevision: availabilityRevisionSchema,
     localDate: bookingLocalDateSchema,
   })
   .strict();
@@ -889,7 +896,10 @@ export const adminAvailabilityExceptionMutationRequestSchema = z.discriminatedUn
 
 /** `exception` is null after a removal, and only after a removal. */
 export const adminAvailabilityExceptionResponseSchema = z
-  .object({ exception: adminAvailabilityExceptionSchema.nullable() })
+  .object({
+    revision: availabilityRevisionSchema,
+    exception: adminAvailabilityExceptionSchema.nullable(),
+  })
   .strict();
 
 export const adminBookingSummaryEntrySchema = z
@@ -950,8 +960,15 @@ export const availabilityAdminPolicy = {
   maxExceptionWindows: ADMIN_AVAILABILITY_MAX_EXCEPTION_WINDOWS,
   authority:
     "availability_rules and availability_exceptions are canonical. The editor reads and replaces them; it never computes, caches or schedules anything the server would then have to trust.",
+  revisionSetting: {
+    key: "availability.revision",
+    initial: 0,
+    valueShape: { revision: "non-negative safe integer" },
+  },
+  optimisticConcurrency:
+    "Weekly and exception writes contend on one durable global revision. A mutation locks it, compares expectedRevision before any availability write, then changes the schedule and increments exactly once in the same transaction. A stale request is 409 REVISION_CONFLICT, writes nothing and does not advance the revision.",
   weeklyReplacement:
-    "PUT carries the complete intended rule set. The server validates all of it, then deletes and reinserts inside one transaction holding a row lock, so a rejected or failed save leaves the previously stored schedule exactly as it was rather than a partial one.",
+    "PUT carries the complete intended rule set. The server validates all of it, then locks the global availability revision and deletes and reinserts inside one transaction, so a rejected or failed save leaves the previously stored schedule exactly as it was rather than a partial one.",
   weeklyRefusals: [
     "An ISO weekday outside 1-7.",
     "A window whose end is not strictly after its start.",
@@ -1900,7 +1917,7 @@ export const apiErrorMessages: Record<ApiErrorCode, string> = {
   UNAUTHENTICATED: "Authentification requise.",
   CSRF_TOKEN_INVALID: "Jeton de sécurité invalide ou expiré.",
   REVISION_CONFLICT:
-    "Le contenu a été modifié entre-temps. Rechargez le brouillon avant d'enregistrer.",
+    "La ressource a été modifiée entre-temps. Rechargez son état avant d'enregistrer.",
   PAYLOAD_TOO_LARGE:
     "Le fichier envoyé dépasse la taille maximale autorisée de 8 Mo.",
   MEDIA_REFERENCED:
@@ -3946,7 +3963,7 @@ export const httpContractCases: HttpContractCase[] = [
       method: "PUT",
       path: ADMIN_AVAILABILITY_WEEKLY_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"09:00","endLocal":"12:30","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true},{"weekdayIso":2,"startLocal":"14:00","endLocal":"18:00","foldUtcOffset":null,"validFrom":"2026-09-01","validUntil":"2026-12-31","isActive":true}]}',
+      rawBody: '{"expectedRevision":0,"rules":[{"weekdayIso":2,"startLocal":"09:00","endLocal":"12:30","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true},{"weekdayIso":2,"startLocal":"14:00","endLocal":"18:00","foldUtcOffset":null,"validFrom":"2026-09-01","validUntil":"2026-12-31","isActive":true}]}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 200, body: "adminAvailabilityWeeklyResponse" },
@@ -3960,10 +3977,24 @@ export const httpContractCases: HttpContractCase[] = [
       method: "PUT",
       path: ADMIN_AVAILABILITY_WEEKLY_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"rules":[]}',
+      rawBody: '{"expectedRevision":0,"rules":[]}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 200, body: "adminAvailabilityWeeklyResponse" },
+  },
+  {
+    id: "admin.availability.weekly.put.staleRevision",
+    endpoint: ADMIN_AVAILABILITY_WEEKLY_PATH,
+    description:
+      "A stale global availability revision is 409 REVISION_CONFLICT; it is never an unconditional replacement.",
+    request: {
+      method: "PUT",
+      path: ADMIN_AVAILABILITY_WEEKLY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"expectedRevision":1,"rules":[]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 409, body: "errorEnvelope", errorCode: "REVISION_CONFLICT" },
   },
   {
     id: "admin.availability.weekly.put.invertedWindow",
@@ -3973,7 +4004,7 @@ export const httpContractCases: HttpContractCase[] = [
       method: "PUT",
       path: ADMIN_AVAILABILITY_WEEKLY_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"18:00","endLocal":"09:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
+      rawBody: '{"expectedRevision":0,"rules":[{"weekdayIso":2,"startLocal":"18:00","endLocal":"09:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
@@ -3987,7 +4018,7 @@ export const httpContractCases: HttpContractCase[] = [
       method: "PUT",
       path: ADMIN_AVAILABILITY_WEEKLY_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"09:00","endLocal":"12:30","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true},{"weekdayIso":2,"startLocal":"12:00","endLocal":"15:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
+      rawBody: '{"expectedRevision":0,"rules":[{"weekdayIso":2,"startLocal":"09:00","endLocal":"12:30","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true},{"weekdayIso":2,"startLocal":"12:00","endLocal":"15:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
@@ -4001,7 +4032,7 @@ export const httpContractCases: HttpContractCase[] = [
       method: "PUT",
       path: ADMIN_AVAILABILITY_WEEKLY_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"25:00","endLocal":"26:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
+      rawBody: '{"expectedRevision":0,"rules":[{"weekdayIso":2,"startLocal":"25:00","endLocal":"26:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
@@ -4015,7 +4046,7 @@ export const httpContractCases: HttpContractCase[] = [
       method: "PUT",
       path: ADMIN_AVAILABILITY_WEEKLY_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"00:00","endLocal":"23:59","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
+      rawBody: '{"expectedRevision":0,"rules":[{"weekdayIso":2,"startLocal":"00:00","endLocal":"23:59","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 200, body: "adminAvailabilityWeeklyResponse" },
@@ -4029,7 +4060,7 @@ export const httpContractCases: HttpContractCase[] = [
       method: "PUT",
       path: ADMIN_AVAILABILITY_WEEKLY_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"09:00","endLocal":"24:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
+      rawBody: '{"expectedRevision":0,"rules":[{"weekdayIso":2,"startLocal":"09:00","endLocal":"24:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
@@ -4043,7 +4074,7 @@ export const httpContractCases: HttpContractCase[] = [
       method: "PUT",
       path: ADMIN_AVAILABILITY_WEEKLY_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"rules":[{"weekdayIso":2,"startLocal":"09:60","endLocal":"12:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
+      rawBody: '{"expectedRevision":0,"rules":[{"weekdayIso":2,"startLocal":"09:60","endLocal":"12:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}]}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
@@ -4072,7 +4103,7 @@ export const httpContractCases: HttpContractCase[] = [
       method: "PATCH",
       path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"action":"close","localDate":"2026-08-15","note":"Jour férié"}',
+      rawBody: '{"action":"close","expectedRevision":0,"localDate":"2026-08-15","note":"Jour férié"}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 200, body: "adminAvailabilityExceptionResponse" },
@@ -4086,10 +4117,24 @@ export const httpContractCases: HttpContractCase[] = [
       method: "PATCH",
       path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"action":"open","localDate":"2026-08-16","windows":[{"startLocal":"10:00","endLocal":"12:00","foldUtcOffset":null},{"startLocal":"14:00","endLocal":"16:00","foldUtcOffset":null}],"note":null}',
+      rawBody: '{"action":"open","expectedRevision":0,"localDate":"2026-08-16","windows":[{"startLocal":"10:00","endLocal":"12:00","foldUtcOffset":null},{"startLocal":"14:00","endLocal":"16:00","foldUtcOffset":null}],"note":null}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 200, body: "adminAvailabilityExceptionResponse" },
+  },
+  {
+    id: "admin.availability.exceptions.patch.staleRevision",
+    endpoint: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+    description:
+      "A stale exception mutation is 409 REVISION_CONFLICT against the same revision used by weekly writes.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"close","expectedRevision":1,"localDate":"2026-08-15","note":null}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 409, body: "errorEnvelope", errorCode: "REVISION_CONFLICT" },
   },
   {
     id: "admin.availability.exceptions.patch.removeOk",
@@ -4099,7 +4144,7 @@ export const httpContractCases: HttpContractCase[] = [
       method: "PATCH",
       path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"action":"remove","localDate":"2026-08-15"}',
+      rawBody: '{"action":"remove","expectedRevision":0,"localDate":"2026-08-15"}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 200, body: "adminAvailabilityExceptionResponse" },
@@ -4113,7 +4158,7 @@ export const httpContractCases: HttpContractCase[] = [
       method: "PATCH",
       path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"action":"open","localDate":"2026-08-16","windows":[],"note":null}',
+      rawBody: '{"action":"open","expectedRevision":0,"localDate":"2026-08-16","windows":[],"note":null}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
@@ -4127,7 +4172,7 @@ export const httpContractCases: HttpContractCase[] = [
       method: "PATCH",
       path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"action":"open","localDate":"2027-03-28","windows":[{"startLocal":"02:30","endLocal":"04:00","foldUtcOffset":null}],"note":null}',
+      rawBody: '{"action":"open","expectedRevision":0,"localDate":"2027-03-28","windows":[{"startLocal":"02:30","endLocal":"04:00","foldUtcOffset":null}],"note":null}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
@@ -4383,7 +4428,12 @@ export const httpContractInvariants = [
   {
     id: "availability.weeklyReplacementIsAllOrNothing",
     description:
-      "The whole submitted rule set is validated before anything is written, and the delete-then-reinsert runs inside one transaction that first locks the existing rows. A refusal or a failure mid-write leaves the previously stored schedule intact; no path can commit part of a week.",
+      "The whole submitted rule set is validated before anything is written, and the delete-then-reinsert runs inside the availability revision transaction. A refusal or a failure mid-write leaves the previously stored schedule intact; no path can commit part of a week.",
+  },
+  {
+    id: "availability.globalOptimisticConcurrency",
+    description:
+      "Every admin availability read returns the durable global revision. Weekly and exception mutations require expectedRevision and lock the same system_settings row before any availability write; a match mutates and advances exactly once, while a stale request returns 409 REVISION_CONFLICT with no availability write and no increment.",
   },
   {
     id: "availability.exceptionRemovalRestoresWeekly",

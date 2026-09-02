@@ -12,6 +12,11 @@
       "type": "string",
       "const": "Europe/Paris"
     },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
     "weeklyRules": {
       "type": "array",
       "items": {
@@ -91,6 +96,7 @@
   },
   "required": [
     "timezone",
+    "revision",
     "weeklyRules"
   ],
   "additionalProperties": false

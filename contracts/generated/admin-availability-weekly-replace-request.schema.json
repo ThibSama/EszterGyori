@@ -8,6 +8,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
+    "expectedRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
     "rules": {
       "maxItems": 100,
       "type": "array",
@@ -81,6 +86,7 @@
     }
   },
   "required": [
+    "expectedRevision",
     "rules"
   ],
   "additionalProperties": false

@@ -64,6 +64,7 @@ export function AdminAvailabilityEditor() {
   const [rules, setRules] = useState<WeeklyRuleDraft[]>([]);
   const [savedRules, setSavedRules] = useState<WeeklyRuleDraft[]>([]);
   const [exceptions, setExceptions] = useState<AdminAvailabilityException[]>([]);
+  const [revision, setRevision] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [alert, setAlert] = useState(false);
@@ -121,11 +122,29 @@ export function AdminAvailabilityEditor() {
       if (!result.ok) return void handleFailure(result.failure);
       adopt(toDrafts(result.value.weeklyRules));
       setExceptions(result.value.exceptions);
+      setRevision(result.value.revision);
     });
     return () => {
       active = false;
     };
   }, [adopt, api, handleFailure, today, untilDate]);
+
+  const recoverAvailabilityConflict = useCallback(async () => {
+    const fresh = await api.readAvailability({ fromDate: today, untilDate });
+    if (!fresh.ok) return void handleFailure(fresh.failure);
+
+    // Discard every stale editing baseline. The next write is possible only
+    // after the operator makes a new explicit edit against this server head.
+    adopt(toDrafts(fresh.value.weeklyRules));
+    setExceptions(fresh.value.exceptions);
+    setRevision(fresh.value.revision);
+    setDraft(null);
+    setConfirmation(null);
+    notify(
+      "Les disponibilités ont été modifiées ailleurs. Vos changements n’ont pas été enregistrés ; les horaires à jour ont été rechargés.",
+      true,
+    );
+  }, [adopt, api, handleFailure, notify, today, untilDate]);
 
   const updateRule = (key: string, patch: Partial<WeeklyRuleDraft>) => {
     setRules((current) =>
@@ -135,21 +154,33 @@ export function AdminAvailabilityEditor() {
   };
 
   const saveWeekly = useCallback(async () => {
-    if (saving || issues.length > 0) return;
+    if (saving || revision === null || issues.length > 0) return;
     setSaving(true);
-    const result = await api.replaceWeeklyAvailability({ rules: toRequest(rules) }, csrfToken);
+    const result = await api.replaceWeeklyAvailability(
+      { expectedRevision: revision, rules: toRequest(rules) },
+      csrfToken,
+    );
+    if (!result.ok) {
+      if (result.failure.kind === "conflict") {
+        await recoverAvailabilityConflict();
+        setSaving(false);
+        return;
+      }
+      setSaving(false);
+      return void handleFailure(result.failure);
+    }
     setSaving(false);
-    if (!result.ok) return void handleFailure(result.failure);
 
     // The response, never the request. Ids, ordering and any normalisation are
     // the server's, and this is the only state the editor renders from here on.
-    adopt(toDrafts(result.value));
+    adopt(toDrafts(result.value.weeklyRules));
+    setRevision(result.value.revision);
     notify(
-      result.value.length === 0
+      result.value.weeklyRules.length === 0
         ? "Les horaires hebdomadaires ont été enregistrés : aucun créneau récurrent n’est actif."
-        : `Les horaires hebdomadaires ont été enregistrés : ${result.value.length} créneau${result.value.length > 1 ? "x" : ""} en place.`,
+        : `Les horaires hebdomadaires ont été enregistrés : ${result.value.weeklyRules.length} créneau${result.value.weeklyRules.length > 1 ? "x" : ""} en place.`,
     );
-  }, [adopt, api, csrfToken, handleFailure, issues.length, notify, rules, saving]);
+  }, [adopt, api, csrfToken, handleFailure, issues.length, notify, recoverAvailabilityConflict, revision, rules, saving]);
 
   const submitWeekly = () => {
     // Emptying the schedule closes the salon to every new booking, so it is
@@ -188,18 +219,30 @@ export function AdminAvailabilityEditor() {
         | { action: "remove"; localDate: string },
       success: string,
     ) => {
-      if (saving) return;
+      if (saving || revision === null) return;
       setSaving(true);
-      const result = await api.mutateAvailabilityException(body, csrfToken);
+      const result = await api.mutateAvailabilityException(
+        { ...body, expectedRevision: revision },
+        csrfToken,
+      );
+      if (!result.ok) {
+        if (result.failure.kind === "conflict") {
+          await recoverAvailabilityConflict();
+          setSaving(false);
+          return;
+        }
+        setSaving(false);
+        return void handleFailure(result.failure);
+      }
       setSaving(false);
-      if (!result.ok) return void handleFailure(result.failure);
 
-      setExceptions((current) => replaceException(current, localDate, result.value));
+      setExceptions((current) => replaceException(current, localDate, result.value.exception));
+      setRevision(result.value.revision);
       setDraft(null);
       setConfirmation(null);
       notify(success);
     },
-    [api, csrfToken, handleFailure, notify, saving],
+    [api, csrfToken, handleFailure, notify, recoverAvailabilityConflict, revision, saving],
   );
 
   const submitDraft = () => {

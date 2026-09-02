@@ -11,11 +11,11 @@
   "artifacts": [
     {
       "file": "admin-availability-exception-mutation-request.schema.json",
-      "sha256": "6ea9270b394fbcfc986ce05ee5c6a0acc5ab33522f670a181c7f43681073aeb6"
+      "sha256": "5e1b12f2b303f015fb96dc0a4182919ab778939d7622511d292b410e9eb5a6ef"
     },
     {
       "file": "admin-availability-exception-response.schema.json",
-      "sha256": "2d61a3a8e69ffe602b6c4a2f7c6ca16ceeb7d9045cf099688a1df11691ebb948"
+      "sha256": "6d40d2db062b49d4a9de93018e06d83b91196cd56e616c4a58c1b7ed9e1847e6"
     },
     {
       "file": "admin-availability-query-request.schema.json",
@@ -23,15 +23,15 @@
     },
     {
       "file": "admin-availability-response.schema.json",
-      "sha256": "0dc85a6c3116425b2255bfdb2106504ee0768bbde0829ec655d337d3aeb2a40a"
+      "sha256": "82094e5956202e4accd1a5cbfe2c2133ab8cab3b578ccbee5b8de4ff693f981e"
     },
     {
       "file": "admin-availability-weekly-replace-request.schema.json",
-      "sha256": "9a36b51e137cfa5f1b7090669b619c2ddd2f56734178bd6a62ca04d445ae9ae7"
+      "sha256": "da83902524049e8f5f48af49167b838962598780e5dbbef8ae7328b5563480fc"
     },
     {
       "file": "admin-availability-weekly-response.schema.json",
-      "sha256": "21f85c36c3008f5e163dff059d42c01d0d7a7ccdf6ed3d8e77db116cef33b483"
+      "sha256": "57d7494bef9477c3cb97cdbcb8d0d44db8c8401bacea39f56f51a998b6f7b93b"
     },
     {
       "file": "admin-booking-move-availability-request.schema.json",
@@ -99,7 +99,7 @@
     },
     {
       "file": "http-contract.json",
-      "sha256": "c89f9992f59bdecf5f1e4760480c42ae745e01ca5b4bc7c33fec85d32ba2fe2c"
+      "sha256": "fefd1dbe1d498885ebd74a2ebef0e878270c48cc1074896ea5763d5348b5c0fe"
     },
     {
       "file": "login-request.schema.json",

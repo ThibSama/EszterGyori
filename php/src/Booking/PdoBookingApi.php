@@ -329,17 +329,20 @@ final class PdoBookingApi implements BookingApi
             throw new BookingValidationException('untilDate', 'Availability range is invalid or too large.');
         }
 
+        $state = $this->availabilityRepository->stateBetween($fromDate, $untilDate);
+
         return [
             'timezone' => $this->contract->timezone,
             'fromDate' => $fromDate,
             'untilDate' => $untilDate,
+            'revision' => $state['revision'],
             'weeklyRules' => array_map(
                 $this->weeklyRulePayload(...),
-                $this->availabilityRepository->weeklyRules(),
+                $state['weeklyRules'],
             ),
             'exceptions' => array_map(
                 $this->exceptionPayload(...),
-                $this->availabilityRepository->exceptionsBetween($fromDate, $untilDate),
+                $state['exceptions'],
             ),
         ];
     }
@@ -351,8 +354,8 @@ final class PdoBookingApi implements BookingApi
      * repository is called at all: a malformed weekday, an inverted window or an
      * impossible validity range raises here, with nothing written. The repository
      * then re-checks the set for overlaps and performs the delete-and-reinsert
-     * inside one transaction that first locks the existing rows, so there is no
-     * ordering of failures that can leave half a week behind.
+     * inside the transaction holding the global availability revision, so there
+     * is no ordering of failures that can leave half a week behind.
      *
      * The response is read back from storage rather than echoed from the request.
      * That is what lets the editor adopt server state instead of its own: the ids
@@ -362,6 +365,7 @@ final class PdoBookingApi implements BookingApi
      */
     public function adminReplaceWeeklyAvailability(array $request): array
     {
+        $expectedRevision = self::requiredInt($request, 'expectedRevision');
         $submitted = $request['rules'] ?? null;
         if (!\is_array($submitted)) {
             throw new BookingValidationException('rules', 'Weekly rule list is required.');
@@ -391,13 +395,14 @@ final class PdoBookingApi implements BookingApi
             );
         }
 
-        $this->availabilityRepository->replaceWeeklyRules($rules);
+        $stored = $this->availabilityRepository->replaceWeeklyRulesWithRevision($rules, $expectedRevision);
 
         return [
             'timezone' => $this->contract->timezone,
+            'revision' => $stored['revision'],
             'weeklyRules' => array_map(
                 $this->weeklyRulePayload(...),
-                $this->availabilityRepository->weeklyRules(),
+                $stored['value'],
             ),
         ];
     }
@@ -417,22 +422,25 @@ final class PdoBookingApi implements BookingApi
     {
         $action = self::requiredString($request, 'action');
         $localDate = self::requiredString($request, 'localDate');
+        $expectedRevision = self::requiredInt($request, 'expectedRevision');
 
         if ($action === 'remove') {
-            $this->availabilityRepository->deleteException($localDate);
+            $stored = $this->availabilityRepository->deleteExceptionWithRevision($localDate, $expectedRevision);
 
-            return ['exception' => null];
+            return ['revision' => $stored['revision'], 'exception' => null];
         }
 
-        $exception = match ($action) {
-            'close' => $this->availabilityRepository->putClosedException(
+        $stored = match ($action) {
+            'close' => $this->availabilityRepository->putClosedExceptionWithRevision(
                 $localDate,
                 self::nullableString($request, 'note'),
+                $expectedRevision,
             ),
-            'open' => $this->availabilityRepository->putOpenException(
+            'open' => $this->availabilityRepository->putOpenExceptionWithRevision(
                 $localDate,
                 $this->submittedWindows($request),
                 self::nullableString($request, 'note'),
+                $expectedRevision,
             ),
             default => throw new BookingValidationException(
                 'action',
@@ -440,7 +448,10 @@ final class PdoBookingApi implements BookingApi
             ),
         };
 
-        return ['exception' => $this->exceptionPayload($exception)];
+        return [
+            'revision' => $stored['revision'],
+            'exception' => $this->exceptionPayload($stored['value']),
+        ];
     }
 
     /**

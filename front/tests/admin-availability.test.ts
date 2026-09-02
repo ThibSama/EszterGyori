@@ -59,9 +59,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 test("availability reads carry no CSRF and mutations carry it on the frozen paths", async () => {
   const calls: Array<{ path: string; init?: RequestInit }> = [];
   const responses = [
-    { timezone: "Europe/Paris", fromDate: "2026-06-01", untilDate: "2026-06-30", weeklyRules: [rule()], exceptions: [] },
-    { timezone: "Europe/Paris", weeklyRules: [rule({ id: 7 })] },
-    { exception: { id: 3, localDate: "2026-06-15", kind: "closed", windows: [], note: null } },
+    { timezone: "Europe/Paris", fromDate: "2026-06-01", untilDate: "2026-06-30", revision: 4, weeklyRules: [rule()], exceptions: [] },
+    { timezone: "Europe/Paris", revision: 5, weeklyRules: [rule({ id: 7 })] },
+    { revision: 6, exception: { id: 3, localDate: "2026-06-15", kind: "closed", windows: [], note: null } },
     {
       timezone: "Europe/Paris",
       todayDate: "2026-06-13",
@@ -81,11 +81,11 @@ test("availability reads carry no CSRF and mutations carry it on the frozen path
 
   await api.readAvailability({ fromDate: "2026-06-01", untilDate: "2026-06-30" });
   const weekly = await api.replaceWeeklyAvailability(
-    { rules: toRequest([draft()]) },
+    { expectedRevision: 4, rules: toRequest([draft()]) },
     "csrf-token",
   );
   await api.mutateAvailabilityException(
-    { action: "close", localDate: "2026-06-15", note: null },
+    { action: "close", expectedRevision: 5, localDate: "2026-06-15", note: null },
     "csrf-token",
   );
   await api.bookingsSummary({ upcomingDays: 7 });
@@ -112,24 +112,30 @@ test("availability reads carry no CSRF and mutations carry it on the frozen path
 
   // The whole set goes in one body: that is what makes the replacement atomic.
   const sent = JSON.parse(String(calls[1]?.init?.body));
-  assert.equal(Object.keys(sent).length, 1);
+  assert.equal(Object.keys(sent).length, 2);
+  assert.equal(sent.expectedRevision, 4);
   assert.equal(sent.rules.length, 1);
   assert.ok(!("id" in sent.rules[0]), "a client-side id was sent for a replaced rule");
 
   // And the caller is handed the server's rules, not its own.
   assert.ok(weekly.ok);
-  assert.equal(weekly.value[0].id, 7);
+  assert.equal(weekly.value.revision, 5);
+  assert.equal(weekly.value.weeklyRules[0].id, 7);
+
+  const sentException = JSON.parse(String(calls[2]?.init?.body));
+  assert.equal(sentException.expectedRevision, 5);
 });
 
 test("a removal resolves with null rather than with an invented exception", async () => {
-  const api = createAdminApiClient(async () => jsonResponse({ exception: null }));
+  const api = createAdminApiClient(async () => jsonResponse({ revision: 8, exception: null }));
   const result = await api.mutateAvailabilityException(
-    { action: "remove", localDate: "2026-06-15" },
+    { action: "remove", expectedRevision: 7, localDate: "2026-06-15" },
     "csrf-token",
   );
 
   assert.ok(result.ok);
-  assert.equal(result.value, null);
+  assert.equal(result.value.revision, 8);
+  assert.equal(result.value.exception, null);
 });
 
 test("a 2xx whose body breaks the frozen schema is never handed to the editor", async () => {
@@ -138,9 +144,9 @@ test("a 2xx whose body breaks the frozen schema is never handed to the editor", 
   // clock. What stays a domain rule the server enforces is everything the range
   // cannot express: an increasing window, a wall time that exists on that date.
   const api = createAdminApiClient(async () =>
-    jsonResponse({ timezone: "Europe/Paris", weeklyRules: [{ ...rule(), weekdayIso: 0 }] }),
+    jsonResponse({ timezone: "Europe/Paris", revision: 1, weeklyRules: [{ ...rule(), weekdayIso: 0 }] }),
   );
-  const result = await api.replaceWeeklyAvailability({ rules: [] }, "csrf-token");
+  const result = await api.replaceWeeklyAvailability({ expectedRevision: 0, rules: [] }, "csrf-token");
 
   assert.ok(!result.ok);
   assert.equal(result.failure.kind, "malformed-response");
@@ -173,16 +179,37 @@ test("an expired session and a refused schedule are different failures", async (
   assert.ok(!expired.ok);
   assert.equal(expired.failure.kind, "unauthenticated");
 
-  const rejected = await refused.replaceWeeklyAvailability({ rules: [] }, "csrf-token");
+  const rejected = await refused.replaceWeeklyAvailability(
+    { expectedRevision: 0, rules: [] },
+    "csrf-token",
+  );
   assert.ok(!rejected.ok);
   assert.equal(rejected.failure.kind, "validation");
 
   const forbidden = await stale.mutateAvailabilityException(
-    { action: "remove", localDate: "2026-06-15" },
+    { action: "remove", expectedRevision: 0, localDate: "2026-06-15" },
     "csrf-token",
   );
   assert.ok(!forbidden.ok);
   assert.equal(forbidden.failure.kind, "forbidden");
+});
+
+test("an availability 409 stays a conflict and does not depend on the content revision header", async () => {
+  const api = createAdminApiClient(async () =>
+    jsonResponse(
+      { error: { code: "REVISION_CONFLICT", message: "x", requestId: "req_conflict" } },
+      409,
+    ),
+  );
+
+  const result = await api.replaceWeeklyAvailability(
+    { expectedRevision: 3, rules: [] },
+    "csrf-token",
+  );
+
+  assert.ok(!result.ok);
+  assert.equal(result.failure.kind, "conflict");
+  assert.equal(result.failure.currentRevision, null);
 });
 
 // --- ESZ-063: weekly prevalidation ----------------------------------------
@@ -447,8 +474,9 @@ test("the editor adopts server state, confirms destructive changes and stays acc
   );
 
   // Server state, never the request, is what the editor renders after a save.
-  assert.match(source, /adopt\(toDrafts\(result\.value\)\)/);
+  assert.match(source, /adopt\(toDrafts\(result\.value\.weeklyRules\)\)/);
   assert.match(source, /The response, never the request/);
+  assert.match(source, /setRevision\(result\.value\.revision\)/);
 
   // Destructive changes are confirmed rather than one click away.
   assert.match(source, /setConfirmation\(\{ kind: "close"/);
@@ -474,7 +502,23 @@ test("the editor adopts server state, confirms destructive changes and stays acc
 
   // Saving is blocked while the set is known-bad, and the whole set is sent.
   assert.match(source, /disabled=\{saving \|\| issues\.length > 0\}/);
-  assert.match(source, /replaceWeeklyAvailability\(\{ rules: toRequest\(rules\) \}, csrfToken\)/);
+  assert.match(source, /expectedRevision: revision, rules: toRequest\(rules\)/);
+  assert.match(source, /\{ \.\.\.body, expectedRevision: revision \}/);
+
+  // A conflict is visible, performs one authoritative read, adopts its complete
+  // state and never invokes either mutation method from the recovery callback.
+  assert.match(source, /Les disponibilités ont été modifiées ailleurs/);
+  const recovery = source.slice(
+    source.indexOf("const recoverAvailabilityConflict"),
+    source.indexOf("const updateRule"),
+  );
+  assert.match(recovery, /api\.readAvailability\(\{ fromDate: today, untilDate \}\)/);
+  assert.match(recovery, /adopt\(toDrafts\(fresh\.value\.weeklyRules\)\)/);
+  assert.match(recovery, /setExceptions\(fresh\.value\.exceptions\)/);
+  assert.match(recovery, /setRevision\(fresh\.value\.revision\)/);
+  assert.match(recovery, /setDraft\(null\)/);
+  assert.match(recovery, /setConfirmation\(null\)/);
+  assert.doesNotMatch(recovery, /replaceWeeklyAvailability|mutateAvailabilityException/);
 
   // Responsive: the editor must not be a fixed two-column desktop layout.
   assert.match(source, /xl:grid-cols-\[minmax\(0,1fr\)_400px\]/);

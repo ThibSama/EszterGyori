@@ -88,7 +88,9 @@ final class BookingDomainTest extends TestCase
     {
         $structural = new StructuralValidator(TestEnvironment::artifacts());
 
-        $body = static fn (string $start, string $end): array => ['rules' => [[
+        $body = static fn (string $start, string $end): array => [
+            'expectedRevision' => 0,
+            'rules' => [[
             'weekdayIso' => 2,
             'startLocal' => $start,
             'endLocal' => $end,
@@ -96,7 +98,8 @@ final class BookingDomainTest extends TestCase
             'validFrom' => null,
             'validUntil' => null,
             'isActive' => true,
-        ]]];
+            ]],
+        ];
 
         self::assertSame(
             [],

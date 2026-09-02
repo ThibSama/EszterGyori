@@ -7,6 +7,7 @@ namespace Eszter\Http\Endpoint;
 use Eszter\Booking\BookingApi;
 use Eszter\Booking\BookingNotFoundException;
 use Eszter\Booking\BookingValidationException;
+use Eszter\Booking\AvailabilityRevisionConflictException;
 use Eszter\Booking\InvalidBookingTransitionException;
 use Eszter\Booking\SlotUnavailableException;
 use Eszter\Contract\StructuralValidator;
@@ -54,6 +55,17 @@ abstract class BookingJsonEndpoint
     {
         try {
             return Response::json($status, $operation(), $this->headers());
+        } catch (AvailabilityRevisionConflictException $exception) {
+            $this->logger->info(
+                'Availability write refused: the schedule moved under the caller.',
+                $exception->logContext(),
+            );
+            throw new HttpException(
+                409,
+                \Eszter\Http\ErrorCatalog::REVISION_CONFLICT,
+                $this->headers(),
+                $exception->getMessage(),
+            );
         } catch (SlotUnavailableException $exception) {
             throw HttpException::slotUnavailable($this->headers(), $exception->getMessage());
         } catch (BookingNotFoundException $exception) {

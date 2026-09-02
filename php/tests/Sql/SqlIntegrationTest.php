@@ -502,7 +502,7 @@ final class SqlIntegrationTest extends TestCase
             $this->weeklyRule(1, '09:00', '12:00'),
             $this->weeklyRule(3, '10:00', '13:00', null, '2026-12-31'),
         ];
-        $this->availability->replaceWeeklyRules($rules);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), $rules);
 
         $stored = $this->availability->weeklyRules();
         self::assertCount(3, $stored);
@@ -511,7 +511,7 @@ final class SqlIntegrationTest extends TestCase
         self::assertNull($stored[1]->validUntil);
 
         try {
-            $this->availability->replaceWeeklyRules([
+            $this->availability->replaceWeeklyRules($this->availabilityHead(), [
                 $this->weeklyRule(1, '09:00', '12:00'),
                 $this->weeklyRule(1, '11:45', '13:00'),
             ]);
@@ -521,7 +521,7 @@ final class SqlIntegrationTest extends TestCase
         }
         self::assertCount(3, $this->availability->weeklyRules(), 'failed replace changed stored rules');
 
-        $this->availability->replaceWeeklyRules([
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [
             $this->weeklyRule(1, '09:00', '10:00', null, '2026-06-30'),
             $this->weeklyRule(1, '09:00', '10:00', '2026-07-01', null),
             $this->weeklyRule(1, '10:00', '11:00'),
@@ -532,7 +532,7 @@ final class SqlIntegrationTest extends TestCase
     public function testOneDateExceptionStoresOrderedReplacementWindowsAndCanBecomeClosed(): void
     {
         try {
-            $this->availability->putOpenException('2026-07-14', [
+            $this->availability->putOpenException($this->availabilityHead(), '2026-07-14', [
                 $this->availabilityWindow('09:00', '12:00'),
                 $this->availabilityWindow('11:00', '14:00'),
             ]);
@@ -542,7 +542,7 @@ final class SqlIntegrationTest extends TestCase
         }
         self::assertNull($this->availability->findException('2026-07-14'));
 
-        $open = $this->availability->putOpenException('2026-07-14', [
+        $open = $this->availability->putOpenException($this->availabilityHead(), '2026-07-14', [
             $this->availabilityWindow('14:00', '17:00'),
             $this->availabilityWindow('09:00', '12:00'),
         ], 'Lunch closure');
@@ -556,7 +556,7 @@ final class SqlIntegrationTest extends TestCase
             'SELECT COUNT(*) AS n FROM availability_exception_windows',
         )['n'] ?? 0));
 
-        $closed = $this->availability->putClosedException('2026-07-14', 'Public holiday');
+        $closed = $this->availability->putClosedException($this->availabilityHead(), '2026-07-14', 'Public holiday');
         self::assertSame('closed', $closed->kind);
         self::assertSame([], $closed->windows);
         self::assertSame(0, (int) ($this->database->fetchOne(
@@ -569,6 +569,7 @@ final class SqlIntegrationTest extends TestCase
     {
         try {
             $this->availability->putOpenException(
+                $this->availabilityHead(),
                 '2026-03-29',
                 [$this->availabilityWindow('02:15', '03:30')],
             );
@@ -579,6 +580,7 @@ final class SqlIntegrationTest extends TestCase
 
         try {
             $this->availability->putOpenException(
+                $this->availabilityHead(),
                 '2026-10-25',
                 [$this->availabilityWindow('02:00', '03:00')],
             );
@@ -588,6 +590,7 @@ final class SqlIntegrationTest extends TestCase
         }
 
         $stored = $this->availability->putOpenException(
+            $this->availabilityHead(),
             '2026-10-25',
             [$this->availabilityWindow('02:00', '03:00', '+01:00')],
         );
@@ -597,7 +600,7 @@ final class SqlIntegrationTest extends TestCase
     public function testMysqlOccupancyExpandsBuffersAndCancellationStopsBlocking(): void
     {
         $service = $this->bookingServices->provision('brows', 'Sourcils', 30, 15, 15, true)['service'];
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '12:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
         $booking = $this->bookings->createConfirmed(
             'brows',
             new \DateTimeImmutable('2026-07-06T08:00:00Z'),
@@ -641,8 +644,9 @@ final class SqlIntegrationTest extends TestCase
     public function testStoredOpenExceptionReplacesWeeklySlotsEndToEnd(): void
     {
         $service = $this->bookingServices->provision('brows', 'Sourcils', 30, 15, 15, true)['service'];
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '12:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
         $this->availability->putOpenException(
+            $this->availabilityHead(),
             '2026-07-06',
             [$this->availabilityWindow('14:00', '15:00')],
         );
@@ -678,7 +682,7 @@ final class SqlIntegrationTest extends TestCase
     public function testPublicAvailabilityUsesTheEngineAndPersistsNoSlots(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 15, 15, true);
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '11:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
 
         $response = $this->bookingApi->availability([
             'serviceKey' => 'brows',
@@ -723,7 +727,7 @@ final class SqlIntegrationTest extends TestCase
             $this->bookingContract,
             NotificationPolicy::fromArtifacts(TestEnvironment::artifacts()),
         );
-        $this->availability->replaceWeeklyRules([
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [
             $this->weeklyRule(7, '02:00', '03:00', null, null, '+01:00'),
         ]);
 
@@ -741,7 +745,7 @@ final class SqlIntegrationTest extends TestCase
     public function testAtomicPublicCreationStoresConsentAndCreatedHistory(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '11:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
 
         $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
         $stored = $this->bookings->find((string) $created['reference']);
@@ -761,7 +765,7 @@ final class SqlIntegrationTest extends TestCase
     public function testBookingLifecycleProducesStableAtomicEmailJobsAndSupersedesReminders(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '12:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
 
         $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
         $booking = $this->bookings->find((string) $created['reference']);
@@ -814,7 +818,7 @@ final class SqlIntegrationTest extends TestCase
     public function testMovingNeverRewritesAPreviouslySentReminder(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '12:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
         $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
         $booking = $this->bookings->find((string) $created['reference']);
         self::assertNotNull($booking);
@@ -845,7 +849,7 @@ final class SqlIntegrationTest extends TestCase
     public function testReminderAlreadyOutsideCatchUpIsRecordedAsTerminalSkip(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(7, '09:00', '10:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(7, '09:00', '10:00')]);
 
         $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-14T07:00:00.000Z'));
         $booking = $this->bookings->find((string) $created['reference']);
@@ -866,7 +870,7 @@ final class SqlIntegrationTest extends TestCase
         $this->database->rollBack();
         TestDatabase::truncateData($this->database);
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '10:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '10:00')]);
         $policy = NotificationPolicy::fromArtifacts(TestEnvironment::artifacts());
         $jobs = new NotificationJobRepository($this->database, $this->clock, $policy);
         $producer = new class ($jobs, $this->clock) implements BookingNotificationProducer {
@@ -920,7 +924,7 @@ final class SqlIntegrationTest extends TestCase
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 15, 15, true);
         $this->bookingServices->provision('lips', 'Lèvres', 30, 0, 0, true);
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '11:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
         $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:15:00.000Z'));
 
         $this->expectException(SlotUnavailableException::class);
@@ -930,7 +934,7 @@ final class SqlIntegrationTest extends TestCase
     public function testAdminUpdateMoveCancelAndReadAppendHistoryWithoutReplacingTheRow(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '12:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
         $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
         $reference = (string) $created['reference'];
         $id = $this->bookings->find($reference)?->id;
@@ -981,7 +985,7 @@ final class SqlIntegrationTest extends TestCase
     public function testContactUpdateOnCancelledBooking(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '12:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
         $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
         $reference = (string) $created['reference'];
 
@@ -1012,7 +1016,7 @@ final class SqlIntegrationTest extends TestCase
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 15, 15, true);
         $this->bookingServices->provision('lips', 'Lèvres', 30, 0, 0, true);
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '12:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
         $source = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:15:00.000Z'));
         $this->bookingApi->create($this->publicBookingRequest('lips', '2026-06-15T09:00:00.000Z'));
 
@@ -1041,7 +1045,7 @@ final class SqlIntegrationTest extends TestCase
     public function testAdminMoveAvailabilityExcludesOnlyTheBookingBeingMoved(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 15, 15, true);
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '12:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
         $source = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:15:00.000Z'));
 
         $public = $this->bookingApi->availability([
@@ -1064,7 +1068,7 @@ final class SqlIntegrationTest extends TestCase
     public function testBookingHttpRoutesKeepPublicErrorsOpaqueAndGuardAdminMutations(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '11:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
         $this->accounts->provision($this->email(self::EMAIL), self::PASSWORD, true);
         $kernel = $this->bootAgainstMysql();
 
@@ -1172,7 +1176,7 @@ final class SqlIntegrationTest extends TestCase
         TestDatabase::truncateData($this->database);
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
         $this->bookingServices->provision('lips', 'Lèvres', 30, 15, 15, true);
-        $this->availability->replaceWeeklyRules([$this->weeklyRule(1, '09:00', '11:00')]);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
 
         // Hold the database row first. Both independent PHP processes signal
         // readiness, then block on this exact SELECT ... FOR UPDATE boundary.
@@ -1255,11 +1259,11 @@ final class SqlIntegrationTest extends TestCase
 
     public function testWeeklyReplacementStoresTheWholeSetAndReturnsStoredState(): void
     {
-        $result = $this->bookingApi->adminReplaceWeeklyAvailability(['rules' => [
+        $result = $this->replaceWeekly([
             $this->weeklyRulePayload(2, '14:00', '18:00'),
             $this->weeklyRulePayload(2, '09:00', '12:30'),
             $this->weeklyRulePayload(4, '10:00', '13:00', '2026-09-01', '2026-12-31', false),
-        ]]);
+        ]);
 
         /** @var list<array<string, mixed>> $rules */
         $rules = $result['weeklyRules'];
@@ -1286,9 +1290,9 @@ final class SqlIntegrationTest extends TestCase
         self::assertSame('2026-12-31', $rules[2]['validUntil']);
 
         // A replacement replaces: the previous set is gone, not merged with.
-        $second = $this->bookingApi->adminReplaceWeeklyAvailability(['rules' => [
+        $second = $this->replaceWeekly([
             $this->weeklyRulePayload(1, '09:00', '10:00'),
-        ]]);
+        ]);
         self::assertCount(1, $second['weeklyRules']);
         self::assertSame(1, (int) ($this->database->fetchOne(
             'SELECT COUNT(*) AS n FROM availability_rules',
@@ -1297,11 +1301,11 @@ final class SqlIntegrationTest extends TestCase
 
     public function testARefusedWeeklyReplacementLeavesThePreviousScheduleExactlyAsItWas(): void
     {
-        $this->bookingApi->adminReplaceWeeklyAvailability(['rules' => [
+        $this->replaceWeekly([
             $this->weeklyRulePayload(1, '09:00', '12:00'),
             $this->weeklyRulePayload(2, '09:00', '12:00'),
             $this->weeklyRulePayload(3, '09:00', '12:00'),
-        ]]);
+        ]);
         $before = $this->bookingApi->adminAvailability([
             'fromDate' => '2026-06-01',
             'untilDate' => '2026-06-30',
@@ -1335,7 +1339,7 @@ final class SqlIntegrationTest extends TestCase
 
         foreach ($refusals as $reason => $rules) {
             try {
-                $this->bookingApi->adminReplaceWeeklyAvailability(['rules' => $rules]);
+                $this->replaceWeekly($rules);
                 self::fail("A weekly set with an {$reason} was stored.");
             } catch (BookingValidationException) {
                 self::addToAssertionCount(1);
@@ -1354,11 +1358,11 @@ final class SqlIntegrationTest extends TestCase
 
     public function testAnEmptyWeeklySetIsAValidScheduleAndNotAMalformedOne(): void
     {
-        $this->bookingApi->adminReplaceWeeklyAvailability(['rules' => [
+        $this->replaceWeekly([
             $this->weeklyRulePayload(1, '09:00', '12:00'),
-        ]]);
+        ]);
 
-        $result = $this->bookingApi->adminReplaceWeeklyAvailability(['rules' => []]);
+        $result = $this->replaceWeekly([]);
 
         self::assertSame([], $result['weeklyRules']);
         self::assertSame(0, (int) ($this->database->fetchOne(
@@ -1372,13 +1376,13 @@ final class SqlIntegrationTest extends TestCase
         // is about what that other connection observes.
         $this->database->rollBack();
         TestDatabase::truncateData($this->database);
-        $this->bookingApi->adminReplaceWeeklyAvailability(['rules' => [
+        $this->replaceWeekly([
             $this->weeklyRulePayload(1, '09:00', '12:00'),
             $this->weeklyRulePayload(2, '09:00', '12:00'),
             $this->weeklyRulePayload(3, '09:00', '12:00'),
-        ]]);
+        ]);
 
-        // Hold exactly the boundary `replaceWeeklyRules` takes before it deletes.
+        // Hold the rule rows that the replacement's DELETE must acquire.
         $this->database->beginTransaction();
         self::assertCount(3, $this->database->fetchAll('SELECT id FROM availability_rules FOR UPDATE'));
 
@@ -1425,9 +1429,9 @@ final class SqlIntegrationTest extends TestCase
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
         // 2026-06-15 is a Monday, so ISO weekday 1.
-        $this->bookingApi->adminReplaceWeeklyAvailability(['rules' => [
+        $this->replaceWeekly([
             $this->weeklyRulePayload(1, '09:00', '12:00'),
-        ]]);
+        ]);
 
         self::assertSame(
             ['09:00', '09:15', '09:30', '09:45', '10:00', '10:15', '10:30', '10:45', '11:00', '11:15', '11:30'],
@@ -1435,7 +1439,7 @@ final class SqlIntegrationTest extends TestCase
         );
 
         // A closure replaces the weekly windows with nothing.
-        $closed = $this->bookingApi->adminMutateAvailabilityException([
+        $closed = $this->mutateException([
             'action' => 'close',
             'localDate' => '2026-06-15',
             'note' => 'Jour férié',
@@ -1448,7 +1452,7 @@ final class SqlIntegrationTest extends TestCase
         // An exceptional opening replaces them with its own complete set. The
         // 09:00-12:00 weekly window is absent from the result, which is the whole
         // point: exception windows are never merged with weekly ones.
-        $open = $this->bookingApi->adminMutateAvailabilityException([
+        $open = $this->mutateException([
             'action' => 'open',
             'localDate' => '2026-06-15',
             'windows' => [
@@ -1468,7 +1472,7 @@ final class SqlIntegrationTest extends TestCase
         );
 
         // Removing it restores the weekly behaviour, and only for that date.
-        $removed = $this->bookingApi->adminMutateAvailabilityException([
+        $removed = $this->mutateException([
             'action' => 'remove',
             'localDate' => '2026-06-15',
         ]);
@@ -1478,7 +1482,7 @@ final class SqlIntegrationTest extends TestCase
         self::assertCount(11, $this->localStarts('2026-06-15'));
 
         // Removing an exception that is not there is satisfied, not an error.
-        self::assertNull($this->bookingApi->adminMutateAvailabilityException([
+        self::assertNull($this->mutateException([
             'action' => 'remove',
             'localDate' => '2026-06-15',
         ])['exception']);
@@ -1502,7 +1506,7 @@ final class SqlIntegrationTest extends TestCase
 
         foreach ($refusals as $reason => $windows) {
             try {
-                $this->bookingApi->adminMutateAvailabilityException([
+                $this->mutateException([
                     'action' => 'open',
                     'localDate' => '2026-07-14',
                     'windows' => $windows,
@@ -1525,7 +1529,7 @@ final class SqlIntegrationTest extends TestCase
         // 2027-03-28: the spring-forward gap. 02:30 never happens in Paris, so it
         // is refused rather than quietly shifted to 03:30.
         try {
-            $this->bookingApi->adminMutateAvailabilityException([
+            $this->mutateException([
                 'action' => 'open',
                 'localDate' => '2027-03-28',
                 'windows' => [['startLocal' => '02:30', 'endLocal' => '04:00', 'foldUtcOffset' => null]],
@@ -1540,7 +1544,7 @@ final class SqlIntegrationTest extends TestCase
         // 2027-10-31: the fall-back overlap. 02:00 happens twice, so the server
         // refuses to guess which one the operator meant.
         try {
-            $this->bookingApi->adminMutateAvailabilityException([
+            $this->mutateException([
                 'action' => 'open',
                 'localDate' => '2027-10-31',
                 'windows' => [['startLocal' => '02:00', 'endLocal' => '02:30', 'foldUtcOffset' => null]],
@@ -1552,7 +1556,7 @@ final class SqlIntegrationTest extends TestCase
         }
 
         // Stated explicitly, it is accepted and the choice is what comes back.
-        $stored = $this->bookingApi->adminMutateAvailabilityException([
+        $stored = $this->mutateException([
             'action' => 'open',
             'localDate' => '2027-10-31',
             'windows' => [['startLocal' => '02:00', 'endLocal' => '02:30', 'foldUtcOffset' => '+01:00']],
@@ -1564,7 +1568,7 @@ final class SqlIntegrationTest extends TestCase
         // consulted: 10:00 on a June morning has exactly one Paris instant and a
         // stored `+01:00` cannot make it a different one. The offset is a
         // fall-back tiebreak, never a way to assert an arbitrary UTC time.
-        $ordinary = $this->bookingApi->adminMutateAvailabilityException([
+        $ordinary = $this->mutateException([
             'action' => 'open',
             'localDate' => '2027-06-15',
             'windows' => [['startLocal' => '10:00', 'endLocal' => '11:00', 'foldUtcOffset' => '+01:00']],
@@ -1583,11 +1587,11 @@ final class SqlIntegrationTest extends TestCase
 
     public function testAvailabilityReadReturnsWeeklyRulesAndOnlyTheExceptionsInRange(): void
     {
-        $this->bookingApi->adminReplaceWeeklyAvailability(['rules' => [
+        $this->replaceWeekly([
             $this->weeklyRulePayload(1, '09:00', '12:00'),
-        ]]);
+        ]);
         foreach (['2026-05-30', '2026-06-15', '2026-07-20'] as $date) {
-            $this->bookingApi->adminMutateAvailabilityException([
+            $this->mutateException([
                 'action' => 'close',
                 'localDate' => $date,
                 'note' => null,
@@ -1728,8 +1732,16 @@ final class SqlIntegrationTest extends TestCase
         $loginBody = $login->decodedBody();
         $csrf = (string) $loginBody['csrfToken'];
 
-        $weekly = ['rules' => [$this->weeklyRulePayload(1, '09:00', '12:00')]];
-        $exception = ['action' => 'close', 'localDate' => '2026-06-15', 'note' => null];
+        $weekly = [
+            'expectedRevision' => 0,
+            'rules' => [$this->weeklyRulePayload(1, '09:00', '12:00')],
+        ];
+        $exception = [
+            'action' => 'close',
+            'expectedRevision' => 1,
+            'localDate' => '2026-06-15',
+            'note' => null,
+        ];
         $mutations = [
             ['PUT', '/api/admin/availability/weekly', $weekly],
             ['PATCH', '/api/admin/availability/exceptions', $exception],
@@ -1804,6 +1816,7 @@ final class SqlIntegrationTest extends TestCase
         ))->decodedBody();
         self::assertCount(1, $stored['weeklyRules']);
         self::assertSame(['2026-06-15'], array_column($stored['exceptions'], 'localDate'));
+        self::assertSame(2, $stored['revision']);
 
         // And a destroyed session stops working immediately, on the reads too.
         self::assertSame(204, $this->logout($kernel, $sessionId, $csrf)->status);
@@ -1816,6 +1829,143 @@ final class SqlIntegrationTest extends TestCase
             ],
             (string) json_encode(['fromDate' => '2026-06-01', 'untilDate' => '2026-06-30']),
         ))->status);
+    }
+
+    public function testAvailabilityRevisionRejectsStaleWeeklyExceptionAndCrossKindHttpWrites(): void
+    {
+        $this->accounts->provision($this->email(self::EMAIL), self::PASSWORD, true);
+        $kernel = $this->bootAgainstMysql();
+        $anonymous = $kernel->handle(new Request('GET', '/api/auth/session'));
+        /** @var array<string, mixed> $anonymousBody */
+        $anonymousBody = $anonymous->decodedBody();
+        $login = $this->login(
+            $kernel,
+            self::cookieValue($anonymous),
+            (string) $anonymousBody['csrfToken'],
+            self::PASSWORD,
+        );
+        $sessionId = self::cookieValue($login);
+        /** @var array<string, mixed> $loginBody */
+        $loginBody = $login->decodedBody();
+        $csrf = (string) $loginBody['csrfToken'];
+        $headers = [
+            'cookie' => $this->cookieName() . '=' . $sessionId,
+            $this->csrfHeader() => $csrf,
+            'content-type' => 'application/json',
+        ];
+        $readHeaders = [
+            'cookie' => $this->cookieName() . '=' . $sessionId,
+            'content-type' => 'application/json',
+        ];
+        $read = static fn () => $kernel->handle(new Request(
+            'POST',
+            '/api/admin/availability/query',
+            $readHeaders,
+            (string) json_encode(['fromDate' => '2026-06-01', 'untilDate' => '2026-06-30']),
+        ));
+        $write = static fn (string $method, string $path, array $body) => $kernel->handle(new Request(
+            $method,
+            $path,
+            $headers,
+            (string) json_encode($body),
+        ));
+
+        /** @var array<string, mixed> $initial */
+        $initial = $read()->decodedBody();
+        $revisionN = (int) $initial['revision'];
+        self::assertSame(0, $revisionN);
+
+        // Clients A and B both read N. A's complete weekly replacement wins N+1.
+        $aWeekly = $write('PUT', '/api/admin/availability/weekly', [
+            'expectedRevision' => $revisionN,
+            'rules' => [$this->weeklyRulePayload(1, '09:00', '12:00')],
+        ]);
+        /** @var array<string, mixed> $aWeeklyBody */
+        $aWeeklyBody = $aWeekly->decodedBody();
+        self::assertSame(200, $aWeekly->status);
+        self::assertSame($revisionN + 1, $aWeeklyBody['revision']);
+
+        $bWeekly = $write('PUT', '/api/admin/availability/weekly', [
+            'expectedRevision' => $revisionN,
+            'rules' => [$this->weeklyRulePayload(1, '14:00', '18:00')],
+        ]);
+        /** @var array<string, mixed> $bWeeklyBody */
+        $bWeeklyBody = $bWeekly->decodedBody();
+        self::assertSame(409, $bWeekly->status);
+        self::assertSame('REVISION_CONFLICT', $bWeeklyBody['error']['code']);
+        self::assertNull($bWeekly->header('X-Content-Revision'));
+
+        /** @var array<string, mixed> $afterWeeklyConflict */
+        $afterWeeklyConflict = $read()->decodedBody();
+        self::assertSame($revisionN + 1, $afterWeeklyConflict['revision']);
+        self::assertSame(['09:00'], array_column($afterWeeklyConflict['weeklyRules'], 'startLocal'));
+
+        // The same stale N also loses across mutation kinds, proving that the
+        // weekly set and date exceptions share one global revision lock.
+        $crossKind = $write('PATCH', '/api/admin/availability/exceptions', [
+            'action' => 'close',
+            'expectedRevision' => $revisionN,
+            'localDate' => '2026-06-15',
+            'note' => 'stale cross-kind write',
+        ]);
+        self::assertSame(409, $crossKind->status);
+        /** @var array<string, mixed> $afterCrossKind */
+        $afterCrossKind = $read()->decodedBody();
+        self::assertSame($revisionN + 1, $afterCrossKind['revision']);
+        self::assertSame([], $afterCrossKind['exceptions']);
+
+        // A fresh exception write wins. B's same-date write from that old head
+        // is refused with neither a partial window change nor a revision bump.
+        $aException = $write('PATCH', '/api/admin/availability/exceptions', [
+            'action' => 'close',
+            'expectedRevision' => $revisionN + 1,
+            'localDate' => '2026-06-15',
+            'note' => 'A survives',
+        ]);
+        /** @var array<string, mixed> $aExceptionBody */
+        $aExceptionBody = $aException->decodedBody();
+        self::assertSame(200, $aException->status);
+        self::assertSame($revisionN + 2, $aExceptionBody['revision']);
+
+        $bException = $write('PATCH', '/api/admin/availability/exceptions', [
+            'action' => 'open',
+            'expectedRevision' => $revisionN + 1,
+            'localDate' => '2026-06-15',
+            'windows' => [[
+                'startLocal' => '15:00',
+                'endLocal' => '17:00',
+                'foldUtcOffset' => null,
+            ]],
+            'note' => 'B stale',
+        ]);
+        self::assertSame(409, $bException->status);
+        /** @var array<string, mixed> $afterExceptionConflict */
+        $afterExceptionConflict = $read()->decodedBody();
+        self::assertSame($revisionN + 2, $afterExceptionConflict['revision']);
+        self::assertSame('closed', $afterExceptionConflict['exceptions'][0]['kind']);
+        self::assertSame('A survives', $afterExceptionConflict['exceptions'][0]['note']);
+        self::assertSame([], $afterExceptionConflict['exceptions'][0]['windows']);
+
+        // B explicitly re-reads and retries against the new head; only that
+        // fresh user action succeeds and advances the revision once.
+        $freshRevision = (int) $afterExceptionConflict['revision'];
+        $retried = $write('PATCH', '/api/admin/availability/exceptions', [
+            'action' => 'open',
+            'expectedRevision' => $freshRevision,
+            'localDate' => '2026-06-15',
+            'windows' => [[
+                'startLocal' => '15:00',
+                'endLocal' => '17:00',
+                'foldUtcOffset' => null,
+            ]],
+            'note' => 'B fresh',
+        ]);
+        /** @var array<string, mixed> $retriedBody */
+        $retriedBody = $retried->decodedBody();
+        self::assertSame(200, $retried->status);
+        self::assertSame($freshRevision + 1, $retriedBody['revision']);
+        self::assertSame('open', $retriedBody['exception']['kind']);
+        self::assertSame('B fresh', $retriedBody['exception']['note']);
     }
 
     // --- ESZ-025 / ESZ-026 end to end, against MySQL ------------------------
@@ -1930,6 +2080,35 @@ final class SqlIntegrationTest extends TestCase
     private function at(string $offset): string
     {
         return IsoTimestamp::format($this->clock->now()->modify($offset));
+    }
+
+    private function availabilityHead(): int
+    {
+        return $this->availability->revision();
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rules
+     * @return array<string, mixed>
+     */
+    private function replaceWeekly(array $rules): array
+    {
+        return $this->bookingApi->adminReplaceWeeklyAvailability([
+            'expectedRevision' => $this->availabilityHead(),
+            'rules' => $rules,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $mutation
+     * @return array<string, mixed>
+     */
+    private function mutateException(array $mutation): array
+    {
+        return $this->bookingApi->adminMutateAvailabilityException([
+            'expectedRevision' => $this->availabilityHead(),
+            ...$mutation,
+        ]);
     }
 
     private function session(?int $accountId, string $idle, string $absolute): Session

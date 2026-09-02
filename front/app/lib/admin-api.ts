@@ -59,6 +59,10 @@ export type AdminBookingMutation =
 export type AdminMoveAvailability = z.infer<typeof bookingAvailabilityResponseSchema>;
 export type AdminBookingsSummary = z.infer<typeof adminBookingsSummaryResponseSchema>;
 export type AdminAvailability = z.infer<typeof adminAvailabilityResponseSchema>;
+export type AdminWeeklyAvailability = z.infer<typeof adminAvailabilityWeeklyResponseSchema>;
+export type AdminAvailabilityExceptionResult = z.infer<
+  typeof adminAvailabilityExceptionResponseSchema
+>;
 export type AdminWeeklyRule = AdminAvailability["weeklyRules"][number];
 export type AdminAvailabilityException = AdminAvailability["exceptions"][number];
 export type AdminAvailabilityWindow = AdminAvailabilityException["windows"][number];
@@ -67,14 +71,15 @@ export type AdminAvailabilityWindow = AdminAvailabilityException["windows"][numb
 export type AdminWeeklyRuleInput = Omit<AdminWeeklyRule, "id">;
 
 export type AdminAvailabilityExceptionMutation =
-  | { action: "close"; localDate: string; note: string | null }
+  | { action: "close"; expectedRevision: number; localDate: string; note: string | null }
   | {
       action: "open";
+      expectedRevision: number;
       localDate: string;
       windows: AdminAvailabilityWindow[];
       note: string | null;
     }
-  | { action: "remove"; localDate: string };
+  | { action: "remove"; expectedRevision: number; localDate: string };
 
 /**
  * The browser half of the admin API (ESZ-034).
@@ -113,8 +118,9 @@ export type AdminApiFailure =
   /** The body failed contract validation server-side. Storage is unchanged. */
   | { kind: "validation"; message: string }
   /**
-   * The draft moved under this editor. `currentRevision` is the head the server
-   * reported in the revision header, so recovery needs no extra round trip.
+   * The edited resource moved under this editor. Content routes report their
+   * current head in the content revision header; availability deliberately does
+   * not reuse that header and therefore returns null here before re-reading.
    */
   | { kind: "conflict"; message: string; currentRevision: number | null }
   /** 5xx, including STORAGE_FAILURE. Opaque by design. */
@@ -183,14 +189,14 @@ export interface AdminApiClient {
    * the server stored — never with what was sent. The caller renders the result.
    */
   replaceWeeklyAvailability(
-    input: { rules: AdminWeeklyRuleInput[] },
+    input: { expectedRevision: number; rules: AdminWeeklyRuleInput[] },
     csrfToken: string,
-  ): Promise<AdminApiResult<AdminWeeklyRule[]>>;
+  ): Promise<AdminApiResult<AdminWeeklyAvailability>>;
   /** Resolves with `null` after a removal, which is the server saying the date follows the weekly rules again. */
   mutateAvailabilityException(
     input: AdminAvailabilityExceptionMutation,
     csrfToken: string,
-  ): Promise<AdminApiResult<AdminAvailabilityException | null>>;
+  ): Promise<AdminApiResult<AdminAvailabilityExceptionResult>>;
 }
 
 /** The only reset source the contract defines. Stated once, sent from here. */
@@ -585,8 +591,7 @@ export function createAdminApiClient(
         body: JSON.stringify(input),
       });
       if (!response.ok) return response;
-      const weekly = parsed(adminAvailabilityWeeklyResponseSchema, response.body);
-      return weekly.ok ? { ok: true, value: weekly.value.weeklyRules } : weekly;
+      return parsed(adminAvailabilityWeeklyResponseSchema, response.body);
     },
 
     async mutateAvailabilityException(input, csrfToken) {
@@ -596,8 +601,7 @@ export function createAdminApiClient(
         body: JSON.stringify(input),
       });
       if (!response.ok) return response;
-      const mutated = parsed(adminAvailabilityExceptionResponseSchema, response.body);
-      return mutated.ok ? { ok: true, value: mutated.value.exception } : mutated;
+      return parsed(adminAvailabilityExceptionResponseSchema, response.body);
     },
   };
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Eszter\Tests\Http;
 
 use Eszter\Booking\AvailabilityWindow;
+use Eszter\Booking\AvailabilityRevisionConflictException;
 use Eszter\Booking\BookingApi;
 use Eszter\Booking\BookingDomainContract;
 use Eszter\Booking\BookingTimePolicy;
@@ -16,6 +17,8 @@ use Eszter\Tests\TestEnvironment;
 /** Deterministic transport fixture; MySQL behavior is proved by the SQL suite. */
 final class InMemoryBookingApi implements BookingApi
 {
+    private int $availabilityRevision = 0;
+
     private const REFERENCE = 'bk_00000000000000000000000000000000';
 
     private readonly BookingDomainContract $contract;
@@ -151,6 +154,7 @@ final class InMemoryBookingApi implements BookingApi
             'timezone' => 'Europe/Paris',
             'fromDate' => \is_string($request['fromDate'] ?? null) ? $request['fromDate'] : '2026-06-01',
             'untilDate' => \is_string($request['untilDate'] ?? null) ? $request['untilDate'] : '2026-06-30',
+            'revision' => $this->availabilityRevision,
             'weeklyRules' => [[
                 'id' => 1,
                 'weekdayIso' => 2,
@@ -174,6 +178,7 @@ final class InMemoryBookingApi implements BookingApi
     /** @return array<string, mixed> */
     public function adminReplaceWeeklyAvailability(array $request): array
     {
+        $this->assertAvailabilityRevision($request);
         $submitted = $request['rules'] ?? null;
         if (!\is_array($submitted)) {
             throw new BookingValidationException('rules', 'Weekly rule list is required.');
@@ -210,22 +215,29 @@ final class InMemoryBookingApi implements BookingApi
 
         self::assertNoOverlap($rules);
 
-        return ['timezone' => 'Europe/Paris', 'weeklyRules' => $stored];
+        ++$this->availabilityRevision;
+
+        return [
+            'timezone' => 'Europe/Paris',
+            'revision' => $this->availabilityRevision,
+            'weeklyRules' => $stored,
+        ];
     }
 
     /** @return array<string, mixed> */
     public function adminMutateAvailabilityException(array $request): array
     {
+        $this->assertAvailabilityRevision($request);
         $action = $request['action'] ?? null;
         $localDate = \is_string($request['localDate'] ?? null) ? $request['localDate'] : '2026-08-15';
         $note = self::optionalString($request, 'note');
 
         if ($action === 'remove') {
-            return ['exception' => null];
+            return ['revision' => ++$this->availabilityRevision, 'exception' => null];
         }
 
         if ($action === 'close') {
-            return ['exception' => [
+            return ['revision' => ++$this->availabilityRevision, 'exception' => [
                 'id' => 1,
                 'localDate' => $localDate,
                 'kind' => 'closed',
@@ -271,13 +283,25 @@ final class InMemoryBookingApi implements BookingApi
             ];
         }
 
-        return ['exception' => [
+        return ['revision' => ++$this->availabilityRevision, 'exception' => [
             'id' => 1,
             'localDate' => $localDate,
             'kind' => 'open',
             'windows' => $windows,
             'note' => $note,
         ]];
+    }
+
+    /** @param array<string, mixed> $request */
+    private function assertAvailabilityRevision(array $request): void
+    {
+        $expected = $request['expectedRevision'] ?? null;
+        if (!\is_int($expected)) {
+            throw new BookingValidationException('expectedRevision', 'Availability revision is required.');
+        }
+        if ($expected !== $this->availabilityRevision) {
+            throw new AvailabilityRevisionConflictException($expected, $this->availabilityRevision);
+        }
     }
 
     /** @param array<string, mixed> $row */

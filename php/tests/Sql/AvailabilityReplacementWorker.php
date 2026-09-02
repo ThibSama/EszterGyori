@@ -47,7 +47,12 @@ try {
         throw new RuntimeException('worker could not signal readiness');
     }
 
+    $head = $api->adminAvailability([
+        'fromDate' => '2026-06-01',
+        'untilDate' => '2026-06-30',
+    ]);
     $result = $api->adminReplaceWeeklyAvailability([
+        'expectedRevision' => $head['revision'],
         'rules' => [
             [
                 'weekdayIso' => 4,
