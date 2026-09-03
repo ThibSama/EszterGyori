@@ -24,6 +24,11 @@ import {
   reservationFlowReducer,
 } from "../../lib/reservation-flow";
 import { createSiteAppearanceVariables } from "../../lib/site-appearance";
+import {
+  isRetryBlocked,
+  retryAllowedAtEpochMs,
+  retryWaitLabel,
+} from "../../lib/retry-after";
 import { ReservationDetails } from "./reservation-details";
 
 const DATE_FORMAT = new Intl.DateTimeFormat("fr-FR", {
@@ -61,6 +66,11 @@ export function ReservationFlow() {
     today,
     initialReservationState,
   );
+  // The render clock (a state value — never Date.now() during render): while
+  // a trusted retry delay runs the interval below advances it each second, so
+  // the countdowns update and the retry controls re-enable at their deadline.
+  // It only re-renders: nothing in that interval dispatches or fetches.
+  const [nowEpochMs, setNowEpochMs] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -73,7 +83,7 @@ export function ReservationFlow() {
       setContentFallback(contentResult.usedDefault);
       if (!serviceResult.ok) {
         setServicesStatus("error");
-        setServicesError(serviceResult.message);
+        setServicesError(serviceResult.failure.message);
         return;
       }
       setServices(serviceResult.value);
@@ -88,7 +98,28 @@ export function ReservationFlow() {
   }, [bootstrapVersion]);
 
   useEffect(() => {
+    const availabilityGate = state.availabilityRetryAtEpochMs;
+    const submissionGate = state.submissionRetryAtEpochMs;
+    if (availabilityGate === null && submissionGate === null) return;
+    const interval = window.setInterval(() => {
+      const now = Date.now();
+      const stillBlocked = (availabilityGate !== null && now < availabilityGate)
+        || (submissionGate !== null && now < submissionGate);
+      // Advance the render clock first, then stop once every gate has
+      // elapsed: the final tick is what re-enables the controls.
+      setNowEpochMs(now);
+      if (!stillBlocked) window.clearInterval(interval);
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [state.availabilityRetryAtEpochMs, state.submissionRetryAtEpochMs]);
+
+  useEffect(() => {
     if (!state.serviceKey) return;
+    // ESZ-136: while a trusted Retry-After delay from a refused availability
+    // load is running, no availability request is started — not even from a
+    // control that slipped through. The interval above re-renders at the
+    // deadline and re-enables the manual control; nothing fires by itself.
+    if (isRetryBlocked(state.availabilityRetryAtEpochMs, Date.now())) return;
     const controller = new AbortController();
     dispatch({ type: "request" });
     void loadAvailability(
@@ -99,13 +130,30 @@ export function ReservationFlow() {
       controller.signal,
     ).then((result) => {
       if (controller.signal.aborted) return;
-      dispatch(
-        result.ok
-          ? { type: "received", availability: result.value }
-          : { type: "failed", message: result.message },
-      );
+      if (result.ok) {
+        dispatch({ type: "received", availability: result.value });
+        return;
+      }
+      if (result.failure.kind === "rate-limited") {
+        setNowEpochMs(Date.now());
+        dispatch({
+          type: "rate-limited",
+          message: result.failure.message,
+          retryAtEpochMs: retryAllowedAtEpochMs(
+            Date.now(),
+            result.failure.retryAfterSeconds,
+          ),
+        });
+        return;
+      }
+      dispatch({ type: "failed", message: result.failure.message });
     });
     return () => controller.abort();
+    // The retry gate is deliberately not a dependency: it only *skips* a
+    // request while a trusted delay runs. Re-running this effect when the
+    // gate changes would dispatch a duplicate request — the effect itself
+    // clears the gate on every request it does start.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [today, state.serviceKey, state.fromDate, state.untilDate, refreshVersion]);
 
   const visibleServices = useMemo(
@@ -139,6 +187,10 @@ export function ReservationFlow() {
 
   async function submitBooking() {
     if (!state.serviceKey || !state.selectedSlot) return;
+    // ESZ-136: a trusted Retry-After delay from a refused creation blocks the
+    // confirmation until it elapses; the control is disabled, and this guard
+    // closes the same-tick gap for anything that reaches the handler anyway.
+    if (isRetryBlocked(state.submissionRetryAtEpochMs, Date.now())) return;
     const request = createBookingRequest(state.serviceKey, state.selectedSlot, state.customer);
     const result = await withSubmissionLock(submissionLock.current, async () => {
       dispatch({ type: "submit-start" });
@@ -154,10 +206,30 @@ export function ReservationFlow() {
       setRefreshVersion((value) => value + 1);
       return;
     }
+    if (result.failure.kind === "rate-limited") {
+      setNowEpochMs(Date.now());
+      dispatch({
+        type: "submit-failed",
+        failure: result.failure,
+        retryAtEpochMs: retryAllowedAtEpochMs(
+          Date.now(),
+          result.failure.retryAfterSeconds,
+        ),
+      });
+      return;
+    }
     dispatch({ type: "submit-failed", failure: result.failure });
   }
 
   const submissionInFlight = state.phase === "submitting";
+  const availabilityRetryBlocked = isRetryBlocked(
+    state.availabilityRetryAtEpochMs,
+    nowEpochMs,
+  );
+  const availabilityRetryCopy = retryWaitLabel(
+    state.availabilityRetryAtEpochMs,
+    nowEpochMs,
+  );
 
   return (
     <div
@@ -203,6 +275,7 @@ export function ReservationFlow() {
               serviceLabel={selectedServiceLabel}
               dateLabel={dateLabel}
               dispatch={dispatch}
+              nowEpochMs={nowEpochMs}
               onSubmit={submitBooking}
             />
           ) : (
@@ -271,7 +344,21 @@ export function ReservationFlow() {
                 {state.availabilityStatus === "error" && (
                   <div className="mt-7" role="alert">
                     <p className="text-warm-700">{state.error}</p>
-                    <button type="button" onClick={() => setRefreshVersion((value) => value + 1)} className="mt-4 rounded-full bg-warm-800 px-5 py-2.5 text-sm font-medium text-porcelain">Réessayer</button>
+                    <button
+                      type="button"
+                      disabled={availabilityRetryBlocked}
+                      onClick={() => {
+                        if (availabilityRetryBlocked) return;
+                        setRefreshVersion((value) => value + 1);
+                      }}
+                      className="mt-4 rounded-full bg-warm-800 px-5 py-2.5 text-sm font-medium text-porcelain disabled:cursor-not-allowed disabled:opacity-50">
+                      Réessayer
+                    </button>
+                    {availabilityRetryCopy && (
+                      <p role="status" aria-live="polite" className="mt-3 text-sm text-warm-600">
+                        {availabilityRetryCopy}
+                      </p>
+                    )}
                   </div>
                 )}
                 {state.notice && <p className="mt-7 rounded-2xl border border-warm-300 bg-warm-100/80 p-4 text-warm-700" role="alert">{state.notice}</p>}
@@ -315,7 +402,12 @@ export function ReservationFlow() {
               <div className="mt-8 rounded-2xl bg-sage-100/80 p-5" role="status" aria-live="polite">
                 <p className="font-medium text-warm-800">Créneau sélectionné : {dateLabel(state.selectedSlot.localDate)} à {state.selectedSlot.localStart}</p>
                 <p className="mt-1 text-sm text-warm-600">Vos coordonnées et la confirmation seront ajoutées dans la prochaine étape.</p>
-                <button type="button" onClick={() => setRefreshVersion((value) => value + 1)} className="mt-4 text-sm font-medium text-sage-600 underline underline-offset-4">Actualiser les disponibilités</button>
+                <button type="button" disabled={availabilityRetryBlocked} onClick={() => { if (availabilityRetryBlocked) return; setRefreshVersion((value) => value + 1); }} className="mt-4 text-sm font-medium text-sage-600 underline underline-offset-4 disabled:cursor-not-allowed disabled:opacity-50">Actualiser les disponibilités</button>
+                {availabilityRetryCopy && (
+                  <p role="status" aria-live="polite" className="mt-3 text-sm text-warm-600">
+                    {availabilityRetryCopy}
+                  </p>
+                )}
               </div>
             )}
           </section>
@@ -324,6 +416,7 @@ export function ReservationFlow() {
             serviceLabel={selectedServiceLabel}
             dateLabel={dateLabel}
             dispatch={dispatch}
+            nowEpochMs={nowEpochMs}
             onSubmit={submitBooking}
           />
             </>

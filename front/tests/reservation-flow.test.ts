@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { defaultSiteContent } from "@eszter/contracts";
+import { BOOKING_API_MESSAGES } from "../app/lib/booking-api";
+import {
+  isRetryBlocked,
+  retryAllowedAtEpochMs,
+} from "../app/lib/retry-after";
 import type { BookingAvailability, BookingSlot } from "../app/lib/booking-api";
 import {
   RESERVATION_HORIZON_DAYS,
@@ -181,4 +186,180 @@ test("last-second unavailability clears only the stale slot and preserves safe i
   assert.equal(state.customer.email, "cliente@example.test");
   assert.equal(state.phase, "selecting");
   assert.match(state.notice ?? "", /vient d’être réservé/);
+});
+
+// --- ESZ-136: rate-limited availability and creation -----------------------
+
+test("an availability 429 is a distinct error that closes the refresh gate until its deadline", () => {
+  const receivedAt = 1_000_000;
+  const deadline = retryAllowedAtEpochMs(receivedAt, 30);
+  assert.equal(deadline, receivedAt + 30_000);
+
+  let state = initialReservationState("2026-08-21");
+  state = reservationFlowReducer(state, { type: "select-service", serviceKey: "brows" });
+  state = reservationFlowReducer(state, {
+    type: "rate-limited",
+    message: BOOKING_API_MESSAGES.rateLimited,
+    retryAtEpochMs: deadline,
+  });
+
+  // Distinct copy, error state, and a closed retry gate: an immediate refresh
+  // attempt is refused until the deadline passes.
+  assert.equal(state.availabilityStatus, "error");
+  assert.equal(state.error, BOOKING_API_MESSAGES.rateLimited);
+  assert.equal(state.availabilityRetryAtEpochMs, deadline);
+  assert.equal(isRetryBlocked(state.availabilityRetryAtEpochMs, receivedAt + 1), true);
+
+  // Once the trusted delay has elapsed the retry is allowed again…
+  assert.equal(isRetryBlocked(state.availabilityRetryAtEpochMs, deadline), false);
+
+  // …and the state did not move by itself: no automatic request fired, the
+  // error is still displayed, and only a manual request starts the reload.
+  assert.equal(state.availabilityStatus, "error");
+  state = reservationFlowReducer(state, { type: "request" });
+  assert.equal(state.availabilityStatus, "loading");
+  assert.equal(state.availabilityRetryAtEpochMs, null);
+});
+
+test("an availability 429 without a usable Retry-After is rate-limited but never blocked", () => {
+  let state = initialReservationState("2026-08-21");
+  state = reservationFlowReducer(state, { type: "select-service", serviceKey: "brows" });
+  state = reservationFlowReducer(state, {
+    type: "rate-limited",
+    message: BOOKING_API_MESSAGES.rateLimited,
+    retryAtEpochMs: null,
+  });
+
+  assert.equal(state.availabilityStatus, "error");
+  assert.equal(state.error, BOOKING_API_MESSAGES.rateLimited);
+  assert.equal(state.availabilityRetryAtEpochMs, null);
+  assert.equal(isRetryBlocked(state.availabilityRetryAtEpochMs, Date.now()), false);
+});
+
+test("a generic availability failure never leaves a retry gate behind", () => {
+  let state = initialReservationState("2026-08-21");
+  state = reservationFlowReducer(state, { type: "select-service", serviceKey: "brows" });
+  state = reservationFlowReducer(state, {
+    type: "rate-limited",
+    message: BOOKING_API_MESSAGES.rateLimited,
+    retryAtEpochMs: 5_000_000,
+  });
+  state = reservationFlowReducer(state, {
+    type: "failed",
+    message: "Le service de réservation n’a pas pu traiter cette demande.",
+  });
+
+  assert.equal(state.availabilityStatus, "error");
+  assert.equal(state.availabilityRetryAtEpochMs, null);
+  assert.doesNotMatch(state.error ?? "", /demandes ont été envoyées/);
+});
+
+test("a 429 booking creation keeps the review state, the slot, the customer and a trusted gate", () => {
+  const receivedAt = 2_000_000;
+  const deadline = retryAllowedAtEpochMs(receivedAt, 120);
+  assert.equal(deadline, receivedAt + 120_000);
+
+  let state = initialReservationState("2026-08-21");
+  state = reservationFlowReducer(state, { type: "select-service", serviceKey: "brows" });
+  state = reservationFlowReducer(state, { type: "select-slot", slot });
+  state = reservationFlowReducer(state, { type: "update-customer", field: "name", value: "Cliente Exemple" });
+  state = reservationFlowReducer(state, { type: "update-customer", field: "email", value: "cliente@example.test" });
+  state = reservationFlowReducer(state, { type: "show-review" });
+  state = reservationFlowReducer(state, { type: "submit-start" });
+  state = reservationFlowReducer(state, {
+    type: "submit-failed",
+    failure: {
+      kind: "rate-limited",
+      message: BOOKING_API_MESSAGES.rateLimited,
+      retryAfterSeconds: 120,
+    },
+    retryAtEpochMs: deadline,
+  });
+
+  // The refusal is not a slot conflict, not a validation problem and not a
+  // server failure: the visitor stays on the review step with everything they
+  // typed and the slot they chose, waiting for a later manual retry.
+  assert.equal(state.phase, "review");
+  assert.equal(state.submissionError?.kind, "rate-limited");
+  if (state.submissionError?.kind !== "rate-limited") return;
+  assert.equal(state.submissionError.retryAfterSeconds, 120);
+  assert.equal(state.selectedSlot?.startsAtUtc, slot.startsAtUtc);
+  assert.equal(state.customer.name, "Cliente Exemple");
+  assert.equal(state.customer.email, "cliente@example.test");
+  assert.equal(state.submissionRetryAtEpochMs, deadline);
+  assert.equal(isRetryBlocked(state.submissionRetryAtEpochMs, receivedAt + 1), true);
+  assert.equal(isRetryBlocked(state.submissionRetryAtEpochMs, deadline), false);
+  assert.equal(isRetryBlocked(state.submissionRetryAtEpochMs, deadline + 1), false);
+
+  // A fresh manual attempt is then allowed and clears the gate.
+  state = reservationFlowReducer(state, { type: "submit-start" });
+  assert.equal(state.submissionRetryAtEpochMs, null);
+  assert.equal(state.phase, "submitting");
+});
+
+test("a booking creation 429 without a usable Retry-After never fabricates a gate", () => {
+  let state = initialReservationState("2026-08-21");
+  state = reservationFlowReducer(state, { type: "select-service", serviceKey: "brows" });
+  state = reservationFlowReducer(state, { type: "select-slot", slot });
+  state = reservationFlowReducer(state, {
+    type: "submit-failed",
+    failure: {
+      kind: "rate-limited",
+      message: BOOKING_API_MESSAGES.rateLimited,
+      retryAfterSeconds: null,
+    },
+    retryAtEpochMs: null,
+  });
+
+  assert.equal(state.phase, "review");
+  assert.equal(state.submissionError?.kind, "rate-limited");
+  assert.equal(state.submissionRetryAtEpochMs, null);
+});
+
+test("non-rate-limited creation failures leave the retry control open", () => {
+  let state = initialReservationState("2026-08-21");
+  state = reservationFlowReducer(state, { type: "select-service", serviceKey: "brows" });
+  state = reservationFlowReducer(state, { type: "select-slot", slot });
+  state = reservationFlowReducer(state, {
+    type: "submit-failed",
+    failure: { kind: "server", message: "Le serveur n’a pas pu confirmer le rendez-vous." },
+  });
+  assert.equal(state.submissionRetryAtEpochMs, null);
+
+  state = reservationFlowReducer(state, { type: "submit-failed", failure: {
+    kind: "uncertain",
+    message: "Nous n’avons pas reçu de confirmation.",
+  } });
+  assert.equal(state.submissionRetryAtEpochMs, null);
+  assert.equal(state.phase, "review");
+});
+
+test("editing or navigating clears the rate-limited gates with the failure they belonged to", () => {
+  let state = initialReservationState("2026-08-21");
+  state = reservationFlowReducer(state, { type: "select-service", serviceKey: "brows" });
+  state = reservationFlowReducer(state, {
+    type: "rate-limited",
+    message: BOOKING_API_MESSAGES.rateLimited,
+    retryAtEpochMs: 5_000_000,
+  });
+  state = reservationFlowReducer(state, { type: "select-slot", slot });
+  state = reservationFlowReducer(state, {
+    type: "submit-failed",
+    failure: {
+      kind: "rate-limited",
+      message: BOOKING_API_MESSAGES.rateLimited,
+      retryAfterSeconds: 30,
+    },
+    retryAtEpochMs: 6_000_000,
+  });
+  assert.equal(state.availabilityRetryAtEpochMs, 5_000_000);
+  assert.equal(state.submissionRetryAtEpochMs, 6_000_000);
+
+  state = reservationFlowReducer(state, {
+    type: "navigate",
+    fromDate: "2026-08-28",
+    untilDate: "2026-09-03",
+  });
+  assert.equal(state.availabilityRetryAtEpochMs, null);
+  assert.equal(state.submissionRetryAtEpochMs, null);
 });

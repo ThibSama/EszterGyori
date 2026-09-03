@@ -10,6 +10,7 @@ import {
   AUTH_SESSION_PATH,
   CONTENT_REVISION_HEADER,
   CSRF_HEADER,
+  RATE_LIMIT_RETRY_AFTER_HEADER,
   defaultSiteContent,
 } from "@eszter/contracts";
 import {
@@ -17,6 +18,7 @@ import {
   createAdminApiClient,
   readRevisionHeader,
 } from "../app/lib/admin-api";
+import { RETRY_AFTER_MAX_SECONDS } from "../app/lib/retry-after";
 
 /**
  * ESZ-034 — the browser half of the admin API, driven against a stub `fetch`.
@@ -342,6 +344,90 @@ test("a 429 on a login is reported as rate-limiting too", async () => {
   if (result.ok) return;
   assert.equal(result.failure.kind, "rate-limited");
   assert.equal(result.failure.message, ADMIN_API_MESSAGES.rateLimited);
+});
+
+test("a 429 with a usable Retry-After carries the bounded seconds on every admin call", async () => {
+  const envelope429 = {
+    status: 429,
+    body: errorBody("RATE_LIMITED"),
+    headers: { [RATE_LIMIT_RETRY_AFTER_HEADER]: "120" },
+  };
+  const api = createAdminApiClient(stubFetch([envelope429]).fetchImpl);
+  const sessionApi = createAdminApiClient(stubFetch([envelope429]).fetchImpl);
+  const draftApi = createAdminApiClient(stubFetch([envelope429]).fetchImpl);
+
+  for (const result of [
+    await api.login({ email: "a@example.com", password: "x" }, "token"),
+    await sessionApi.readSession(),
+    await draftApi.readDraft(),
+  ]) {
+    assert.equal(result.ok, false);
+    if (result.ok) continue;
+    assert.equal(result.failure.kind, "rate-limited");
+    if (result.failure.kind !== "rate-limited") continue;
+    assert.equal(result.failure.retryAfterSeconds, 120);
+  }
+});
+
+test("429 header values that are unusable never become trusted timers, yet stay rate-limited", async () => {
+  // Each response is a genuine 429 RATE_LIMITED whose Retry-After is missing
+  // or unusable: the failure must remain explicitly rate-limited, and only
+  // the bounded seconds may differ (null = no trusted delay, capped = the
+  // documented client bound).
+  const cases: Array<{ raw: string | null; expected: number | null }> = [
+    { raw: null, expected: null },
+    { raw: "abc", expected: null },
+    { raw: "-5", expected: null },
+    { raw: "1.5", expected: null },
+    { raw: "99999999999999999999999999999", expected: null },
+    { raw: "86400", expected: RETRY_AFTER_MAX_SECONDS },
+  ];
+
+  for (const { raw, expected } of cases) {
+    const headers: Record<string, string> = {};
+    if (raw !== null) headers[RATE_LIMIT_RETRY_AFTER_HEADER] = raw;
+    const { fetchImpl } = stubFetch([
+      { status: 429, body: errorBody("RATE_LIMITED"), headers },
+    ]);
+    const result = await createAdminApiClient(fetchImpl).login(
+      { email: "admin@example.com", password: "whatever" },
+      "token",
+    );
+
+    assert.equal(result.ok, false);
+    if (result.ok) continue;
+    assert.equal(result.failure.kind, "rate-limited");
+    if (result.failure.kind !== "rate-limited") continue;
+    assert.equal(result.failure.message, ADMIN_API_MESSAGES.rateLimited);
+    assert.equal(result.failure.retryAfterSeconds, expected, `Retry-After: ${raw ?? "(absent)"}`);
+  }
+});
+
+test("a bare 429 without an error envelope is rate-limited, never a generic server failure", async () => {
+  const { fetchImpl } = stubFetch([{ status: 429 }]);
+  const result = await createAdminApiClient(fetchImpl).readSession();
+
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.failure.kind, "rate-limited");
+  if (result.failure.kind !== "rate-limited") return;
+  assert.equal(result.failure.retryAfterSeconds, null);
+});
+
+test("only 429 is rate-limited; other refusals keep their own kinds", async () => {
+  const { fetchImpl } = stubFetch([
+    { status: 500, body: errorBody("INTERNAL_ERROR") },
+    { status: 401, body: errorBody("UNAUTHENTICATED") },
+  ]);
+  const api = createAdminApiClient(fetchImpl);
+
+  const server = await api.readDraft();
+  const expired = await api.readSession();
+
+  assert.equal(server.ok, false);
+  if (!server.ok) assert.equal(server.failure.kind, "server");
+  assert.equal(expired.ok, false);
+  if (!expired.ok) assert.equal(expired.failure.kind, "unauthenticated");
 });
 
 test("publish sends the precondition and no content at all", async () => {

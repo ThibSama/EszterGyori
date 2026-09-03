@@ -15,6 +15,7 @@ import {
   AUTH_SESSION_PATH,
   CONTENT_REVISION_HEADER,
   CSRF_HEADER,
+  RATE_LIMIT_RETRY_AFTER_HEADER,
   BOOKING_ADMIN_RANGE_MAX_PAGES,
   authSessionResponseSchema,
   errorEnvelopeSchema,
@@ -41,6 +42,7 @@ import {
   type SiteContent,
 } from "@eszter/contracts";
 import { z } from "zod";
+import { parseRetryAfterSeconds } from "./retry-after";
 
 export type AdminBooking = z.infer<typeof adminBookingResponseSchema>["booking"];
 export type AdminBookingsCursor = { startsAtUtc: string; reference: string };
@@ -130,13 +132,18 @@ export type AdminApiFailure =
   /** Login only: unknown e-mail, wrong password or disabled account, indistinguishably. */
   | { kind: "invalid-credentials"; message: string }
   /**
-   * 429 `RATE_LIMITED` (ESZ-130): the server refused the request to bound
-   * abuse. Recoverable by waiting, never a sign about the session: the
+   * 429 `RATE_LIMITED` (ESZ-130, ESZ-136): the server refused the request to
+   * bound abuse. Recoverable by waiting, never a sign about the session: the
    * anonymous `GET /api/auth/session` bootstrap can be throttled without the
    * caller having any session at all, so this must never be read as an auth
    * result and never retried in a tight loop.
+   *
+   * `retryAfterSeconds` is the bounded whole seconds parsed from the frozen
+   * `Retry-After` header (ESZ-136), or `null` when the header was missing,
+   * malformed or otherwise unusable — the refusal is still rate-limited
+   * without a trusted timer.
    */
-  | { kind: "rate-limited"; message: string }
+  | { kind: "rate-limited"; message: string; retryAfterSeconds: number | null }
   /** The body failed contract validation server-side. Storage is unchanged. */
   | { kind: "validation"; message: string }
   /**
@@ -320,7 +327,7 @@ function failureFromResponse(
         message: ADMIN_API_MESSAGES.invalidCredentials,
       };
     case "RATE_LIMITED":
-      return { kind: "rate-limited", message: ADMIN_API_MESSAGES.rateLimited };
+      return rateLimitedFailure(headers);
     case "CSRF_TOKEN_INVALID":
       return { kind: "forbidden", message: ADMIN_API_MESSAGES.forbidden };
     case "REVISION_CONFLICT":
@@ -368,8 +375,28 @@ function failureFromResponse(
   if (status === 413) {
     return { kind: "payload-too-large", message: ADMIN_API_MESSAGES.payloadTooLarge };
   }
+  if (status === 429) {
+    // A bare 429 (proxy or middlebox) is still the status that means "slow
+    // down": it is classified as rate-limited, never as a server failure.
+    return rateLimitedFailure(headers);
+  }
 
   return { kind: "server", message: ADMIN_API_MESSAGES.server, status };
+}
+
+/**
+ * The one 429 answer (ESZ-136). The header may be unusable — missing,
+ * malformed, negative or absurd — and the failure is still explicitly
+ * rate-limited; only `retryAfterSeconds` says whether a trusted delay exists.
+ */
+function rateLimitedFailure(headers: Headers): AdminApiFailure {
+  return {
+    kind: "rate-limited",
+    message: ADMIN_API_MESSAGES.rateLimited,
+    retryAfterSeconds: parseRetryAfterSeconds(
+      headers.get(RATE_LIMIT_RETRY_AFTER_HEADER),
+    ),
+  };
 }
 
 export type FetchLike = (

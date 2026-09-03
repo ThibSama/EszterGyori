@@ -9,6 +9,11 @@ import {
   toSessionState,
   type AdminSessionState,
 } from "../../lib/admin-session";
+import {
+  isRetryBlocked,
+  retryAllowedAtEpochMs,
+  retryWaitLabel,
+} from "../../lib/retry-after";
 
 /**
  * `/admin/login` — the real form (ESZ-034).
@@ -59,6 +64,18 @@ export function AdminLoginForm() {
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [noticeMessage, setNoticeMessage] = useState<string | null>(null);
+  /**
+   * ESZ-136: the epoch (ms) at which the submit control re-opens after a 429
+   * `RATE_LIMITED` refusal whose `Retry-After` was usable; `null` while no
+   * trusted delay is running. The login is never resubmitted automatically.
+   */
+  const [retryAllowedUntil, setRetryAllowedUntil] = useState<number | null>(null);
+  // The clock the render reads (a value, never Date.now() in the render):
+  // while the trusted delay runs the interval below advances it each second,
+  // so the countdown updates and the control re-enables at the deadline by
+  // itself — re-enabling is not resubmitting: the admin still presses the
+  // button.
+  const [nowEpochMs, setNowEpochMs] = useState(0);
   const mountedRef = useRef(true);
 
   const readSession = useCallback(async (): Promise<AdminSessionState> => {
@@ -79,6 +96,26 @@ export function AdminLoginForm() {
     };
   }, [readSession]);
 
+  // ESZ-136: while a trusted Retry-After delay runs, tick each second so the
+  // countdown updates and the control re-enables at the deadline. The tick
+  // only advances the render clock (and clears the gate at expiry): no timer
+  // here may submit anything.
+  useEffect(() => {
+    if (retryAllowedUntil === null) return;
+    const interval = window.setInterval(() => {
+      const now = Date.now();
+      if (now >= retryAllowedUntil) {
+        setRetryAllowedUntil(null);
+        return;
+      }
+      setNowEpochMs(now);
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [retryAllowedUntil]);
+
+  const retryBlocked = isRetryBlocked(retryAllowedUntil, nowEpochMs);
+  const retryCopy = retryWaitLabel(retryAllowedUntil, nowEpochMs);
+
   /**
    * The destination after a successful login.
    *
@@ -97,7 +134,10 @@ export function AdminLoginForm() {
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submitting) return;
+    // ESZ-136: while a trusted Retry-After delay from a refused login runs,
+    // the form is not resubmitted — the control is disabled, and this guard
+    // covers a submission that reaches the handler in the same tick anyway.
+    if (submitting || isRetryBlocked(retryAllowedUntil, Date.now())) return;
 
     if (email.trim() === "" || password === "") {
       setErrorMessage(LOGIN_FORM_MESSAGES.missingFields);
@@ -150,6 +190,23 @@ export function AdminLoginForm() {
       return;
     }
 
+    // A 429 RATE_LIMITED refusal is consumed distinctly (ESZ-136): the login
+    // shows rate-limit wording and, when the frozen Retry-After header was
+    // usable, keeps the submit control closed until the bounded delay passes.
+    // The refusal is never presented as a credential problem, and nothing
+    // resubmits automatically when the delay ends.
+    if (result.failure.kind === "rate-limited") {
+      const now = Date.now();
+      const allowedAt = retryAllowedAtEpochMs(now, result.failure.retryAfterSeconds);
+      // A usable delay arms the gate; a missing or already-elapsed one leaves
+      // the control open — the refusal is still shown as rate-limited.
+      setNowEpochMs(now);
+      setRetryAllowedUntil(allowedAt !== null && allowedAt > now ? allowedAt : null);
+      setErrorMessage(result.failure.message);
+      return;
+    }
+
+    setRetryAllowedUntil(null);
     setErrorMessage(result.failure.message);
   }
 
@@ -227,6 +284,15 @@ export function AdminLoginForm() {
                 </p>
               )}
 
+              {retryCopy && (
+                <p
+                  role="status"
+                  aria-live="polite"
+                  className="rounded-xl border border-warm-200 bg-warm-50 px-3 py-2 text-sm text-warm-700">
+                  {retryCopy}
+                </p>
+              )}
+
               {noticeMessage && !errorMessage && (
                 <p
                   role="status"
@@ -238,7 +304,7 @@ export function AdminLoginForm() {
 
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={submitting || retryBlocked}
                 className="inline-flex w-full items-center justify-center rounded-full bg-warm-900 px-5 py-3 text-sm font-medium text-porcelain transition hover:bg-warm-700 focus:outline-none focus:ring-2 focus:ring-sage-300 disabled:cursor-not-allowed disabled:opacity-60">
                 {submitting ? LOGIN_FORM_MESSAGES.submitting : "Se connecter"}
               </button>

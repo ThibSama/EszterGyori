@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import {
   ADMIN_HOME_PATH,
@@ -94,12 +96,16 @@ test("a rate-limited session read leaves the admin area unavailable, never signe
   const state = sessionStateFromFailure({
     kind: "rate-limited",
     message: ADMIN_SESSION_MESSAGES.signedOut,
+    retryAfterSeconds: null,
   });
 
   assert.equal(state.status, "unavailable");
   if (state.status !== "unavailable") return;
   assert.equal(state.message, ADMIN_SESSION_MESSAGES.signedOut);
-  assert.equal(isSessionExpiry({ kind: "rate-limited", message: "x" }), false);
+  assert.equal(
+    isSessionExpiry({ kind: "rate-limited", message: "x", retryAfterSeconds: null }),
+    false,
+  );
 });
 
 test("the post-login destination cannot leave the admin area", () => {
@@ -215,4 +221,63 @@ test("dismissing a failed logout returns to a quiet state", () => {
   const dismissed = logoutUiReducer(failed, { type: "logout-dismissed" });
   assert.equal(dismissed.status, "idle");
   assert.equal(canStartLogout(dismissed), true);
+});
+
+// --- ESZ-136: the login form consumes a rate-limited refusal distinctly ----
+
+const loginForm = readFileSync(
+  join(process.cwd(), "app", "components", "admin", "admin-login-form.tsx"),
+  "utf8",
+);
+
+test("a rate-limited login refusal is its own branch with the bounded deadline", () => {
+  // The 429 is consumed separately from credential failures (401) and stale
+  // CSRF (403): it opens the retry gate from the frozen Retry-After and shows
+  // the rate-limit message, never a credential or CSRF copy.
+  assert.match(
+    loginForm,
+    /if \(result\.failure\.kind === "rate-limited"\)/,
+  );
+  assert.match(
+    loginForm,
+    /retryAllowedAtEpochMs\(now, result\.failure\.retryAfterSeconds\)/,
+  );
+  assert.match(loginForm, /setErrorMessage\(result\.failure\.message\)/);
+  // The other failures clear the gate before showing their own copy.
+  assert.match(loginForm, /setRetryAllowedUntil\(null\)/);
+  assert.match(loginForm, /failure\.kind === "forbidden"/);
+  // A refused login must not be routed through the stale-CSRF recovery (the
+  // forbidden branch re-reads the session) — the 429 branch only arms the
+  // gate and shows the rate-limit copy.
+  const rateLimitedBranchStart = loginForm.indexOf('if (result.failure.kind === "rate-limited")');
+  const rateLimitedBranch = loginForm.slice(
+    rateLimitedBranchStart,
+    loginForm.indexOf("setRetryAllowedUntil(null)", rateLimitedBranchStart),
+  );
+  assert.doesNotMatch(rateLimitedBranch, /readSession/);
+  assert.match(rateLimitedBranch, /retryAllowedAtEpochMs\(/);
+});
+
+test("the login cannot be resubmitted while the trusted delay runs", () => {
+  // The handler refuses to submit while the gate is closed, and the button is
+  // disabled with it — two independent guards, so a click in the same tick as
+  // the render cannot slip through.
+  assert.match(loginForm, /isRetryBlocked\(retryAllowedUntil, Date\.now\(\)\)/);
+  assert.match(loginForm, /disabled=\{submitting \|\| retryBlocked\}/);
+  // While blocked the form announces when the retry becomes possible.
+  assert.match(loginForm, /retryCopy/);
+  assert.match(loginForm, /retryWaitLabel\(retryAllowedUntil, nowEpochMs\)/);
+  assert.match(loginForm, /role="status"/);
+});
+
+test("expiration re-enables the submit control without any automatic request", () => {
+  // The countdown interval only advances the render clock (and clears the
+  // gate at expiry): it must never call the API, the session read or the
+  // submit handler by itself.
+  const intervalBody = loginForm.slice(
+    loginForm.indexOf("const interval = window.setInterval"),
+    loginForm.indexOf("}, 1000)"),
+  );
+  assert.match(intervalBody, /setNowEpochMs/);
+  assert.doesNotMatch(intervalBody, /login|readSession|submit|handleSubmit|fetch/);
 });

@@ -168,6 +168,17 @@ ESZ-130 it also classifies 429 `RATE_LIMITED` as a distinct recoverable `rate-li
 failure: a throttled anonymous session bootstrap renders as the unavailable state with a
 manual retry, never as an auth result, and is never an expiry.
 
+Since ESZ-136 the `Retry-After` those refusals carry is parsed in one shared frontend
+module: only ASCII whole seconds are recognised, a usable delay is honoured up to a
+documented 900-second client bound (every frozen bucket's widest refusal is one
+emission interval, at most 720 seconds), and a missing, malformed, negative or absurd
+value never becomes a trusted timer while the refusal stays explicitly rate-limited.
+The login form, the availability refresh and the booking confirmation each render
+rate-limit copy, keep their retry control closed until the trusted deadline with an
+exact French countdown, and re-enable a manual retry when it passes — nothing resubmits
+automatically, a 429 is never classified as a credential, slot, validation, network or
+generic-server outcome, and booking creation's network `uncertain` meaning survives.
+
 Since Package 3.3 it also covers the media panel: that an upload sends `FormData` with
 **no** explicit `content-type` — a hand-set `multipart/form-data` carries no boundary
 and arrives as zero parts — that an oversized file is refused before a request is made,

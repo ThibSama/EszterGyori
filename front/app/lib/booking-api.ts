@@ -2,6 +2,7 @@ import {
   PUBLIC_BOOKING_AVAILABILITY_PATH,
   PUBLIC_BOOKING_SERVICES_PATH,
   PUBLIC_BOOKINGS_PATH,
+  RATE_LIMIT_RETRY_AFTER_HEADER,
   bookingAvailabilityResponseSchema,
   errorEnvelopeSchema,
   publicBookableServicesResponseSchema,
@@ -12,6 +13,7 @@ import {
   type SiteContent,
 } from "@eszter/contracts";
 import { z } from "zod";
+import { parseRetryAfterSeconds } from "./retry-after";
 
 export type PublicBookableService = z.infer<
   typeof publicBookableServicesResponseSchema
@@ -23,7 +25,24 @@ export type PublicBookingConfirmation = z.infer<typeof publicBookingResponseSche
 
 export type BookingApiResult<T> =
   | { ok: true; value: T }
-  | { ok: false; message: string };
+  | { ok: false; failure: BookingReadFailure };
+
+/**
+ * A failed public booking *read* (services discovery, availability).
+ *
+ * `rejected` is every non-2xx that is not a rate-limit refusal — a 500, say.
+ * A 429 stays out of it: it is its own kind (ESZ-136), carrying the bounded
+ * `Retry-After` seconds when the frozen header was usable, `null` otherwise.
+ */
+export type BookingReadFailure =
+  /** The request never reached a response: offline, DNS, TLS, aborted. */
+  | { kind: "network"; message: string }
+  /** A non-2xx that is not a rate-limit refusal; the service failed or refused. */
+  | { kind: "rejected"; message: string }
+  /** 429 `RATE_LIMITED`: slow down. Never read as a service failure. */
+  | { kind: "rate-limited"; message: string; retryAfterSeconds: number | null }
+  /** A 2xx whose body did not match the frozen schema. Never rendered. */
+  | { kind: "malformed"; message: string };
 
 export interface ReservationBootstrap {
   services: PublicBookableService[];
@@ -35,6 +54,8 @@ export const BOOKING_API_MESSAGES = {
   network: "Impossible de joindre le service de réservation. Vérifiez votre connexion puis réessayez.",
   rejected: "Le service de réservation n’a pas pu traiter cette demande. Réessayez dans un instant.",
   malformed: "La réponse du service de réservation est inexploitable. Rechargez la page puis réessayez.",
+  rateLimited:
+    "Trop de demandes ont été envoyées. Patientez quelques instants avant de réessayer.",
   unavailable: "Ce créneau vient d’être réservé. Vos coordonnées sont conservées : choisissez un nouvel horaire.",
   validation: "Certaines informations ont été refusées par le serveur. Vérifiez le formulaire avant de réessayer.",
   server: "Le serveur n’a pas pu confirmer le rendez-vous. Aucune confirmation n’est affichée.",
@@ -46,7 +67,14 @@ export type BookingCreationFailure =
   | { kind: "slot-unavailable"; message: string }
   | { kind: "validation"; message: string }
   | { kind: "server"; message: string }
-  | { kind: "uncertain"; message: string };
+  | { kind: "uncertain"; message: string }
+  /**
+   * 429 `RATE_LIMITED` (ESZ-136): the refusal happened before any work, so no
+   * booking exists and the visitor's slot and details are still worth
+   * keeping. `retryAfterSeconds` is the bounded header value, or `null` when
+   * no usable `Retry-After` arrived — still rate-limited, no trusted timer.
+   */
+  | { kind: "rate-limited"; message: string; retryAfterSeconds: number | null };
 
 export type BookingCreationResult =
   | { ok: true; value: PublicBookingConfirmation }
@@ -78,6 +106,29 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
+/**
+ * Classifies a non-2xx public read. A 429 — the frozen envelope's
+ * `RATE_LIMITED`, or the bare status from a middlebox — is its own failure:
+ * it must never surface as the generic "service could not process" copy, and
+ * its bounded `Retry-After` travels with it when the header is usable.
+ */
+function nonOkReadFailure(response: Response, body: unknown): BookingReadFailure {
+  const error = errorEnvelopeSchema.safeParse(body);
+  const rateLimited =
+    response.status === 429
+    || (error.success && error.data.error.code === "RATE_LIMITED");
+  if (rateLimited) {
+    return {
+      kind: "rate-limited",
+      message: BOOKING_API_MESSAGES.rateLimited,
+      retryAfterSeconds: parseRetryAfterSeconds(
+        response.headers.get(RATE_LIMIT_RETRY_AFTER_HEADER),
+      ),
+    };
+  }
+  return { kind: "rejected", message: BOOKING_API_MESSAGES.rejected };
+}
+
 export async function loadBookableServices(
   fetcher: typeof fetch = fetch,
   signal?: AbortSignal,
@@ -90,15 +141,15 @@ export async function loadBookableServices(
       signal,
     });
   } catch {
-    return { ok: false, message: BOOKING_API_MESSAGES.network };
+    return { ok: false, failure: { kind: "network", message: BOOKING_API_MESSAGES.network } };
   }
 
   const body = await readJson(response);
-  if (!response.ok) return { ok: false, message: BOOKING_API_MESSAGES.rejected };
+  if (!response.ok) return { ok: false, failure: nonOkReadFailure(response, body) };
   const parsed = publicBookableServicesResponseSchema.safeParse(body);
   return parsed.success
     ? { ok: true, value: parsed.data.services }
-    : { ok: false, message: BOOKING_API_MESSAGES.malformed };
+    : { ok: false, failure: { kind: "malformed", message: BOOKING_API_MESSAGES.malformed } };
 }
 
 export async function loadPublishedContent(
@@ -137,15 +188,15 @@ export async function loadAvailability(
       signal,
     });
   } catch {
-    return { ok: false, message: BOOKING_API_MESSAGES.network };
+    return { ok: false, failure: { kind: "network", message: BOOKING_API_MESSAGES.network } };
   }
 
   const body = await readJson(response);
-  if (!response.ok) return { ok: false, message: BOOKING_API_MESSAGES.rejected };
+  if (!response.ok) return { ok: false, failure: nonOkReadFailure(response, body) };
   const parsed = bookingAvailabilityResponseSchema.safeParse(body);
   return parsed.success
     ? { ok: true, value: parsed.data }
-    : { ok: false, message: BOOKING_API_MESSAGES.malformed };
+    : { ok: false, failure: { kind: "malformed", message: BOOKING_API_MESSAGES.malformed } };
 }
 
 export async function createBooking(
@@ -203,6 +254,25 @@ export async function createBooking(
     return {
       ok: false,
       failure: { kind: "validation", message: BOOKING_API_MESSAGES.validation },
+    };
+  }
+  // ESZ-136: a 429 — the frozen envelope's RATE_LIMITED, or the bare status
+  // from a middlebox — is rate-limiting, never a generic server failure. The
+  // refusal happens before any work, so the visitor keeps their slot and
+  // details for a later manual retry.
+  if (
+    response.status === 429
+    || (error.success && error.data.error.code === "RATE_LIMITED")
+  ) {
+    return {
+      ok: false,
+      failure: {
+        kind: "rate-limited",
+        message: BOOKING_API_MESSAGES.rateLimited,
+        retryAfterSeconds: parseRetryAfterSeconds(
+          response.headers.get(RATE_LIMIT_RETRY_AFTER_HEADER),
+        ),
+      },
     };
   }
   return {

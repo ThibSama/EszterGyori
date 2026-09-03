@@ -64,6 +64,20 @@ export interface ReservationFlowState {
   phase: "selecting" | "details" | "review" | "submitting" | "confirmed";
   submissionError: BookingCreationFailure | null;
   confirmation: PublicBookingConfirmation | null;
+  /**
+   * ESZ-136 — epoch (ms) at which the availability retry control opens again,
+   * or `null` when no trusted `Retry-After` delay is running. Set only by a
+   * 429 rate-limit refusal of an availability load; everything that moves the
+   * availability state (a fresh request, a response, a generic failure, a
+   * service or week change) clears it.
+   */
+  availabilityRetryAtEpochMs: number | null;
+  /**
+   * ESZ-136 — same deadline, for the booking-submission retry control. Set
+   * only by a 429 rate-limit refusal of the creation request; cleared by
+   * anything that resets the submission (a new attempt, a success, editing).
+   */
+  submissionRetryAtEpochMs: number | null;
 }
 
 export interface CustomerDraft {
@@ -88,11 +102,26 @@ export type ReservationFlowAction =
   | { type: "edit-details" }
   | { type: "submit-start" }
   | { type: "submit-success"; confirmation: PublicBookingConfirmation }
-  | { type: "submit-failed"; failure: BookingCreationFailure }
+  | {
+      type: "submit-failed";
+      failure: BookingCreationFailure;
+      /**
+       * ESZ-136: the trusted-retry deadline (epoch ms) computed when the 429
+       * was received. Present only for a `rate-limited` failure whose
+       * `Retry-After` was usable; absent or `null` otherwise.
+       */
+      retryAtEpochMs?: number | null;
+    }
   | { type: "booking-slot-unavailable"; message: string }
   | { type: "request" }
   | { type: "received"; availability: BookingAvailability }
-  | { type: "failed"; message: string };
+  | { type: "failed"; message: string }
+  /**
+   * ESZ-136: an availability load was refused with 429 `RATE_LIMITED`.
+   * `retryAtEpochMs` is the trusted-retry deadline computed when the refusal
+   * was received, or `null` when no usable `Retry-After` arrived.
+   */
+  | { type: "rate-limited"; message: string; retryAtEpochMs: number | null };
 
 export function initialReservationState(today: string): ReservationFlowState {
   return {
@@ -110,6 +139,8 @@ export function initialReservationState(today: string): ReservationFlowState {
     phase: "selecting",
     submissionError: null,
     confirmation: null,
+    availabilityRetryAtEpochMs: null,
+    submissionRetryAtEpochMs: null,
   };
 }
 
@@ -167,6 +198,8 @@ export function reservationFlowReducer(
         phase: "selecting",
         submissionError: null,
         confirmation: null,
+        availabilityRetryAtEpochMs: null,
+        submissionRetryAtEpochMs: null,
       };
     case "navigate":
       return {
@@ -182,6 +215,8 @@ export function reservationFlowReducer(
         phase: "selecting",
         submissionError: null,
         confirmation: null,
+        availabilityRetryAtEpochMs: null,
+        submissionRetryAtEpochMs: null,
       };
     case "select-date":
       return {
@@ -192,6 +227,7 @@ export function reservationFlowReducer(
         phase: "selecting",
         submissionError: null,
         confirmation: null,
+        submissionRetryAtEpochMs: null,
       };
     case "select-slot":
       return {
@@ -201,6 +237,7 @@ export function reservationFlowReducer(
         phase: "details",
         submissionError: null,
         confirmation: null,
+        submissionRetryAtEpochMs: null,
       };
     case "update-customer":
       return {
@@ -208,20 +245,38 @@ export function reservationFlowReducer(
         customer: { ...state.customer, [action.field]: action.value },
         customerErrors: { ...state.customerErrors, [action.field]: undefined },
         submissionError: null,
+        submissionRetryAtEpochMs: null,
       };
     case "customer-invalid":
       return { ...state, customerErrors: action.errors, phase: "details" };
     case "show-review":
-      return { ...state, customerErrors: {}, phase: "review", submissionError: null };
+      return {
+        ...state,
+        customerErrors: {},
+        phase: "review",
+        submissionError: null,
+        submissionRetryAtEpochMs: null,
+      };
     case "edit-details":
-      return { ...state, phase: "details", submissionError: null };
+      return {
+        ...state,
+        phase: "details",
+        submissionError: null,
+        submissionRetryAtEpochMs: null,
+      };
     case "submit-start":
-      return { ...state, phase: "submitting", submissionError: null };
+      return {
+        ...state,
+        phase: "submitting",
+        submissionError: null,
+        submissionRetryAtEpochMs: null,
+      };
     case "submit-success":
       return {
         ...state,
         phase: "confirmed",
         submissionError: null,
+        submissionRetryAtEpochMs: null,
         confirmation: action.confirmation,
       };
     case "submit-failed":
@@ -229,6 +284,12 @@ export function reservationFlowReducer(
         ...state,
         phase: action.failure.kind === "validation" ? "details" : "review",
         submissionError: action.failure,
+        // Only a 429 refusal carries a trusted retry deadline (ESZ-136); any
+        // other failure leaves the retry control open.
+        submissionRetryAtEpochMs:
+          action.failure.kind === "rate-limited"
+            ? (action.retryAtEpochMs ?? null)
+            : null,
       };
     case "booking-slot-unavailable":
       return {
@@ -236,6 +297,7 @@ export function reservationFlowReducer(
         selectedSlot: null,
         phase: "selecting",
         submissionError: null,
+        submissionRetryAtEpochMs: null,
         confirmation: null,
         notice: action.message,
       };
@@ -245,6 +307,7 @@ export function reservationFlowReducer(
         availabilityStatus: "loading",
         error: null,
         requestVersion: state.requestVersion + 1,
+        availabilityRetryAtEpochMs: null,
       };
     case "received": {
       const exactSlotStillExists = state.selectedSlot
@@ -261,12 +324,25 @@ export function reservationFlowReducer(
         phase: exactSlotStillExists ? state.phase : "selecting",
         availabilityStatus: "ready",
         error: null,
+        availabilityRetryAtEpochMs: null,
         notice: exactSlotStillExists
           ? state.notice
           : "Ce créneau n’est plus disponible. Choisissez un nouvel horaire.",
       };
     }
     case "failed":
-      return { ...state, availabilityStatus: "error", error: action.message };
+      return {
+        ...state,
+        availabilityStatus: "error",
+        error: action.message,
+        availabilityRetryAtEpochMs: null,
+      };
+    case "rate-limited":
+      return {
+        ...state,
+        availabilityStatus: "error",
+        error: action.message,
+        availabilityRetryAtEpochMs: action.retryAtEpochMs,
+      };
   }
 }

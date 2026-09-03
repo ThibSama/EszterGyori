@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { RATE_LIMIT_RETRY_AFTER_HEADER } from "@eszter/contracts";
 import {
+  BOOKING_API_MESSAGES,
   createBooking,
   loadAvailability,
   loadBookableServices,
   withSubmissionLock,
   type PublicBookingRequest,
 } from "../app/lib/booking-api";
+import { RETRY_AFTER_MAX_SECONDS } from "../app/lib/retry-after";
 
 const bookingRequest: PublicBookingRequest = {
   serviceKey: "brows",
@@ -65,14 +68,60 @@ test("availability posts the selected key and exact visible range", async () => 
   if (result.ok) assert.equal(result.value.slots[0].startsAtUtc, "2026-08-24T07:15:00.000Z");
 });
 
-test("malformed and failed availability responses remain recoverable failures", async () => {
+test("malformed, rejected, network and rate-limited availability failures stay distinct", async () => {
   const malformed = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () => Response.json({ slots: [] }));
   const rejected = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () => Response.json({}, { status: 500 }));
   const network = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () => { throw new Error("offline"); });
+  const rateLimited = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () =>
+    Response.json(
+      { error: { code: "RATE_LIMITED", message: "refusé", requestId: "req_test" } },
+      { status: 429, headers: { [RATE_LIMIT_RETRY_AFTER_HEADER]: "30" } },
+    ));
 
   assert.equal(malformed.ok, false);
+  if (!malformed.ok) assert.equal(malformed.failure.kind, "malformed");
+  // A 500 is the generic service failure; a 429 must never collapse into it.
   assert.equal(rejected.ok, false);
+  if (!rejected.ok) assert.equal(rejected.failure.kind, "rejected");
   assert.equal(network.ok, false);
+  if (!network.ok) assert.equal(network.failure.kind, "network");
+  assert.equal(rateLimited.ok, false);
+  if (!rateLimited.ok) {
+    assert.equal(rateLimited.failure.kind, "rate-limited");
+    if (rateLimited.failure.kind !== "rate-limited") return;
+    assert.equal(rateLimited.failure.retryAfterSeconds, 30);
+    assert.equal(rateLimited.failure.message, BOOKING_API_MESSAGES.rateLimited);
+  }
+});
+
+test("an availability 429 stays explicitly rate-limited without a usable Retry-After", async () => {
+  // Missing and unusable header values: still rate-limited, no trusted timer.
+  const missing = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () =>
+    Response.json(
+      { error: { code: "RATE_LIMITED", message: "refusé", requestId: "req_test" } },
+      { status: 429 },
+    ));
+  const absurd = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () =>
+    Response.json(
+      { error: { code: "RATE_LIMITED", message: "refusé", requestId: "req_test" } },
+      { status: 429, headers: { [RATE_LIMIT_RETRY_AFTER_HEADER]: "86400" } },
+    ));
+  const bare = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () =>
+    new Response("slow down", { status: 429 }));
+
+  for (const result of [missing, bare]) {
+    assert.equal(result.ok, false);
+    if (result.ok) continue;
+    assert.equal(result.failure.kind, "rate-limited");
+    if (result.failure.kind !== "rate-limited") continue;
+    assert.equal(result.failure.retryAfterSeconds, null);
+  }
+  assert.equal(absurd.ok, false);
+  if (!absurd.ok) {
+    assert.equal(absurd.failure.kind, "rate-limited");
+    if (absurd.failure.kind !== "rate-limited") return;
+    assert.equal(absurd.failure.retryAfterSeconds, RETRY_AFTER_MAX_SECONDS);
+  }
 });
 
 test("booking creation posts the exact validated customer, consent and returned instant", async () => {
@@ -122,6 +171,51 @@ test("stale, validation, server and uncertain creation failures remain distinct"
   assert.equal(server.ok ? "success" : server.failure.kind, "server");
   assert.equal(network.ok ? "success" : network.failure.kind, "uncertain");
   if (!network.ok) assert.match(network.failure.message, /peut-être été enregistrée/);
+});
+
+test("a 429 on booking creation is rate-limited, never server, slot, validation or uncertain", async () => {
+  const envelope429 = {
+    error: { code: "RATE_LIMITED", message: "refusé", requestId: "req_test" },
+  };
+  const withHeader = await createBooking(bookingRequest, async () =>
+    Response.json(envelope429, {
+      status: 429,
+      headers: { [RATE_LIMIT_RETRY_AFTER_HEADER]: "120" },
+    }));
+  const withoutHeader = await createBooking(bookingRequest, async () =>
+    Response.json(envelope429, { status: 429 }));
+  const bare = await createBooking(bookingRequest, async () =>
+    new Response("slow down", { status: 429 }));
+
+  for (const result of [withHeader, withoutHeader, bare]) {
+    assert.equal(result.ok, false);
+    if (result.ok) continue;
+    assert.equal(result.failure.kind, "rate-limited");
+    if (result.failure.kind !== "rate-limited") continue;
+    assert.equal(result.failure.message, BOOKING_API_MESSAGES.rateLimited);
+  }
+  assert.equal(withHeader.ok, false);
+  if (!withHeader.ok && withHeader.failure.kind === "rate-limited") {
+    assert.equal(withHeader.failure.retryAfterSeconds, 120);
+  }
+  assert.equal(withoutHeader.ok, false);
+  if (!withoutHeader.ok && withoutHeader.failure.kind === "rate-limited") {
+    assert.equal(withoutHeader.failure.retryAfterSeconds, null);
+  }
+});
+
+test("a booking creation 429 with an oversized Retry-After stays within the documented bound", async () => {
+  const result = await createBooking(bookingRequest, async () =>
+    Response.json(
+      { error: { code: "RATE_LIMITED", message: "refusé", requestId: "req_test" } },
+      { status: 429, headers: { [RATE_LIMIT_RETRY_AFTER_HEADER]: "86400" } },
+    ));
+
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.failure.kind, "rate-limited");
+  if (result.failure.kind !== "rate-limited") return;
+  assert.equal(result.failure.retryAfterSeconds, RETRY_AFTER_MAX_SECONDS);
 });
 
 test("the immediate submission lock prevents duplicate concurrent posts", async () => {

@@ -7,12 +7,22 @@ import type {
   ReservationFlowState,
 } from "../../lib/reservation-flow";
 import { validateCustomerDraft } from "../../lib/reservation-flow";
+import {
+  isRetryBlocked,
+  retryWaitLabel,
+} from "../../lib/retry-after";
 
 interface ReservationDetailsProps {
   state: ReservationFlowState;
   serviceLabel: string;
   dateLabel: (date: string) => string;
   dispatch: Dispatch<ReservationFlowAction>;
+  /**
+   * ESZ-136: the render clock supplied by the parent's one-second tick, so
+   * the submission retry gate can be evaluated without calling Date.now()
+   * during render.
+   */
+  nowEpochMs: number;
   onSubmit: () => Promise<void>;
 }
 
@@ -21,6 +31,7 @@ export function ReservationDetails({
   serviceLabel,
   dateLabel,
   dispatch,
+  nowEpochMs,
   onSubmit,
 }: ReservationDetailsProps) {
   const detailsHeading = useRef<HTMLHeadingElement>(null);
@@ -68,6 +79,17 @@ export function ReservationDetails({
 
   const customer = state.customer;
   const errors = state.customerErrors;
+  // ESZ-136: a trusted Retry-After delay from a refused creation keeps the
+  // confirmation control closed until the deadline passes. The parent's clock
+  // tick advances `nowEpochMs` each second while a gate is running.
+  const submissionRetryBlocked = isRetryBlocked(
+    state.submissionRetryAtEpochMs,
+    nowEpochMs,
+  );
+  const submissionRetryCopy = retryWaitLabel(
+    state.submissionRetryAtEpochMs,
+    nowEpochMs,
+  );
 
   function update(field: CustomerField, value: string | boolean) {
     dispatch({ type: "update-customer", field, value });
@@ -100,6 +122,9 @@ export function ReservationDetails({
       {state.submissionError && (
         <div ref={submissionAlert} tabIndex={-1} role="alert" className="mt-6 rounded-2xl border border-warm-300 bg-warm-100 p-5 text-warm-700">
           {state.submissionError.message}
+          {submissionRetryCopy && (
+            <p className="mt-2 text-sm text-warm-600">{submissionRetryCopy}</p>
+          )}
         </div>
       )}
 
@@ -169,7 +194,7 @@ export function ReservationDetails({
           <p className="mt-5 text-sm text-warm-600">Consentement confirmé pour le traitement de cette demande.</p>
           <div className="mt-7 flex flex-col gap-3 sm:flex-row">
             <button type="button" disabled={state.phase === "submitting"} onClick={() => dispatch({ type: "edit-details" })} className="rounded-full border border-warm-300 bg-white/60 px-6 py-3 font-medium text-warm-700 disabled:opacity-50">Modifier mes coordonnées</button>
-            <button type="button" disabled={state.phase === "submitting" || state.availabilityStatus !== "ready"} onClick={() => void onSubmit()} className="rounded-full bg-warm-800 px-6 py-3 font-medium text-porcelain transition-colors hover:bg-warm-700 disabled:cursor-wait disabled:opacity-60">
+            <button type="button" disabled={state.phase === "submitting" || submissionRetryBlocked || state.availabilityStatus !== "ready"} onClick={() => { if (submissionRetryBlocked) return; void onSubmit(); }} className="rounded-full bg-warm-800 px-6 py-3 font-medium text-porcelain transition-colors hover:bg-warm-700 disabled:cursor-wait disabled:opacity-60">
               {state.phase === "submitting" ? "Confirmation en cours…" : "Confirmer le rendez-vous"}
             </button>
           </div>
