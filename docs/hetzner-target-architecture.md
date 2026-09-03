@@ -613,6 +613,15 @@ Boundaries:
   customer data. Admin updates may change only name, email, phone and note; moves retain
   reference and service and are allowed only while confirmed; cancellation uses the
   central state transition and never deletes the booking.
+- The booking's `updatedAt` is its V1 optimistic-concurrency token (ESZ-139): admin
+  responses expose it in canonical UTC millisecond form, and every admin mutation —
+  update, move or cancel — sends it back as `expectedUpdatedAt`. Inside the mutation
+  transaction, after the authoritative row lock, the server compares it byte-for-byte
+  with the current row before any write, history append or notification scheduling; a
+  mismatch is the existing 409 `REVISION_CONFLICT` envelope and writes nothing. A
+  successful mutation stores one derived instant, strictly later than the token it was
+  granted against even when the application clock returns the same millisecond or moves
+  backward, so a stale admin tab can neither overwrite nor supersede a newer action.
 - `booking_history` appends `created`, `moved`, `cancelled` and `customer_updated`
   events in the same transaction as their change. The booking row remains the source of
   truth for current state.

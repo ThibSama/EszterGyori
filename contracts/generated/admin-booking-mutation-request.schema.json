@@ -18,6 +18,9 @@
           "type": "string",
           "pattern": "^bk_[0-9a-f]{32}$"
         },
+        "expectedUpdatedAt": {
+          "type": "string"
+        },
         "customerName": {
           "type": "string",
           "minLength": 1,
@@ -55,6 +58,7 @@
       "required": [
         "action",
         "reference",
+        "expectedUpdatedAt",
         "customerName",
         "customerEmail",
         "customerPhone",
@@ -73,6 +77,9 @@
           "type": "string",
           "pattern": "^bk_[0-9a-f]{32}$"
         },
+        "expectedUpdatedAt": {
+          "type": "string"
+        },
         "startsAtUtc": {
           "type": "string"
         }
@@ -80,6 +87,7 @@
       "required": [
         "action",
         "reference",
+        "expectedUpdatedAt",
         "startsAtUtc"
       ],
       "additionalProperties": false
@@ -94,6 +102,9 @@
         "reference": {
           "type": "string",
           "pattern": "^bk_[0-9a-f]{32}$"
+        },
+        "expectedUpdatedAt": {
+          "type": "string"
         },
         "reason": {
           "anyOf": [
@@ -110,6 +121,7 @@
       "required": [
         "action",
         "reference",
+        "expectedUpdatedAt",
         "reason"
       ],
       "additionalProperties": false

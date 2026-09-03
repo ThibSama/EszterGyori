@@ -6,6 +6,7 @@ namespace Eszter\Booking;
 
 use Eszter\Database\Database;
 use Eszter\Support\Clock;
+use Eszter\Support\IsoTimestamp;
 
 /** MySQL persistence for appointment creation and explicit state transitions. */
 final class BookingRepository
@@ -375,9 +376,15 @@ final class BookingRepository
             $booking = Booking::fromRow($row, $this->contract);
             $this->assertCustomerDataLive($booking);
             $next = $this->states->transition($booking->state, $target);
-            $nowIso = $this->clock->nowIso();
+            // ESZ-139: one derived mutation instant, strictly later than the
+            // row's own updatedAt, drives every advancing state timestamp of
+            // the transition — updated_at, state_changed_at and (when
+            // cancelling) cancelled_at_utc — so the stored facts can never
+            // disagree about when the transition happened.
+            $mutationInstant = $this->mutationInstant($booking->updatedAt);
+            $mutationIso = IsoTimestamp::format($mutationInstant);
             $cancelledAt = $next->value === 'cancelled'
-                ? $this->time->databaseUtc($this->clock->now())
+                ? $this->time->databaseUtc($mutationInstant)
                 : null;
             $reason = $next->value === 'cancelled' ? self::optional($reason) : null;
 
@@ -393,8 +400,8 @@ final class BookingRepository
                     'state' => $next->value,
                     'cancelled_at' => $cancelledAt,
                     'reason' => $reason,
-                    'updated_at' => $nowIso,
-                    'state_changed_at' => $nowIso,
+                    'updated_at' => $mutationIso,
+                    'state_changed_at' => $mutationIso,
                     'id' => $booking->id,
                 ],
             );
@@ -467,7 +474,10 @@ final class BookingRepository
     {
         $this->assertCustomerDataLive($booking);
 
-        $now = $this->clock->nowIso();
+        // ESZ-139: the derived instant is strictly later than the row's own
+        // updatedAt, so a move that succeeds under a frozen or backward
+        // application clock still mints a strictly newer token.
+        $now = IsoTimestamp::format($this->mutationInstant($booking->updatedAt));
         $this->database->run(
             'UPDATE bookings SET starts_at_utc = :start, ends_at_utc = :end,'
             . ' updated_at = :updated WHERE id = :id',
@@ -518,12 +528,53 @@ final class BookingRepository
                 'email' => $email,
                 'phone' => $phone,
                 'note' => $note,
-                'updated' => $this->clock->nowIso(),
+                // ESZ-139: strictly later than the row's own token even under
+                // a frozen or backward application clock.
+                'updated' => IsoTimestamp::format($this->mutationInstant($booking->updatedAt)),
                 'id' => $booking->id,
             ],
         );
 
         return $this->required($booking->reference);
+    }
+
+    /**
+     * ESZ-139 — one derived mutation instant per successful booking write.
+     *
+     * State timestamps advance by exactly this instant, which is the later of
+     * the application clock (canonical UTC, millisecond precision) and the
+     * row's own `updatedAt` plus one millisecond. The comparison happens in
+     * the canonical string domain — fixed-width UTC text, so byte order is
+     * chronological order — which makes the result strictly later than the
+     * token the mutation was granted against even when the application clock
+     * returns the same millisecond or moves backward.
+     */
+    private function mutationInstant(string $currentUpdatedAt): \DateTimeImmutable
+    {
+        $nowIso = $this->clock->nowIso();
+        if (\strcmp($nowIso, $currentUpdatedAt) > 0) {
+            $instant = \DateTimeImmutable::createFromFormat(
+                IsoTimestamp::FORMAT,
+                $nowIso,
+                new \DateTimeZone('UTC'),
+            );
+            if ($instant === false) {
+                throw new \RuntimeException('The application clock produced a non-canonical timestamp.');
+            }
+
+            return $instant;
+        }
+
+        $current = \DateTimeImmutable::createFromFormat(
+            IsoTimestamp::FORMAT,
+            $currentUpdatedAt,
+            new \DateTimeZone('UTC'),
+        );
+        if ($current === false) {
+            throw new \RuntimeException('The stored booking updated_at is not a canonical timestamp.');
+        }
+
+        return $current->modify('+1 millisecond');
     }
 
     private function required(string $reference): Booking

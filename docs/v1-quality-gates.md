@@ -179,6 +179,17 @@ exact French countdown, and re-enable a manual retry when it passes — nothing 
 automatically, a 429 is never classified as a credential, slot, validation, network or
 generic-server outcome, and booking creation's network `uncertain` meaning survives.
 
+Since ESZ-139 the admin booking calendar sends the booking's own `updatedAt` back as
+`expectedUpdatedAt` on every mutation — move, cancel and contact update — and tells the
+two frozen 409 conflict codes apart even though both classify as `conflict`: a
+`REVISION_CONFLICT` means the tab held stale data and is never auto-retried (the booking
+is reloaded by reference, the UI keeps working from the authoritative reloaded row with
+explicit stale-data copy, and for a move the slots refresh only when the reloaded booking
+is still confirmed), while a `SLOT_UNAVAILABLE` keeps its own slot copy and is never
+presented as stale data. No conflict path claims a cancelled or saved outcome, and the
+client's `conflict` failure carries the frozen `errorCode` that makes the distinction
+possible without widening the HTTP envelope.
+
 Since Package 3.3 it also covers the media panel: that an upload sends `FormData` with
 **no** explicit `content-type` — a hand-set `multipart/form-data` carries no boundary
 and arrives as zero parts — that an oversized file is refused before a request is made,
@@ -361,6 +372,20 @@ history and real concurrent cross-service creation. Package 7.1 adds a third SQL
 `sql:notifications`, and gives `system_settings` its first key,
 `notifications.channels`. Package 7.2 adds the booking e-mail producer and SMTP transport;
 SMS and live-provider receipt remain separate work.
+
+Since ESZ-139 the gate also proves the per-booking optimistic-concurrency token against
+real MySQL: update, move and cancel require `expectedUpdatedAt` and compare it
+byte-for-byte with the current row under the authoritative row lock before any write,
+history append or notification scheduling. A stale contact update cannot overwrite a
+newer one; stale moves and cancels leave row, history and notification jobs untouched;
+move-then-stale-cancel and cancel-then-stale-move are both refused; two real concurrent
+processes replaying the same token yield exactly one success and one
+`BookingRevisionConflictException`; the same frozen millisecond or a backward application
+clock still mints a strictly newer canonical `updatedAt` (one derived instant, with
+`updated_at`, `state_changed_at` and `cancelled_at_utc` agreeing); a fresh re-read token
+unblocks the next mutation; and the HTTP surface maps the refusal to 409
+`REVISION_CONFLICT` with the closed envelope and no internal state, a token-less mutation
+being a schema 400.
 
 ---
 

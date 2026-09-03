@@ -179,6 +179,7 @@ test("booking contact update patches the admin route with the exact nullable bod
   const requestBody = {
     action: "update" as const,
     reference: "bk_00000000000000000000000000000000",
+    expectedUpdatedAt: "2026-08-22T10:00:00.000Z",
     customerName: "Nouvelle Représentante",
     customerEmail: "representante@example.test",
     customerPhone: null,
@@ -217,6 +218,42 @@ test("booking contact update patches the admin route with the exact nullable bod
   assert.equal(calls[0]?.method, "PATCH");
   assert.equal(calls[0]?.headers.get(CSRF_HEADER), "contact-csrf-token");
   assert.deepEqual(JSON.parse(calls[0]?.body ?? "null"), requestBody);
+});
+
+test("a stale booking mutation is a conflict that names REVISION_CONFLICT", async () => {
+  const { fetchImpl } = stubFetch([{ status: 409, body: errorBody("REVISION_CONFLICT") }]);
+  const result = await createAdminApiClient(fetchImpl).mutateBooking(
+    {
+      action: "move",
+      reference: "bk_00000000000000000000000000000000",
+      expectedUpdatedAt: "2026-08-22T10:00:00.000Z",
+      startsAtUtc: "2026-08-24T09:00:00.000Z",
+    },
+    "csrf",
+  );
+
+  assert.equal(result.ok, false);
+  if (result.ok || result.failure.kind !== "conflict") return;
+  assert.equal(result.failure.errorCode, "REVISION_CONFLICT");
+});
+
+test("a booking slot that was taken is a conflict, never a stale-data one", async () => {
+  // ESZ-139: SLOT_UNAVAILABLE and REVISION_CONFLICT are both 409 conflicts,
+  // but the calendar must tell them apart — the copy and the recovery differ.
+  const { fetchImpl } = stubFetch([{ status: 409, body: errorBody("SLOT_UNAVAILABLE") }]);
+  const result = await createAdminApiClient(fetchImpl).mutateBooking(
+    {
+      action: "move",
+      reference: "bk_00000000000000000000000000000000",
+      expectedUpdatedAt: "2026-08-22T10:00:00.000Z",
+      startsAtUtc: "2026-08-24T09:00:00.000Z",
+    },
+    "csrf",
+  );
+
+  assert.equal(result.ok, false);
+  if (result.ok || result.failure.kind !== "conflict") return;
+  assert.equal(result.failure.errorCode, "SLOT_UNAVAILABLE");
 });
 
 test("the draft read returns the validated server envelope", async () => {

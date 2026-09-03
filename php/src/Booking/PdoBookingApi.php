@@ -294,11 +294,15 @@ final class PdoBookingApi implements BookingApi
     {
         $action = self::requiredString($request, 'action');
         $reference = self::requiredString($request, 'reference');
+        // ESZ-139: the canonical-UTC form is checked once here for every
+        // action; the byte-for-byte comparison against the current row
+        // happens under the authoritative row lock inside each mutation.
+        $expectedUpdatedAt = self::expectedUpdatedAt($request);
 
         $booking = match ($action) {
             'update' => $this->updateCustomer($reference, $request),
-            'move' => $this->move($reference, self::timestamp($request, 'startsAtUtc')),
-            'cancel' => $this->cancel($reference, self::nullableString($request, 'reason')),
+            'move' => $this->move($reference, $expectedUpdatedAt, self::timestamp($request, 'startsAtUtc')),
+            'cancel' => $this->cancel($reference, $expectedUpdatedAt, self::nullableString($request, 'reason')),
             default => throw new BookingValidationException('action', 'Unknown booking action.'),
         };
 
@@ -617,10 +621,15 @@ final class PdoBookingApi implements BookingApi
     private function updateCustomer(string $reference, array $request): Booking
     {
         return $this->database->transactional(function () use ($reference, $request): Booking {
+            $expectedUpdatedAt = self::expectedUpdatedAt($request);
             $booking = $this->bookings->findForUpdate($reference);
             if ($booking === null) {
                 throw new BookingNotFoundException($reference);
             }
+            // ESZ-139: the caller's token must equal the current row before
+            // anything is written; a stale editor is refused with 409
+            // REVISION_CONFLICT and leaves row, history and jobs untouched.
+            $this->assertNotStale($expectedUpdatedAt, $booking);
             $updated = $this->bookings->updateCustomer(
                 $booking,
                 self::requiredString($request, 'customerName'),
@@ -643,17 +652,28 @@ final class PdoBookingApi implements BookingApi
         });
     }
 
-    private function move(string $reference, \DateTimeImmutable $requestedStart): Booking
-    {
+    private function move(
+        string $reference,
+        string $expectedUpdatedAt,
+        \DateTimeImmutable $requestedStart,
+    ): Booking {
         $localDate = $requestedStart->setTimezone(new \DateTimeZone($this->contract->timezone))->format('Y-m-d');
         $this->assertPublicRange($localDate, $localDate);
 
-        return $this->database->transactional(function () use ($reference, $requestedStart, $localDate): Booking {
+        return $this->database->transactional(function () use (
+            $reference,
+            $expectedUpdatedAt,
+            $requestedStart,
+            $localDate,
+        ): Booking {
             $this->lockResource();
             $booking = $this->bookings->findForUpdate($reference);
             if ($booking === null) {
                 throw new BookingNotFoundException($reference);
             }
+            // ESZ-139: compared under both authoritative locks (boundary then
+            // row) and before any write, history or notification.
+            $this->assertNotStale($expectedUpdatedAt, $booking);
             if ($booking->state->value !== 'confirmed') {
                 throw new InvalidBookingTransitionException($booking->state->value, 'moved');
             }
@@ -673,14 +693,20 @@ final class PdoBookingApi implements BookingApi
         });
     }
 
-    private function cancel(string $reference, ?string $reason): Booking
-    {
-        return $this->database->transactional(function () use ($reference, $reason): Booking {
+    private function cancel(
+        string $reference,
+        string $expectedUpdatedAt,
+        ?string $reason,
+    ): Booking {
+        return $this->database->transactional(function () use ($reference, $expectedUpdatedAt, $reason): Booking {
             $this->lockResource();
             $booking = $this->bookings->findForUpdate($reference);
             if ($booking === null) {
                 throw new BookingNotFoundException($reference);
             }
+            // ESZ-139: compared under both authoritative locks (boundary then
+            // row) and before any write, history or notification.
+            $this->assertNotStale($expectedUpdatedAt, $booking);
             $cancelled = $this->bookings->transition($reference, 'cancelled', $reason);
             $this->history->append($booking->id, 'cancelled', 'admin');
             $this->notifications->cancelled($cancelled);
@@ -819,6 +845,31 @@ final class PdoBookingApi implements BookingApi
                 'occurredAt' => $event->occurredAt,
             ], $this->history->forBooking($booking->id)),
         ];
+    }
+
+    /** @param array<string, mixed> $request */
+    private static function expectedUpdatedAt(array $request): string
+    {
+        $expected = self::requiredString($request, 'expectedUpdatedAt');
+        if (!IsoTimestamp::isCanonical($expected)) {
+            throw new BookingValidationException('expectedUpdatedAt', 'Timestamp is not canonical UTC.');
+        }
+
+        return $expected;
+    }
+
+    /**
+     * ESZ-139 — the V1 optimistic-concurrency refusal.
+     *
+     * The caller's token is compared byte-for-byte with the row read under the
+     * authoritative lock. The comparison must precede every write, history
+     * append and notification scheduling of the mutation.
+     */
+    private function assertNotStale(string $expectedUpdatedAt, Booking $booking): void
+    {
+        if ($expectedUpdatedAt !== $booking->updatedAt) {
+            throw new BookingRevisionConflictException($expectedUpdatedAt, $booking->updatedAt);
+        }
     }
 
     /** @return list<string> */

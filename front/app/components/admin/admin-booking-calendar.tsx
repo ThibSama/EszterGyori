@@ -126,10 +126,17 @@ export function AdminBookingCalendar() {
     requestAnimationFrame(() => detailHeadingRef.current?.focus());
   };
 
-  const refreshOne = useCallback(async (reference: string) => {
+  const refreshOne = useCallback(async (reference: string): Promise<AdminBooking | null> => {
     const result = await api.queryBookings({ mode: "reference", reference });
-    if (!result.ok) return void handleFailure(result.failure);
-    if (result.value.bookings[0]) setBookings((current) => replaceBooking(current, result.value.bookings[0]));
+    if (!result.ok) {
+      void handleFailure(result.failure);
+      return null;
+    }
+    // ESZ-139: the calendar adopts the authoritative reloaded row — the whole
+    // UI keeps working from it, never from the copy the tab held before.
+    const fresh = result.value.bookings[0] ?? null;
+    if (fresh) setBookings((current) => replaceBooking(current, fresh));
+    return fresh;
   }, [api, handleFailure]);
 
   const loadMoveSlots = useCallback(async (booking: AdminBooking, date: string) => {
@@ -178,20 +185,38 @@ export function AdminBookingCalendar() {
     if (!selected || !selectedSlot || mutating) return;
     setMutating(true);
     const result = await api.mutateBooking(
-      { action: "move", reference: selected.reference, startsAtUtc: selectedSlot },
+      {
+        action: "move",
+        reference: selected.reference,
+        expectedUpdatedAt: selected.updatedAt,
+        startsAtUtc: selectedSlot,
+      },
       csrfToken,
     );
     setMutating(false);
     if (!result.ok) {
-      if (result.failure.kind === "conflict") {
-        setSelectedSlot(null);
-        await refreshOne(selected.reference);
-        await loadMoveSlots(selected, moveDate);
-        setMessage("Ce créneau n’est plus disponible. Le rendez-vous n’a pas été déplacé ; choisissez un autre horaire.");
-        requestAnimationFrame(() => noticeRef.current?.focus());
-        return;
+      if (result.failure.kind !== "conflict") return void handleFailure(result.failure);
+      // ESZ-139 — both move conflicts reload the booking by reference first:
+      // the calendar then keeps working from the authoritative row, and slots
+      // are refreshed only when the reloaded booking is still confirmed. The
+      // two frozen codes are told apart: a REVISION_CONFLICT means the tab was
+      // stale (never auto-retried, explicit stale-data copy, no success
+      // claim), while SLOT_UNAVAILABLE means another appointment took the
+      // instant and the operator should pick another slot.
+      setSelectedSlot(null);
+      const fresh = await refreshOne(selected.reference);
+      if (fresh?.state === "confirmed") {
+        await loadMoveSlots(fresh, moveDate);
+      } else {
+        setAction("none");
       }
-      return void handleFailure(result.failure);
+      if (result.failure.errorCode === "REVISION_CONFLICT") {
+        setMessage("Ce rendez-vous avait déjà changé. Il n’a pas été déplacé : les données affichées ont été actualisées.");
+      } else {
+        setMessage("Ce créneau n’est plus disponible. Le rendez-vous n’a pas été déplacé ; choisissez un autre horaire.");
+      }
+      requestAnimationFrame(() => noticeRef.current?.focus());
+      return;
     }
     setBookings((current) => replaceBooking(current, result.value));
     setSelectedReference(result.value.reference);
@@ -206,15 +231,24 @@ export function AdminBookingCalendar() {
     if (!selected || selected.state !== "confirmed" || mutating) return;
     setMutating(true);
     const result = await api.mutateBooking(
-      { action: "cancel", reference: selected.reference, reason: cancelReason.trim() || null },
+      {
+        action: "cancel",
+        reference: selected.reference,
+        expectedUpdatedAt: selected.updatedAt,
+        reason: cancelReason.trim() || null,
+      },
       csrfToken,
     );
     setMutating(false);
     if (!result.ok) {
       if (result.failure.kind === "conflict") {
+        // ESZ-139: stale cancellation — never auto-retried, never claimed as
+        // cancelled. The booking is reloaded by reference and the panel closes
+        // on the authoritative row with explicit stale-data copy.
+        setCancelReason("");
         await refreshOne(selected.reference);
         setAction("none");
-        setMessage("Le rendez-vous avait déjà changé. Son état serveur a été actualisé sans nouvelle annulation.");
+        setMessage("Ce rendez-vous avait déjà changé. Il n’a pas été annulé : les données affichées ont été actualisées.");
         requestAnimationFrame(() => noticeRef.current?.focus());
         return;
       }
@@ -232,6 +266,7 @@ export function AdminBookingCalendar() {
     const parsed = adminBookingMutationRequestSchema.safeParse({
       action: "update",
       reference: selected.reference,
+      expectedUpdatedAt: selected.updatedAt,
       customerName: contactName,
       customerEmail: contactEmail,
       customerPhone: contactPhone.trim() || null,

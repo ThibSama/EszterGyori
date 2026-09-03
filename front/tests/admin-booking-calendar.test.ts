@@ -101,13 +101,19 @@ test("admin booking transport uses authenticated read routes and CSRF only on mu
   });
   await api.queryBookings({ mode: "range", fromDate: "2026-10-01", untilDate: "2026-10-31" });
   await api.moveAvailability({ reference: REFERENCE, fromDate: "2026-10-25", untilDate: "2026-10-25" });
-  await api.mutateBooking({ action: "move", reference: REFERENCE, startsAtUtc: availability.slots[0].startsAtUtc }, "csrf-token");
+  await api.mutateBooking(
+    { action: "move", reference: REFERENCE, expectedUpdatedAt: booking().updatedAt, startsAtUtc: availability.slots[0].startsAtUtc },
+    "csrf-token",
+  );
 
   assert.deepEqual(calls.map((call) => call.path), [ADMIN_BOOKINGS_QUERY_PATH, ADMIN_BOOKING_MOVE_AVAILABILITY_PATH, ADMIN_BOOKINGS_PATH]);
   assert.equal(new Headers(calls[0]?.init?.headers).get(CSRF_HEADER), null);
   assert.equal(new Headers(calls[1]?.init?.headers).get(CSRF_HEADER), null);
   assert.equal(new Headers(calls[2]?.init?.headers).get(CSRF_HEADER), "csrf-token");
   assert.equal(JSON.parse(String(calls[2]?.init?.body)).startsAtUtc, availability.slots[0].startsAtUtc);
+  // ESZ-139: the mutation carries the booking's own updatedAt as its
+  // optimistic-concurrency token, byte-for-byte from the read that seeded it.
+  assert.equal(JSON.parse(String(calls[2]?.init?.body)).expectedUpdatedAt, "2026-08-20T10:00:00.000Z");
 });
 
 test("calendar UI keeps conflict, cancellation, focus and responsive guarantees explicit", async () => {
@@ -129,6 +135,32 @@ test("calendar UI keeps conflict, cancellation, focus and responsive guarantees 
   assert.match(source, /Le rendez-vous n’a pas été déplacé/);
   assert.match(source, /Confirmer l’annulation/);
   assert.match(source, /Il reste visible dans le calendrier/);
+});
+
+test("calendar mutations send the booking token and never auto-retry a stale conflict", async () => {
+  const source = await readFile(new URL("../app/components/admin/admin-booking-calendar.tsx", import.meta.url), "utf8");
+
+  // ESZ-139: every mutation (move, cancel, update) sends the selected
+  // booking's own updatedAt as expectedUpdatedAt — three payload sites, and
+  // no fourth mutateBooking call exists anywhere (a stale 409 must never
+  // auto-retry).
+  assert.equal(source.match(/expectedUpdatedAt: selected\.updatedAt/g)?.length, 3);
+  assert.equal(source.match(/api\.mutateBooking/g)?.length, 3, "a stale 409 must never auto-retry a mutation");
+
+  // The move flow tells the two frozen 409 codes apart: a REVISION_CONFLICT
+  // reloads the booking and shows explicit stale-data copy, while a genuinely
+  // unavailable slot keeps its own copy. Either way slots are refreshed only
+  // when the reloaded booking is still confirmed.
+  assert.match(source, /result\.failure\.kind !== "conflict"/);
+  assert.match(source, /result\.failure\.errorCode === "REVISION_CONFLICT"/);
+  assert.match(source, /const fresh = await refreshOne\(selected\.reference\)/);
+  assert.match(source, /if \(fresh\?\.state === "confirmed"\) \{\s*\n\s*await loadMoveSlots\(fresh, moveDate\);/);
+  assert.match(source, /Ce rendez-vous avait déjà changé\. Il n’a pas été déplacé : les données affichées ont été actualisées\./);
+  assert.match(source, /Ce créneau n’est plus disponible\. Le rendez-vous n’a pas été déplacé/);
+
+  // Cancel and update conflicts reload by reference and never claim success.
+  assert.match(source, /Il n’a pas été annulé : les données affichées ont été actualisées\./);
+  assert.match(source, /sans enregistrer la modification\./);
 });
 
 test("calendar UI exposes contract-validated contact editing without deriving server state", async () => {

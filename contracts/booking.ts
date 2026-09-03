@@ -395,8 +395,10 @@ export const bookingSerializationPolicy = {
     "The operation that acquires the boundary first is ordered first. If a bookability mutation commits first, a create/move that started concurrently acquires the boundary only afterwards, re-reads the new service/availability state and may confirm only if the requested slot is still valid. If create/move owns the boundary first it may commit first, and the mutation then follows; both sides finish without deadlock because the boundary is their only shared lock order.",
   optimisticConcurrency:
     "ESZ-137 is preserved: a stale expectedRevision still fails deterministically with a revision conflict and writes nothing, after the boundary has been acquired.",
+  bookingRowToken:
+    "ESZ-139 — a booking row carries its own optimistic-concurrency token, the canonical UTC millisecond updatedAt exposed by admin responses; no separate revision column exists. Admin update, move and cancel send it back as expectedUpdatedAt, and inside the mutation transaction after the authoritative row lock the server compares it byte-for-byte with the current updatedAt before any write, history append or notification scheduling. A mismatch is 409 REVISION_CONFLICT and writes nothing; a matching token lets the mutation store a single derived updatedAt strictly later than the token it was granted against — the derivation compares the application clock against the row's own token, so the same frozen millisecond or a backward clock can never mint an equal or older updatedAt. The row lock is the authority for update-vs-update and update-vs-lifecycle races; create, move and cancel additionally hold the boundary first, preserving the ESZ-146 order.",
   scope:
-    "Package 4.2/6.2/ESZ-146 concurrency invariant of the booking domain; no HTTP response shape is affected.",
+    "Package 4.2/6.2/ESZ-146 concurrency invariant of the booking domain; ESZ-139 adds the expectedUpdatedAt precondition to the admin mutation request shape and keeps the error envelope closed (the frozen 409 REVISION_CONFLICT code, no new field).",
 } as const;
 
 /**

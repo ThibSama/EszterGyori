@@ -687,6 +687,7 @@
           "cancellationReason"
         ]
       },
+      "optimisticConcurrency": "Admin booking responses expose the canonical UTC millisecond updatedAt, which doubles as the V1 optimistic-concurrency token of the row — there is no separate revision column. Update, move and cancel require expectedUpdatedAt and, inside the mutation transaction after the authoritative row lock and before any write, history append or notification scheduling, compare it byte-for-byte with the current updatedAt. A mismatch is 409 REVISION_CONFLICT and writes nothing; a fresh token lets the mutation proceed and store an updatedAt strictly later than the token it was granted against, even when the application clock returns the same millisecond or moves backward — the state timestamps advance by one derived mutation instant.",
       "move": "Authenticated move availability resolves the booking server-side and delegates to SlotEngine while excluding only itself. Mutation retains reference and service, requires confirmed state, and transactionally recomputes the submitted returned instant.",
       "history": "Append-only created, moved, cancelled and customer_updated events; the bookings row remains authoritative current state.",
       "adminQuery": "An authenticated read, no CSRF. mode=reference is an exact lookup. mode=range returns the bookings whose start falls in the requested Paris-civil window, deterministically ordered and paginated per adminViews.rangeRead: pageSize rows at most, a typed cursor for the next page, hasMore detected with a pageSize+1 probe — no row is silently clipped.",
@@ -3365,14 +3366,14 @@
     {
       "id": "admin.bookings.patch.updateOk",
       "endpoint": "/api/admin/bookings",
-      "description": "Customer corrections are an explicit authenticated CSRF-protected mutation.",
+      "description": "Customer corrections are an explicit authenticated CSRF-protected mutation carrying the booking's own updatedAt as its ESZ-139 optimistic-concurrency token.",
       "request": {
         "method": "PATCH",
         "path": "/api/admin/bookings",
         "headers": {
           "content-type": "application/json"
         },
-        "rawBody": "{\"action\":\"update\",\"reference\":\"bk_00000000000000000000000000000000\",\"customerName\":\"Cliente Corrigée\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null}"
+        "rawBody": "{\"action\":\"update\",\"reference\":\"bk_00000000000000000000000000000000\",\"expectedUpdatedAt\":\"2026-06-13T12:00:00.000Z\",\"customerName\":\"Cliente Corrigée\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null}"
       },
       "auth": {
         "session": "authenticated",
@@ -3387,14 +3388,14 @@
     {
       "id": "admin.bookings.patch.moveOk",
       "endpoint": "/api/admin/bookings",
-      "description": "A move returns the same booking reference after transactional slot revalidation.",
+      "description": "A move returns the same booking reference after transactional slot revalidation, granted against the booking's current ESZ-139 token.",
       "request": {
         "method": "PATCH",
         "path": "/api/admin/bookings",
         "headers": {
           "content-type": "application/json"
         },
-        "rawBody": "{\"action\":\"move\",\"reference\":\"bk_00000000000000000000000000000000\",\"startsAtUtc\":\"2026-06-15T08:00:00.000Z\"}"
+        "rawBody": "{\"action\":\"move\",\"reference\":\"bk_00000000000000000000000000000000\",\"expectedUpdatedAt\":\"2026-06-13T12:00:00.000Z\",\"startsAtUtc\":\"2026-06-15T08:00:00.000Z\"}"
       },
       "auth": {
         "session": "authenticated",
@@ -3409,14 +3410,14 @@
     {
       "id": "admin.bookings.patch.cancelOk",
       "endpoint": "/api/admin/bookings",
-      "description": "Cancellation changes state and retains the booking and its history.",
+      "description": "Cancellation changes state and retains the booking and its history, granted against the booking's current ESZ-139 token.",
       "request": {
         "method": "PATCH",
         "path": "/api/admin/bookings",
         "headers": {
           "content-type": "application/json"
         },
-        "rawBody": "{\"action\":\"cancel\",\"reference\":\"bk_00000000000000000000000000000000\",\"reason\":\"Indisponible\"}"
+        "rawBody": "{\"action\":\"cancel\",\"reference\":\"bk_00000000000000000000000000000000\",\"expectedUpdatedAt\":\"2026-06-13T12:00:00.000Z\",\"reason\":\"Indisponible\"}"
       },
       "auth": {
         "session": "authenticated",
@@ -4189,7 +4190,7 @@
     },
     {
       "id": "booking.adminMutationsAreGuardedAndAudited",
-      "description": "Admin update, move and cancel require an authenticated session and CSRF. Move uses the creation lock/revalidation path; every meaningful mutation appends durable history while bookings remains the source of truth."
+      "description": "Admin update, move and cancel require an authenticated session and CSRF. Move uses the creation lock/revalidation path; every meaningful mutation appends durable history while bookings remains the source of truth. Since ESZ-139 every mutation also carries the booking's updatedAt as expectedUpdatedAt: under the authoritative row lock, and before any write, history or notification, the server compares it byte-for-byte with the current updatedAt and answers 409 REVISION_CONFLICT on a mismatch, writing nothing. A successful mutation stores one derived updatedAt strictly later than the token it was granted against, even under a frozen or backward application clock, so a stale tab can neither overwrite nor supersede a newer admin action."
     },
     {
       "id": "availability.weeklyReplacementIsAllOrNothing",

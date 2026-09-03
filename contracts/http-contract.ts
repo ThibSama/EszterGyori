@@ -751,6 +751,12 @@ export const adminBookingSchema = z
     cancelledAtUtc: isoTimestampSchema.nullable(),
     cancellationReason: z.string().max(500).nullable(),
     createdAt: isoTimestampSchema,
+    /**
+     * ESZ-139: the V1 optimistic-concurrency token of this booking. It
+     * changes on every successful admin mutation, is exposed by every admin
+     * read, and is sent back byte-for-byte as `expectedUpdatedAt` on the next
+     * mutation. There is deliberately no separate revision column.
+     */
     updatedAt: isoTimestampSchema,
     history: z.array(bookingHistoryEventSchema),
   })
@@ -767,10 +773,21 @@ export const adminBookingResponseSchema = z
   .object({ booking: adminBookingSchema })
   .strict();
 
+/**
+ * ESZ-139 — admin booking mutations carry the V1 optimistic-concurrency token.
+ *
+ * Each mutation sends the booking's own `updatedAt`, read from an admin
+ * response, back as `expectedUpdatedAt`. The server compares it byte-for-byte
+ * with the current row under the authoritative row lock; a mismatch is 409
+ * `REVISION_CONFLICT` and writes no history and schedules no notification. The
+ * token is the canonical UTC millisecond `updatedAt` — no revision column is
+ * added.
+ */
 const adminBookingUpdateSchema = z
   .object({
     action: z.literal("update"),
     reference: bookingReferenceSchema,
+    expectedUpdatedAt: isoTimestampSchema,
     customerName: z.string().trim().min(1).max(160),
     customerEmail: z.string().trim().email().max(254),
     customerPhone: z.string().trim().max(32).nullable(),
@@ -782,6 +799,7 @@ const adminBookingMoveSchema = z
   .object({
     action: z.literal("move"),
     reference: bookingReferenceSchema,
+    expectedUpdatedAt: isoTimestampSchema,
     startsAtUtc: isoTimestampSchema,
   })
   .strict();
@@ -790,6 +808,7 @@ const adminBookingCancelSchema = z
   .object({
     action: z.literal("cancel"),
     reference: bookingReferenceSchema,
+    expectedUpdatedAt: isoTimestampSchema,
     reason: z.string().trim().max(500).nullable(),
   })
   .strict();
@@ -1057,6 +1076,8 @@ export const bookingApiPolicy = {
     move: ["startsAtUtc"],
     cancel: ["state", "cancelledAtUtc", "cancellationReason"],
   },
+  optimisticConcurrency:
+    "Admin booking responses expose the canonical UTC millisecond updatedAt, which doubles as the V1 optimistic-concurrency token of the row — there is no separate revision column. Update, move and cancel require expectedUpdatedAt and, inside the mutation transaction after the authoritative row lock and before any write, history append or notification scheduling, compare it byte-for-byte with the current updatedAt. A mismatch is 409 REVISION_CONFLICT and writes nothing; a fresh token lets the mutation proceed and store an updatedAt strictly later than the token it was granted against, even when the application clock returns the same millisecond or moves backward — the state timestamps advance by one derived mutation instant.",
   move:
     "Authenticated move availability resolves the booking server-side and delegates to SlotEngine while excluding only itself. Mutation retains reference and service, requires confirmed state, and transactionally recomputes the submitted returned instant.",
   history:
@@ -4025,12 +4046,14 @@ export const httpContractCases: HttpContractCase[] = [
   {
     id: "admin.bookings.patch.updateOk",
     endpoint: ADMIN_BOOKINGS_PATH,
-    description: "Customer corrections are an explicit authenticated CSRF-protected mutation.",
+    description:
+      "Customer corrections are an explicit authenticated CSRF-protected mutation carrying the booking's own updatedAt as its ESZ-139 optimistic-concurrency token.",
     request: {
       method: "PATCH",
       path: ADMIN_BOOKINGS_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"action":"update","reference":"bk_00000000000000000000000000000000","customerName":"Cliente Corrigée","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null}',
+      rawBody:
+        '{"action":"update","reference":"bk_00000000000000000000000000000000","expectedUpdatedAt":"2026-06-13T12:00:00.000Z","customerName":"Cliente Corrigée","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 200, body: "adminBookingResponse" },
@@ -4038,12 +4061,14 @@ export const httpContractCases: HttpContractCase[] = [
   {
     id: "admin.bookings.patch.moveOk",
     endpoint: ADMIN_BOOKINGS_PATH,
-    description: "A move returns the same booking reference after transactional slot revalidation.",
+    description:
+      "A move returns the same booking reference after transactional slot revalidation, granted against the booking's current ESZ-139 token.",
     request: {
       method: "PATCH",
       path: ADMIN_BOOKINGS_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"action":"move","reference":"bk_00000000000000000000000000000000","startsAtUtc":"2026-06-15T08:00:00.000Z"}',
+      rawBody:
+        '{"action":"move","reference":"bk_00000000000000000000000000000000","expectedUpdatedAt":"2026-06-13T12:00:00.000Z","startsAtUtc":"2026-06-15T08:00:00.000Z"}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 200, body: "adminBookingResponse" },
@@ -4051,12 +4076,14 @@ export const httpContractCases: HttpContractCase[] = [
   {
     id: "admin.bookings.patch.cancelOk",
     endpoint: ADMIN_BOOKINGS_PATH,
-    description: "Cancellation changes state and retains the booking and its history.",
+    description:
+      "Cancellation changes state and retains the booking and its history, granted against the booking's current ESZ-139 token.",
     request: {
       method: "PATCH",
       path: ADMIN_BOOKINGS_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"action":"cancel","reference":"bk_00000000000000000000000000000000","reason":"Indisponible"}',
+      rawBody:
+        '{"action":"cancel","reference":"bk_00000000000000000000000000000000","expectedUpdatedAt":"2026-06-13T12:00:00.000Z","reason":"Indisponible"}',
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 200, body: "adminBookingResponse" },
@@ -4633,7 +4660,7 @@ export const httpContractInvariants = [
   {
     id: "booking.adminMutationsAreGuardedAndAudited",
     description:
-      "Admin update, move and cancel require an authenticated session and CSRF. Move uses the creation lock/revalidation path; every meaningful mutation appends durable history while bookings remains the source of truth.",
+      "Admin update, move and cancel require an authenticated session and CSRF. Move uses the creation lock/revalidation path; every meaningful mutation appends durable history while bookings remains the source of truth. Since ESZ-139 every mutation also carries the booking's updatedAt as expectedUpdatedAt: under the authoritative row lock, and before any write, history or notification, the server compares it byte-for-byte with the current updatedAt and answers 409 REVISION_CONFLICT on a mismatch, writing nothing. A successful mutation stores one derived updatedAt strictly later than the token it was granted against, even under a frozen or backward application clock, so a stale tab can neither overwrite nor supersede a newer admin action.",
   },
   {
     id: "availability.weeklyReplacementIsAllOrNothing",

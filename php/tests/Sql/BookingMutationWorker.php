@@ -12,36 +12,44 @@ use Eszter\Tests\TestEnvironment;
 require_once __DIR__ . '/../../vendor/autoload.php';
 
 /**
- * A booking create or move driven through the real application service in its
- * own process (ESZ-146).
+ * A booking create or admin mutation driven through the real application
+ * service in its own process (ESZ-146 / ESZ-139).
  *
  * It exists for the same reason {@see AvailabilityReplacementWorker} does: the
- * property under test is what a *different* connection observes while a
- * bookability mutation is in flight, and a single connection cannot demonstrate
- * that — it would see its own uncommitted writes, and blocking on its own lock
- * would simply deadlock the test.
+ * property under test is what a *different* connection observes while another
+ * mutation is in flight, and a single connection cannot demonstrate that — it
+ * would see its own uncommitted writes, and blocking on its own lock would
+ * simply deadlock the test.
  *
  * The worker signals readiness and then blocks inside
- * `PdoBookingApi::create()` / `adminMutate(move)` on the shared
- * `booking_resource_locks.primary` boundary if another transaction owns it.
- * The test decides who owns the boundary first and asserts on the outcome.
+ * `PdoBookingApi::create()` / `adminMutate()` on the shared
+ * `booking_resource_locks.primary` boundary and/or the booking row lock if
+ * another transaction owns them. The test decides who owns the locks first
+ * and asserts on the outcome.
  *
- * Usage:
+ * Admin mutations (ESZ-139) send `expectedUpdatedAt`. When the caller passes
+ * it as an argument the worker replays exactly that token — the stale-editor
+ * case; when the argument is absent the worker reads the booking's current
+ * `updatedAt` itself before signalling readiness, like a fresh client would.
+ *
+ * Usage (the readiness path is always the last argument):
  *   php BookingMutationWorker.php create <serviceKey> <startsAtUtc> <readyPath>
- *   php BookingMutationWorker.php move <reference> <startsAtUtc> <readyPath>
+ *   php BookingMutationWorker.php move <reference> <startsAtUtc> [<expectedUpdatedAt>] <readyPath>
+ *   php BookingMutationWorker.php update <reference> <customerName> [<expectedUpdatedAt>] <readyPath>
+ *   php BookingMutationWorker.php cancel <reference> <reason|-|> [<expectedUpdatedAt>] <readyPath>
  *
- * stdout carries the outcome: `CONFIRMED <reference>` / `MOVED <reference>` on
- * success, `FAILED <ExceptionClass>` on the expected domain refusal. The
- * message goes to stderr; the exit code is 1 on any refusal.
+ * stdout carries the outcome: `CONFIRMED <reference>` / `MOVED <reference>` /
+ * `UPDATED <reference>` / `CANCELLED <reference>` on success, `FAILED
+ * <ExceptionClass>` on the expected domain refusal. The message goes to
+ * stderr; the exit code is 1 on any refusal.
  *
  * @var list<string> $argv
  */
-$operation = $argv[1] ?? '';
-$first = $argv[2] ?? '';
-$second = $argv[3] ?? '';
-$readyPath = $argv[4] ?? '';
+$arguments = array_slice($argv, 1);
+$readyPath = (string) array_pop($arguments);
+$operation = $arguments[0] ?? '';
 
-if (!\in_array($operation, ['create', 'move'], true) || $readyPath === '') {
+if (!in_array($operation, ['create', 'move', 'update', 'cancel'], true) || $readyPath === '') {
     fwrite(STDERR, "worker arguments missing\n");
     exit(2);
 }
@@ -54,14 +62,14 @@ try {
         NotificationPolicy::fromArtifacts(TestEnvironment::artifacts()),
     );
 
-    if (!touch($readyPath)) {
-        throw new RuntimeException('worker could not signal readiness');
-    }
-
     if ($operation === 'create') {
+        if (!touch($readyPath)) {
+            throw new RuntimeException('worker could not signal readiness');
+        }
+
         $booking = $api->create([
-            'serviceKey' => $first,
-            'startsAtUtc' => $second,
+            'serviceKey' => $arguments[1] ?? '',
+            'startsAtUtc' => $arguments[2] ?? '',
             'customerName' => 'Concurrent acceptance client',
             'customerEmail' => 'concurrent@example.test',
             'customerPhone' => null,
@@ -69,14 +77,58 @@ try {
             'consentAccepted' => true,
         ]);
         fwrite(STDOUT, 'CONFIRMED ' . $booking['reference'] . "\n");
-    } else {
-        $moved = $api->adminMutate([
-            'action' => 'move',
-            'reference' => $first,
-            'startsAtUtc' => $second,
-        ]);
-        fwrite(STDOUT, 'MOVED ' . $moved['booking']['reference'] . "\n");
+        exit(0);
     }
+
+    /** @var string $reference */
+    $reference = $arguments[1] ?? '';
+    // ESZ-139: the token is the optional argument right before the readiness
+    // path (`move <ref> <target> [token]`, `update <ref> <name> [token]`,
+    // `cancel <ref> <reason|-> [token]`). When the caller omits it, the worker
+    // reads the row's current updatedAt before signalling readiness — the
+    // fresh-client spelling.
+    $expectedUpdatedAt = $arguments[3] ?? null;
+    if ($expectedUpdatedAt === null || $expectedUpdatedAt === '') {
+        $read = $api->adminQuery(['mode' => 'reference', 'reference' => $reference]);
+        $expectedUpdatedAt = (string) ($read['bookings'][0]['updatedAt'] ?? '');
+    }
+
+    if (!touch($readyPath)) {
+        throw new RuntimeException('worker could not signal readiness');
+    }
+
+    // The in_array guard above already restricted $operation to these three
+    // (create exited earlier), so the match is exhaustive without a default.
+    $mutated = match ($operation) {
+        'move' => $api->adminMutate([
+            'action' => 'move',
+            'reference' => $reference,
+            'expectedUpdatedAt' => $expectedUpdatedAt,
+            'startsAtUtc' => $arguments[2] ?? '',
+        ]),
+        'update' => $api->adminMutate([
+            'action' => 'update',
+            'reference' => $reference,
+            'expectedUpdatedAt' => $expectedUpdatedAt,
+            'customerName' => $arguments[2] ?? 'Worker Cliente',
+            'customerEmail' => 'worker@example.test',
+            'customerPhone' => null,
+            'customerNote' => null,
+        ]),
+        'cancel' => $api->adminMutate([
+            'action' => 'cancel',
+            'reference' => $reference,
+            'expectedUpdatedAt' => $expectedUpdatedAt,
+            'reason' => ($arguments[2] ?? '') === '' ? null : $arguments[2],
+        ]),
+    };
+    $labels = [
+        'create' => 'CONFIRMED',
+        'move' => 'MOVED',
+        'update' => 'UPDATED',
+        'cancel' => 'CANCELLED',
+    ];
+    fwrite(STDOUT, $labels[$operation] . ' ' . $mutated['booking']['reference'] . "\n");
 
     exit(0);
 } catch (Throwable $exception) {

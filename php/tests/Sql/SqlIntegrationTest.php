@@ -16,6 +16,7 @@ use Eszter\Booking\AvailabilityWindow;
 use Eszter\Booking\Booking;
 use Eszter\Booking\BookingDomainContract;
 use Eszter\Booking\BookingRepository;
+use Eszter\Booking\BookingRevisionConflictException;
 use Eszter\Booking\BookingSerializationLock;
 use Eszter\Booking\BookingStateMachine;
 use Eszter\Booking\BookingTimePolicy;
@@ -809,11 +810,7 @@ final class SqlIntegrationTest extends TestCase
             self::assertCount(2, $this->notificationRows($booking->id));
         }
 
-        $this->bookingApi->adminMutate([
-            'action' => 'move',
-            'reference' => $booking->reference,
-            'startsAtUtc' => '2026-06-15T08:00:00.000Z',
-        ]);
+        $this->adminMutateFresh('move', $booking->reference, ['startsAtUtc' => '2026-06-15T08:00:00.000Z']);
         $moved = $this->notificationRows($booking->id);
         self::assertSame(
             ['booking_confirmation', 'booking_reminder', 'booking_moved', 'booking_reminder'],
@@ -823,11 +820,7 @@ final class SqlIntegrationTest extends TestCase
         self::assertSame('reminder_superseded', $moved[1]['last_error_code']);
         self::assertSame('2026-06-14 08:00:00.000', $moved[3]['due_at_utc']);
 
-        $this->bookingApi->adminMutate([
-            'action' => 'cancel',
-            'reference' => $booking->reference,
-            'reason' => null,
-        ]);
+        $this->adminMutateFresh('cancel', $booking->reference, ['reason' => null]);
         $cancelled = $this->notificationRows($booking->id);
         self::assertSame('skipped', $cancelled[3]['status']);
         self::assertSame('booking_cancelled', $cancelled[3]['last_error_code']);
@@ -858,11 +851,7 @@ final class SqlIntegrationTest extends TestCase
             ],
         );
 
-        $this->bookingApi->adminMutate([
-            'action' => 'move',
-            'reference' => $booking->reference,
-            'startsAtUtc' => '2026-06-15T08:00:00.000Z',
-        ]);
+        $this->adminMutateFresh('move', $booking->reference, ['startsAtUtc' => '2026-06-15T08:00:00.000Z']);
         $rows = $this->notificationRows($booking->id);
 
         self::assertSame('sent', $rows[1]['status']);
@@ -964,24 +953,14 @@ final class SqlIntegrationTest extends TestCase
         $reference = (string) $created['reference'];
         $id = $this->bookings->find($reference)?->id;
 
-        $this->bookingApi->adminMutate([
-            'action' => 'update',
-            'reference' => $reference,
+        $this->adminMutateFresh('update', $reference, [
             'customerName' => 'Cliente Corrigée',
             'customerEmail' => 'corrigee@example.test',
             'customerPhone' => null,
             'customerNote' => 'Corrigé',
         ]);
-        $this->bookingApi->adminMutate([
-            'action' => 'move',
-            'reference' => $reference,
-            'startsAtUtc' => '2026-06-15T08:00:00.000Z',
-        ]);
-        $cancelled = $this->bookingApi->adminMutate([
-            'action' => 'cancel',
-            'reference' => $reference,
-            'reason' => 'Cliente indisponible',
-        ]);
+        $this->adminMutateFresh('move', $reference, ['startsAtUtc' => '2026-06-15T08:00:00.000Z']);
+        $cancelled = $this->adminMutateFresh('cancel', $reference, ['reason' => 'Cliente indisponible']);
         $queried = $this->bookingApi->adminQuery(['mode' => 'reference', 'reference' => $reference]);
 
         self::assertSame($id, $this->bookings->find($reference)?->id);
@@ -1000,11 +979,7 @@ final class SqlIntegrationTest extends TestCase
         self::assertContains('10:00', array_column($availableAfterCancellation['slots'], 'localStart'));
 
         $this->expectException(InvalidBookingTransitionException::class);
-        $this->bookingApi->adminMutate([
-            'action' => 'move',
-            'reference' => $reference,
-            'startsAtUtc' => '2026-06-15T09:00:00.000Z',
-        ]);
+        $this->adminMutateFresh('move', $reference, ['startsAtUtc' => '2026-06-15T09:00:00.000Z']);
     }
 
     public function testContactUpdateOnCancelledBooking(): void
@@ -1014,14 +989,8 @@ final class SqlIntegrationTest extends TestCase
         $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
         $reference = (string) $created['reference'];
 
-        $this->bookingApi->adminMutate([
-            'action' => 'cancel',
-            'reference' => $reference,
-            'reason' => 'Cliente indisponible',
-        ]);
-        $updated = $this->bookingApi->adminMutate([
-            'action' => 'update',
-            'reference' => $reference,
+        $this->adminMutateFresh('cancel', $reference, ['reason' => 'Cliente indisponible']);
+        $updated = $this->adminMutateFresh('update', $reference, [
             'customerName' => 'Nouvelle Représentante',
             'customerEmail' => 'representante@example.test',
             'customerPhone' => null,
@@ -1046,9 +1015,7 @@ final class SqlIntegrationTest extends TestCase
         $this->bookingApi->create($this->publicBookingRequest('lips', '2026-06-15T09:00:00.000Z'));
 
         try {
-            $this->bookingApi->adminMutate([
-                'action' => 'move',
-                'reference' => $source['reference'],
+            $this->adminMutateFresh('move', (string) $source['reference'], [
                 'startsAtUtc' => '2026-06-15T09:00:00.000Z',
             ]);
             self::fail('A move onto an occupied cross-service interval committed.');
@@ -1163,6 +1130,9 @@ final class SqlIntegrationTest extends TestCase
         $mutation = [
             'action' => 'update',
             'reference' => $reference,
+            // ESZ-139: the PATCH carries the booking's own token, read from
+            // the authenticated query just above.
+            'expectedUpdatedAt' => (string) ($query->decodedBody()['bookings'][0]['updatedAt'] ?? ''),
             'customerName' => 'Cliente HTTP',
             'customerEmail' => 'cliente@example.test',
             'customerPhone' => null,
@@ -1769,6 +1739,495 @@ final class SqlIntegrationTest extends TestCase
 
         $this->expectException(AvailabilityRevisionConflictException::class);
         $this->availability->putClosedException(1, '2026-06-16', 'stale close'); // current revision is 2
+    }
+
+    // --- ESZ-139: per-booking optimistic concurrency ----------------------
+    //
+    // A booking row's canonical UTC millisecond `updatedAt` is its V1
+    // optimistic-concurrency token: admin responses expose it, and update,
+    // move and cancel send it back as expectedUpdatedAt. Under the
+    // authoritative row lock the server compares it byte-for-byte with the
+    // current row before any write, history append or notification
+    // scheduling; a mismatch is BookingRevisionConflictException (409
+    // REVISION_CONFLICT on the wire) and writes nothing. A successful
+    // mutation stores one derived instant, strictly later than the token it
+    // was granted against, even when the application clock returns the same
+    // millisecond or moves backward.
+
+    /** Leaves the wrapper, truncates and commits the canonical ESZ-139 fixture. */
+    private function esz139Seed(string $slot = '2026-06-15T07:00:00.000Z'): string
+    {
+        $this->database->rollBack();
+        TestDatabase::truncateData($this->database);
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
+
+        return (string) $this->bookingApi->create($this->publicBookingRequest('brows', $slot))['reference'];
+    }
+
+    public function testEs139StaleContactUpdateCannotOverwriteANewerOne(): void
+    {
+        $reference = $this->esz139Seed();
+        $token = $this->bookingToken($reference);
+
+        // Client A wins with the shared token and advances it.
+        $winner = $this->adminMutateFresh('update', $reference, [
+            'customerName' => 'Cliente Gagnante',
+            'customerEmail' => 'gagnante@example.test',
+            'customerPhone' => null,
+            'customerNote' => 'modifiée par A',
+        ]);
+        self::assertGreaterThan(0, strcmp($winner['booking']['updatedAt'], $token));
+
+        // Client B still holds the old token: refused before any write.
+        try {
+            $this->bookingApi->adminMutate([
+                'action' => 'update',
+                'reference' => $reference,
+                'expectedUpdatedAt' => $token,
+                'customerName' => 'Cliente Périmée',
+                'customerEmail' => 'perimee@example.test',
+                'customerPhone' => null,
+                'customerNote' => null,
+            ]);
+            self::fail('a stale contact update was accepted');
+        } catch (BookingRevisionConflictException $conflict) {
+            self::assertSame($token, $conflict->expectedUpdatedAt);
+            self::assertSame($winner['booking']['updatedAt'], $conflict->currentUpdatedAt);
+        }
+
+        $stored = $this->bookings->find($reference);
+        self::assertNotNull($stored);
+        self::assertSame('Cliente Gagnante', $stored->customerName);
+        self::assertSame('gagnante@example.test', $stored->customerEmail);
+        self::assertSame(
+            $winner['booking']['updatedAt'],
+            $stored->updatedAt,
+            'the refused update must not move the token',
+        );
+        self::assertSame(
+            ['created', 'customer_updated'],
+            array_column($this->database->fetchAll(
+                'SELECT event_type FROM booking_history WHERE booking_id = :booking ORDER BY id',
+                ['booking' => $stored->id],
+            ), 'event_type'),
+        );
+        self::assertCount(2, $this->notificationRows($stored->id), 'a stale update schedules nothing');
+    }
+
+    public function testEs139StaleMoveAfterContactUpdateWritesNoHistoryOrNotification(): void
+    {
+        $reference = $this->esz139Seed();
+        $token = $this->bookingToken($reference);
+
+        $winner = $this->adminMutateFresh('update', $reference, [
+            'customerName' => 'Cliente Gagnante',
+            'customerEmail' => 'gagnante@example.test',
+            'customerPhone' => null,
+            'customerNote' => null,
+        ]);
+        $currentToken = (string) $winner['booking']['updatedAt'];
+        $booking = $this->bookings->find($reference);
+        self::assertNotNull($booking);
+        $jobsBefore = count($this->notificationRows($booking->id));
+
+        try {
+            $this->bookingApi->adminMutate([
+                'action' => 'move',
+                'reference' => $reference,
+                'expectedUpdatedAt' => $token,
+                'startsAtUtc' => '2026-06-15T08:00:00.000Z',
+            ]);
+            self::fail('a stale move was accepted');
+        } catch (BookingRevisionConflictException $conflict) {
+            self::assertSame($token, $conflict->expectedUpdatedAt);
+            self::assertSame($currentToken, $conflict->currentUpdatedAt);
+        }
+
+        $stored = $this->bookings->find($reference);
+        self::assertNotNull($stored);
+        self::assertSame('confirmed', $stored->state->value);
+        self::assertSame('2026-06-15 07:00:00.000', $stored->startsAtUtc, 'the stale move must not move the row');
+        self::assertSame($currentToken, $stored->updatedAt);
+        self::assertSame(
+            ['created', 'customer_updated'],
+            array_column($this->database->fetchAll(
+                'SELECT event_type FROM booking_history WHERE booking_id = :booking ORDER BY id',
+                ['booking' => $stored->id],
+            ), 'event_type'),
+        );
+        self::assertCount($jobsBefore, $this->notificationRows($stored->id), 'a stale move schedules no moved job');
+    }
+
+    public function testEs139MoveThenStaleCancelAndCancelThenStaleMove(): void
+    {
+        $reference = $this->esz139Seed();
+        $token = $this->bookingToken($reference);
+
+        // A fresh move advances the token to tokenAfterMove.
+        $moved = $this->adminMutateFresh('move', $reference, ['startsAtUtc' => '2026-06-15T08:00:00.000Z']);
+        $tokenAfterMove = (string) $moved['booking']['updatedAt'];
+        self::assertGreaterThan(0, strcmp($tokenAfterMove, $token));
+
+        // A cancel still holding the pre-move token is a stale conflict: the
+        // row stays confirmed and no cancellation history or job appears.
+        try {
+            $this->bookingApi->adminMutate([
+                'action' => 'cancel',
+                'reference' => $reference,
+                'expectedUpdatedAt' => $token,
+                'reason' => 'stale cancel',
+            ]);
+            self::fail('a stale cancel after a move was accepted');
+        } catch (BookingRevisionConflictException $conflict) {
+            self::assertSame($token, $conflict->expectedUpdatedAt);
+            self::assertSame($tokenAfterMove, $conflict->currentUpdatedAt);
+        }
+
+        $stored = $this->bookings->find($reference);
+        self::assertNotNull($stored);
+        self::assertSame('confirmed', $stored->state->value);
+        self::assertSame(
+            ['created', 'moved'],
+            array_column($this->database->fetchAll(
+                'SELECT event_type FROM booking_history WHERE booking_id = :booking ORDER BY id',
+                ['booking' => $stored->id],
+            ), 'event_type'),
+        );
+        self::assertSame([], array_filter(
+            $this->notificationRows($stored->id),
+            static fn (array $row): bool => $row['job_type'] === 'booking_cancellation',
+        ));
+
+        // A fresh cancel succeeds; then a move holding the pre-cancel token is
+        // refused even though the state machine would otherwise say the move
+        // target is free — the token check precedes the transition checks.
+        $cancelled = $this->adminMutateFresh('cancel', $reference, ['reason' => 'décision cliente']);
+        $tokenAfterCancel = (string) $cancelled['booking']['updatedAt'];
+        self::assertGreaterThan(0, strcmp($tokenAfterCancel, $tokenAfterMove));
+
+        try {
+            $this->bookingApi->adminMutate([
+                'action' => 'move',
+                'reference' => $reference,
+                'expectedUpdatedAt' => $tokenAfterMove,
+                'startsAtUtc' => '2026-06-15T09:00:00.000Z',
+            ]);
+            self::fail('a stale move after a cancel was accepted');
+        } catch (BookingRevisionConflictException $conflict) {
+            self::assertSame($tokenAfterMove, $conflict->expectedUpdatedAt);
+            self::assertSame($tokenAfterCancel, $conflict->currentUpdatedAt);
+        }
+
+        $final = $this->bookings->find($reference);
+        self::assertNotNull($final);
+        self::assertSame('cancelled', $final->state->value);
+        self::assertSame('2026-06-15 08:00:00.000', $final->startsAtUtc, 'the stale move must not move the row');
+        self::assertSame(
+            ['created', 'moved', 'cancelled'],
+            array_column($this->database->fetchAll(
+                'SELECT event_type FROM booking_history WHERE booking_id = :booking ORDER BY id',
+                ['booking' => $final->id],
+            ), 'event_type'),
+        );
+    }
+
+    public function testEs139TwoProcessesWithOneTokenYieldExactlyOneSuccess(): void
+    {
+        $reference = $this->esz139Seed();
+        $token = $this->bookingToken($reference);
+
+        // Hold the booking row; both real processes signal readiness while
+        // parked behind it, each replaying the very same token. Releasing the
+        // row lets exactly one of them pass; whichever wins commits and mints
+        // a newer token, and the other re-reads the newer row under the lock
+        // and must be refused as stale — the outcome counts hold for either
+        // grant order.
+        $this->database->beginTransaction();
+        $row = $this->database->fetchOne(
+            'SELECT id FROM bookings WHERE reference = :reference FOR UPDATE',
+            ['reference' => $reference],
+        );
+        self::assertNotNull($row);
+
+        $first = $this->esz146Spawn(
+            'BookingMutationWorker.php',
+            'esz139-a',
+            ['update', $reference, 'Cliente Processus A', $token],
+        );
+        $this->esz146AwaitReady($first, 'first updater');
+        $second = $this->esz146Spawn(
+            'BookingMutationWorker.php',
+            'esz139-b',
+            ['update', $reference, 'Cliente Processus B', $token],
+        );
+        $this->esz146AwaitReady($second, 'second updater');
+
+        $this->database->rollBack();
+
+        [$firstExit, $firstOut, $firstErr] = $this->esz146Reap($first, 'first updater');
+        [$secondExit, $secondOut, $secondErr] = $this->esz146Reap($second, 'second updater');
+        $exits = [$firstExit, $secondExit];
+        sort($exits);
+        self::assertSame([0, 1], $exits, $firstErr . "\n" . $secondErr);
+        $winners = array_filter(
+            [$firstOut, $secondOut],
+            static fn (string $out): bool => str_starts_with($out, 'UPDATED '),
+        );
+        $losers = array_filter(
+            [$firstOut, $secondOut],
+            static fn (string $out): bool => str_starts_with($out, 'FAILED '),
+        );
+        self::assertCount(1, $winners, 'exactly one process may succeed with the shared token');
+        self::assertCount(1, $losers, 'exactly one process must lose with the shared token');
+        self::assertStringContainsString(
+            'BookingRevisionConflictException',
+            (string) reset($losers),
+            $firstErr . "\n" . $secondErr,
+        );
+
+        $stored = $this->bookings->find($reference);
+        self::assertNotNull($stored);
+        self::assertContains(
+            $stored->customerName,
+            ['Cliente Processus A', 'Cliente Processus B'],
+        );
+        self::assertGreaterThan(0, strcmp($stored->updatedAt, $token), 'the winner must mint a strictly newer token');
+        self::assertSame(
+            ['created', 'customer_updated'],
+            array_column($this->database->fetchAll(
+                'SELECT event_type FROM booking_history WHERE booking_id = :booking ORDER BY id',
+                ['booking' => $stored->id],
+            ), 'event_type'),
+            'exactly one process may append customer_updated history',
+        );
+    }
+
+    public function testEs139SameOrBackwardClockStillMintsStrictlyNewerTokens(): void
+    {
+        // Part A — the suite clock is frozen on NOW, so three successive
+        // mutations granted fresh tokens all happen "in the same millisecond".
+        // Each must still mint exactly one millisecond later than the token it
+        // was granted against.
+        $reference = $this->esz139Seed();
+        self::assertSame('2026-06-13T12:00:00.000Z', $this->bookingToken($reference));
+
+        $updated = $this->adminMutateFresh('update', $reference, [
+            'customerName' => 'Cliente Modifiée',
+            'customerEmail' => 'modifiee@example.test',
+            'customerPhone' => null,
+            'customerNote' => null,
+        ]);
+        self::assertSame('2026-06-13T12:00:00.001Z', $updated['booking']['updatedAt']);
+
+        $moved = $this->adminMutateFresh('move', $reference, ['startsAtUtc' => '2026-06-15T08:00:00.000Z']);
+        self::assertSame('2026-06-13T12:00:00.002Z', $moved['booking']['updatedAt']);
+
+        $cancelled = $this->adminMutateFresh('cancel', $reference, ['reason' => 'test']);
+        self::assertSame('2026-06-13T12:00:00.003Z', $cancelled['booking']['updatedAt']);
+
+        // One derived instant drives every advancing state timestamp: the
+        // stored row agrees with the wire token, and the DATETIME(3) facts
+        // carry the same millisecond.
+        $stored = $this->bookings->find($reference);
+        self::assertNotNull($stored);
+        self::assertSame('2026-06-13T12:00:00.003Z', $stored->updatedAt);
+        self::assertSame('2026-06-13T12:00:00.003Z', $stored->stateChangedAt);
+        self::assertSame('2026-06-13 12:00:00.003', $stored->cancelledAtUtc);
+        foreach ([$updated, $moved, $cancelled] as $response) {
+            self::assertMatchesRegularExpression(
+                '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/D',
+                $response['booking']['updatedAt'],
+                'the token keeps the canonical UTC millisecond form',
+            );
+        }
+
+        // Part B — an application clock that reads one second EARLIER than the
+        // row's token cannot mint an older or equal token: the mutation still
+        // advances to token + 1 ms.
+        $referenceB = $this->esz139Seed('2026-06-15T08:00:00.000Z');
+        $tokenB = $this->bookingToken($referenceB);
+        self::assertSame('2026-06-13T12:00:00.000Z', $tokenB);
+
+        $backward = PdoBookingApi::createDefault(
+            $this->database,
+            new FrozenClock('2026-06-13T11:59:59.000Z'),
+            $this->bookingContract,
+            NotificationPolicy::fromArtifacts(TestEnvironment::artifacts()),
+        );
+        $won = $backward->adminMutate([
+            'action' => 'update',
+            'reference' => $referenceB,
+            'expectedUpdatedAt' => $tokenB,
+            'customerName' => 'Cliente Horloge Retardée',
+            'customerEmail' => 'retardee@example.test',
+            'customerPhone' => null,
+            'customerNote' => null,
+        ]);
+        self::assertSame('2026-06-13T12:00:00.001Z', $won['booking']['updatedAt']);
+    }
+
+    public function testEs139FreshTokenAfterAConflictAllowsTheNextMutation(): void
+    {
+        $reference = $this->esz139Seed();
+        $token = $this->bookingToken($reference);
+        $winner = $this->adminMutateFresh('update', $reference, [
+            'customerName' => 'Cliente Gagnante',
+            'customerEmail' => 'gagnante@example.test',
+            'customerPhone' => null,
+            'customerNote' => null,
+        ]);
+        $currentToken = (string) $winner['booking']['updatedAt'];
+
+        $refused = false;
+        try {
+            $this->bookingApi->adminMutate([
+                'action' => 'cancel',
+                'reference' => $reference,
+                'expectedUpdatedAt' => $token,
+                'reason' => 'stale',
+            ]);
+        } catch (BookingRevisionConflictException) {
+            $refused = true;
+        }
+        self::assertTrue($refused, 'the stale cancel must be refused');
+
+        // The recovery the UI performs: re-read by reference, then retry with
+        // the authoritative token — only that succeeds.
+        $reRead = $this->bookingApi->adminQuery(['mode' => 'reference', 'reference' => $reference]);
+        self::assertSame($currentToken, $reRead['bookings'][0]['updatedAt']);
+
+        $retried = $this->bookingApi->adminMutate([
+            'action' => 'cancel',
+            'reference' => $reference,
+            'expectedUpdatedAt' => $currentToken,
+            'reason' => 'décision cliente',
+        ]);
+        self::assertSame('cancelled', $retried['booking']['state']);
+        self::assertGreaterThan(0, strcmp($retried['booking']['updatedAt'], $currentToken));
+    }
+
+    public function testEs139BookingConflictIsHttp409RevisionConflictWithoutLeakingState(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
+        $this->accounts->provision($this->email(self::EMAIL), self::PASSWORD, true);
+        $kernel = $this->bootAgainstMysql();
+
+        $created = $kernel->handle(new Request(
+            'POST',
+            '/api/bookings',
+            ['content-type' => 'application/json'],
+            (string) json_encode($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z')),
+        ));
+        self::assertSame(201, $created->status);
+        $reference = (string) ($created->decodedBody()['reference'] ?? '');
+
+        $anonymous = $kernel->handle(new Request('GET', '/api/auth/session'));
+        /** @var array<string, mixed> $anonymousBody */
+        $anonymousBody = $anonymous->decodedBody();
+        $login = $this->login(
+            $kernel,
+            self::cookieValue($anonymous),
+            (string) $anonymousBody['csrfToken'],
+            self::PASSWORD,
+        );
+        $sessionId = self::cookieValue($login);
+        /** @var array<string, mixed> $loginBody */
+        $loginBody = $login->decodedBody();
+        $headers = [
+            'cookie' => $this->cookieName() . '=' . $sessionId,
+            $this->csrfHeader() => (string) $loginBody['csrfToken'],
+            'content-type' => 'application/json',
+        ];
+
+        $query = $kernel->handle(new Request(
+            'POST',
+            '/api/admin/bookings/query',
+            [
+                'cookie' => $this->cookieName() . '=' . $sessionId,
+                'content-type' => 'application/json',
+            ],
+            (string) json_encode(['mode' => 'reference', 'reference' => $reference]),
+        ));
+        self::assertSame(200, $query->status);
+        $token = (string) ($query->decodedBody()['bookings'][0]['updatedAt'] ?? '');
+
+        $aUpdate = $kernel->handle(new Request(
+            'PATCH',
+            '/api/admin/bookings',
+            $headers,
+            (string) json_encode([
+                'action' => 'update',
+                'reference' => $reference,
+                'expectedUpdatedAt' => $token,
+                'customerName' => 'Cliente Gagnante',
+                'customerEmail' => 'gagnante@example.test',
+                'customerPhone' => null,
+                'customerNote' => 'état interne A',
+            ]),
+        ));
+        self::assertSame(200, $aUpdate->status);
+
+        $stalePatch = $kernel->handle(new Request(
+            'PATCH',
+            '/api/admin/bookings',
+            $headers,
+            (string) json_encode([
+                'action' => 'update',
+                'reference' => $reference,
+                'expectedUpdatedAt' => $token,
+                'customerName' => 'Cliente Périmée',
+                'customerEmail' => 'perimee@example.test',
+                'customerPhone' => null,
+                'customerNote' => null,
+            ]),
+        ));
+        self::assertSame(409, $stalePatch->status);
+        /** @var array<string, mixed> $body */
+        $body = $stalePatch->decodedBody();
+        self::assertSame(['error'], array_keys($body));
+        self::assertSame(['code', 'message', 'requestId'], array_keys($body['error']));
+        self::assertSame('REVISION_CONFLICT', $body['error']['code'] ?? null);
+        self::assertSame(
+            \Eszter\Http\ErrorCatalog::fromArtifacts(TestEnvironment::artifacts())->message('REVISION_CONFLICT'),
+            $body['error']['message'] ?? null,
+        );
+        $internal = ['Cliente Gagnante', 'gagnante@example.test', 'état interne A', 'expectedUpdatedAt', 'expected', 'currentUpdatedAt'];
+        foreach ($internal as $leak) {
+            self::assertStringNotContainsString($leak, $stalePatch->body, 'the envelope must not leak internal state');
+        }
+
+        // A mutation without the token is refused by the schema itself.
+        $missingToken = $kernel->handle(new Request(
+            'PATCH',
+            '/api/admin/bookings',
+            $headers,
+            (string) json_encode([
+                'action' => 'move',
+                'reference' => $reference,
+                'startsAtUtc' => '2026-06-15T08:00:00.000Z',
+            ]),
+        ));
+        self::assertSame(400, $missingToken->status);
+        self::assertSame('VALIDATION_FAILED', $missingToken->decodedBody()['error']['code'] ?? null);
+
+        // The refused stale write changed nothing: A's data is still stored,
+        // with exactly one customer_updated event.
+        $after = $kernel->handle(new Request(
+            'POST',
+            '/api/admin/bookings/query',
+            [
+                'cookie' => $this->cookieName() . '=' . $sessionId,
+                'content-type' => 'application/json',
+            ],
+            (string) json_encode(['mode' => 'reference', 'reference' => $reference]),
+        ));
+        self::assertSame('Cliente Gagnante', $after->decodedBody()['bookings'][0]['customerName'] ?? null);
+        self::assertSame(
+            ['created', 'customer_updated'],
+            array_column($after->decodedBody()['bookings'][0]['history'] ?? [], 'type'),
+        );
     }
 
     // --- ESZ-063 / ESZ-064 / ESZ-065: availability administration -----------
@@ -2719,6 +3178,36 @@ final class SqlIntegrationTest extends TestCase
             . ' FROM notification_jobs WHERE booking_id = :booking ORDER BY id',
             ['booking' => $bookingId],
         );
+    }
+
+    /**
+     * ESZ-139 — the booking's current `updatedAt`, i.e. the
+     * optimistic-concurrency token a fresh admin read would hand the editor.
+     */
+    private function bookingToken(string $reference): string
+    {
+        $booking = $this->bookings->find($reference);
+        self::assertNotNull($booking);
+
+        return $booking->updatedAt;
+    }
+
+    /**
+     * ESZ-139 — `adminMutate` as a fresh client sends it: with the row's
+     * current token read just before the mutation. Tests that assert stale
+     * refusals pass an explicit old token instead.
+     *
+     * @param array<string, mixed> $extra
+     * @return array<string, mixed>
+     */
+    private function adminMutateFresh(string $action, string $reference, array $extra = []): array
+    {
+        return $this->bookingApi->adminMutate([
+            'action' => $action,
+            'reference' => $reference,
+            'expectedUpdatedAt' => $this->bookingToken($reference),
+            ...$extra,
+        ]);
     }
 
     /** @return array<string, mixed> */
@@ -4553,11 +5042,14 @@ final class SqlIntegrationTest extends TestCase
         $service->applyEligible();
 
         // Contact update: refused, even though the admin UI would seed the
-        // editor from the server booking's placeholder values.
+        // editor from the server booking's placeholder values. ESZ-139: the
+        // request still carries the row's own token, so the refusal is the
+        // erasure rule, not a stale-token mismatch.
         try {
             $this->bookingApi->adminMutate([
                 'action' => 'update',
                 'reference' => $reference,
+                'expectedUpdatedAt' => $this->bookingToken($reference),
                 'customerName' => 'Nouvelle Cliente',
                 'customerEmail' => 'nouvelle@example.test',
                 'customerPhone' => '+33 6 12 34 56 78',
@@ -4575,6 +5067,7 @@ final class SqlIntegrationTest extends TestCase
             $this->bookingApi->adminMutate([
                 'action' => 'cancel',
                 'reference' => $reference,
+                'expectedUpdatedAt' => $this->bookingToken($reference),
                 'reason' => 'nouveau motif',
             ]);
             self::fail('an erased booking accepted a cancellation');
@@ -4619,19 +5112,13 @@ final class SqlIntegrationTest extends TestCase
         $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
         $booking = $this->bookings->find((string) $created['reference']);
         self::assertNotNull($booking);
-        $this->bookingApi->adminMutate([
-            'action' => 'update',
-            'reference' => $booking->reference,
+        $this->adminMutateFresh('update', $booking->reference, [
             'customerName' => 'Cliente Modifiée',
             'customerEmail' => 'modifiee@example.test',
             'customerPhone' => '+33 6 98 76 54 32',
             'customerNote' => 'note modifiée',
         ]);
-        $this->bookingApi->adminMutate([
-            'action' => 'cancel',
-            'reference' => $booking->reference,
-            'reason' => null,
-        ]);
+        $this->adminMutateFresh('cancel', $booking->reference, ['reason' => null]);
 
         // The booking was created inside the 90-day horizon, so it is not yet
         // eligible; age it directly the way the calendar never could.

@@ -61,12 +61,18 @@ export type AdminBookingsQueryResult = {
   bookings: AdminBooking[];
   page: AdminBookingsPage;
 };
+/**
+ * ESZ-139 — every admin booking mutation carries the booking's own `updatedAt`
+ * as `expectedUpdatedAt`: the V1 optimistic-concurrency token of the row, sent
+ * byte-for-byte from the admin response that seeded the editor.
+ */
 export type AdminBookingMutation =
-  | { action: "move"; reference: string; startsAtUtc: string }
-  | { action: "cancel"; reference: string; reason: string | null }
+  | { action: "move"; reference: string; expectedUpdatedAt: string; startsAtUtc: string }
+  | { action: "cancel"; reference: string; expectedUpdatedAt: string; reason: string | null }
   | {
       action: "update";
       reference: string;
+      expectedUpdatedAt: string;
       customerName: string;
       customerEmail: string;
       customerPhone: string | null;
@@ -150,8 +156,19 @@ export type AdminApiFailure =
    * The edited resource moved under this editor. Content routes report their
    * current head in the content revision header; availability deliberately does
    * not reuse that header and therefore returns null here before re-reading.
+   *
+   * `errorCode` names the frozen code behind the conflict when the server sent
+   * a frozen envelope (ESZ-139): the booking calendar must tell a stale-data
+   * `REVISION_CONFLICT` apart from a `SLOT_UNAVAILABLE` — both are 409, both
+   * are `conflict`, but the recovery differs (reload the booking versus pick
+   * another instant). Null only when the 409 body was not a frozen envelope.
    */
-  | { kind: "conflict"; message: string; currentRevision: number | null }
+  | {
+      kind: "conflict";
+      message: string;
+      currentRevision: number | null;
+      errorCode?: "REVISION_CONFLICT" | "SLOT_UNAVAILABLE" | null;
+    }
   /** 5xx, including STORAGE_FAILURE. Opaque by design. */
   | { kind: "server"; message: string; status: number }
   /** A 2xx whose body did not match the frozen schema. Never rendered. */
@@ -335,6 +352,17 @@ function failureFromResponse(
         kind: "conflict",
         message: ADMIN_API_MESSAGES.conflict,
         currentRevision: readRevisionHeader(headers),
+        errorCode: "REVISION_CONFLICT",
+      };
+    case "SLOT_UNAVAILABLE":
+      // ESZ-139: also 409, also a `conflict` — but the booking calendar must
+      // not read it as stale data: the chosen instant was taken, the recovery
+      // is another slot, not a reload-and-reconsider.
+      return {
+        kind: "conflict",
+        message: ADMIN_API_MESSAGES.conflict,
+        currentRevision: readRevisionHeader(headers),
+        errorCode: "SLOT_UNAVAILABLE",
       };
     case "VALIDATION_FAILED":
     case "INVALID_JSON":
@@ -364,6 +392,9 @@ function failureFromResponse(
       kind: "conflict",
       message: ADMIN_API_MESSAGES.conflict,
       currentRevision: readRevisionHeader(headers),
+      // A 409 whose body is not a frozen envelope names no code: callers must
+      // fall back on the least specific recovery.
+      errorCode: null,
     };
   }
   if (status === 400) {
