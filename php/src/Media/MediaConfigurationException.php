@@ -17,6 +17,11 @@ namespace Eszter\Media;
  * `docs/hetzner-target-architecture.md` §7 requires content inspection. A host
  * that cannot do it fails the request with 500 INVALID_CONFIGURATION, which is
  * both honest and actionable: the fix is a hosting setting, not a code change.
+ *
+ * Deliberately not the exception for a host that cannot even *take* the upload —
+ * a missing temporary directory, an unwritable destination or an extension abort
+ * (ESZ-135) — which is {@see MediaUploadHostFaultException}: those answer the
+ * opaque generic 500 and are a runtime fault, not a verification configuration.
  */
 final class MediaConfigurationException extends \RuntimeException
 {

@@ -13,6 +13,7 @@ use Eszter\Media\MediaException;
 use Eszter\Media\MediaIngest;
 use Eszter\Media\MediaContract;
 use Eszter\Media\MediaLibrary;
+use Eszter\Media\MediaUploadHostFaultException;
 use Eszter\Auth\Authenticator;
 use Eszter\Auth\CsrfGuard;
 use Eszter\Auth\SessionManager;
@@ -86,6 +87,24 @@ final class AdminMediaUploadEndpoint extends AdminMediaEndpoint
                 ErrorCatalog::INVALID_CONFIGURATION,
                 $this->mediaHeaders(),
                 $misconfigured->getMessage(),
+            );
+        } catch (MediaUploadHostFaultException $hostFault) {
+            // PHP itself could not take the upload — no temporary directory, no
+            // write, an extension abort, or an unrecognised error code (ESZ-135).
+            // That is an infrastructure failure, not bad input: the caller is
+            // answered with the opaque generic 500, the classification and the
+            // PHP upload error code go to the operator log at error level, and
+            // neither the code nor any path reaches the response.
+            $this->logger->error(
+                'Media upload refused: the host could not take the upload.',
+                $hostFault->logContext() + ['detail' => $hostFault->getMessage()],
+            );
+
+            throw new HttpException(
+                500,
+                ErrorCatalog::INTERNAL_ERROR,
+                $this->mediaHeaders(),
+                $hostFault->getMessage(),
             );
         } catch (StorageException $full) {
             if ($full->storageCode !== StorageException::FILE_TOO_LARGE) {

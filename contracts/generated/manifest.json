@@ -99,7 +99,7 @@
     },
     {
       "file": "http-contract.json",
-      "sha256": "dd8d1d9d1e7e1a036997957bec5477c64dd9c59397a76d9e4ccecfb95e377f2c"
+      "sha256": "4db76968aed40e0d124ff7ce746b305efffd846d811e8f055bcf03f952497e9b"
     },
     {
       "file": "login-request.schema.json",

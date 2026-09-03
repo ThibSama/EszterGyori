@@ -1922,6 +1922,7 @@ export const mediaIngest = {
     "Every rejection leaves no intake file, no temp file, no original and no file under /media/.",
     "The response body carries only mediaAssetMetadata; no server path, temp name or decoder detail appears in it or in an error envelope.",
     "An environment without the image extensions the pipeline needs answers 500 INVALID_CONFIGURATION rather than accepting an unverified file.",
+    "A part PHP refused for a host reason — no usable temporary directory, an unwritable destination or an extension abort — answers the opaque generic 500, is logged at error level and never as VALIDATION_FAILED; an unrecognised non-zero upload error code fails closed the same way (ESZ-135). No PHP error number, path, ini value, extension or temporary name reaches the response.",
   ],
 } as const;
 

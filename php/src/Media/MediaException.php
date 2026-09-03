@@ -8,9 +8,11 @@ namespace Eszter\Media;
  * A media operation failed for a reason the caller can be told about.
  *
  * Distinct from {@see \Eszter\Storage\StorageException}, which means the service
- * is broken, and distinct from {@see MediaConfigurationException}, which means
- * the host is. This one means the *upload* was unacceptable, and the endpoint
- * turns it into a 400 or a 413.
+ * is broken, distinct from {@see MediaConfigurationException}, which means the
+ * host cannot verify an image, and distinct from
+ * {@see MediaUploadHostFaultException}, which means PHP itself could not take the
+ * upload (no temporary directory, no write, an extension abort). This one means
+ * the *upload* was unacceptable, and the endpoint turns it into a 400 or a 413.
  *
  * The message names what was wrong in enough detail to be useful in a log and is
  * never put on the wire: the response carries the frozen envelope, whose copy the

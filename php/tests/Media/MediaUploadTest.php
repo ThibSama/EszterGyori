@@ -32,6 +32,13 @@ use PHPUnit\Framework\TestCase;
  * contract says why it is here rather than in the artifact: a case would have to
  * carry a JPEG, a truncated JPEG and a PHP script renamed to `.jpg` as literals
  * in a file every implementation parses.
+ *
+ * Since ESZ-135 it also drives every standard PHP upload error code through the
+ * route: the caller-side refusals (`UPLOAD_ERR_INI_SIZE`/`FORM_SIZE` → 413,
+ * `UPLOAD_ERR_NO_FILE`/`PARTIAL` → 400) are unchanged, while the host faults
+ * (`UPLOAD_ERR_NO_TMP_DIR`/`CANT_WRITE`/`EXTENSION`, and any unrecognised
+ * non-zero code) answer the opaque generic 500, log at error level and leave
+ * nothing behind.
  */
 final class MediaUploadTest extends TestCase
 {
@@ -301,6 +308,165 @@ final class MediaUploadTest extends TestCase
         self::assertSame('PAYLOAD_TOO_LARGE', $this->errorCodeOf($response));
     }
 
+    // ── PHP upload error-code classification (ESZ-135) ─────────────────────
+
+    /**
+     * Every standard PHP upload error code, driven through the real route.
+     *
+     * ESZ-135 froze the classification: the codes PHP uses to say "I could not
+     * take this upload" are three different kinds of failure and must not all be
+     * reported as a caller validation failure. `UPLOAD_ERR_INI_SIZE` and
+     * `UPLOAD_ERR_FORM_SIZE` mean the file was too big -> 413; `UPLOAD_ERR_NO_FILE`
+     * and `UPLOAD_ERR_PARTIAL` mean the part carried nothing usable -> 400; and
+     * `UPLOAD_ERR_NO_TMP_DIR`, `UPLOAD_ERR_CANT_WRITE` and `UPLOAD_ERR_EXTENSION`
+     * are host faults -> the opaque generic 500. Any other non-zero code fails
+     * closed the same way.
+     *
+     * The `bytes` row for `UPLOAD_ERR_OK` is a real image: proving 201 through
+     * the same table keeps the success path honest rather than assumed.
+     *
+     * @return iterable<string, array{int, string|null, int, string|null}>
+     */
+    public static function phpUploadErrorCodes(): iterable
+    {
+        yield 'ok' => [\UPLOAD_ERR_OK, MediaFixtures::jpeg(), 201, null];
+        yield 'ini_size' => [\UPLOAD_ERR_INI_SIZE, null, 413, 'PAYLOAD_TOO_LARGE'];
+        yield 'form_size' => [\UPLOAD_ERR_FORM_SIZE, null, 413, 'PAYLOAD_TOO_LARGE'];
+        yield 'no_file' => [\UPLOAD_ERR_NO_FILE, null, 400, 'VALIDATION_FAILED'];
+        yield 'partial' => [\UPLOAD_ERR_PARTIAL, null, 400, 'VALIDATION_FAILED'];
+        yield 'no_tmp_dir' => [\UPLOAD_ERR_NO_TMP_DIR, null, 500, 'INTERNAL_ERROR'];
+        yield 'cant_write' => [\UPLOAD_ERR_CANT_WRITE, null, 500, 'INTERNAL_ERROR'];
+        yield 'extension' => [\UPLOAD_ERR_EXTENSION, null, 500, 'INTERNAL_ERROR'];
+        yield 'unassigned code 5' => [5, null, 500, 'INTERNAL_ERROR'];
+        yield 'unknown code 99' => [99, null, 500, 'INTERNAL_ERROR'];
+    }
+
+    #[DataProvider('phpUploadErrorCodes')]
+    public function testEachPhpUploadErrorCodeAnswersItsFrozenClass(
+        int $errorCode,
+        ?string $bytes,
+        int $expectedStatus,
+        ?string $expectedErrorCode,
+    ): void {
+        $kernel = $this->boot();
+
+        $response = $bytes !== null
+            ? $this->upload($kernel, $bytes)
+            : $kernel->handle($this->request('POST', [
+                // A path PHP would never have filled: every refusal below
+                // happens before any transport access, so the path must never
+                // be read, moved or named.
+                new UploadedFile('file', '/nonexistent', 0, $errorCode, 'big.jpg', 'image/jpeg'),
+            ]));
+
+        self::assertSame($expectedStatus, $response->status, "error code {$errorCode}");
+
+        if ($expectedErrorCode === null) {
+            self::assertArrayHasKey('asset', $response->decodedBody());
+
+            return;
+        }
+
+        self::assertSame($expectedErrorCode, $this->errorCodeOf($response));
+
+        // Proof 6 of ESZ-135: every refusal leaves zero managed artefacts —
+        // no intake file, no original, no derivative under /media/, no
+        // catalogue entry. These checks run before any intake movement, so the
+        // residue each could leave is exactly what this asserts.
+        $this->assertNothingWasLeftBehind();
+    }
+
+    /**
+     * Host upload faults answer the opaque 500 and log at error level, and
+     * neither the PHP error number nor any path reaches either surface's copy
+     * the wrong way (ESZ-135 proofs 4, 5 and 7).
+     *
+     * @return iterable<string, array{int}>
+     */
+    public static function hostFaultUploadCodes(): iterable
+    {
+        yield 'no_tmp_dir' => [\UPLOAD_ERR_NO_TMP_DIR];
+        yield 'cant_write' => [\UPLOAD_ERR_CANT_WRITE];
+        yield 'extension' => [\UPLOAD_ERR_EXTENSION];
+        yield 'unknown' => [99];
+    }
+
+    #[DataProvider('hostFaultUploadCodes')]
+    public function testHostFaultUploadsAreLoggedAtErrorLevelAndStayOpaque(int $errorCode): void
+    {
+        // 'debug' so the assertion can also prove the client-error lines are
+        // *not* at error level (proof 7 keeps caller refusals at warn).
+        $kernel = $this->boot(['logLevel' => 'debug']);
+        $logPath = $this->root . '/var/log/app.log';
+
+        $clientRefusal = $kernel->handle($this->request('POST', [
+            new UploadedFile('file', '/nonexistent', 0, \UPLOAD_ERR_NO_FILE, 'absent.jpg'),
+        ]));
+
+        self::assertSame(400, $clientRefusal->status);
+
+        $response = $kernel->handle($this->request('POST', [
+            new UploadedFile('file', '/nonexistent', 0, $errorCode, 'hostile.jpg', 'image/jpeg'),
+        ]));
+
+        // The frozen generic envelope, and nothing else: the body must not
+        // carry the PHP error number, a path, the classification or any detail.
+        self::assertSame(500, $response->status);
+        $body = $response->decodedBody();
+
+        /** @var array<string, string> $messages */
+        $messages = TestEnvironment::artifacts()->httpContract()['errorMessages'];
+
+        self::assertIsArray($body);
+        self::assertSame(['error'], array_keys($body));
+        self::assertIsArray($body['error']);
+        self::assertSame(['code', 'message', 'requestId'], array_keys($body['error']));
+        self::assertSame('INTERNAL_ERROR', $body['error']['code']);
+        self::assertSame($messages['INTERNAL_ERROR'], $body['error']['message']);
+
+        foreach (['/nonexistent', 'hostile.jpg', 'PHP_UPLOAD_HOST_FAULT', 'UPLOAD_ERR'] as $needle) {
+            self::assertStringNotContainsString($needle, $response->body, "body leaks {$needle}");
+        }
+
+        // The log: one error-level line naming the stable classification and
+        // the PHP upload error code — and no path and no client filename — and
+        // the caller refusal stays a warning, never an error.
+        $log = (string) @file_get_contents($logPath);
+        self::assertNotSame('', $log, 'no log lines were written');
+
+        $lines = array_values(array_filter(
+            explode("\n", $log),
+            static fn (string $line): bool => $line !== '',
+        ));
+
+        $levels = [];
+        $messages = [];
+
+        foreach ($lines as $line) {
+            /** @var array<string, mixed> $entry */
+            $entry = json_decode($line, true);
+            self::assertIsArray($entry, "log line is not JSON: {$line}");
+            $levels[] = $entry['level'];
+            $messages[] = $entry['message'];
+        }
+
+        $hostIndex = array_search('Media upload refused: the host could not take the upload.', $messages, true);
+        self::assertNotFalse($hostIndex, 'no host-fault log line');
+        self::assertSame('error', $levels[$hostIndex]);
+
+        $entry = json_decode($lines[$hostIndex], true);
+        self::assertIsArray($entry);
+        self::assertSame('PHP_UPLOAD_HOST_FAULT', $entry['classification']);
+        self::assertSame($errorCode, $entry['phpErrorCode']);
+
+        self::assertStringNotContainsString('/nonexistent', $lines[$hostIndex]);
+        self::assertStringNotContainsString('hostile.jpg', $lines[$hostIndex]);
+
+        $clientIndex = array_search('Media upload refused.', $messages, true);
+        self::assertNotFalse($clientIndex, 'no client-refusal log line');
+        self::assertSame('warn', $levels[$clientIndex]);
+    }
+
     public function testABodyDiscardedByPostMaxSizeIsA413RatherThanAMissingFile(): void
     {
         // The silent overflow: PHP throws the body away, leaves `$_FILES` empty
@@ -319,6 +485,58 @@ final class MediaUploadTest extends TestCase
 
         self::assertSame(413, $response->status);
         self::assertSame('PAYLOAD_TOO_LARGE', $this->errorCodeOf($response));
+    }
+
+    public function testPostMaxSizeDiscardIsNotConflatedWithAHostFault(): void
+    {
+        // Proof 8 of ESZ-135: the silent post_max_size overflow is a 413 that
+        // belongs to the caller's file being too big — logged at warn like a
+        // client error, never reclassified as the error-level host fault a
+        // NO_TMP_DIR/CANT_WRITE/EXTENSION code produces.
+        $kernel = $this->boot(['logLevel' => 'debug']);
+        $logPath = $this->root . '/var/log/app.log';
+
+        $response = $kernel->handle(new Request(
+            'POST',
+            '/api/admin/media',
+            $this->authHeaders() + [
+                'content-type' => 'multipart/form-data; boundary=----eszter',
+                'content-length' => '4194304',
+            ],
+        ));
+
+        self::assertSame(413, $response->status);
+        self::assertSame('PAYLOAD_TOO_LARGE', $this->errorCodeOf($response));
+        self::assertStringNotContainsString('INTERNAL_ERROR', $response->body);
+
+        $log = (string) @file_get_contents($logPath);
+        $lines = array_values(array_filter(
+            explode("\n", $log),
+            static fn (string $line): bool => $line !== '',
+        ));
+
+        $discard = null;
+        foreach ($lines as $line) {
+            /** @var array<string, string> $entry */
+            $entry = json_decode($line, true);
+
+            if (!\is_array($entry)) {
+                continue;
+            }
+
+            if ($entry['message'] === 'Media upload discarded before it reached the script.') {
+                $discard = $entry;
+
+                break;
+            }
+        }
+
+        self::assertNotNull($discard, 'the discard is not logged');
+        self::assertSame('warn', $discard['level'], 'the discard log line is not warn');
+
+        // The host-fault classification never appears on this path, and the
+        // recovery never answers INTERNAL_ERROR.
+        self::assertStringNotContainsString('PHP_UPLOAD_HOST_FAULT', $log);
     }
 
     public function testARequestDeclaringMoreThanTheRouteLimitIsRejectedBeforeRouting(): void
@@ -472,9 +690,13 @@ final class MediaUploadTest extends TestCase
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
-    private function boot(): Kernel
+    /**
+     * @param array<string, mixed> $configOverrides Merged over the generated
+     *        deployment, so a test can boot at 'debug' to observe log levels.
+     */
+    private function boot(array $configOverrides = []): Kernel
     {
-        $configPath = TestEnvironment::writeDeployment($this->root);
+        $configPath = TestEnvironment::writeDeployment($this->root, $configOverrides);
         TestEnvironment::writeExportedPage($this->root);
 
         $clock = new FrozenClock(self::NOW);

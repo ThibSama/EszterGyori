@@ -71,6 +71,7 @@ final class MediaIngest
      * @param list<UploadedFile> $uploads Every part the request carried.
      * @return array<string, mixed> The catalogued metadata.
      * @throws MediaConfigurationException The host cannot verify an image.
+     * @throws MediaUploadHostFaultException PHP could not take the upload.
      * @throws MediaException The upload is unacceptable.
      * @throws StorageException Storing what was verified failed.
      */
@@ -191,12 +192,26 @@ final class MediaIngest
     }
 
     /**
-     * Turns PHP's upload error code into the right refusal.
+     * Turns PHP's upload error code into the right outcome (ESZ-135).
      *
-     * `INI_SIZE` and `FORM_SIZE` are 413, not 400: the file was too big, which is
-     * a different thing for the person holding it than "your file was not
-     * acceptable". `PARTIAL` is a truncated transfer and 400 — the bytes that
-     * arrived are not an image, whatever the ones that did not would have been.
+     * The classification is frozen, code by code:
+     *
+     * - `UPLOAD_ERR_OK`: continue;
+     * - `UPLOAD_ERR_INI_SIZE`, `UPLOAD_ERR_FORM_SIZE`: 413 `PAYLOAD_TOO_LARGE` —
+     *   the file was too big, which is a different thing for the person holding
+     *   it than "your file was not acceptable", whatever measured it;
+     * - `UPLOAD_ERR_NO_FILE`, `UPLOAD_ERR_PARTIAL`: 400 — the part carried no
+     *   file, or the transfer was truncated and the bytes that arrived are not
+     *   an image, whatever the ones that did not would have been;
+     * - `UPLOAD_ERR_NO_TMP_DIR`, `UPLOAD_ERR_CANT_WRITE`, `UPLOAD_ERR_EXTENSION`:
+     *   host faults. PHP could not even take the upload — no usable temporary
+     *   directory, no write, an extension abort. Telling the caller their input
+     *   failed validation would be a lie about which side broke, so these are
+     *   {@see MediaUploadHostFaultException}, which the endpoint answers with the
+     *   opaque generic 500 and logs at error level;
+     * - any other non-zero code: fail closed the same way. Nothing in the frozen
+     *   classification makes an unknown code the caller's fault, so the honest
+     *   default is the server's failure, never `VALIDATION_FAILED`.
      */
     private function assertUploadSucceeded(UploadedFile $upload): void
     {
@@ -217,14 +232,17 @@ final class MediaIngest
             case \UPLOAD_ERR_PARTIAL:
                 throw MediaException::rejected('The upload arrived truncated.');
 
+            case \UPLOAD_ERR_NO_TMP_DIR:
+                throw MediaUploadHostFaultException::noTmpDir();
+
+            case \UPLOAD_ERR_CANT_WRITE:
+                throw MediaUploadHostFaultException::cantWrite();
+
+            case \UPLOAD_ERR_EXTENSION:
+                throw MediaUploadHostFaultException::extensionAborted();
+
             default:
-                // NO_TMP_DIR, CANT_WRITE and EXTENSION are host faults rather
-                // than caller faults, but they are indistinguishable from here
-                // and the honest answer to the caller is the same: this upload
-                // did not happen. The code is in the log for whoever looks.
-                throw MediaException::rejected(
-                    'PHP reported upload error code ' . $upload->errorCode . '.',
-                );
+                throw MediaUploadHostFaultException::unknownCode($upload->errorCode);
         }
     }
 
