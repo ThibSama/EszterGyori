@@ -49,6 +49,20 @@ final class DatabaseException extends \RuntimeException
         return new self($message, $context);
     }
 
+    /**
+     * ESZ-110 — the callback returned normally, but a failure escaping a nested
+     * {@see transactional()} call had already doomed the transaction, so the
+     * outermost commit was refused and the physical transaction rolled back.
+     *
+     * Deliberately carries no context: the original failure belongs to the code
+     * that caught it, and the statement that never committed must not be named
+     * here any more than a failed one would be.
+     */
+    public static function transactionDoomed(): self
+    {
+        return new self('The transaction was rolled back because nested work had already failed.');
+    }
+
     /** @return array<string, scalar|null> */
     public function logContext(): array
     {

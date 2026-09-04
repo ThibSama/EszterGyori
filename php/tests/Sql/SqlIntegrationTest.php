@@ -30,6 +30,7 @@ use Eszter\Config\SessionSettings;
 use Eszter\Contract\ContentValidator;
 use Eszter\Contract\StructuralValidator;
 use Eszter\Database\Database;
+use Eszter\Database\DatabaseException;
 use Eszter\Http\Request;
 use Eszter\Http\Response;
 use Eszter\Kernel;
@@ -109,6 +110,13 @@ final class SqlIntegrationTest extends TestCase
 
     /** ESZ-130 fixtures: the abusing client address (documentation range). */
     private const ESZ130_ADDRESS = '203.0.113.130';
+
+    /**
+     * ESZ-110 fixtures: the exact generic message of the doomed-transaction
+     * exception the outermost commit is refused with.
+     */
+    private const TRANSACTION_DOOMED_MESSAGE = 'The transaction was rolled back'
+        . ' because nested work had already failed.';
 
     private static bool $migrated = false;
 
@@ -6084,6 +6092,314 @@ final class SqlIntegrationTest extends TestCase
         );
         self::assertSame(30, (int) $row['duration_minutes']);
         self::assertCount(1, $this->allBookingServiceRows());
+    }
+
+    // --- ESZ-110 / AUD-16: nested transactions are rollback-only --------------
+    // --- (Database::transactional against the real MySQL, no savepoints) ------
+
+    /**
+     * ESZ-110 proofs 1-5: the outer transaction writes A, the nested one
+     * writes B then throws, the intermediate code catches that exception and
+     * keeps going, the outer writes C and returns normally — and the commit is
+     * nevertheless refused, with A, B and C absent afterwards. All three writes
+     * are real rows inside one physical MySQL transaction; the suite connection
+     * reads them after the refused commit, so their absence is the physical
+     * rollback.
+     */
+    public function testCaughtNestedFailureDoomsTheOuterTransactionAndCommitsNothing(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $database = $this->database;
+
+        $caughtMessage = null;
+        $attempted = [];
+        $doomedMessage = null;
+
+        try {
+            $database->transactional(function (Database $database) use (&$caughtMessage, &$attempted): void {
+                $this->writeMarker($database, 'esz110.doom.a');
+                $attempted[] = 'a';
+
+                try {
+                    $database->transactional(function (Database $inner) use (&$attempted): void {
+                        $this->writeMarker($inner, 'esz110.doom.b');
+                        $attempted[] = 'b';
+                        throw new \RuntimeException('esz110-nested-explosion');
+                    });
+                } catch (\RuntimeException $caught) {
+                    $caughtMessage = $caught->getMessage();
+                }
+
+                $this->writeMarker($database, 'esz110.doom.c');
+                $attempted[] = 'c';
+            });
+
+            self::fail('A transaction doomed by a nested failure must refuse to commit.');
+        } catch (DatabaseException $exception) {
+            $doomedMessage = $exception->getMessage();
+        }
+
+        // The deterministic server-side exception replaces the commit.
+        self::assertSame(self::TRANSACTION_DOOMED_MESSAGE, $doomedMessage);
+
+        // The intermediate code really did catch the inner failure and continue,
+        // so the refusal is the rollback-only state, not a rethrown exception.
+        self::assertSame('esz110-nested-explosion', $caughtMessage);
+        self::assertSame(['a', 'b', 'c'], $attempted);
+
+        // A, B and C are all absent: the physical transaction was rolled back
+        // instead of committing the work written around the swallowed failure.
+        self::assertSame([], $this->markerKeys($database));
+        self::assertFalse($database->inTransaction());
+    }
+
+    /**
+     * ESZ-110 proof 6: at three nesting levels, a deepest failure caught by the
+     * middle layer dooms the whole transaction just the same — the middle
+     * layer's own continuation and the outer layer's work are rolled back with
+     * the innermost write, and the outermost commit is refused.
+     */
+    public function testThreeLevelNestingCaughtAtTheMiddleIsStillDoomed(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $database = $this->database;
+
+        $deepestMessage = null;
+        $attempted = [];
+        $doomedMessage = null;
+
+        try {
+            $database->transactional(function (Database $outer) use (&$deepestMessage, &$attempted): void {
+                $this->writeMarker($outer, 'esz110.three.outer1');
+                $attempted[] = 'outer1';
+
+                $outer->transactional(function (Database $middle) use (&$deepestMessage, &$attempted): void {
+                    $this->writeMarker($middle, 'esz110.three.middle1');
+                    $attempted[] = 'middle1';
+
+                    try {
+                        $middle->transactional(function (Database $deepest) use (&$attempted): void {
+                            $this->writeMarker($deepest, 'esz110.three.deep');
+                            $attempted[] = 'deep';
+                            throw new \RuntimeException('esz110-deepest-explosion');
+                        });
+                    } catch (\RuntimeException $caught) {
+                        $deepestMessage = $caught->getMessage();
+                    }
+
+                    // The middle layer continues after catching the failure…
+                    $this->writeMarker($middle, 'esz110.three.middle2');
+                    $attempted[] = 'middle2';
+                });
+
+                // …and so does the outer layer. Nothing may commit.
+                $this->writeMarker($outer, 'esz110.three.outer2');
+                $attempted[] = 'outer2';
+            });
+
+            self::fail('Three-level nesting with a caught deepest failure must refuse to commit.');
+        } catch (DatabaseException $exception) {
+            $doomedMessage = $exception->getMessage();
+        }
+
+        self::assertSame('esz110-deepest-explosion', $deepestMessage);
+        self::assertSame(self::TRANSACTION_DOOMED_MESSAGE, $doomedMessage);
+        self::assertSame(['outer1', 'middle1', 'deep', 'middle2', 'outer2'], $attempted);
+        self::assertSame([], $this->markerKeys($database));
+        self::assertFalse($database->inTransaction());
+    }
+
+    /**
+     * ESZ-110 proof 7: an uncaught nested failure still propagates unchanged —
+     * the original throwable, not the doomed-transaction exception — and rolls
+     * the whole transaction back.
+     */
+    public function testUncaughtNestedFailureRethrowsAndRollsBack(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $database = $this->database;
+
+        $seen = null;
+        try {
+            $database->transactional(function (Database $database): void {
+                $this->writeMarker($database, 'esz110.uncaught.a');
+
+                $database->transactional(function (Database $inner): void {
+                    $this->writeMarker($inner, 'esz110.uncaught.b');
+
+                    // The failure escapes the nested transactional() uncaught.
+                    // The guard is a live return path for the static analyser
+                    // only: inside the shared transaction — always the case
+                    // here — it throws exactly like the defect proof.
+                    if ($inner->inTransaction()) {
+                        throw new \RuntimeException('esz110-original-failure');
+                    }
+                });
+            });
+
+            self::fail('The nested failure must escape the outer transaction.');
+        } catch (\RuntimeException $exception) {
+            $seen = $exception;
+        }
+
+        // self::fail() above never returns, so reaching this point means the
+        // catch ran and $seen holds the escaped exception.
+        self::assertSame('esz110-original-failure', $seen->getMessage());
+        self::assertNotInstanceOf(DatabaseException::class, $seen);
+        self::assertSame([], $this->markerKeys($database));
+        self::assertFalse($database->inTransaction());
+    }
+
+    /**
+     * ESZ-110 proof 8: successful nesting commits exactly once — every level's
+     * rows are durably present afterwards, values flow back through every level,
+     * and no transaction remains open on the instance.
+     */
+    public function testSuccessfulNestingCommitsOnce(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $database = $this->database;
+
+        $deepResult = null;
+        $result = $database->transactional(function (Database $outer) use (&$deepResult): string {
+            $this->writeMarker($outer, 'esz110.ok.outer');
+
+            $outer->transactional(function (Database $middle) use (&$deepResult): void {
+                $this->writeMarker($middle, 'esz110.ok.middle');
+
+                $deepResult = $middle->transactional(function (Database $deep): string {
+                    $this->writeMarker($deep, 'esz110.ok.deep');
+
+                    return 'deep-return';
+                });
+            });
+
+            return 'outer-return';
+        });
+
+        self::assertSame('outer-return', $result);
+        self::assertSame('deep-return', $deepResult);
+        self::assertSame(
+            ['esz110.ok.deep', 'esz110.ok.middle', 'esz110.ok.outer'],
+            $this->markerKeys($database),
+        );
+        self::assertFalse($database->inTransaction());
+    }
+
+    /**
+     * ESZ-110 proof 9 plus the terminal-path resets: once a doomed transaction
+     * has been refused and rolled back, and once an explicit rollBack() cycle
+     * has run, the very same Database instance starts fresh, committable
+     * transactions again — nothing about the doom leaks into the next
+     * transaction.
+     */
+    public function testTheSameInstanceStartsFreshCommittableTransactionsAfterDoomedTermination(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $database = $this->database;
+
+        // A doomed termination, exactly like the defect scenario.
+        $doomedMessage = null;
+        try {
+            $database->transactional(function (Database $database): void {
+                $this->writeMarker($database, 'esz110.reuse.one');
+
+                try {
+                    $database->transactional(static function (): void {
+                        throw new \RuntimeException('esz110-reuse-explosion');
+                    });
+                } catch (\RuntimeException $caught) {
+                }
+            });
+
+            self::fail('The doomed transaction must refuse to commit.');
+        } catch (DatabaseException $exception) {
+            $doomedMessage = $exception->getMessage();
+        }
+
+        self::assertSame(self::TRANSACTION_DOOMED_MESSAGE, $doomedMessage);
+        self::assertSame([], $this->markerKeys($database));
+        self::assertFalse($database->inTransaction());
+
+        // An explicit rollBack() cycle leaves the same instance equally clean.
+        $database->beginTransaction();
+        $this->writeMarker($database, 'esz110.reuse.two');
+        $database->rollBack();
+        self::assertSame([], $this->markerKeys($database));
+        self::assertFalse($database->inTransaction());
+
+        // A brand-new independent transaction on the same instance commits.
+        $database->transactional(function (Database $database): void {
+            $this->writeMarker($database, 'esz110.reuse.three');
+        });
+
+        self::assertSame(['esz110.reuse.three'], $this->markerKeys($database));
+        self::assertFalse($database->inTransaction());
+    }
+
+    /**
+     * ESZ-110: the rollback-only state is shared with consistent snapshots, the
+     * other physical-transaction opener on the same instance. A nested failure
+     * caught inside a snapshot refuses the snapshot's commit the same way, so
+     * the shared state cannot be silently ignored by one commit path.
+     */
+    public function testCaughtNestedFailureInsideAConsistentSnapshotRefusesItsCommit(): void
+    {
+        $this->leaveTheWrapperTransaction();
+        $database = $this->database;
+
+        $doomedMessage = null;
+        try {
+            $database->consistentSnapshot(function (Database $snapshot): void {
+                $this->writeMarker($snapshot, 'esz110.snapshot.a');
+
+                try {
+                    $snapshot->transactional(static function (): void {
+                        throw new \RuntimeException('esz110-snapshot-explosion');
+                    });
+                } catch (\RuntimeException $caught) {
+                }
+            });
+
+            self::fail('A snapshot whose nested work failed must refuse to commit.');
+        } catch (DatabaseException $exception) {
+            $doomedMessage = $exception->getMessage();
+        }
+
+        self::assertSame(self::TRANSACTION_DOOMED_MESSAGE, $doomedMessage);
+        self::assertSame([], $this->markerKeys($database));
+        self::assertFalse($database->inTransaction());
+    }
+
+    /**
+     * Inserts one ESZ-110 marker row into system_settings — a real, prepared,
+     * parameterised statement against the schema under test.
+     */
+    private function writeMarker(Database $database, string $key): void
+    {
+        $database->run(
+            'INSERT INTO system_settings (setting_key, value_json, created_at, updated_at)'
+            . ' VALUES (:key, :value, :created, :updated)',
+            [
+                'key' => $key,
+                'value' => '{"esz110":true}',
+                'created' => self::NOW,
+                'updated' => self::NOW,
+            ],
+        );
+    }
+
+    /** @return list<string> */
+    private function markerKeys(Database $database): array
+    {
+        $rows = $database->fetchAll(
+            "SELECT setting_key FROM system_settings WHERE setting_key LIKE 'esz110.%' ORDER BY setting_key ASC",
+        );
+
+        return array_map(
+            static fn (array $row): string => (string) $row['setting_key'],
+            $rows,
+        );
     }
 
     /** @return array<string, mixed>|null */

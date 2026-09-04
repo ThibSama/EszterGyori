@@ -46,6 +46,19 @@ final class Database
     /** Depth of nested {@see transactional()} calls; only the outermost commits. */
     private int $transactionDepth = 0;
 
+    /**
+     * ESZ-110 — whether the shared logical transaction is doomed.
+     *
+     * False whenever a physical transaction begins: every transaction starts
+     * committable. A throwable escaping a *nested* {@see transactional()} call
+     * sets it before rethrowing, so an outer callback catching that throwable
+     * cannot clear it — nothing clears it short of ending the physical
+     * transaction (commit, rollback or the outermost {@see transactional()}
+     * finally). When the outermost work would otherwise commit, the mark forces
+     * a physical rollback and a deterministic exception instead.
+     */
+    private bool $transactionRollbackOnly = false;
+
     private readonly ?ApplicationSnapshotLock $snapshotLock;
 
     /**
@@ -250,13 +263,18 @@ final class Database
             throw DatabaseException::queryFailed('BEGIN', $exception);
         }
 
+        // ESZ-110: every new physical transaction starts committable.
         $this->transactionDepth = 1;
+        $this->transactionRollbackOnly = false;
     }
 
     /** Discards everything since the outermost {@see beginTransaction()}. */
     public function rollBack(): void
     {
+        // ESZ-110: ending the physical transaction also clears any rollback-only
+        // mark, so this same instance can safely start another transaction.
         $this->transactionDepth = 0;
+        $this->transactionRollbackOnly = false;
 
         try {
             if ($this->pdo()->inTransaction()) {
@@ -277,6 +295,16 @@ final class Database
      * the outer transaction still commits, which is exactly the outcome a
      * transaction is supposed to make impossible.
      *
+     * ESZ-110 strengthens that to rollback-only semantics: a throwable escaping
+     * a nested call marks the shared logical transaction doomed *before* it is
+     * rethrown, and no amount of catching in outer callbacks clears the mark. If
+     * the outermost work then returns normally, committing is refused — the
+     * physical transaction is rolled back and
+     * {@see DatabaseException::transactionDoomed()} is thrown where the commit
+     * would have happened — so a swallowed inner failure can never commit the
+     * work written around it. An uncaught failure still propagates unchanged
+     * after the rollback, and a fresh outermost call starts committable again.
+     *
      * @template T
      * @param \Closure(self): T $work
      * @return T
@@ -288,6 +316,10 @@ final class Database
 
             try {
                 return $work($this);
+            } catch (\Throwable $exception) {
+                $this->transactionRollbackOnly = true;
+
+                throw $exception;
             } finally {
                 --$this->transactionDepth;
             }
@@ -312,9 +344,29 @@ final class Database
         }
 
         $this->transactionDepth = 1;
+        $this->transactionRollbackOnly = false;
 
         try {
             $result = $work($this);
+
+            if ($this->transactionRollbackOnly) {
+                // ESZ-110: the callback returned normally, but a nested failure
+                // already doomed the transaction. The commit is refused: roll the
+                // physical transaction back and answer with the deterministic
+                // doomed-transaction exception instead of committing around the
+                // swallowed failure.
+                try {
+                    if ($pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+                } catch (\PDOException) {
+                    // Swallowed like the sibling rollback below; the refusal is
+                    // the outcome to report either way.
+                }
+
+                throw DatabaseException::transactionDoomed();
+            }
+
             $pdo->commit();
 
             return $result;
@@ -333,6 +385,7 @@ final class Database
             throw $exception;
         } finally {
             $this->transactionDepth = 0;
+            $this->transactionRollbackOnly = false;
         }
     }
 
@@ -359,9 +412,26 @@ final class Database
         }
 
         $this->transactionDepth = 1;
+        $this->transactionRollbackOnly = false;
 
         try {
             $result = $work($this);
+
+            if ($this->transactionRollbackOnly) {
+                // ESZ-110: a consistent snapshot is a physical transaction on the
+                // same shared state; a nested failure that escaped a
+                // transactional() call inside it dooms the snapshot too, so the
+                // snapshot is rolled back and refused rather than committed.
+                try {
+                    if ($pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+                } catch (\PDOException) {
+                }
+
+                throw DatabaseException::transactionDoomed();
+            }
+
             $pdo->commit();
 
             return $result;
@@ -376,6 +446,7 @@ final class Database
             throw $exception;
         } finally {
             $this->transactionDepth = 0;
+            $this->transactionRollbackOnly = false;
         }
     }
 
