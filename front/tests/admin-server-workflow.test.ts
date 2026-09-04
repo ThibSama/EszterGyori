@@ -26,12 +26,29 @@ function readAppFile(...segments: string[]): string {
   return readFileSync(join(appRoot, ...segments), "utf8");
 }
 
+/**
+ * The ESZ-107 split moved the server-lifecycle wiring out of the page
+ * component into `content-editor-controller.ts` (the hook that owns the
+ * working document, the server calls and the conflict orchestration) and the
+ * import/export handlers into `content-editor-backup.ts`. Every assertion that
+ * used to read `content-editor.tsx` for one of those now reads the file that
+ * actually owns the behaviour; `content-editor.tsx` is still read where the
+ * assertion is about the rendered page (button labels, preview wiring).
+ */
+const controllerSource = () => readAppFile("components", "admin", "content-editor-controller.ts");
+const backupSource = () => readAppFile("components", "admin", "content-editor-backup.ts");
+const editorSource = () => readAppFile("components", "admin", "content-editor.tsx");
+
 test("no admin route spells an API path instead of naming it from the contract", () => {
   const sources = [
     readAppFile("lib", "admin-api.ts"),
-    readAppFile("components", "admin", "content-editor.tsx"),
+    editorSource(),
     readAppFile("components", "admin", "admin-login-form.tsx"),
     readAppFile("components", "admin", "admin-session-provider.tsx"),
+    // ESZ-107: the three extracted units are client-rendered too.
+    readAppFile("components", "admin", "content-editor-sections.tsx"),
+    controllerSource(),
+    backupSource(),
   ];
 
   // The paths live in `@eszter/contracts`, which PHP reads the same values out
@@ -65,7 +82,7 @@ test("no admin route spells an API path instead of naming it from the contract",
 });
 
 test("every privileged write states the loaded revision as its precondition", () => {
-  const source = readAppFile("components", "admin", "content-editor.tsx");
+  const source = controllerSource();
 
   assert.match(
     source,
@@ -82,7 +99,7 @@ test("every privileged write states the loaded revision as its precondition", ()
 });
 
 test("publishing is explicit, confirmed, and refuses to run on unsaved text", () => {
-  const source = readAppFile("components", "admin", "content-editor.tsx");
+  const source = controllerSource();
 
   // Publish takes what is *stored*. Offering it on a dirty editor would publish
   // something other than what the admin is looking at.
@@ -99,10 +116,12 @@ test("publishing is explicit, confirmed, and refuses to run on unsaved text", ()
 });
 
 test("reset delegates to the server route rather than rebuilding content locally", () => {
-  const editor = readAppFile("components", "admin", "content-editor.tsx");
+  const editor = editorSource();
+  const controller = controllerSource();
   const api = readAppFile("lib", "admin-api.ts");
 
-  assert.match(editor, /api\.resetDraft/);
+  assert.match(controller, /api\.resetDraft/);
+  // The label is rendered by the page, next to the other action buttons.
   assert.match(editor, /Restaurer le contenu publié/);
   // `adminContent.reset.sources` is a closed enum of one. The client names it;
   // it does not reconstruct the published document and save it as a draft, which
@@ -112,18 +131,18 @@ test("reset delegates to the server route rather than rebuilding content locally
 });
 
 test("no 409 path anywhere can write against a head whose content was not read", () => {
-  const editor = readAppFile("components", "admin", "content-editor.tsx");
+  const controller = controllerSource();
   const state = readAppFile("lib", "admin-server-draft.ts");
   const reconciliation = readAppFile("lib", "admin-draft-reconciliation.ts");
 
   // The removed defect, named so a reintroduction is loud: an action that took
   // the head off the 409 response and a button that offered it as "keep mine".
-  for (const source of [editor, state]) {
+  for (const source of [controller, state]) {
     assert.doesNotMatch(source, /conflict-rebase/);
     assert.doesNotMatch(source, /conflictRebased/);
   }
-  assert.doesNotMatch(editor, /Conserver mes modifications/);
-  assert.doesNotMatch(editor, /keepLocalConfirm/);
+  assert.doesNotMatch(controller, /Conserver mes modifications/);
+  assert.doesNotMatch(controller, /keepLocalConfirm/);
 
   // The only revision the client sends is one that arrived with its content.
   assert.match(
@@ -136,11 +155,11 @@ test("no 409 path anywhere can write against a head whose content was not read",
 });
 
 test("a refused save reconciles against fetched content, backing up first", () => {
-  const editor = readAppFile("components", "admin", "content-editor.tsx");
+  const controller = controllerSource();
   const reconciliation = readAppFile("lib", "admin-draft-reconciliation.ts");
 
   assert.match(
-    editor,
+    controller,
     /if \(result\.failure\.kind === "conflict"\) \{\s*\n\s*await reconcileAfterSaveConflict/,
   );
   // Order matters and is asserted as order: the backup precedes the fetch, which
@@ -157,31 +176,31 @@ test("a refused save reconciles against fetched content, backing up first", () =
 });
 
 test("publish and reset answer a 409 by re-reading, never by forcing", () => {
-  const editor = readAppFile("components", "admin", "content-editor.tsx");
+  const controller = controllerSource();
   const reconciliation = readAppFile("lib", "admin-draft-reconciliation.ts");
 
   for (const operation of ["publishing", "resetting"]) {
     assert.match(
-      editor,
+      controller,
       new RegExp(`await refreshAfterRefusedAction\\("${operation}"`),
     );
   }
   // The refresh surface has no way to re-attempt the operation it is recovering
   // from: it can read, and that is all it is given.
   assert.doesNotMatch(reconciliation, /ports\.publish|ports\.resetDraft/);
-  assert.match(editor, /contentAdopted = !isDirtyRef\.current/);
+  assert.match(controller, /contentAdopted = !isDirtyRef\.current/);
 });
 
 test("a 401 anywhere flips the admin area to signed out, a 403 only refreshes", () => {
-  const editor = readAppFile("components", "admin", "content-editor.tsx");
+  const controller = controllerSource();
   const provider = readAppFile("components", "admin", "admin-session-provider.tsx");
 
   assert.match(
-    editor,
+    controller,
     /if \(failure\.kind === "unauthenticated"\) \{[\s\S]{0,600}markExpired\(\);\s*\n\s*return;/,
   );
   assert.match(
-    editor,
+    controller,
     /if \(failure\.kind === "forbidden"\) \{\s*\n\s*void refreshSession\(\);/,
   );
   assert.match(provider, /markExpired/);
@@ -226,7 +245,10 @@ test("ESZ-035: the preview still mirrors the working draft, unpublished", () => 
 });
 
 test("ESZ-035: navigation, sections, appearance and validation survive the rewiring", () => {
-  const editor = readAppFile("components", "admin", "content-editor.tsx");
+  const editor = editorSource();
+  // ESZ-107: the import/export handlers moved to the local-backup unit; the
+  // page still renders them, but the behaviour is asserted where it lives.
+  const backup = backupSource();
 
   for (const marker of [
     /ADMIN_PREVIEW_SECTIONS\.map/,
@@ -243,11 +265,11 @@ test("ESZ-035: navigation, sections, appearance and validation survive the rewir
     /<ContactEditor/,
     /<FooterEditor/,
     /beforeunload/,
-    /handleExportDraft/,
-    /handleImportDraft/,
   ]) {
     assert.match(editor, marker);
   }
+  assert.match(backup, /function handleExportDraft\(/);
+  assert.match(backup, /function handleImportDraft\(/);
 });
 
 test("ESZ-035: nothing server-only was reintroduced into the export", () => {
@@ -258,6 +280,10 @@ test("ESZ-035: nothing server-only was reintroduced into the export", () => {
     readAppFile("components", "admin", "admin-session-provider.tsx"),
     readAppFile("components", "admin", "admin-login-form.tsx"),
     readAppFile("lib", "admin-api.ts"),
+    // ESZ-107: the editor controller and local-backup units are part of the
+    // client bundle the export builds, so they carry the same constraint.
+    readAppFile("components", "admin", "content-editor-controller.ts"),
+    readAppFile("components", "admin", "content-editor-backup.ts"),
   ];
 
   for (const source of sources) {

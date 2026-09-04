@@ -53,7 +53,9 @@ test("admin action labels name the server draft, publication and the local backu
 });
 
 test("import, export and backup messages keep the server draft authoritative", () => {
-  const source = readAppFile("components", "admin", "content-editor.tsx");
+  // ESZ-107: the backup/import/export unit owns this copy now; the header only
+  // renders whatever status the reducer carries.
+  const source = readAppFile("components", "admin", "content-editor-backup.ts");
 
   assert.match(source, /Sauvegarde JSON exportée/);
   assert.match(source, /Enregistrez-le sur le serveur pour le conserver/);

@@ -25,6 +25,15 @@ function readAppFile(...segments: string[]): string {
   return readFileSync(join(appRoot, ...segments), "utf8");
 }
 
+/**
+ * ESZ-107 split the editor: the server flows that call the device backup live
+ * in `content-editor-controller.ts`, the device backup and import/export unit
+ * in `content-editor-backup.ts`. The assertions below that used to read
+ * `content-editor.tsx` now read the file that owns the behaviour.
+ */
+const backupUnit = () => readAppFile("components", "admin", "content-editor-backup.ts");
+const controllerUnit = () => readAppFile("components", "admin", "content-editor-controller.ts");
+
 /** A `localStorage` that is a plain Map, so a test can inspect exactly what was written. */
 function installFakeStorage(): Map<string, string> {
   const entries = new Map<string, string>();
@@ -117,35 +126,43 @@ test("deleting the backup leaves nothing behind on the device", (t) => {
 });
 
 test("the editor bootstraps from the server draft, never from the device", () => {
-  const source = readAppFile("components", "admin", "content-editor.tsx");
+  const controller = controllerUnit();
+  const backup = backupUnit();
 
-  // The bootstrap effect reads the API. The device is read in a *separate*
-  // effect whose only job is to report that a backup exists.
-  assert.match(source, /await loadServerDraft\(\)/);
-  assert.match(source, /api\.readDraft\(\)/);
+  // The bootstrap effect reads the API (the controller's `loadServerDraft`).
+  // The device is read in a *separate* report-only step whose only job is to
+  // say that a backup exists — it never feeds the editor document.
+  assert.match(controller, /await loadServerDraft\(\)/);
+  assert.match(controller, /api\.readDraft\(\)/);
   assert.match(
-    source,
+    backup,
     /const backup = loadDraft\(\);\s*\n\s*setBackupSavedAt\(backup\.ok \? \(backup\.draft\?\.savedAt \?\? null\) : null\);/,
   );
-  // The bootstrap read never feeds `setContent`; only the server draft and an
-  // explicit restore do.
-  assert.doesNotMatch(source, /loadDraft\(\)[\s\S]{0,200}setContent/);
+  // The bootstrap read never replaces the working document: only the server
+  // draft and an explicit restore do. The controller has no device read at
+  // all, and the backup unit's report-only reader never reaches `replace`.
+  assert.doesNotMatch(controller, /loadDraft\(\)/);
+  assert.doesNotMatch(
+    backup,
+    /const backup = loadDraft\(\);[\s\S]{0,250}replace\(/,
+  );
 
   // Restoring a backup into the editor happens in a handler, behind a
   // confirmation, and still requires an explicit save to reach the server.
-  assert.match(source, /function handleRestoreLocalBackup\(\)/);
-  assert.match(source, /restoreBackupConfirm/);
-  assert.match(source, /window\.confirm\(EDITOR_MESSAGES\.restoreBackupConfirm\)/);
+  assert.match(backup, /function handleRestoreLocalBackup\(/);
+  assert.match(backup, /restoreBackupConfirm/);
+  assert.match(backup, /window\.confirm\(BACKUP_MESSAGES\.restoreBackupConfirm\)/);
 });
 
 test("a refused write puts the only copy of unsaved work on the device first", () => {
-  const source = readAppFile("components", "admin", "content-editor.tsx");
+  const controller = controllerUnit();
+  const backup = backupUnit();
 
   // The 409 branch of the save hands over to the reconciliation, whose very
   // first step — before any network call — is the device backup. At that moment
   // the content on screen is the only copy that exists anywhere.
   assert.match(
-    source,
+    controller,
     /if \(result\.failure\.kind === "conflict"\) \{\s*\n\s*await reconcileAfterSaveConflict/,
   );
   const reconciliation = readAppFile("lib", "admin-draft-reconciliation.ts");
@@ -153,20 +170,26 @@ test("a refused write puts the only copy of unsaved work on the device first", (
     reconciliation,
     /const backupWritten = backup\(local\);[\s\S]{0,200}await ports\.readDraft\(\)/,
   );
+  // The reconciliation hands the backup unit the document it must write.
+  assert.match(controller, /backup: \(content\) => writeLocalBackup\(content\),/);
   // Reset replaces what is on screen with the published document, so anything
-  // unsaved is written out before that happens.
-  assert.match(source, /if \(isDirty\) writeLocalBackup\(\);/);
+  // unsaved is written out before that happens. The controller reaches the
+  // backup unit with the current working document explicitly.
+  assert.match(controller, /if \(isDirty\) writeLocalBackup\(contentRef\.current\);/);
   // So does taking the server's draft during a conflict.
   assert.match(
-    source,
-    /handleReloadServerDraft[\s\S]{0,400}writeLocalBackup\(\);/,
+    controller,
+    /handleReloadServerDraft[\s\S]{0,400}writeLocalBackup\(contentRef\.current\);/,
   );
   // And so does an expiry: signing out unmounts the editor, so the honest
   // handling of a dead session would otherwise be the data-loss path.
   assert.match(
-    source,
-    /if \(isDirtyRef\.current\) writeLocalBackup\(\);\s*\n\s*markExpired\(\);/,
+    controller,
+    /if \(isDirtyRef\.current\) writeLocalBackup\(contentRef\.current\);\s*\n\s*markExpired\(\);/,
   );
+
+  // The backup unit itself is what performs the device write.
+  assert.match(backup, /const writeLocalBackup = useCallback\(/);
 });
 
 test("no admin module writes a session or CSRF secret to the device", () => {
@@ -177,6 +200,10 @@ test("no admin module writes a session or CSRF secret to the device", () => {
     readAppFile("lib", "admin-api.ts"),
     readAppFile("lib", "admin-session.ts"),
     readAppFile("lib", "admin-server-draft.ts"),
+    // ESZ-107: the extracted editor units are admin modules too.
+    backupUnit(),
+    controllerUnit(),
+    readAppFile("components", "admin", "content-editor-sections.tsx"),
   ];
 
   for (const source of sources) {
