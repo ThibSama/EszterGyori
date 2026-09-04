@@ -3092,6 +3092,146 @@ final class SqlIntegrationTest extends TestCase
         self::assertSame('B fresh', $retriedBody['exception']['note']);
     }
 
+    /**
+     * ESZ-106 — after the use-case split, the compatibility façade still wires
+     * every one of the ten `BookingApi` methods to a real MySQL-backed use
+     * case. One scenario walks all ten surfaces in order and asserts a
+     * contract fact for each, so a delegate that stopped reaching its
+     * collaborator (or a collaborator that lost its rule) fails here.
+     */
+    public function testEs106TheSplitKeepsAllTenBookingApiMethodsWiredAgainstMysql(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->availability->replaceWeeklyRules(
+            $this->availabilityHead(),
+            [$this->weeklyRule(1, '09:00', '11:00'), $this->weeklyRule(2, '09:00', '11:00')],
+        );
+
+        // 1. services() — public discovery returns only active catalogue facts.
+        $services = $this->bookingApi->services();
+        self::assertSame([[
+            'key' => 'brows',
+            'label' => 'Sourcils',
+            'durationMinutes' => 30,
+        ]], $services['services']);
+
+        // 2. availability() — the public read computes the 09:00-11:00 grid.
+        $availability = $this->bookingApi->availability([
+            'serviceKey' => 'brows',
+            'fromDate' => '2026-06-15',
+            'untilDate' => '2026-06-15',
+        ]);
+        self::assertSame('Europe/Paris', $availability['timezone']);
+        self::assertSame(
+            ['09:00', '09:15', '09:30', '09:45', '10:00', '10:15', '10:30'],
+            array_column($availability['slots'], 'localStart'),
+        );
+
+        // 3. create() — atomic public confirmation.
+        $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
+        $reference = (string) $created['reference'];
+        self::assertSame('confirmed', $created['state']);
+        self::assertArrayNotHasKey('customerEmail', $created);
+
+        // 4. adminQuery(range) — current-facts page with no per-booking history.
+        $range = $this->bookingApi->adminQuery([
+            'mode' => 'range',
+            'fromDate' => '2026-06-15',
+            'untilDate' => '2026-06-15',
+        ]);
+        self::assertSame([$reference], array_column($range['bookings'], 'reference'));
+        self::assertFalse($range['page']['hasMore']);
+        self::assertArrayNotHasKey('history', $range['bookings'][0]);
+
+        // 5. adminQuery(reference) — detail read beside the bounded history page.
+        $referenceRead = $this->bookingApi->adminQuery(['mode' => 'reference', 'reference' => $reference]);
+        self::assertSame($reference, $referenceRead['booking']['reference']);
+        self::assertSame('created', $referenceRead['historyPage']['events'][0]['type']);
+        $token = (string) $referenceRead['booking']['updatedAt'];
+
+        // 6. adminMoveAvailability() — the exclusion re-offers the moving
+        //    booking's own slot (the move target set) while the next day
+        //    keeps its complete grid.
+        $moveSlots = $this->bookingApi->adminMoveAvailability([
+            'reference' => $reference,
+            'fromDate' => '2026-06-15',
+            'untilDate' => '2026-06-16',
+        ]);
+        $moveStarts = array_column($moveSlots['slots'], 'startsAtUtc');
+        self::assertContains('2026-06-15T07:00:00.000Z', $moveStarts);
+        self::assertContains('2026-06-16T07:00:00.000Z', $moveStarts);
+        self::assertSame(
+            ['09:00', '09:15', '09:30', '09:45', '10:00', '10:15', '10:30'],
+            array_values(array_unique(array_column(
+                array_values(array_filter($moveSlots['slots'], static fn (array $slot): bool =>
+                    $slot['localDate'] === '2026-06-16')),
+                'localStart',
+            ))),
+        );
+
+        // 7. adminMutate(update) — contact facts change and the token advances.
+        $updated = $this->adminMutateFresh('update', $reference, [
+            'customerName' => 'Cliente Modifiée',
+            'customerEmail' => 'modifiee@example.test',
+        ]);
+        self::assertSame('Cliente Modifiée', $updated['booking']['customerName']);
+        $token = (string) $updated['booking']['updatedAt'];
+
+        // 8. adminMutate(move) — the confirmed booking moves to the next day.
+        $moved = $this->bookingApi->adminMutate([
+            'action' => 'move',
+            'reference' => $reference,
+            'expectedUpdatedAt' => $token,
+            'startsAtUtc' => '2026-06-16T07:00:00.000Z',
+        ]);
+        self::assertSame('2026-06-16T07:00:00.000Z', $moved['booking']['startsAtUtc']);
+        $token = (string) $moved['booking']['updatedAt'];
+
+        // 9. adminSummary() — exact SQL counts over the [today, horizon] window.
+        $summary = $this->bookingApi->adminSummary(['upcomingDays' => 7]);
+        self::assertSame(1, $summary['counts']['upcomingConfirmed']);
+        self::assertSame($reference, $summary['upcoming'][0]['reference']);
+        self::assertTrue($summary['listings']['upcomingComplete']);
+
+        // 10-12. Availability administration — stored-schedule read, complete
+        // weekly replacement, then a date exception, each with its revision.
+        // (The setUp seed's own weekly replacement already advanced the shared
+        // availability revision from 0 to 1.)
+        $editor = $this->bookingApi->adminAvailability([
+            'fromDate' => '2026-06-01',
+            'untilDate' => '2026-06-30',
+        ]);
+        self::assertSame(1, $editor['revision']);
+        self::assertSame([1, 2], array_column($editor['weeklyRules'], 'weekdayIso'));
+
+        $replaced = $this->replaceWeekly([$this->weeklyRulePayload(2, '10:00', '12:00')]);
+        self::assertSame(2, $replaced['revision']);
+        self::assertSame([2], array_column($replaced['weeklyRules'], 'weekdayIso'));
+        self::assertSame(['10:00'], array_column($replaced['weeklyRules'], 'startLocal'));
+
+        $closed = $this->mutateException([
+            'action' => 'close',
+            'localDate' => '2026-06-17',
+            'note' => 'fermé par la preuve ESZ-106',
+        ]);
+        self::assertSame(3, $closed['revision']);
+        self::assertSame('closed', $closed['exception']['kind']);
+
+        // 13. adminMutate(cancel) — terminal transition beside the full trail.
+        $cancelled = $this->bookingApi->adminMutate([
+            'action' => 'cancel',
+            'reference' => $reference,
+            'expectedUpdatedAt' => $token,
+            'reason' => 'annulé par la preuve ESZ-106',
+        ]);
+        self::assertSame('cancelled', $cancelled['booking']['state']);
+        $trail = $this->bookingApi->adminQuery(['mode' => 'reference', 'reference' => $reference]);
+        self::assertSame(
+            ['created', 'customer_updated', 'moved', 'cancelled'],
+            array_column($trail['historyPage']['events'], 'type'),
+        );
+    }
+
     // --- ESZ-025 / ESZ-026 end to end, against MySQL ------------------------
 
     public function testTheWholeAuthFlowWorksAgainstMysql(): void
