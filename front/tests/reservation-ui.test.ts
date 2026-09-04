@@ -119,3 +119,24 @@ test("a rate-limited creation keeps the review step and closes the confirm contr
   // the control and nothing calls onSubmit by itself.
   assert.doesNotMatch(details, /setInterval/);
 });
+
+// --- ESZ-142: the consent notice is the contract's, not the component's ----
+
+test("the checkbox renders the current catalog notice and carries no private duplicate", () => {
+  // The displayed sentence must come from the immutable booking-domain
+  // catalog — the same artifact the server validates ids against — so a
+  // wording change is one catalog edit, never a hunt through components.
+  assert.match(
+    details,
+    /import { bookingConsentCurrentNotice } from "@eszter\/contracts";/,
+  );
+  assert.match(details, /\{bookingConsentCurrentNotice\.text\}/);
+  // The old hardcoded copy is gone from the component source entirely.
+  assert.doesNotMatch(details, /J’accepte que mes coordonnées/);
+  assert.doesNotMatch(details, /soient utilisées pour traiter/);
+  // The label keeps the required-field marker the checkbox still needs.
+  assert.match(
+    details,
+    /bookingConsentCurrentNotice\.text\} <span aria-hidden="true">\*<\/span>/,
+  );
+});

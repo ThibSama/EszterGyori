@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaultSiteContent } from "@eszter/contracts";
+import {
+  BOOKING_CONSENT_CURRENT_NOTICE_ID,
+  bookingConsentCurrentNotice,
+  defaultSiteContent,
+} from "@eszter/contracts";
 import { BOOKING_API_MESSAGES } from "../app/lib/booking-api";
 import {
   isRetryBlocked,
@@ -134,8 +138,28 @@ test("the creation payload preserves the exact slot instant and normalizes optio
     customerEmail: "cliente@example.test",
     customerPhone: null,
     customerNote: "question",
+    // ESZ-142: the id of the catalog entry whose text the checkbox displayed.
+    consentNoticeId: BOOKING_CONSENT_CURRENT_NOTICE_ID,
     consentAccepted: true,
   });
+});
+
+test("the creation request names exactly the notice the current checkbox renders", () => {
+  // The pair is the point of ESZ-142: `reservation-details.tsx` renders
+  // `bookingConsentCurrentNotice.text` and the request sends
+  // `bookingConsentCurrentNotice.id`, so the server can store which wording
+  // was accepted. Notice text is never part of the request.
+  const request = createBookingRequest("brows", slot, {
+    name: "Cliente Exemple",
+    email: "cliente@example.test",
+    phone: "",
+    note: "",
+    consentAccepted: true,
+  });
+  assert.equal(request.consentNoticeId, bookingConsentCurrentNotice.id);
+  assert.equal(request.consentNoticeId, BOOKING_CONSENT_CURRENT_NOTICE_ID);
+  assert.equal("consentNoticeText" in request, false);
+  assert.equal(Object.keys(request).includes("consentNoticeText"), false);
 });
 
 test("review, confirmed success and ordinary failure preserve customer and appointment facts", () => {

@@ -4,9 +4,11 @@ import { SITE_CONTENT_SCHEMA_VERSION, siteContentSchema } from "./site-content.j
 import {
   BOOKING_ADMIN_RANGE_PAGE_SIZE,
   BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES,
+  BOOKING_CONSENT_CURRENT_NOTICE_ID,
   BOOKING_DST_FOLD_OFFSETS,
   BOOKING_TIME_ZONE,
   bookableServiceKeys,
+  bookingConsentNoticeIds,
   bookingStates,
 } from "./booking.js";
 
@@ -651,6 +653,18 @@ export const bookingAvailabilityResponseSchema = z
   })
   .strict();
 
+/**
+ * ESZ-142 — a consent notice id must name an entry of the immutable catalog.
+ *
+ * The enum is generated from `bookingConsentNoticeIds` in the booking-domain
+ * contract, so a request can only name a notice the catalog actually carries:
+ * a missing or unknown id is a structural 400 VALIDATION_FAILED before the
+ * booking domain is reached, and the domain re-checks membership against the
+ * same artifact for defence in depth. The wire carries the id of the notice
+ * the client displayed — never notice text, which no schema field accepts.
+ */
+const bookingConsentNoticeIdSchema = z.enum(bookingConsentNoticeIds);
+
 export const publicBookingCreateRequestSchema = z
   .object({
     serviceKey: bookableServiceKeySchema,
@@ -659,6 +673,7 @@ export const publicBookingCreateRequestSchema = z
     customerEmail: z.string().trim().email().max(254),
     customerPhone: z.string().trim().max(32).nullable(),
     customerNote: z.string().trim().max(2000).nullable(),
+    consentNoticeId: bookingConsentNoticeIdSchema,
     consentAccepted: z.literal(true),
   })
   .strict();
@@ -1071,6 +1086,8 @@ export const bookingApiPolicy = {
     "Lists only active canonical service keys with booking label and duration; editorial descriptions and media remain in SiteContent.",
   creation:
     "The client submits a returned UTC start. Inside one transaction the singleton primary resource row is locked, all inputs are re-read, SlotEngine recomputes, and insert plus created history commit together.",
+  consent:
+    "ESZ-142 — the request must pair consentAccepted: true with consentNoticeId naming the entry of the immutable notice catalog (booking-domain consentNotices) whose text the client displayed. The server accepts only an id the catalog contains and stores it beside consent_at_utc; it never accepts notice text. Bookings created before the catalog keep a null consent_notice_id and are never retro-attributed one.",
   adminMutableFields: {
     update: ["customerName", "customerEmail", "customerPhone", "customerNote"],
     move: ["startsAtUtc"],
@@ -3948,36 +3965,67 @@ export const httpContractCases: HttpContractCase[] = [
   {
     id: "booking.create.post.ok",
     endpoint: PUBLIC_BOOKINGS_PATH,
-    description: "A currently available slot creates one confirmed booking and returns no customer data.",
+    description:
+      "A currently available slot with explicit consent for the current catalog notice creates one confirmed booking and returns no customer data.",
     request: {
       method: "POST",
       path: PUBLIC_BOOKINGS_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"serviceKey":"brows","startsAtUtc":"2026-06-15T07:00:00.000Z","customerName":"Cliente Exemple","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null,"consentAccepted":true}',
+      rawBody: `{"serviceKey":"brows","startsAtUtc":"2026-06-15T07:00:00.000Z","customerName":"Cliente Exemple","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null,"consentNoticeId":"${BOOKING_CONSENT_CURRENT_NOTICE_ID}","consentAccepted":true}`,
     },
     expect: { status: 201, body: "publicBookingResponse" },
   },
   {
     id: "booking.create.post.staleSlot",
     endpoint: PUBLIC_BOOKINGS_PATH,
-    description: "A slot lost before transactional revalidation is a generic 409.",
+    description:
+      "A slot lost before transactional revalidation is a generic 409.",
     request: {
       method: "POST",
       path: PUBLIC_BOOKINGS_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"serviceKey":"brows","startsAtUtc":"2026-06-15T07:15:00.000Z","customerName":"Cliente Exemple","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null,"consentAccepted":true}',
+      rawBody: `{"serviceKey":"brows","startsAtUtc":"2026-06-15T07:15:00.000Z","customerName":"Cliente Exemple","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null,"consentNoticeId":"${BOOKING_CONSENT_CURRENT_NOTICE_ID}","consentAccepted":true}`,
     },
     expect: { status: 409, body: "errorEnvelope", errorCode: "SLOT_UNAVAILABLE" },
   },
   {
     id: "booking.create.post.invalidConsent",
     endpoint: PUBLIC_BOOKINGS_PATH,
-    description: "Consent must be explicitly true before customer facts reach persistence.",
+    description:
+      "Consent must be explicitly true before customer facts reach persistence.",
     request: {
       method: "POST",
       path: PUBLIC_BOOKINGS_PATH,
       headers: { "content-type": "application/json" },
-      rawBody: '{"serviceKey":"brows","startsAtUtc":"2026-06-15T07:00:00.000Z","customerName":"Cliente Exemple","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null,"consentAccepted":false}',
+      rawBody: `{"serviceKey":"brows","startsAtUtc":"2026-06-15T07:00:00.000Z","customerName":"Cliente Exemple","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null,"consentNoticeId":"${BOOKING_CONSENT_CURRENT_NOTICE_ID}","consentAccepted":false}`,
+    },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "booking.create.post.missingConsentNotice",
+    endpoint: PUBLIC_BOOKINGS_PATH,
+    description:
+      "ESZ-142 — a request without the consent notice id cannot name which wording was accepted, so it is refused before persistence.",
+    request: {
+      method: "POST",
+      path: PUBLIC_BOOKINGS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody:
+        '{"serviceKey":"brows","startsAtUtc":"2026-06-15T07:00:00.000Z","customerName":"Cliente Exemple","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null,"consentAccepted":true}',
+    },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "booking.create.post.unknownConsentNotice",
+    endpoint: PUBLIC_BOOKINGS_PATH,
+    description:
+      "ESZ-142 — an id the immutable catalog does not contain is refused before persistence; the server never guesses which notice the client meant.",
+    request: {
+      method: "POST",
+      path: PUBLIC_BOOKINGS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody:
+        '{"serviceKey":"brows","startsAtUtc":"2026-06-15T07:00:00.000Z","customerName":"Cliente Exemple","customerEmail":"cliente@example.test","customerPhone":null,"customerNote":null,"consentNoticeId":"booking-consent-9999","consentAccepted":true}',
     },
     expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
   },

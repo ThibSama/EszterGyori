@@ -68,7 +68,8 @@ final class MigrationTest extends TestCase
         self::assertSame($sorted, $applied);
 
         self::assertSame(
-            ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '0010', '0011', '0012', '0013'],
+            ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
+             '0009', '0010', '0011', '0012', '0013', '0014'],
             $applied,
         );
     }
@@ -295,7 +296,7 @@ final class MigrationTest extends TestCase
                 'bookings' => [
                     'id', 'reference', 'service_key', 'state', 'starts_at_utc',
                     'ends_at_utc', 'timezone_name', 'customer_name', 'customer_email',
-                    'customer_phone', 'customer_note', 'consent_at_utc',
+                    'customer_phone', 'customer_note', 'consent_at_utc', 'consent_notice_id',
                     'cancelled_at_utc', 'cancellation_reason', 'customer_data_erased_at',
                     'created_at', 'updated_at', 'state_changed_at',
                 ],
@@ -666,6 +667,166 @@ final class MigrationTest extends TestCase
         }
     }
 
+    // --- ESZ-142: the consent-notice id column and CHECK -------------------
+
+    /**
+     * Migration 0014 bounds the consent notice id to the catalog's bounded
+     * ASCII shape: the column is ascii_bin (non-ASCII bytes cannot be stored),
+     * NULL stays legal as the explicit pre-catalog marker, and the CHECK
+     * refuses ids the pattern does not admit — an over-long id, or one
+     * carrying uppercase where the machine pattern says lowercase.
+     */
+    public function testMigration0014BoundsTheConsentNoticeIdColumn(): void
+    {
+        $this->migrator()->migrate();
+        $seedId = $this->seedBookingForNotifications();
+
+        // The pre-catalog marker: a row inserted without the column is NULL.
+        $legacy = $this->database->fetchOne(
+            'SELECT consent_notice_id, consent_at_utc FROM bookings WHERE id = :id',
+            ['id' => $seedId],
+        );
+        self::assertNull($legacy['consent_notice_id']);
+        self::assertSame('2026-06-13 09:00:00.000', $legacy['consent_at_utc']);
+
+        // The column really is bounded ASCII.
+        $column = $this->column('bookings', 'consent_notice_id');
+        self::assertSame('ascii', $column['CHARACTER_SET_NAME']);
+        self::assertSame('ascii_bin', $column['COLLATION_NAME']);
+        $check = $this->checkClause('bookings', 'chk_bookings_consent_notice_id');
+        self::assertNotNull($check);
+        // MySQL 8.4 canonicalizes CHECK text (REGEXP becomes regexp_like,
+        // backticked identifiers, lowercase keywords) — assert the semantics.
+        self::assertStringContainsString(
+            'is null',
+            (string) $check,
+            'NULL must stay legal as the explicit legacy marker',
+        );
+        self::assertStringContainsString(
+            'regexp_like',
+            (string) $check,
+            'the CHECK must restate the catalog id pattern',
+        );
+        self::assertStringContainsString(
+            '^[a-z0-9][a-z0-9_-]{0,63}$',
+            (string) $check,
+            'the CHECK must restate the catalog id pattern',
+        );
+
+        // A well-formed catalog id is accepted on insert…
+        $this->seedBookingWithNotice('bk_99999999999999999999999999999991', 'booking-consent-v1');
+
+        // …an over-long id is refused…
+        $this->expectConstraintFailure(fn () => $this->seedBookingWithNotice(
+            'bk_99999999999999999999999999999992',
+            str_repeat('x', 65),
+        ));
+
+        // …and so is an id outside the lowercase machine pattern.
+        $this->expectConstraintFailure(fn () => $this->seedBookingWithNotice(
+            'bk_99999999999999999999999999999993',
+            'Booking-Consent-V1',
+        ));
+    }
+
+    /**
+     * ESZ-142, proof 5 — applying 0014 over a database that already holds
+     * bookings must preserve them without inventing provenance: pre-existing
+     * rows keep their consent_at_utc untouched and a NULL consent_notice_id,
+     * and only new inserts can carry the id.
+     */
+    public function testMigration0014PreservesPreExistingBookingsWithoutInventingProvenance(): void
+    {
+        $directory = TestEnvironment::makeTempDirectory('eszter-migrations-esz142');
+
+        try {
+            $migrations = TestDatabase::migrationsDirectory();
+            foreach ((glob($migrations . '/000[1-9]_*.sql') ?: []) as $file) {
+                copy($file, $directory . '/' . basename($file));
+            }
+            foreach ((glob($migrations . '/001[0-3]_*.sql') ?: []) as $file) {
+                copy($file, $directory . '/' . basename($file));
+            }
+
+            // The pre-0014 world: schema 0001-0013, with bookings already live.
+            self::assertSame(
+                ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
+                 '0009', '0010', '0011', '0012', '0013'],
+                $this->migrator($directory)->migrate(),
+            );
+            $this->database->run(
+                'INSERT INTO booking_services'
+                . ' (service_key, booking_label, duration_minutes, buffer_before_minutes,'
+                . ' buffer_after_minutes, is_active, created_at, updated_at)'
+                . " VALUES ('lips', 'Lèvres', 60, 0, 0, 1, :created, :updated)",
+                ['created' => self::NOW, 'updated' => self::NOW],
+            );
+            $this->database->run(
+                'INSERT INTO bookings'
+                . ' (reference, service_key, state, starts_at_utc, ends_at_utc, timezone_name,'
+                . ' customer_name, customer_email, consent_at_utc, created_at, updated_at, state_changed_at)'
+                . " VALUES ('bk_88888888888888888888888888888881', 'lips', 'confirmed',"
+                . " '2026-06-15 10:00:00.000', '2026-06-15 11:00:00.000', 'Europe/Paris',"
+                . " 'Cliente', 'cliente@example.test', '2026-06-13 09:00:00.000', :created, :updated, :changed)",
+                ['created' => self::NOW, 'updated' => self::NOW, 'changed' => self::NOW],
+            );
+
+            // The deploy: 0014 lands and applies alone.
+            copy($migrations . '/0014_booking_consent_notice.sql', $directory . '/0014_booking_consent_notice.sql');
+            self::assertSame(['0014'], $this->migrator($directory)->migrate());
+            self::assertSame([], $this->migrator($directory)->pendingVersions());
+
+            // No provenance was invented: the pre-existing row still has its
+            // exact consent instant and a NULL notice id.
+            $legacy = $this->database->fetchOne(
+                'SELECT consent_notice_id, consent_at_utc FROM bookings'
+                . ' WHERE reference = :reference',
+                ['reference' => 'bk_88888888888888888888888888888881'],
+            );
+            self::assertNull($legacy['consent_notice_id']);
+            self::assertSame('2026-06-13 09:00:00.000', $legacy['consent_at_utc']);
+
+            // While new bookings now carry the id beside their own instant.
+            $this->seedBookingWithNotice('bk_88888888888888888888888888888882', 'booking-consent-v1');
+            $fresh = $this->database->fetchOne(
+                'SELECT consent_notice_id, consent_at_utc FROM bookings'
+                . ' WHERE reference = :reference',
+                ['reference' => 'bk_88888888888888888888888888888882'],
+            );
+            self::assertSame('booking-consent-v1', $fresh['consent_notice_id']);
+            self::assertSame('2026-06-13 09:00:00.000', $fresh['consent_at_utc']);
+
+            // And 0014 itself stays repeat-safe on re-run.
+            self::assertSame([], $this->migrator($directory)->migrate());
+        } finally {
+            TestEnvironment::removeDirectory($directory);
+        }
+    }
+
+    /**
+     * A booking row whose consent notice id is stated explicitly.
+     */
+    private function seedBookingWithNotice(string $reference, string $noticeId): void
+    {
+        $this->database->run(
+            'INSERT INTO bookings'
+            . ' (reference, service_key, state, starts_at_utc, ends_at_utc, timezone_name,'
+            . ' customer_name, customer_email, consent_at_utc, consent_notice_id,'
+            . ' created_at, updated_at, state_changed_at)'
+            . " VALUES (:reference, 'lips', 'confirmed',"
+            . " '2026-06-15 10:00:00.000', '2026-06-15 11:00:00.000', 'Europe/Paris',"
+            . " 'Cliente', 'cliente@example.test', '2026-06-13 09:00:00.000', :notice,"
+            . ' :created, :updated, :changed)',
+            [
+                'reference' => $reference,
+                'notice' => $noticeId,
+                'created' => self::NOW,
+                'updated' => self::NOW,
+                'changed' => self::NOW,
+            ],
+        );
+    }
+
     // --- helpers -----------------------------------------------------------
 
     private function migrator(?string $directory = null): Migrator
@@ -756,7 +917,7 @@ final class MigrationTest extends TestCase
     private function column(string $table, string $column): array
     {
         return $this->database->fetchOne(
-            'SELECT COLUMN_NAME, DATA_TYPE, COLLATION_NAME, IS_NULLABLE'
+            'SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_SET_NAME, COLLATION_NAME, IS_NULLABLE'
             . ' FROM information_schema.COLUMNS'
             . ' WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t AND COLUMN_NAME = :c',
             ['t' => $table, 'c' => $column],

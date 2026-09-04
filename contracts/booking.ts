@@ -20,8 +20,16 @@ import { serviceItemIds } from "./site-content.js";
  * singleton MySQL row lock first, inside their own transaction, so no
  * create/move can confirm a slot from state a concurrently committed mutation
  * has already invalidated.
+ *
+ * Version 7 (ESZ-142) makes the booking contract the single authority for the
+ * consent notice a visitor accepted: an immutable notice catalog
+ * (`consentNotices.entries`) carries every notice ever shown with its exact
+ * user-visible French text, `consentNotices.currentId` names the one the
+ * current frontend renders, and `POST /api/bookings` requires the machine id
+ * of the displayed notice beside `consentAccepted: true`. The request never
+ * carries notice text; the server accepts only an id the catalog contains.
  */
-export const BOOKING_DOMAIN_VERSION = 6;
+export const BOOKING_DOMAIN_VERSION = 7;
 
 /**
  * The business operates in metropolitan France. Rules are authored as local
@@ -402,6 +410,91 @@ export const bookingSerializationPolicy = {
 } as const;
 
 /**
+ * ESZ-142 — the immutable consent-notice catalog.
+ *
+ * ## Why the notice is a contract value, not a component string
+ *
+ * Before ESZ-142 the consent checkbox copy lived only in the React component
+ * and the server stored only `consent_at_utc`, so nothing durable said which
+ * wording a visitor actually accepted. A wording that later changes would
+ * make an old `consent_at_utc` mean whatever the current screen happens to
+ * say — a silent rewrite of history.
+ *
+ * The catalog below is the single authority for both. Each entry pairs a
+ * stable machine id with the exact user-visible French text of one notice;
+ * `BOOKING_CONSENT_CURRENT_NOTICE_ID` names the entry the shipped frontend
+ * renders and must send. The React checkbox renders `entries` text and never
+ * carries a private duplicate, and the booking request sends only the id —
+ * never notice text, which the server refuses to trust by never accepting
+ * it.
+ *
+ * ## Immutability policy
+ *
+ * Entries are append-only and never edited or removed: a stored id keeps
+ * naming exactly the text the visitor accepted, forever. Changing the
+ * wording is a new entry plus moving the current pointer; old stored ids are
+ * untouched, and because acceptance is catalog membership, an id issued in
+ * the past remains accepted unchanged — it is never silently remapped to the
+ * new notice. The first entry exists from the introduction of the catalog
+ * (ESZ-142) onward: bookings created before it carry no notice id at all and
+ * are never retro-attributed one (their stored `consent_at_utc` is all the
+ * provenance that exists).
+ *
+ * The id is a machine token (bounded ASCII, `BOOKING_CONSENT_NOTICE_ID_PATTERN`)
+ * and the notice text itself is not customer PII, so ESZ-140 anonymization
+ * preserves both the consent instant and the notice id of an erased booking.
+ */
+
+/**
+ * The ids ever issued, in issuance order. This tuple is the catalog's spine:
+ * {@link bookingConsentNoticeTexts} is a `Record` over it, so adding an id
+ * without its text (or vice versa) is a compile error.
+ */
+export const bookingConsentNoticeIds = ["booking-consent-v1"] as const;
+
+export type BookingConsentNoticeId = (typeof bookingConsentNoticeIds)[number];
+
+/** Bounded-ASCII shape every notice id must satisfy (mirrored by migration 0014's CHECK). */
+export const BOOKING_CONSENT_NOTICE_ID_PATTERN = "^[a-z0-9][a-z0-9_-]{0,63}$";
+
+/**
+ * The exact user-visible text of each notice, keyed by id. The typographic
+ * apostrophe is part of the frozen text.
+ */
+export const bookingConsentNoticeTexts: Record<BookingConsentNoticeId, string> = {
+  "booking-consent-v1":
+    "J’accepte que mes coordonnées soient utilisées pour traiter cette demande de rendez-vous.",
+};
+
+/** The one notice the shipped frontend displays and sends today. */
+export const BOOKING_CONSENT_CURRENT_NOTICE_ID: BookingConsentNoticeId = "booking-consent-v1";
+
+/** The current notice's full entry: `id` for the request, `text` for the checkbox. */
+export const bookingConsentCurrentNotice: {
+  id: BookingConsentNoticeId;
+  text: string;
+} = {
+  id: BOOKING_CONSENT_CURRENT_NOTICE_ID,
+  text: bookingConsentNoticeTexts[BOOKING_CONSENT_CURRENT_NOTICE_ID],
+};
+
+export const bookingConsentNoticePolicy = {
+  entries: bookingConsentNoticeIds.map((id) => ({ id, text: bookingConsentNoticeTexts[id] })),
+  idPattern: BOOKING_CONSENT_NOTICE_ID_PATTERN,
+  currentId: BOOKING_CONSENT_CURRENT_NOTICE_ID,
+  requestShape:
+    "POST /api/bookings requires consentNoticeId (one of entries[].id, structurally bounded by the id pattern) plus consentAccepted: true. The request never carries notice text and the server never accepts any.",
+  acceptance:
+    "An id is accepted exactly when the catalog contains it. Entries are never removed, so a historical stored id remains accepted unchanged and is never silently remapped to the current notice; moving currentId changes what new clients send, not what old ids mean.",
+  legacy:
+    "Bookings created before the catalog (ESZ-142) have no consent_notice_id: their stored consent_at_utc is the only provenance that exists, and no migration or reader invents one for them. New bookings always store the non-null id of the notice they displayed.",
+  future:
+    "Changing the wording appends a new id and text to the catalog and moves currentId. Old entries and every stored id stay immutable; the database column and retention anonymization preserve the stored id byte for byte.",
+  retention:
+    "The notice id is operational evidence of which text was accepted, not customer PII: ESZ-140 erasure replaces the customer fields and leaves consent_at_utc and consent_notice_id untouched.",
+} as const;
+
+/**
  * ESZ-140 — the V1 customer-data retention policy.
  *
  * This is a product policy of this application, frozen as a contract so the
@@ -442,6 +535,7 @@ export const customerDataRetentionPolicy = {
     "id and reference",
     "service and appointment instants and timezone",
     "state and lifecycle timestamps (created, updated, state changed, consent, cancellation)",
+    "consent notice id (ESZ-142: which accepted wording the consent instant refers to)",
     "erasure timestamp",
     "non-PII booking history facts",
     "notification delivery metadata (terminal jobs)",
@@ -569,5 +663,6 @@ export const bookingDomainContract = {
   },
   notifications: notificationPolicy,
   serialization: bookingSerializationPolicy,
+  consentNotices: bookingConsentNoticePolicy,
   customerDataRetention: customerDataRetentionPolicy,
 } as const;

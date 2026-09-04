@@ -319,7 +319,8 @@ const schemaTargets: SchemaTarget[] = [
   {
     file: "public-booking-create-request.schema.json",
     title: "PublicBookingCreateRequest",
-    description: "Public booking facts and explicit consent for one returned UTC slot.",
+    description:
+      "Public booking facts, the explicit consent notice id (one of the immutable booking-domain catalog's entries) and explicit consent for one returned UTC slot.",
     schema: publicBookingCreateRequestSchema,
     io: "input",
   },

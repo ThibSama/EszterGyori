@@ -55,10 +55,11 @@ if (!in_array($operation, ['create', 'move', 'update', 'cancel'], true) || $read
 }
 
 try {
+    $contract = BookingDomainContract::fromArtifacts(TestEnvironment::artifacts());
     $api = PdoBookingApi::createDefault(
         TestDatabase::connectSeparately(),
         new FrozenClock('2026-06-13T12:00:00.000Z'),
-        BookingDomainContract::fromArtifacts(TestEnvironment::artifacts()),
+        $contract,
         NotificationPolicy::fromArtifacts(TestEnvironment::artifacts()),
     );
 
@@ -74,6 +75,9 @@ try {
             'customerEmail' => 'concurrent@example.test',
             'customerPhone' => null,
             'customerNote' => null,
+            // ESZ-142: the catalog's current consent notice id, resolved from
+            // the same artifacts the API validates membership against.
+            'consentNoticeId' => $contract->currentConsentNoticeId,
             'consentAccepted' => true,
         ]);
         fwrite(STDOUT, 'CONFIRMED ' . $booking['reference'] . "\n");

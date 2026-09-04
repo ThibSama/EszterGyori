@@ -13,6 +13,7 @@ use Eszter\Booking\BookingTimePolicy;
 use Eszter\Booking\BookingValidationException;
 use Eszter\Booking\InvalidBookingTransitionException;
 use Eszter\Booking\NonexistentLocalTimeException;
+use Eszter\Contract\ContractArtifacts;
 use Eszter\Contract\StructuralValidator;
 use Eszter\Tests\TestEnvironment;
 use PHPUnit\Framework\TestCase;
@@ -167,5 +168,81 @@ final class BookingDomainTest extends TestCase
 
         $this->expectException(BookingValidationException::class);
         $this->time->localToUtc('2026-10-25 02:30:00', '+03:00');
+    }
+
+    // --- ESZ-142: the immutable consent-notice catalog ---------------------
+
+    public function testTheConsentNoticeCatalogIsParsedFromTheArtifact(): void
+    {
+        self::assertSame(['booking-consent-v1'], $this->contract->consentNoticeIds);
+        self::assertSame('booking-consent-v1', $this->contract->currentConsentNoticeId);
+        self::assertSame('^[a-z0-9][a-z0-9_-]{0,63}$', $this->contract->consentNoticeIdPattern);
+
+        self::assertTrue($this->contract->acceptsConsentNoticeId('booking-consent-v1'));
+        self::assertFalse($this->contract->acceptsConsentNoticeId('booking-consent-9999'));
+        // Shape is part of acceptance: an id the wire enum can never produce
+        // (uppercase, spaces, text) is not accepted at the domain layer either.
+        self::assertFalse($this->contract->acceptsConsentNoticeId('Booking-Consent-V1'));
+        self::assertFalse($this->contract->acceptsConsentNoticeId('j\'accepte…'));
+    }
+
+    /**
+     * ESZ-142, proofs 4 and 7 — the reader over a future catalog version.
+     *
+     * A future wording change appends an entry and moves the current pointer
+     * (here `booking-consent-v2`), exactly as the catalog policy documents.
+     * The reader then reports the new current id while still accepting the
+     * old one: acceptance is membership of the immutable catalog, so a
+     * historical stored id is never silently remapped — the pointer move
+     * changes what new clients send, not what old ids mean.
+     */
+    public function testAMovedCurrentPointerNeverRejectsOrRemapsAHistoricalId(): void
+    {
+        $directory = TestEnvironment::makeTempDirectory('eszter-consent-future');
+        $checksum = null;
+
+        try {
+            $source = TestEnvironment::contractsDirectory() . '/booking-domain.json';
+            /** @var array<mixed> $document */
+            $document = json_decode((string) file_get_contents($source), true, 512, JSON_THROW_ON_ERROR);
+            /** @var array<string, mixed> $consentNotices */
+            $consentNotices = $document['consentNotices'];
+            /** @var list<array{id: string, text: string}> $entries */
+            $entries = $consentNotices['entries'];
+            $entries[] = [
+                'id' => 'booking-consent-v2',
+                'text' => 'J’accepte que mes coordonnées soient utilisées pour '
+                    . 'traiter cette demande de rendez-vous (version 2).',
+            ];
+            $consentNotices['entries'] = $entries;
+            $consentNotices['currentId'] = 'booking-consent-v2';
+            $document['consentNotices'] = $consentNotices;
+            $flags = JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE;
+            $rewritten = json_encode($document, $flags) . "\n";
+            $checksum = hash('sha256', $rewritten);
+            file_put_contents($directory . '/booking-domain.json', $rewritten);
+            file_put_contents(
+                $directory . '/manifest.json',
+                json_encode([
+                    'artifacts' => [['file' => 'booking-domain.json', 'sha256' => $checksum]],
+                ], JSON_PRETTY_PRINT) . "\n",
+            );
+
+            $future = BookingDomainContract::fromArtifacts(new ContractArtifacts($directory));
+
+            // The pointer moved…
+            self::assertSame('booking-consent-v2', $future->currentConsentNoticeId);
+            self::assertSame(
+                ['booking-consent-v1', 'booking-consent-v2'],
+                $future->consentNoticeIds,
+            );
+            // …but the historical id is accepted unchanged — membership is
+            // the only rule, and no id is ever remapped onto the new notice.
+            self::assertTrue($future->acceptsConsentNoticeId('booking-consent-v1'));
+            self::assertTrue($future->acceptsConsentNoticeId('booking-consent-v2'));
+            self::assertFalse($future->acceptsConsentNoticeId('booking-consent-9999'));
+        } finally {
+            TestEnvironment::removeDirectory($directory);
+        }
     }
 }

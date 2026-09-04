@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Eszter\Booking\BookingDomainContract;
 use Eszter\Http\Request;
 use Eszter\Kernel;
 use Eszter\Support\FrozenClock;
@@ -49,6 +50,10 @@ try {
         'customerEmail' => 'concurrent@example.test',
         'customerPhone' => null,
         'customerNote' => null,
+        // ESZ-142: the worker sends the catalog's current consent notice id,
+        // resolved from the same artifacts the kernel validates against.
+        'consentNoticeId' => BookingDomainContract::fromArtifacts(TestEnvironment::artifacts())
+            ->currentConsentNoticeId,
         'consentAccepted' => true,
     ];
     $response = $kernel->handle(new Request(

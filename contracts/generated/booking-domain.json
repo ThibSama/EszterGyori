@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "scope": "Package 4.1/4.2 booking domain and dynamic slot computation; no booking HTTP API.",
   "services": {
     "keys": [
@@ -249,6 +249,21 @@
     "bookingRowToken": "ESZ-139 — a booking row carries its own optimistic-concurrency token, the canonical UTC millisecond updatedAt exposed by admin responses; no separate revision column exists. Admin update, move and cancel send it back as expectedUpdatedAt, and inside the mutation transaction after the authoritative row lock the server compares it byte-for-byte with the current updatedAt before any write, history append or notification scheduling. A mismatch is 409 REVISION_CONFLICT and writes nothing; a matching token lets the mutation store a single derived updatedAt strictly later than the token it was granted against — the derivation compares the application clock against the row's own token, so the same frozen millisecond or a backward clock can never mint an equal or older updatedAt. The row lock is the authority for update-vs-update and update-vs-lifecycle races; create, move and cancel additionally hold the boundary first, preserving the ESZ-146 order.",
     "scope": "Package 4.2/6.2/ESZ-146 concurrency invariant of the booking domain; ESZ-139 adds the expectedUpdatedAt precondition to the admin mutation request shape and keeps the error envelope closed (the frozen 409 REVISION_CONFLICT code, no new field)."
   },
+  "consentNotices": {
+    "entries": [
+      {
+        "id": "booking-consent-v1",
+        "text": "J’accepte que mes coordonnées soient utilisées pour traiter cette demande de rendez-vous."
+      }
+    ],
+    "idPattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+    "currentId": "booking-consent-v1",
+    "requestShape": "POST /api/bookings requires consentNoticeId (one of entries[].id, structurally bounded by the id pattern) plus consentAccepted: true. The request never carries notice text and the server never accepts any.",
+    "acceptance": "An id is accepted exactly when the catalog contains it. Entries are never removed, so a historical stored id remains accepted unchanged and is never silently remapped to the current notice; moving currentId changes what new clients send, not what old ids mean.",
+    "legacy": "Bookings created before the catalog (ESZ-142) have no consent_notice_id: their stored consent_at_utc is the only provenance that exists, and no migration or reader invents one for them. New bookings always store the non-null id of the notice they displayed.",
+    "future": "Changing the wording appends a new id and text to the catalog and moves currentId. Old entries and every stored id stay immutable; the database column and retention anonymization preserve the stored id byte for byte.",
+    "retention": "The notice id is operational evidence of which text was accepted, not customer PII: ESZ-140 erasure replaces the customer fields and leaves consent_at_utc and consent_notice_id untouched."
+  },
   "customerDataRetention": {
     "confirmedExpiryDaysAfterEndsAtUtc": 90,
     "cancelledExpiryDaysAfterCancelledAtUtc": 90,
@@ -266,6 +281,7 @@
       "id and reference",
       "service and appointment instants and timezone",
       "state and lifecycle timestamps (created, updated, state changed, consent, cancellation)",
+      "consent notice id (ESZ-142: which accepted wording the consent instant refers to)",
       "erasure timestamp",
       "non-PII booking history facts",
       "notification delivery metadata (terminal jobs)"

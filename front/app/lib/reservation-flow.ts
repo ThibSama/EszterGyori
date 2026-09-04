@@ -1,3 +1,4 @@
+import { BOOKING_CONSENT_CURRENT_NOTICE_ID } from "@eszter/contracts";
 import type { BookableServiceKey, ServiceItemContent } from "@eszter/contracts";
 import type {
   BookingAvailability,
@@ -176,6 +177,10 @@ export function createBookingRequest(
     customerEmail: customer.email.trim(),
     customerPhone: customer.phone.trim() || null,
     customerNote: customer.note.trim() || null,
+    // ESZ-142: the id of the notice the checkbox displayed — the catalog's
+    // current entry — travels with the explicit consent, so the server can
+    // record exactly which wording was accepted. Notice text is never sent.
+    consentNoticeId: BOOKING_CONSENT_CURRENT_NOTICE_ID,
     consentAccepted: true,
   };
 }

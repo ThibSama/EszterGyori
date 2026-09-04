@@ -21,6 +21,7 @@ final class BookingDomainContract
      * @param list<string> $foldOffsets
      * @param list<string> $states
      * @param array<string, list<string>> $transitions
+     * @param list<string> $consentNoticeIds
      */
     private function __construct(
         public readonly int $version,
@@ -41,6 +42,13 @@ final class BookingDomainContract
         public readonly array $states,
         public readonly string $initialState,
         public readonly array $transitions,
+        /**
+         * ESZ-142 — the immutable consent-notice catalog: every machine id
+         * ever issued and the one the shipped frontend currently displays.
+         */
+        public readonly array $consentNoticeIds,
+        public readonly string $currentConsentNoticeId,
+        public readonly string $consentNoticeIdPattern,
     ) {
     }
 
@@ -59,6 +67,14 @@ final class BookingDomainContract
         $adminViews = self::block($document, 'adminViews');
         $rangeRead = self::block($adminViews, 'rangeRead');
         $summary = self::block($adminViews, 'summary');
+        $consentNotices = self::block($document, 'consentNotices');
+        $consentNoticeIds = self::consentNoticeIds($consentNotices);
+        $currentConsentNoticeId = self::string($consentNotices, 'currentId');
+        if (!\in_array($currentConsentNoticeId, $consentNoticeIds, true)) {
+            throw new ContractArtifactException(
+                'booking-domain.json consentNotices.currentId does not name a catalog entry.',
+            );
+        }
 
         return new self(
             self::positiveInt($document, 'version'),
@@ -79,6 +95,9 @@ final class BookingDomainContract
             self::stringList($states, 'values'),
             self::string($states, 'initial'),
             self::transitionMap($states),
+            $consentNoticeIds,
+            $currentConsentNoticeId,
+            self::string($consentNotices, 'idPattern'),
         );
     }
 
@@ -91,6 +110,19 @@ final class BookingDomainContract
     public function acceptsState(string $state): bool
     {
         return \in_array($state, $this->states, true);
+    }
+
+    /**
+     * ESZ-142 — whether the wire may carry `id` as the accepted consent
+     * notice. Acceptance is membership of the immutable catalog (plus the
+     * bounded-ASCII shape the column CHECK mirrors): an id issued in the past
+     * stays accepted unchanged, and moving the current pointer changes what
+     * clients send, never what a stored id means.
+     */
+    public function acceptsConsentNoticeId(string $id): bool
+    {
+        return \in_array($id, $this->consentNoticeIds, true)
+            && preg_match('#' . $this->consentNoticeIdPattern . '#D', $id) === 1;
     }
 
     /** @return list<string> */
@@ -171,6 +203,39 @@ final class BookingDomainContract
         }
 
         return $strings;
+    }
+
+    /**
+     * @param array<mixed> $consentNotices
+     * @return list<string>
+     */
+    private static function consentNoticeIds(array $consentNotices): array
+    {
+        $value = $consentNotices['entries'] ?? null;
+
+        if (!\is_array($value) || $value === []) {
+            throw new ContractArtifactException(
+                'booking-domain.json consentNotices has no non-empty `entries` list.',
+            );
+        }
+
+        $ids = [];
+        foreach ($value as $entry) {
+            if (!\is_array($entry) || !\is_string($entry['id'] ?? null) || $entry['id'] === '') {
+                throw new ContractArtifactException(
+                    'booking-domain.json consentNotices has a malformed entry.',
+                );
+            }
+            $ids[] = $entry['id'];
+        }
+
+        if (\count(array_unique($ids)) !== \count($ids)) {
+            throw new ContractArtifactException(
+                'booking-domain.json consentNotices entries must have unique ids.',
+            );
+        }
+
+        return $ids;
     }
 
     /**

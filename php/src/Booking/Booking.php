@@ -20,6 +20,13 @@ final class Booking
         public readonly ?string $customerPhone,
         public readonly ?string $customerNote,
         public readonly string $consentAtUtc,
+        /**
+         * ESZ-142 — the machine id of the immutable consent-notice catalog
+         * entry whose text this booking's visitor accepted. Null means the
+         * booking predates the catalog: it carries a consent instant but no
+         * notice id, and nothing ever invents one for it.
+         */
+        public readonly ?string $consentNoticeId,
         public readonly ?string $cancelledAtUtc,
         public readonly ?string $cancellationReason,
         /**
@@ -55,6 +62,7 @@ final class Booking
             self::nullableString($row, 'customer_phone'),
             self::nullableString($row, 'customer_note'),
             self::requiredString($row, 'consent_at_utc'),
+            self::nullableString($row, 'consent_notice_id'),
             self::nullableString($row, 'cancelled_at_utc'),
             self::nullableString($row, 'cancellation_reason'),
             self::nullableString($row, 'customer_data_erased_at'),

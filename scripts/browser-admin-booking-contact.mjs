@@ -353,7 +353,14 @@ async function main() {
   const creationResponse = await fetch(`${origin}/api/bookings`, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ serviceKey, startsAtUtc, ...initialContact, consentAccepted: true }),
+    body: JSON.stringify({
+      serviceKey,
+      startsAtUtc,
+      ...initialContact,
+      // ESZ-142: the catalog's current consent notice id.
+      consentNoticeId: "booking-consent-v1",
+      consentAccepted: true,
+    }),
   });
   const created = await creationResponse.json();
   assert(creationResponse.status === 201 && /^bk_[0-9a-f]{32}$/.test(created.reference), "real public booking creation failed");

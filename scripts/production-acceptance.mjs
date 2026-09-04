@@ -141,6 +141,9 @@ async function fullAcceptance() {
       customerEmail,
       customerPhone: null,
       customerNote: `${marker} isolated production acceptance; cancel after verification`,
+      // ESZ-142: the catalog's current consent notice id (booking-domain
+      // consentNotices); membership acceptance keeps this valid forever.
+      consentNoticeId: "booking-consent-v1",
       consentAccepted: true,
     },
   });

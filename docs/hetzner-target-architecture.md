@@ -613,6 +613,13 @@ Boundaries:
   customer data. Admin updates may change only name, email, phone and note; moves retain
   reference and service and are allowed only while confirmed; cancellation uses the
   central state transition and never deletes the booking.
+- Consent is historically traceable (ESZ-142): the notice wording the checkbox shows is
+  frozen, with its machine id, in the immutable `consentNotices` catalog of
+  `booking-domain.json`; the request must send that id beside `consentAccepted: true`;
+  the server accepts only an id the catalog contains (never notice text) and stores it
+  in `bookings.consent_notice_id` (migration 0014) beside `consent_at_utc`. Rows created
+  before the catalog keep a NULL notice id — no provenance is invented for them — and
+  retention anonymization preserves both consent fields when it erases customer data.
 - The booking's `updatedAt` is its V1 optimistic-concurrency token (ESZ-139): admin
   responses expose it in canonical UTC millisecond form, and every admin mutation —
   update, move or cancel — sends it back as `expectedUpdatedAt`. Inside the mutation
@@ -643,10 +650,13 @@ Boundaries:
   offset. Refresh revalidates against returned UTC starts and clears a disappeared slot
   with a recoverable explanation.
 - Name, email, optional phone/note and explicit consent are reviewed with service/date/
-  slot before the browser sends the existing `POST /api/bookings` contract. The exact
-  server-returned UTC start is submitted; an immediate in-memory lock and disabled
-  controls prevent duplicate concurrent posts. Customer and consent facts are never
-  written to browser storage.
+  slot before the browser sends the existing `POST /api/bookings` contract. The consent
+  checkbox renders the current notice text from the frozen catalog, and the request
+  carries that notice's id (`consentNoticeId`) beside `consentAccepted: true` — the
+  component holds no private copy of the wording (ESZ-142). The exact server-returned
+  UTC start is submitted; an immediate in-memory lock and disabled controls prevent
+  duplicate concurrent posts. Customer and consent facts are never written to browser
+  storage.
 - Only a validated successful response shows confirmation and its opaque reference. A
   last-second 409 clears the slot, retains customer input, refreshes availability and
   never retries or chooses a replacement. Network loss is described as uncertain

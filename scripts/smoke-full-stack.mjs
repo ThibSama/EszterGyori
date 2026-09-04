@@ -207,6 +207,8 @@ try {
     customerEmail: `smoke+${Date.now()}@example.test`,
     customerPhone: null,
     customerNote: "Created by the project-owned full-stack smoke and cancelled during cleanup.",
+    // ESZ-142: the catalog's current consent notice id.
+    consentNoticeId: "booking-consent-v1",
     consentAccepted: true,
   });
   assert(created.response.status === 201, `Booking creation returned ${created.response.status}.`);

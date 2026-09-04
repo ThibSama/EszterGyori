@@ -1,5 +1,6 @@
 "use client";
 
+import { bookingConsentCurrentNotice } from "@eszter/contracts";
 import { useEffect, useRef, type Dispatch, type FormEvent } from "react";
 import type {
   CustomerField,
@@ -164,7 +165,7 @@ export function ReservationDetails({
             <div>
               <label className="flex cursor-pointer items-start gap-3 rounded-2xl bg-white/55 p-4" htmlFor="consent-accepted">
                 <input ref={consentInput} id="consent-accepted" name="consentAccepted" type="checkbox" checked={customer.consentAccepted} onChange={(event) => update("consentAccepted", event.target.checked)} aria-invalid={Boolean(errorFor("consentAccepted"))} aria-describedby={describedBy("consentAccepted")} className="mt-1 h-5 w-5 shrink-0 accent-sage-600" />
-                <span className="text-sm leading-relaxed text-warm-700">J’accepte que mes coordonnées soient utilisées pour traiter cette demande de rendez-vous. <span aria-hidden="true">*</span></span>
+                <span className="text-sm leading-relaxed text-warm-700">{bookingConsentCurrentNotice.text} <span aria-hidden="true">*</span></span>
               </label>
               {errorFor("consentAccepted") && <p id="consentAccepted-error" className="mt-2 text-sm text-warm-700">{errorFor("consentAccepted")}</p>}
             </div>

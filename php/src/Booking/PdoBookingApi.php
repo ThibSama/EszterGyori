@@ -130,6 +130,14 @@ final class PdoBookingApi implements BookingApi
         $email = self::requiredString($request, 'customerEmail');
         $phone = self::nullableString($request, 'customerPhone');
         $note = self::nullableString($request, 'customerNote');
+        $consentNoticeId = self::requiredString($request, 'consentNoticeId');
+        // ESZ-142: acceptance is membership of the immutable notice catalog —
+        // the same artifact the wire enum was generated from. An id the
+        // catalog does not contain (and no client-supplied text, which no
+        // field carries) is refused here, before the transaction opens.
+        if (!$this->contract->acceptsConsentNoticeId($consentNoticeId)) {
+            throw new BookingValidationException('consentNoticeId', 'Unknown booking consent notice.');
+        }
         if (($request['consentAccepted'] ?? null) !== true) {
             throw new BookingValidationException('consentAccepted', 'Booking consent must be explicit.');
         }
@@ -144,6 +152,7 @@ final class PdoBookingApi implements BookingApi
             $email,
             $phone,
             $note,
+            $consentNoticeId,
         ): Booking {
             $this->lockResource();
             $service = $this->activeService($serviceKey);
@@ -157,6 +166,7 @@ final class PdoBookingApi implements BookingApi
                 $phone,
                 $note,
                 $this->clock->now(),
+                $consentNoticeId,
             );
             $this->history->append($booking->id, 'created', 'public');
             $this->notifications->created($booking);

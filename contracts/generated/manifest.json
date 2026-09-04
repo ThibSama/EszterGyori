@@ -87,7 +87,7 @@
     },
     {
       "file": "booking-domain.json",
-      "sha256": "190cd4f1a21bc8c841e98006c4d0bce3b813e0083d7166745e5de81047293609"
+      "sha256": "b349b9031d00c80ea8524067fedb18c6ae0660a5a700fe27b2692932b3dfda14"
     },
     {
       "file": "error-envelope.schema.json",
@@ -99,7 +99,7 @@
     },
     {
       "file": "http-contract.json",
-      "sha256": "2898c0a417adc63e00bb4eecfd8fb5a51a5b7a0dbbd956aadebb5f02a59eaf6f"
+      "sha256": "b18f61d1c89a39ec9427266c3391a7593d797a0f737a4745525ce2ee02455590"
     },
     {
       "file": "login-request.schema.json",
@@ -131,7 +131,7 @@
     },
     {
       "file": "public-booking-create-request.schema.json",
-      "sha256": "2b938e7ea3ecbd9ae8c78f0f7321d1717008acaf83eab7fcd5ec05bcac82c3cf"
+      "sha256": "4846447ececc4eea2496dedb40a5f5c71d6785de5fa1373bed45dfadd543b8af"
     },
     {
       "file": "public-booking-response.schema.json",

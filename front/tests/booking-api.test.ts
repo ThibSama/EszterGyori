@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RATE_LIMIT_RETRY_AFTER_HEADER } from "@eszter/contracts";
+import {
+  BOOKING_CONSENT_CURRENT_NOTICE_ID,
+  bookingConsentCurrentNotice,
+  RATE_LIMIT_RETRY_AFTER_HEADER,
+} from "@eszter/contracts";
 import {
   BOOKING_API_MESSAGES,
   createBooking,
@@ -18,6 +22,7 @@ const bookingRequest: PublicBookingRequest = {
   customerEmail: "cliente@example.test",
   customerPhone: "+33 6 00 00 00 00",
   customerNote: null,
+  consentNoticeId: BOOKING_CONSENT_CURRENT_NOTICE_ID,
   consentAccepted: true,
 };
 
@@ -142,6 +147,41 @@ test("booking creation posts the exact validated customer, consent and returned 
   assert.deepEqual(submitted, bookingRequest);
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.value.reference, "bk_00000000000000000000000000000000");
+});
+
+test("the client refuses to post a request whose notice id is not the displayed one", async () => {
+  // ESZ-142: the request's id must be the very notice the checkbox renders.
+  assert.equal(bookingRequest.consentNoticeId, bookingConsentCurrentNotice.id);
+
+  // Malformed wire payloads, deliberately smuggled past the literal types the
+  // schema would otherwise enforce at compile time: the runtime safeParse is
+  // the guard under test.
+  const wire = (body: unknown) => body as PublicBookingRequest;
+
+  let calls = 0;
+  const missing = await createBooking(
+    wire({ ...bookingRequest, consentNoticeId: undefined }),
+    async () => { calls += 1; throw new Error("must not be sent"); },
+  );
+  assert.equal(calls, 0);
+  assert.equal(missing.ok, false);
+  if (!missing.ok) assert.equal(missing.failure.kind, "validation");
+
+  const unknown = await createBooking(
+    wire({ ...bookingRequest, consentNoticeId: "booking-consent-9999" }),
+    async () => { calls += 1; throw new Error("must not be sent"); },
+  );
+  assert.equal(calls, 0);
+  assert.equal(unknown.ok, false);
+  if (!unknown.ok) assert.equal(unknown.failure.kind, "validation");
+
+  const refused = await createBooking(
+    wire({ ...bookingRequest, consentAccepted: false }),
+    async () => { calls += 1; throw new Error("must not be sent"); },
+  );
+  assert.equal(calls, 0);
+  assert.equal(refused.ok, false);
+  if (!refused.ok) assert.equal(refused.failure.kind, "validation");
 });
 
 test("only a matching confirmed server response is success", async () => {

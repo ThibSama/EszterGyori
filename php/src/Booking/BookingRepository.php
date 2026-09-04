@@ -13,7 +13,7 @@ final class BookingRepository
 {
     private const SELECT_COLUMNS = 'id, reference, service_key, state, starts_at_utc, ends_at_utc,'
         . ' timezone_name, customer_name, customer_email, customer_phone, customer_note,'
-        . ' consent_at_utc, cancelled_at_utc, cancellation_reason, customer_data_erased_at,'
+        . ' consent_at_utc, consent_notice_id, cancelled_at_utc, cancellation_reason, customer_data_erased_at,'
         . ' created_at, updated_at, state_changed_at';
 
     public function __construct(
@@ -283,6 +283,15 @@ final class BookingRepository
         return \is_string($value) ? $value : null;
     }
 
+    /**
+     * Inserts the initial confirmed booking row.
+     *
+     * @param \DateTimeImmutable $consentAt the instant the visitor accepted
+     * @param string $consentNoticeId ESZ-142 — the catalog id of the notice
+     *     the visitor accepted; the caller (PdoBookingApi) has already checked
+     *     membership against the booking-domain artifact, and every new
+     *     booking stores a non-null id beside consent_at_utc.
+     */
     public function createConfirmed(
         string $serviceKey,
         \DateTimeImmutable $startsAt,
@@ -292,6 +301,7 @@ final class BookingRepository
         ?string $customerPhone,
         ?string $customerNote,
         \DateTimeImmutable $consentAt,
+        string $consentNoticeId,
     ): Booking {
         $service = $this->services->find($serviceKey);
         if ($service === null) {
@@ -319,6 +329,12 @@ final class BookingRepository
         $customerPhone = self::optional($customerPhone);
         $customerNote = self::optional($customerNote);
         $this->validateCustomer($customerName, $customerEmail, $customerPhone, $customerNote);
+        // ESZ-142: the repository re-checks the notice id against the same
+        // artifact the API layer used, so no code path can persist an id the
+        // immutable catalog does not contain.
+        if (!$this->contract->acceptsConsentNoticeId($consentNoticeId)) {
+            throw new BookingValidationException('consentNoticeId', 'Unknown booking consent notice.');
+        }
 
         $reference = 'bk_' . bin2hex(random_bytes(16));
         $now = $this->clock->nowIso();
@@ -327,9 +343,9 @@ final class BookingRepository
         $this->database->run(
             'INSERT INTO bookings (reference, service_key, state, starts_at_utc, ends_at_utc,'
             . ' timezone_name, customer_name, customer_email, customer_phone, customer_note,'
-            . ' consent_at_utc, created_at, updated_at, state_changed_at)'
+            . ' consent_at_utc, consent_notice_id, created_at, updated_at, state_changed_at)'
             . ' VALUES (:reference, :service, :state, :starts, :ends, :timezone, :name, :email,'
-            . ' :phone, :note, :consent, :created, :updated, :state_changed)',
+            . ' :phone, :note, :consent, :consent_notice, :created, :updated, :state_changed)',
             [
                 'reference' => $reference,
                 'service' => $serviceKey,
@@ -342,6 +358,7 @@ final class BookingRepository
                 'phone' => $customerPhone,
                 'note' => $customerNote,
                 'consent' => $this->time->databaseUtc($consentAt),
+                'consent_notice' => $consentNoticeId,
                 'created' => $now,
                 'updated' => $now,
                 'state_changed' => $now,
