@@ -52,7 +52,7 @@ Everything below runs today and is covered by passing gates:
 | `php/` | PHP 8.2+ backend, and since ESZ-015 the **only** one. It owns the HTTP/API, content, media, booking and admin domains. Packages 7.1/7.2 add the durable notification queue, one lease-safe cron tick, typed booking templates and Symfony Mailer SMTP. Production refuses the development logging transport. |
 | SQL | `php/migrations/` — ordered, forward-only, individually idempotent files applied by `php/bin/migrate.php` and recorded in `schema_migrations` with their checksums. Package 4.1 adds `booking_services`, rule-driven availability, `bookings` and `system_settings`; there is deliberately no future-slot table. Gates `sql:migrations` and `sql:integration` run against a disposable MySQL when `ESZTER_TEST_DB_DSN` names one, and report NOT RUN otherwise. |
 | Admin identity | `php/bin/provision-admin.php`. Accounts are created by an operator, never by a migration and never at boot: a seeded default account would be identical on every deployment. The password is read from a terminal with echo off or from stdin, never from an argument. |
-| Routing | `php/public/.htaccess` and `php/public/media/.htaccess`, **generated** from `src/Deploy/DocumentRootRouting.php` and drift-checked by `php:routing`. Not deployed, and not yet executed by a real Apache — see §14. |
+| Routing | `php/public/.htaccess` and `php/public/media/.htaccess`, **generated** from `src/Deploy/DocumentRootRouting.php`, drift-checked by `php:routing` and executed by a real Apache since ESZ-095/ESZ-104 — the `browser:admin-preview-csp` and `browser:public` gates run the committed rules under `mod_rewrite` with `AllowOverride All`. Still not deployed: no hosting-plan Apache has exercised them (§14 items 1 and 8). |
 | Deployment | `npm run package:production` creates a deterministic, manifest-verified archive with the exact `public_html`/private sibling layout, static export, production Composer set, generated contracts, runtime CLIs and migrations. `docs/deployment-runbook.md` is the operator procedure. No host/domain/TLS/cron/SMTP deployment or live smoke has been performed. |
 
 Both of the migrations this section used to list as owed are now done, and it is worth
@@ -76,15 +76,21 @@ request (§6).
 
 What remains owed, in the order it matters:
 
-- **Login throttling.** §6 asks for rate-limited attempts keyed by account and by source
-  address. Not built. Everything else §6 specifies is.
+- ~~**Login throttling.**~~ **Built (ESZ-084).** §6 asked for rate-limited attempts keyed by
+  account and by source address; `POST /api/auth/login` now charges the frozen
+  `auth.login.address` and `auth.login.identity` buckets before any credential work, and
+  ESZ-130/136 rounded out the 429 surface (bounded anonymous session bootstrap, client
+  Retry-After handling). Everything else §6 specifies is.
 - ~~**The browser half of `/admin`.**~~ Built (Package 3.2). `/admin/login` posts to
   `/api/auth/login`, the editor reads and writes the server draft, and publish and reset
   call their endpoints rather than re-implementing them. Still unproven *in a browser*:
   `browser:admin` needs a deployed origin and a runner (§14).
-- **Live deployment acceptance.** The artifact and procedures are built locally, but
-  `smoke:http`, `browser:*` and the live portion of `security:config` remain NOT RUN;
-  no `.htaccess`, SMTP account or cron entry has been exercised on real hosting (§14).
+- **Live deployment acceptance.** The artifact and procedures are built locally, and the
+  focused browser gates (`browser:admin-preview-csp`, `browser:media-pipeline`,
+  `browser:admin-booking-contact`, `browser:public`, `browser:admin-auth`) run inside
+  `validate` against local Apache/PHP stacks, but `smoke:deployed-http`, `browser:admin`,
+  `browser:booking` and the live portion of `security:config` remain NOT RUN; no
+  `.htaccess`, SMTP account or cron entry has been exercised on **real hosting** (§14).
 
 ---
 
@@ -356,13 +362,20 @@ Restated from `docs/runtime-inventory.md` §6: **the frontend session must never
 treated as authorization for a PHP endpoint.** With the middleware gone, PHP-side
 enforcement is not a defence-in-depth nicety — it is the only thing standing there.
 
-Additional hardening: rate-limit and throttle login attempts (counter in SQL, keyed by
-account and by source address), with a uniform failure response and no user enumeration.
-**Not built.** The uniform failure response and the absence of enumeration *are* built
-and covered (`auth.failureModesAreIndistinguishable`); the counter and the throttle are
-not, and there is no `login_attempts` table. This is the one item in this section
-Package 2.2 left open, and it is deliberately not half-built: a counter with no
-enforcement would read like a control while being none.
+Additional hardening: rate-limit and throttle login attempts, with a uniform failure
+response and no user enumeration. **Built (ESZ-084).** The uniform failure response and
+the absence of enumeration are covered (`auth.failureModesAreIndistinguishable`), and
+the throttle is a SQL-backed GCRA limiter (`rate_limit_buckets`), never a bare counter:
+`POST /api/auth/login` charges the per-address bucket (`auth.login.address`, 10 per
+900 s, burst 5) before the per-identity one (`auth.login.identity`, 30 per 900 s,
+burst 10, keyed by the normalised submitted e-mail), and a refusal happens before any
+credential work, as a frozen 429 `RATE_LIMITED` with a `Retry-After`
+(`contracts/http-contract.ts`, `rateLimitPolicy`). This was the one item in this
+section Package 2.2 left open, and it was deliberately not half-built: a counter with
+no enforcement would read like a control while being none — ESZ-084 shipped the
+enforcement, ESZ-130 bounds the anonymous session-bootstrap read
+(`auth.session.bootstrap.address`) the same way, and ESZ-136 made the login form
+consume the 429.
 
 ### API surface
 
@@ -968,16 +981,22 @@ Carried forward from `docs/runtime-inventory.md` §12, plus what this document a
    state-changing call needs a per-session CSRF token in addition to `SameSite=Strict`.
    The commented-out Basic auth block in the generated `.htaccess` was the stopgap for
    this item and is no longer the thing standing between `/admin` and the internet.
-8. **Apache has never executed the generated rules** — `php:routing` proves the table
-   and that `.htaccess` matches it, using only directives legal in that context, but
-   not that `mod_rewrite` is enabled, that `AllowOverride` permits them, or that
-   `DirectoryIndex disabled` behaves as assumed on this plan. First deploy must run
-   `smoke:http` before anything else is trusted.
-9. **Login throttling** — opened by ESZ-025. §6 asks for rate-limited attempts keyed by
-   account and by source address, with a counter in SQL. Not built, and deliberately not
-   half-built: a counter that nothing enforces reads like a control while being none.
-   The uniform failure response and the absence of user enumeration that §6 asks for in
-   the same breath *are* built and covered.
+8. ~~**Apache has never executed the generated rules**~~ — **closed locally (ESZ-095/
+   ESZ-104).** `php:routing` proves the table and that `.htaccess` matches it, and the
+   `browser:admin-preview-csp` and `browser:public` gates now run the committed rules
+   under a real Apache with `mod_rewrite` enabled and `AllowOverride All`. What remains
+   open is the hosting plan's own Apache — whether `AllowOverride` permits the rules and
+   `DirectoryIndex disabled` behaves as assumed *there* — which item 1 keeps open. First
+   deploy must still run `smoke:http` before anything else is trusted.
+9. ~~**Login throttling**~~ — opened by ESZ-025, **built (ESZ-084).** §6 asked for
+   rate-limited attempts keyed by account and by source address: `POST /api/auth/login`
+   charges the frozen `auth.login.address` then `auth.login.identity` GCRA buckets
+   (SQL-backed `rate_limit_buckets`) before any credential work and answers a frozen 429
+   `RATE_LIMITED` with `Retry-After`, so it was never a counter without enforcement. The
+   anonymous session-bootstrap read is bounded separately (`auth.session.bootstrap.address`,
+   ESZ-130) and the login form consumes the refusal since ESZ-136. The uniform failure
+   response and the absence of user enumeration that §6 asks for in the same breath were
+   already built and covered.
 10. **`/reservation` is a static export** — Package 5.1 resolves it explicitly to
    `reservation.html`. It discovers active services and availability through same-origin
    PHP APIs; no Node renderer or public-page content injection is required.

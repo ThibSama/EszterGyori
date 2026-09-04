@@ -1,6 +1,6 @@
 # Eszter Frontend
 
-Application Next.js publique et prototype `/admin` local.
+Application Next.js publique et interface d'administration (`/admin`).
 
 Le frontend depend du package partage local `@eszter/contracts`, situe dans `../contracts`. Toute construction doit donc utiliser le depot complet comme contexte, avec `front` comme repertoire racine.
 
@@ -12,11 +12,11 @@ Depuis la racine du depot :
 
 ```powershell
 npm --prefix front install
-npm run dev
 npm run build
 ```
 
-La commande de developpement recommandee est `npm run dev` depuis `E:\Eszter`. Elle delegue au frontend et execute automatiquement `npm run build:contracts` avant le demarrage Next.js.
+La racine n'a pas de script `dev` : le serveur de developpement Next.js se lance depuis
+`front/`, dont le script `predev` reconstruit `@eszter/contracts` avant le demarrage.
 
 Depuis `front/` directement :
 
@@ -41,7 +41,7 @@ The frontend owns compilation of the shared package during install, development 
 npm run build:contracts
 ```
 
-This script uses the frontend-local TypeScript binary from `front/node_modules`; no global TypeScript installation is required. `contracts` no longer builds through `prepare`, so standalone contracts work remains `cd E:\Eszter\contracts`, `npm install`, then `npm run build`.
+This script uses the frontend-local TypeScript binary from `front/node_modules`; no global TypeScript installation is required. `contracts` no longer builds through `prepare`, so standalone contracts work remains `npm install` + `npm run build` from `contracts/`.
 
 ## Contenu public
 
@@ -102,8 +102,8 @@ Le paquet 3.2 (ESZ-034/035) a branche le navigateur dessus :
 - l'editeur charge `GET /api/admin/content/draft`, enregistre via `PUT` avec la revision
   recue comme `expectedRevision`, publie via `POST …/publish` et restaure le contenu
   publie via `POST …/reset` ;
-- `php/public/.htaccess` contient un bloc Basic auth commente ; c'est un palliatif au
-  niveau du serveur web, jamais la conception.
+- `php/public/.htaccess` est genere depuis `php/src/Deploy/DocumentRootRouting.php` ; la
+  protection reelle est PHP, jamais une regle de serveur web.
 
 Cote contenu, `/admin` n'est plus local-only :
 
@@ -157,9 +157,8 @@ toute la fenetre — les listes de rendez-vous confirmes affichees sont bornees 
 serveur et le signalent explicitement (`Liste partielle…`) quand elles ne sont pas
 completes, sans jamais rendre le compteur inexact.
 
-Ce qui n'est toujours pas la : les notifications et la limitation des tentatives de
-connexion. Le parcours public de reservation couvre maintenant selection, coordonnees,
-verification, soumission et confirmation sans stockage navigateur des donnees cliente.
+Le parcours public de reservation couvre maintenant selection,
+coordonnees, verification, soumission et confirmation sans stockage navigateur des donnees cliente.
 
 L'apercu admin recoit seulement du `SiteContent` valide par `postMessage` same-origin. Le contenu d'apercu n'est pas persiste. Les dimensions logiques sont fixes a 390 x 844 pour `Telephone`, 768 x 1024 pour `Tablette` et 1440 x 900 pour `Ordinateur`. Le panneau mesure l'espace disponible avec `ResizeObserver`, puis applique `scale = min(availableWidth / deviceWidth, availableHeight / deviceHeight, 1)` au viewport complet afin de conserver les vrais breakpoints dans l'iframe. Les animations reveal y sont desactivees pour que toutes les sections restent visibles dans les captures, tandis que le site public conserve ses animations normales et respecte `prefers-reduced-motion`.
 
@@ -169,12 +168,18 @@ L'apparence est stockee dans `SiteContent.appearance`. Les anciennes sauvegardes
 
 Les controles couleur utilisent uniquement des champs natifs `input type="color"` et des valeurs hexadecimales `#RRGGBB` validees par le contrat. Les teintes de section sont appliquees avec une intensite fixe et legere pour conserver la lisibilite. Le contraste est valide avant sauvegarde/export, et les boutons remplis calculent automatiquement un texte blanc ou sombre.
 
-L'admin propose depuis le paquet 3.2 la publication et le brouillon serveur. Il ne propose toujours pas d'upload media. Le site public ne contient toujours aucun lien vers `/admin`.
+L'admin propose depuis le paquet 3.2 la publication et le brouillon serveur, et depuis
+le paquet 3.3 l'upload media (`GET|POST|DELETE /api/admin/media`) : la bibliotheque
+alimente les champs image de l'editeur. Le site public ne contient toujours aucun lien
+vers `/admin`.
 
-Aucune autorisation n'existe cote frontend, et c'est volontaire. Toute future route PHP
-de mutation devra verifier sa propre session et sa propre autorisation : la session du
-frontend ne doit jamais en tenir lieu. Le backend PHP n'expose aujourd'hui que
-`GET /api/health`, `GET /api/content` et `GET|HEAD /`, tous publics et read-only.
+Aucune autorisation n'existe cote frontend, et c'est volontaire : chaque route PHP de
+mutation verifie sa propre session et son propre jeton CSRF, et la session du frontend
+ne doit jamais en tenir lieu. Le backend PHP expose aujourd'hui la surface gelee du
+contrat HTTP — routes publiques read-only (`/api/health`, `/api/content`, `/`),
+session et CSRF (`/api/auth/*`), reservation publique (`/api/bookings`,
+`/api/booking/*`) et familles admin (contenu, medias, disponibilites, reservations) —
+via `docs/contract-freeze.md` et `contracts/generated/http-contract.json`.
 
 ## Vercel (historique)
 

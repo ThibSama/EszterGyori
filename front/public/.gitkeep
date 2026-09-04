@@ -1,0 +1,4 @@
+# Keeps front/public present in checkouts: next.config.ts hashes the directory
+# as a build-id input, and git does not track empty directories. Public assets
+# are app-level (front/app/icon.svg, favicon.ico); Next copies this file into
+# out/ as an inert dotfile.

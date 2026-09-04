@@ -71,21 +71,6 @@ interface ContentEditorProps {
  */
 
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const EDITOR_SECTIONS = [
-  { href: "#editor-appearance", label: "Apparence" },
-  { href: "#editor-navigation", label: "Navigation" },
-  { href: "#editor-hero", label: "Hero" },
-  { href: "#editor-reassurance", label: "Réassurance" },
-  { href: "#editor-services", label: "Prestations" },
-  { href: "#editor-process", label: "Parcours" },
-  { href: "#editor-gallery", label: "Réalisations" },
-  { href: "#editor-about", label: "À propos" },
-  { href: "#editor-contact", label: "Contact" },
-  { href: "#editor-footer", label: "Pied de page" },
-];
-
-
 function formatFrenchDateTime(isoDate: string): string {
   return new Intl.DateTimeFormat("fr-FR", {
     dateStyle: "medium",
@@ -455,10 +440,6 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
                   Aucun identifiant de session ni jeton de sécurité n&apos;est
                   conservé dans le navigateur : la session est un cookie que la
                   page ne peut pas lire.
-                </p>
-                <p>
-                  L&apos;upload d&apos;image, la réservation et les notifications
-                  ne sont pas encore implémentés.
                 </p>
               </div>
             </details>
