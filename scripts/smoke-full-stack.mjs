@@ -83,7 +83,11 @@ function parisDate(daysFromNow) {
   return `${pick("year")}-${pick("month")}-${pick("day")}`;
 }
 
-async function waitUntilReady() {
+// Health is a LIVENESS wait only: it reads no file and touches no database, so
+// a 200 proves the PHP process answers and nothing more. Composition readiness
+// (MySQL, booking, auth, admin) is proven by the flow that follows this wait —
+// it is what makes this smoke the full-stack readiness proof.
+async function waitUntilLive() {
   const deadline = Date.now() + 45_000;
   let lastError = "server did not answer";
   while (Date.now() < deadline) {
@@ -96,7 +100,7 @@ async function waitUntilReady() {
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   }
-  throw new Error(`PHP server did not become ready: ${lastError}`);
+  throw new Error(`PHP server did not become live: ${lastError}`);
 }
 
 async function cleanupBooking() {
@@ -166,7 +170,7 @@ try {
   server.once("error", (error) => {
     process.stderr.write(`full-stack smoke: PHP launcher error: ${error.message}\n`);
   });
-  await waitUntilReady();
+  await waitUntilLive();
 
   const home = await request("/");
   assert(home.response.status === 200 && home.text.includes("__ESZTER_CONTENT__"), "GET / did not return the public HTML.");

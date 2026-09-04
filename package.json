@@ -16,6 +16,7 @@
     "browser:media-pipeline": "node scripts/browser-media-pipeline.mjs",
     "browser:public": "node scripts/browser-public.mjs",
     "acceptance:production": "node scripts/production-acceptance.mjs",
+    "readiness:probe": "node scripts/readiness-cli.mjs",
     "php:lint": "php php/bin/lint.php",
     "baseline:verify": "node scripts/verify-project-baseline-matrix.mjs",
     "validate": "node scripts/validate.mjs"

@@ -12,8 +12,12 @@ The harness needs an explicit HTTPS origin even for read-only checks:
 ESZTER_ACCEPTANCE_TARGET_URL=https://<DEPLOYED-ORIGIN>/ npm run acceptance:production
 ```
 
-That checks the homepage bootstrap, `/api/health`, and the published content
-envelope. It cannot log in, upload, book, mutate or cancel.
+Read-only mode runs the project readiness probe (`scripts/readiness.mjs`,
+ESZ-127/AUD-22) against the origin: `/api/health` (liveness under its frozen
+contract), the homepage bootstrap, the published `/api/content` envelope, and
+`/api/booking/services` reaching at least one active bookable service — the
+surface that would fail if MySQL/booking were unavailable while the service
+stayed live. It cannot log in, upload, book, mutate or cancel.
 
 State-changing mode is deliberately cumbersome. The deployment owner must approve
 the target, the admin account and a mailbox that may receive the test messages, then
@@ -38,7 +42,8 @@ a real booking and sending messages to the named mailbox is authorized now.
 
 It uses the production HTTP surface, in order:
 
-1. Homepage, health and published-content reads.
+1. Readiness probe (read-only): health = liveness under its contract, exported
+   public page, published envelope, at least one active bookable service.
 2. Anonymous session, CSRF-bound login and rotated authenticated session.
 3. Upload a generated PNG named with an `ESZ-086-<timestamp>-<random>` marker,
    assert its server id, then delete it immediately.

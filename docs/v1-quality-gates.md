@@ -417,7 +417,12 @@ ephemeral loopback port after the build stage. It proves that `/` returns the in
 Eszter export, one hashed frontend asset resolves, `/api/health` crosses the production
 PHP front controller, unknown public and API routes retain their HTML and JSON 404
 contracts, and the server logs no PHP routing/bootstrap fatal. The process is always
-terminated at the end of the gate.
+terminated at the end of the gate. `/api/health` here is a **liveness** answer — it
+reads no file and touches no database — so this gate proves the live static HTTP
+surface only; composed-product readiness (published envelope + booking/MySQL) is the
+separate read-only probe `scripts/readiness.mjs` (npm `readiness:probe`, ESZ-127),
+which production acceptance reuses against a deployed origin (see
+`docs/production-acceptance.md`).
 
 The separate `smoke:deployed-http` gate remains NOT RUN until an origin exists. It adds
 `GET /api/content` ETag revalidation, a wrong method and `Allow`, HTTP→HTTPS redirect,

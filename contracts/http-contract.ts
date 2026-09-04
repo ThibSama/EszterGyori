@@ -22,6 +22,20 @@ import {
  * PHP implementation can be checked against the generated, language-neutral
  * artifacts in `contracts/generated/` without running Node.
  *
+ * ## Liveness vs readiness (ESZ-127/AUD-22)
+ *
+ * `GET /api/health` answers **liveness**: it reads no file, takes no lock and
+ * touches no database, so its 200 means only that the PHP service can boot and
+ * answer. Composed-product readiness — the live health payload, the exported
+ * public page, a valid published envelope on `/api/content`, and
+ * `/api/booking/services` reaching the real booking surface with at least one
+ * active bookable service — is deliberately NOT part of this HTTP contract:
+ * the shared-hosting target exposes no `/api/readiness` endpoint. Readiness is
+ * the project-owned read-only probe in `scripts/readiness.mjs` (CLI wrapper
+ * `scripts/readiness-cli.mjs`, npm `readiness:probe`), which production
+ * acceptance reuses; its checks are documented in `docs/production-acceptance.md`
+ * and `docs/contract-freeze.md`.
+ *
  * Bumping HTTP_CONTRACT_VERSION is a breaking change for every consumer.
  */
 export const HTTP_CONTRACT_VERSION = 2;
@@ -487,6 +501,12 @@ export type ErrorEnvelope = z.infer<typeof errorEnvelopeSchema>;
  * is worse than an absent one, so it left the contract rather than becoming a
  * permanent per-implementation exemption. The object is strict, so an
  * implementation that keeps sending it fails validation.
+ *
+ * Health is **liveness**, nothing more (ESZ-127/AUD-22): a 200 proves the
+ * service can boot and answer — never that the published content or the
+ * booking/MySQL surface is usable. Readiness for those surfaces is the separate
+ * project-owned probe in `scripts/readiness.mjs`; this contract deliberately
+ * defines no `/api/readiness` endpoint.
  */
 export const healthResponseSchema = z
   .object({

@@ -175,6 +175,36 @@ surface on `/api/content`, as the 500 above.
 
 This is also what keeps `/api/health`'s frozen statuses honest: 200, 400, 405, no 500.
 
+### Liveness vs readiness (ESZ-127/AUD-22)
+
+Health is **liveness**: a 200 means the service can boot and answer, and nothing
+more. It deliberately cannot mean "the composed product works", because it reads
+no file and touches no database. Readiness — the question a deployer or monitor
+actually wants answered before trusting an origin — is the separate,
+project-owned, **read-only** probe `scripts/readiness.mjs` (CLI wrapper
+`scripts/readiness-cli.mjs`, npm `readiness:probe`), and it checks four surfaces
+of a supplied origin, in this order:
+
+1. `/api/health` answers 200 with the frozen payload above (liveness under its
+   contract);
+2. `/` serves the exported Eszter public page (`text/html`, the
+   `__ESZTER_CONTENT__` bootstrap element and the baked site name) — a shell
+   check: the page may legitimately serve baked defaults when the published
+   envelope is unusable, so readiness gets its content truth from the next check,
+   never from the page's injected copy;
+3. `/api/content` answers 200 with a valid published envelope;
+4. `/api/booking/services` answers 200 with at least one well-formed active
+   bookable service — the surface that reaches the real booking/MySQL wiring.
+
+There is deliberately **no `/api/readiness` endpoint**: the shared-hosting target
+exposes the frozen surface and nothing more, and the probe above is the one
+reusable implementation, so production acceptance runs exactly the same checks
+against a deployed origin instead of duplicating them. A readiness failure is
+deterministic and identifies only the failed component (public path + HTTP
+status or transport code at most); it never carries a response body, so DSNs,
+credentials and path internals cannot leak through it. The probe opens no
+session, uploads nothing, creates no booking, runs no cron and contacts no SMTP.
+
 ### Bootstrap failure
 
 Frozen in Package 1.2, because the target runtime made it observable. Node booted once

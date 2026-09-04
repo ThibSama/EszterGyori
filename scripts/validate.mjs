@@ -404,7 +404,7 @@ const gates = [
     cwd: ".",
     command: ["node", "scripts/smoke-local-php.mjs"],
     proves:
-      "The documented PHP development command starts a real built-in server; / renders the injected Eszter export, a generated frontend asset resolves, /api/health crosses the production front controller, and unknown public/API routes keep their HTML/JSON 404 contracts without a PHP routing or bootstrap fatal.",
+      "The documented PHP development command starts a real built-in server; / renders the injected Eszter export, a generated frontend asset resolves, /api/health crosses the production front controller, and unknown public/API routes keep their HTML/JSON 404 contracts without a PHP routing or bootstrap fatal. /api/health is a liveness answer (it reads no file and touches no database), so this gate proves the live static HTTP surface only; composed-product readiness (published envelope + booking/MySQL) is the separate read-only probe scripts/readiness.mjs (ESZ-127) that production acceptance reuses.",
   },
   {
     id: "smoke:deployed-http",

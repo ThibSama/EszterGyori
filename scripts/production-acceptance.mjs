@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { probeReadiness, READINESS_COMPONENTS } from "./readiness.mjs";
+
 const LIVE_CONFIRMATION = "I_AUTHORIZE_ESZTER_LIVE_MUTATIONS";
 const args = new Map(process.argv.slice(2).map((argument) => {
   const match = argument.match(/^--([^=]+)(?:=(.*))?$/);
@@ -86,14 +88,30 @@ function dateInParis(offsetDays) {
   }).format(date);
 }
 
+/**
+ * Read-only mode = the project readiness probe (ESZ-127/AUD-22).
+ *
+ * Health alone is liveness, so it is not enough: readiness must also prove the
+ * exported public page, the published `/api/content` envelope and that
+ * `/api/booking/services` reaches the real booking/MySQL surface with at least
+ * one active bookable service. Those are exactly the checks
+ * `scripts/readiness.mjs` runs — reused here rather than duplicated, so the
+ * deployed-origin answer and the local one come from the same code. The probe
+ * is read-only by construction: no session, no upload, no booking, no cron,
+ * no SMTP contact.
+ */
 async function readOnlyChecks() {
-  const home = await request("/", { headers: { accept: "text/html" } });
-  if (!home.text.includes('id="__ESZTER_CONTENT__"')) throw new Error("Homepage lacks the published-content bootstrap.");
-  const health = await request("/api/health");
-  if (health.body?.status !== "ok") throw new Error("Health response is not `ok`.");
-  const content = await request("/api/content");
-  if (!content.body?.content || !Number.isInteger(content.body?.revision)) {
-    throw new Error("Published content envelope is missing content or revision.");
+  const verdict = await probeReadiness(target.origin);
+  for (const name of READINESS_COMPONENTS) {
+    const component = verdict.components[name];
+    const detail = component.passed ? "PASS" : `FAIL — ${component.reason}`;
+    process.stdout.write(`READINESS ${name}: ${detail}\n`);
+  }
+  if (!verdict.ready) {
+    const summary = verdict.failures
+      .map((name) => `${name}: ${verdict.components[name].reason}`)
+      .join("; ");
+    throw new Error(`readiness probe FAILED — ${summary}`);
   }
 }
 
@@ -183,7 +201,7 @@ try {
   process.stdout.write(`Target: ${target.origin}\nMode: ${confirmed ? "AUTHORIZED STATE-CHANGING" : "READ-ONLY"}\n`);
   await readOnlyChecks();
   if (!confirmed) {
-    process.stdout.write(`Read-only checks complete. State-changing checks NOT RUN; exact --live-confirmation=${LIVE_CONFIRMATION} was not supplied.\n`);
+    process.stdout.write(`Readiness PASS: liveness, public page, published content and booking services all answered. State-changing checks NOT RUN; exact --live-confirmation=${LIVE_CONFIRMATION} was not supplied.\n`);
   } else {
     await fullAcceptance();
   }

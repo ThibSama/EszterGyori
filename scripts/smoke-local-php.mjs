@@ -1,5 +1,15 @@
 #!/usr/bin/env node
 
+// Local PHP smoke (stage-8 gate `smoke:local-php`). The `/api/health` wait
+// below is a LIVENESS wait: health reads no file, takes no lock and touches no
+// database, so a 200 proves only that the PHP service can boot and answer.
+// This smoke then proves the live static HTTP surface (public pages, assets,
+// routing, no PHP fatal). It deliberately does NOT claim composed-product
+// readiness — published-content envelope and booking/MySQL are outside it.
+// Readiness is the separate project probe `scripts/readiness.mjs` (ESZ-127),
+// and the full-stack smoke proves the composed product through its own MySQL/
+// auth/booking flow.
+
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
@@ -48,7 +58,9 @@ try {
     await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }
 
-  if (!health || health.status !== 200) throw new Error("Development server did not become ready.");
+  if (!health || health.status !== 200) {
+    throw new Error("Development server did not become live (/api/health never answered 200 within 15 s).");
+  }
   const healthBody = await health.json();
   if (healthBody.status !== "ok" || healthBody.service !== "eszter-api") {
     throw new Error(`Unexpected health response: ${JSON.stringify(healthBody)}`);
@@ -110,10 +122,11 @@ try {
   }
 
   process.stdout.write(
-    `php local smoke: 9 checks passed at ${baseUrl}; `
-      + `GET / 200, GET /reservation 200, GET /reservation.html 301, `
+    `php local smoke: server live at ${baseUrl}; liveness + static HTTP surface: 9 checks passed `
+      + `(GET / 200, GET /reservation 200, GET /reservation.html 301, `
       + `${reservationAssetPath} 200, ${assetPath} 200, GET /api/health 200, `
-      + `public/API unknown routes 404, no PHP fatal.\n`,
+      + `public/API unknown routes 404, no PHP fatal). `
+      + `Readiness (published envelope, booking/MySQL) is not part of this smoke.\n`,
   );
 } catch (error) {
   process.stderr.write(`php local smoke: FAIL: ${error.message}\n${output}\n`);

@@ -134,3 +134,11 @@ la configuration PHP et MySQL et la dernière mise en production. Préserver les
 journaux et prendre une sauvegarde si l’état reste lisible. Ne pas modifier plusieurs
 causes à la fois. Suivre [`deployment-runbook.md`](deployment-runbook.md) pour les
 contrôles de déploiement et la procédure de retour à une version connue.
+
+`/api/health` ne prouve que la **vivacité** (liveness) : ce chemin ne lit aucun
+fichier et ne touche aucune base, donc un `200` ne dit rien de l’état de MySQL ni du
+contenu publié. Pour vérifier que le produit composé répond — santé, page publique,
+enveloppe publiée et au moins un service réservable — utiliser la sonde en lecture
+seule du projet : `npm run readiness:probe -- --origin=https://<origine>/`
+(`scripts/readiness.mjs`, ESZ-127). Elle est réutilisée par le mode lecture seule de
+l’acceptance de production.
