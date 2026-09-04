@@ -74,7 +74,7 @@ final class AdminDraftSaveEndpoint extends AdminContentEndpoint
             // boundary, so nothing was written and the head did not move.
             $this->logger->info(
                 'Draft save refused: a managed media reference is not catalogued.',
-                ['detail' => $dangling->getMessage()],
+                ['reason' => 'dangling-media-reference'],
             );
 
             throw HttpException::validationFailed($dangling->getMessage());

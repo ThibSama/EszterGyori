@@ -79,7 +79,7 @@ final class AdminMediaUploadEndpoint extends AdminMediaEndpoint
             // Not the caller's fault and not something to degrade around: a host
             // that cannot verify an image must refuse to store one.
             $this->logger->error('Media upload refused: the host cannot verify images.', [
-                'detail' => $misconfigured->getMessage(),
+                'reason' => 'image-verification-unavailable',
             ]);
 
             throw new HttpException(
@@ -97,7 +97,7 @@ final class AdminMediaUploadEndpoint extends AdminMediaEndpoint
             // neither the code nor any path reaches the response.
             $this->logger->error(
                 'Media upload refused: the host could not take the upload.',
-                $hostFault->logContext() + ['detail' => $hostFault->getMessage()],
+                $hostFault->logContext(),
             );
 
             throw new HttpException(
@@ -122,7 +122,7 @@ final class AdminMediaUploadEndpoint extends AdminMediaEndpoint
             // library is exactly as readable, and as deletable, as before.
             $this->logger->error('Media upload refused: the catalogue is at its size cap.', [
                 'maxIndexBytes' => $this->library->maxIndexBytes(),
-                'detail' => $full->getMessage(),
+                'reason' => 'media-catalogue-size-cap',
             ]);
 
             throw new HttpException(
@@ -135,9 +135,7 @@ final class AdminMediaUploadEndpoint extends AdminMediaEndpoint
             // The detail names types, sizes and decoder outcomes. It goes to the
             // log; the response is the frozen envelope, so a prober learns only
             // which of the two refusals it hit.
-            $this->logger->warn('Media upload refused.', $rejected->logContext() + [
-                'detail' => $rejected->getMessage(),
-            ]);
+            $this->logger->warn('Media upload refused.', $rejected->logContext());
 
             throw $rejected->mediaCode === MediaException::TOO_LARGE
                 ? new HttpException(

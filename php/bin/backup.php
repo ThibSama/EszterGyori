@@ -12,8 +12,9 @@
  *
  * What it carries and what it deliberately leaves out is declared in
  * `Eszter\Backup\BackupSet` and repeated in `docs/backup-and-restore.md`. The
- * short version: data, not secrets and not code. Configuration never enters the
- * archive, and neither do logs, locks, temporary files or the application itself.
+ * short version: data, not secrets and not code. Logs are outside the declared
+ * set, an unsafe overlap with a walked media directory is refused, and neither
+ * locks, temporary files nor the application itself enter the archive.
  *
  * The archive contains customer names, e-mail addresses and phone numbers. It is
  * written 0600, it is refused if the destination is inside the document root, and
@@ -132,6 +133,7 @@ function usage(): void
 
         It never holds configuration, secrets, logs, locks, temporary files,
         in-flight uploads, sessions, rate-limit counters or application code.
+        A log directory beneath a walked media directory is refused before export.
 
         Verify and apply one with bin/restore.php.
 

@@ -47,9 +47,8 @@ namespace Eszter\Backup;
  *   visitors rather than from the site.
  * - **`booking_resource_locks`** — a serialization row whose only content is its
  *   own existence; the migrations recreate it.
- * - **`var/log`** — customer names, addresses and phone numbers appear in booking
- *   diagnostics. Logs have their own retention and do not belong in a file that
- *   gets copied to laptops.
+ * - **`var/log`** — logs are absent from the declared set, unsafe overlap with a
+ *   walked media directory is refused, and logs have their own bounded retention.
  * - **`var/tmp`, `data/locks`, `.intake/`, `.staging-*`** — in-flight state by
  *   definition. Every one of them is a file that exists only between two moments
  *   of a write, and restoring one means restoring a half-finished operation.
@@ -60,6 +59,7 @@ namespace Eszter\Backup;
  */
 final class BackupSet
 {
+    public const UNSAFE_LOG_TOPOLOGY = 'Refusing backup: the log directory overlaps a walked media directory.';
     public const FORMAT_VERSION = 1;
 
     public const MANIFEST_FILE = 'BACKUP-MANIFEST.json';
@@ -132,6 +132,44 @@ final class BackupSet
      * headroom while making an endless stream of empty tar entries impossible.
      */
     public const MAX_ARCHIVE_ENTRIES = 10_000;
+
+    /**
+     * Refuses the only topology in which the flat media walk could collect logs.
+     *
+     * @param string $logDir Configured log directory.
+     * @param string ...$mediaDirectories Directories fully walked by backup.
+     * @return void
+     * @throws BackupException
+     */
+    public static function assertLogDirectoryExcluded(string $logDir, string ...$mediaDirectories): void
+    {
+        $realLogDir = realpath($logDir);
+
+        foreach ($mediaDirectories as $mediaDirectory) {
+            $root = rtrim($mediaDirectory, '/\\');
+            $realRoot = realpath($root);
+            if (
+                self::isEqualOrInside($logDir, $root)
+                || (
+                    $realLogDir !== false
+                    && $realRoot !== false
+                    && self::isEqualOrInside($realLogDir, $realRoot)
+                )
+            ) {
+                throw new BackupException(self::UNSAFE_LOG_TOPOLOGY);
+            }
+        }
+    }
+
+    /**
+     * @param string $candidate Normalized candidate path.
+     * @param string $root Normalized containing path.
+     * @return bool Whether the candidate equals or is beneath the root.
+     */
+    private static function isEqualOrInside(string $candidate, string $root): bool
+    {
+        return $candidate === $root || str_starts_with($candidate, $root . \DIRECTORY_SEPARATOR);
+    }
 
     /** Files inside the media directories that are never part of a backup. */
     public static function isTransient(string $fileName): bool

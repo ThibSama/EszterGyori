@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Eszter\Tests\Notification;
 
 use Eszter\Notification\NotificationPolicy;
+use Eszter\Notification\NotificationLogContext;
 use Eszter\Tests\TestEnvironment;
 use PHPUnit\Framework\TestCase;
 
@@ -143,6 +144,26 @@ final class NotificationPolicyTest extends TestCase
         // passed through, which is the difference between an allowlist and a
         // redaction filter.
         self::assertFalse($this->policy->isLogFieldAllowed('providerResponse'));
+    }
+
+    public function testTheLogChokePointMechanicallyDropsCustomerAndMessageValues(): void
+    {
+        $sensitive = 'Recognizable Customer <customer@example.test> +33 6 12 34 56 78 private message';
+        $context = NotificationLogContext::filter($this->policy, [
+            'jobId' => 42,
+            'status' => 'sent',
+            'recipient' => $sensitive,
+            'body' => $sensitive,
+            'customerName' => $sensitive,
+            'customerEmail' => $sensitive,
+            'customerPhone' => $sensitive,
+            'customerNote' => $sensitive,
+            'token' => $sensitive,
+            'providerResponse' => $sensitive,
+        ]);
+
+        self::assertSame(['jobId' => 42, 'status' => 'sent'], $context);
+        self::assertStringNotContainsString($sensitive, (string) json_encode($context));
     }
 
     /**

@@ -158,7 +158,7 @@ abstract class AdminContentEndpoint
         if (!$result->valid || !\is_array($result->value)) {
             $this->logger->warn('Admin content body failed contract validation.', [
                 'target' => $target,
-                'issues' => $result->summary(),
+                'issues' => \count($result->issues),
             ]);
 
             throw HttpException::validationFailed("Body failed validation for {$target}.");

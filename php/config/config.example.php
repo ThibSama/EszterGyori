@@ -20,6 +20,13 @@ return [
     // debug | info | warn | error
     'logLevel' => 'info',
 
+    // Dedicated key for deterministic, pseudonymous failed-login correlation.
+    // Generate with: php -r 'echo bin2hex(random_bytes(32)), PHP_EOL;'
+    // Never print, log or reuse this value for another purpose.
+    'privacy' => [
+        'logPseudonymizationKey' => 'CHANGE_ME_WITH_64_RANDOM_HEX_CHARACTERS',
+    ],
+
     'paths' => [
         // draft.json and published.json. Must NOT be web-reachable.
         'content' => '../data/content',

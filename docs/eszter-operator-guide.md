@@ -151,3 +151,26 @@ mode effectif exact `0600`, puis une écriture complète et vidée vers le fichi
 sonde HTTP ESZ-127 prouve uniquement les dépendances de service : elle ne contrôle
 pas ces préconditions hôte, ne remplace pas ce preflight et ne suffit jamais seule à
 déclarer la production acceptable.
+
+## Entretien et conservation des journaux
+
+Configurer aussi un cron quotidien depuis `app/` :
+
+```sh
+/usr/bin/php bin/maintain-logs.php --config=/usr/home/<FTP_LOGIN>/eszter/config/config.php
+```
+
+La durée unique est de 30 jours calendaires. La commande fait tourner uniquement
+`app.log`, `notifications.log` et `retention.log`, conserve l’archive ayant exactement
+30 jours et supprime seulement les archives plus anciennes. Les fichiers actifs et
+archives restent en mode `0600`; les journaux de sortie des cron et tout autre
+fichier sont laissés intacts. Un dossier absent est sans erreur. En cas de refus
+(lien symbolique, cible non régulière, permissions ou lecture), corriger le
+propriétaire et la topologie, préserver à part le fichier suspect, relancer la
+commande, puis provoquer une écriture applicative et vérifier que le nouveau
+journal actif est bien `0600`. Ne jamais supprimer avec un joker global.
+
+La clé `privacy.logPseudonymizationKey` est obligatoire en production et doit être
+créée une fois avec 32 octets aléatoires, transmise comme un secret et jamais
+affichée. Elle permet de rapprocher les refus de connexion sans écrire l’adresse
+soumise en clair ; sa rotation rompt le rapprochement avec les anciennes lignes.

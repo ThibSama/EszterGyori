@@ -84,12 +84,19 @@ channel to `/usr/home/<FTP_LOGIN>/eszter/config/config.php`, replace all placeho
 then set mode `0600`. The example deliberately ships outside the artifact so a real
 configuration cannot be mistaken for a packaged default.
 
-Required production values include the MySQL DSN/user/password and the SMTP host,
+Required production values include the dedicated
+`privacy.logPseudonymizationKey`, the MySQL DSN/user/password and the SMTP host,
 port, encryption mode, authentication choice and credentials, sender address/name,
 bounded timeout, and canonical customer instructions/contact. No Hetzner endpoint,
 credential or mail tariff is assumed. Production configuration validation refuses
 empty values, placeholders, insecure session cookies, an unreadable/over-permissive
 config file, invalid paths, invalid database settings and incomplete SMTP settings.
+Generate the privacy key once with
+`php -r 'echo bin2hex(random_bytes(32)), PHP_EOL;'`, install it through the same
+private channel as the configuration, and never print or log it. It keys the full
+64-character HMAC-SHA256 fingerprints used to correlate failed logins; changing it
+breaks correlation with earlier lines and it is not reused as a database or SMTP
+credential.
 SMTP encryption is part of that boundary: production accepts `starttls` (mandatory
 STARTTLS — never an opportunistic downgrade to plaintext) or `smtps` (implicit TLS)
 only, and a production `notifications.email.encryption = none` is refused at
@@ -197,6 +204,34 @@ no booking reference and no customer value ever reaches its stdout or
 `var/log/retention.log`, which is what makes the cron log safe to keep and to read.
 A non-zero exit requires attention, and a failure changes nothing: each booking is
 erased in its own transaction.
+
+A third job runs the repository-owned **log maintenance** once daily, after the
+customer-data sweep:
+
+- cadence: daily (e.g. `45 3 * * *`);
+- mode: no exclusivity requirement applies at this cadence;
+- working directory: `/usr/home/<FTP_LOGIN>/eszter/app`;
+- command:
+
+```sh
+cd /usr/home/<FTP_LOGIN>/eszter/app && /usr/bin/php bin/maintain-logs.php --config=/usr/home/<FTP_LOGIN>/eszter/config/config.php
+```
+
+The single policy is 30 calendar days (`LogMaintenance::RETENTION_DAYS`). The
+command rotates only `app.log`, `notifications.log` and `retention.log` to
+`<name>.YYYYMMDD`, keeps an archive dated exactly 30 days ago, and deletes it only
+once its date is strictly older. Every active file and managed archive is corrected
+and verified as `0600`; unrelated files, including the two `*-cron.log` redirection
+files, are untouched. There is no compression, daemon or system `logrotate`.
+
+No active file is recreated during rotation. PHP and these commands do not hold a
+logger across requests; the next application write creates a new private `0600`
+file. A missing directory or missing logs is a successful no-op. A symlink,
+non-regular managed target, unreadable directory or permission failure produces
+exit 1 before expired archives are removed. Correct ownership/topology or preserve
+and remove the unsafe managed entry, rerun the command, then issue one ordinary
+request and confirm the new active file is `0600`. Never delete archives with a
+broad wildcard; this command alone owns cleanup of its exact managed names.
 
 These path, interpreter and scheduling rules come from Hetzner's official
 [Cron Job Manager documentation](https://docs.hetzner.com/managed/administration-on-konsoleh/cronmanager/).

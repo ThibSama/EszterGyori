@@ -54,6 +54,7 @@ use Eszter\Storage\PublishedContentReader;
 use Eszter\Storage\StorageException;
 use Eszter\Support\Clock;
 use Eszter\Support\Logger;
+use Eszter\Support\LoginIdentityPseudonymizer;
 use Eszter\Support\SystemClock;
 
 /**
@@ -331,7 +332,16 @@ final class Kernel
             // real connection behind the doubles; there the rotation is
             // compensated rather than rolled back.
             $authenticated = new AuthenticatedServices(
-                new Authenticator($accounts, $sessions, $clock, $logger, $sqlWiring ? $database : null),
+                new Authenticator(
+                    $accounts,
+                    $sessions,
+                    $clock,
+                    $logger,
+                    $sqlWiring ? $database : null,
+                    $config->logPseudonymizationKey === null
+                        ? null
+                        : new LoginIdentityPseudonymizer($config->logPseudonymizationKey),
+                ),
                 $sessions,
                 CsrfGuard::fromArtifacts($artifacts),
             );
@@ -421,15 +431,14 @@ final class Kernel
             // a schema detail. Diagnostics go to the log and nowhere else.
             $this->logger->error('Content storage failure.', [
                 'requestId' => $requestId,
-                'detail' => $exception->getMessage(),
+                'reason' => 'storage-failure',
             ] + $exception->logContext());
 
             $response = $this->errorResponse(500, ErrorCatalog::STORAGE_FAILURE, $requestId);
         } catch (\Throwable $exception) {
             $this->logger->error('Unhandled request failure.', [
                 'requestId' => $requestId,
-                'exception' => $exception::class,
-                'detail' => $exception->getMessage(),
+                'reason' => 'unhandled-exception',
             ]);
 
             $response = $this->errorResponse(500, ErrorCatalog::INTERNAL_ERROR, $requestId);

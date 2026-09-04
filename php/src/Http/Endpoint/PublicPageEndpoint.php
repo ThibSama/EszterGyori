@@ -77,7 +77,7 @@ final class PublicPageEndpoint
             $injected = $this->bootstrap->inject($html, $envelope);
         } catch (PublicPageBootstrapException $exception) {
             $this->logger->error('The exported page could not be injected into.', [
-                'detail' => $exception->getMessage(),
+                'reason' => 'bootstrap-injection-failed',
             ]);
 
             return $this->fallback($request, $html);
@@ -114,7 +114,7 @@ final class PublicPageEndpoint
             $envelope = $this->reader->readPublished();
         } catch (StorageException $exception) {
             $this->logger->error('Published content is unreadable; serving exported defaults.', [
-                'detail' => $exception->getMessage(),
+                'reason' => 'published-content-unreadable',
             ] + $exception->logContext());
 
             return null;
@@ -127,7 +127,7 @@ final class PublicPageEndpoint
 
         if (!$result->valid || !\is_array($result->value)) {
             $this->logger->error('Published content failed validation; serving exported defaults.', [
-                'detail' => $result->summary(),
+                'issues' => \count($result->issues),
             ]);
 
             return null;

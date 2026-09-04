@@ -60,7 +60,7 @@ final class AuthenticationTest extends TestCase
         $this->accounts = InMemoryAccountDirectory::withAccount(true);
         $this->sessions = new InMemorySessionStore($clock);
 
-        $configPath = TestEnvironment::writeDeployment($this->root);
+        $configPath = TestEnvironment::writeDeployment($this->root, ['logLevel' => 'warn']);
         TestEnvironment::writeExportedPage($this->root);
 
         $this->kernel = Kernel::boot(
@@ -442,14 +442,78 @@ final class AuthenticationTest extends TestCase
 
         // The log is not a public place, but a password written to it is a
         // password that outlives the incident. The rejected login above logged a
-        // line naming the address, which is deliberate and must not have brought
-        // the password with it.
+        // pseudonymous correlation line, which must carry neither credential nor
+        // submitted address.
         $log = (string) @file_get_contents($this->root . '/var/log/app.log');
 
         self::assertStringNotContainsString(InMemoryAccountDirectory::PASSWORD, $log);
         self::assertStringNotContainsString($account->passwordHash, $log);
         self::assertStringNotContainsString($signedIn['sessionId'], $log);
         self::assertStringNotContainsString($signedIn['csrfToken'], $log);
+        self::assertStringNotContainsString(InMemoryAccountDirectory::EMAIL, $log);
+    }
+
+    public function testRejectedLoginFingerprintsAreKeyedNormalizedAndContainNoIdentity(): void
+    {
+        $anonymous = $this->openAnonymousSession();
+        foreach (['Seeded.Customer@Example.Test', 'seeded.customer@example.test', 'other@example.test'] as $email) {
+            $this->login($anonymous['sessionId'], $anonymous['csrfToken'], $email, 'recognizable-password');
+        }
+
+        $contents = (string) file_get_contents($this->root . '/var/log/app.log');
+        self::assertStringNotContainsString('Seeded.Customer@Example.Test', $contents);
+        self::assertStringNotContainsString('seeded.customer@example.test', $contents);
+        self::assertStringNotContainsString('other@example.test', $contents);
+        self::assertStringNotContainsString('recognizable-password', $contents);
+        self::assertStringNotContainsString('test-log-pseudonymization-key', $contents);
+
+        $events = [];
+        foreach (explode("\n", trim($contents)) as $line) {
+            /** @var array<string, mixed> $event */
+            $event = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
+            if (($event['message'] ?? null) === 'Login rejected.') {
+                $events[] = $event;
+            }
+        }
+
+        self::assertCount(3, $events);
+        self::assertSame($events[0]['identityFingerprint'], $events[1]['identityFingerprint']);
+        self::assertNotSame($events[0]['identityFingerprint'], $events[2]['identityFingerprint']);
+        foreach ($events as $event) {
+            self::assertSame(['ts', 'level', 'message', 'reason', 'identityFingerprint'], array_keys($event));
+            self::assertMatchesRegularExpression('/^[0-9a-f]{64}$/D', (string) $event['identityFingerprint']);
+        }
+    }
+
+    public function testRejectedLoginOmitsIdentityWhenTheNonProductionKeyIsAbsent(): void
+    {
+        $configPath = TestEnvironment::writeDeployment($this->root, [
+            'logLevel' => 'warn',
+            'privacy' => ['logPseudonymizationKey' => null],
+        ]);
+        $this->kernel = Kernel::boot(
+            $configPath,
+            new FrozenClock(self::NOW),
+            null,
+            null,
+            $this->accounts,
+            $this->sessions,
+        );
+        @unlink($this->root . '/var/log/app.log');
+
+        $anonymous = $this->openAnonymousSession();
+        $this->login(
+            $anonymous['sessionId'],
+            $anonymous['csrfToken'],
+            'absent-key-customer@example.test',
+            'recognizable-password',
+        );
+
+        $contents = (string) file_get_contents($this->root . '/var/log/app.log');
+        self::assertStringNotContainsString('absent-key-customer@example.test', $contents);
+        self::assertStringNotContainsString('recognizable-password', $contents);
+        self::assertStringNotContainsString('identityFingerprint', $contents);
+        self::assertStringContainsString('"reason":"unknown-account"', $contents);
     }
 
     public function testReadsNeedNoCsrfToken(): void

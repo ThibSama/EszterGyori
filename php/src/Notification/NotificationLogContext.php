@@ -56,7 +56,11 @@ final class NotificationLogContext
         $safe = [];
 
         foreach ($context as $key => $value) {
-            if (!$policy->isLogFieldAllowed($key) || $value === null) {
+            if (
+                \in_array($key, $policy->forbiddenLogFields, true)
+                || !$policy->isLogFieldAllowed($key)
+                || $value === null
+            ) {
                 continue;
             }
 

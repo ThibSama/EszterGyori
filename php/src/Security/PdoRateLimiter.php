@@ -111,7 +111,7 @@ final class PdoRateLimiter implements RateLimiter
             // the caller's address is not this file's to record.
             $this->logger->error('Rate limiter unavailable; refusing the request.', [
                 'scope' => $scope,
-                'reason' => $exception->getMessage(),
+                'reason' => 'database-unavailable',
             ]);
 
             return RateLimitDecision::refused($scope, $rule->emissionIntervalMs);
@@ -239,7 +239,7 @@ final class PdoRateLimiter implements RateLimiter
             );
         } catch (DatabaseException $exception) {
             $this->logger->warn('Rate limit sweep failed; buckets were not pruned.', [
-                'reason' => $exception->getMessage(),
+                'reason' => 'database-sweep-failed',
             ]);
         }
     }

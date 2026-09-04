@@ -71,6 +71,9 @@ final class TestEnvironment
         $config = [
             'environment' => 'test',
             'logLevel' => 'error',
+            'privacy' => [
+                'logPseudonymizationKey' => str_repeat('test-log-pseudonymization-key-', 2),
+            ],
             'paths' => [
                 'content' => $root . '/data/content',
                 'tmp' => $root . '/var/tmp',

@@ -52,6 +52,11 @@ final class BackupWriter
      */
     public function write(string $destinationDirectory): array
     {
+        BackupSet::assertLogDirectoryExcluded(
+            $this->config->logDir,
+            $this->config->mediaOriginalsDir,
+            $this->config->mediaPublicDir(),
+        );
         $this->assertDestination($destinationDirectory);
 
         $barrier = new ApplicationSnapshotLock($this->config->lockDir);

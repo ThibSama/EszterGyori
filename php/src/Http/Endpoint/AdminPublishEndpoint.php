@@ -71,7 +71,7 @@ final class AdminPublishEndpoint extends AdminContentEndpoint
             $this->logger->error(
                 'Content publish refused: the stored draft carries a managed media reference '
                     . 'the catalogue does not name.',
-                ['detail' => $dangling->getMessage()],
+                ['reason' => 'dangling-media-reference'],
             );
 
             throw new HttpException(

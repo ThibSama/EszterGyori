@@ -37,7 +37,7 @@ images were quietly re-encoded.
 | `admin_sessions` | Live credentials in table form. A restore that brought them back would resurrect sessions somebody deliberately ended. The correct state after any restore is "everyone signs in again". |
 | `rate_limit_buckets` | Ephemeral abuse counters with no meaning outside the minutes they were written in, and the one table derived from visitors rather than from the site. |
 | `booking_resource_locks` | A serialization row whose only content is its own existence; the migrations recreate it. |
-| `var/log/` | Customer names, addresses and phone numbers appear in booking diagnostics. Logs have their own retention and do not belong in a file that gets copied around. |
+| `var/log/` | Logs contain no clear customer PII by default, but remain operational data: the declared set excludes them, unsafe overlap with a walked media directory is refused, and logs have their own bounded retention. |
 | `var/tmp/`, `data/locks/`, `.intake/`, `.staging-*` | In-flight state by definition. Every one of them exists only between two moments of a write, and restoring one means restoring a half-finished operation. |
 | `app/`, `vendor/`, the rest of `public_html/` | Code and build output. They come from `dist/eszter-production.tar.gz`, which is reproducible from the repository. Including them would multiply every backup's size and let a restore silently downgrade the application. |
 
@@ -45,6 +45,9 @@ The set is **declared**, not discovered by walking the deployment. A declared se
 omits a newly-added thing until someone adds it, which is visible in a diff; a
 discovered set includes it until someone remembers to exclude it, which is not.
 The declaration is `php/src/Backup/BackupSet.php`.
+Before any database export, backup also refuses a topology where `paths.log` is
+equal to or below either media directory. This closes the only configuration route
+by which the flat media walk could otherwise collect a log file.
 
 ## 3. Taking a backup
 

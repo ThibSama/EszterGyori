@@ -12,6 +12,7 @@ use Eszter\Database\Database;
 use Eszter\Http\HttpException;
 use Eszter\Support\Clock;
 use Eszter\Support\Logger;
+use Eszter\Support\LoginIdentityPseudonymizer;
 
 /**
  * Sign in, sign out, and who-is-this (ESZ-025).
@@ -55,6 +56,7 @@ final class Authenticator
          * itself.
          */
         private readonly ?Database $database = null,
+        private readonly ?LoginIdentityPseudonymizer $loginIdentityPseudonymizer = null,
     ) {
     }
 
@@ -135,16 +137,17 @@ final class Authenticator
         // Deliberately not short-circuited into the checks above: the verification
         // has already happened for every path by the time this is evaluated.
         if ($account === null || !$passwordMatches || !$account->isEnabled) {
-            $this->logger->warn('Login rejected.', [
+            $context = [
                 'reason' => match (true) {
                     $account === null => 'unknown-account',
                     !$passwordMatches => 'wrong-password',
                     default => 'account-disabled',
                 },
-                // The address is logged because an operator investigating a
-                // lockout needs it. The password is not, anywhere, ever.
-                'email' => $normalized,
-            ]);
+            ];
+            if ($this->loginIdentityPseudonymizer !== null) {
+                $context['identityFingerprint'] = $this->loginIdentityPseudonymizer->fingerprint($normalized);
+            }
+            $this->logger->warn('Login rejected.', $context);
 
             throw HttpException::invalidCredentials();
         }
@@ -200,7 +203,7 @@ final class Authenticator
                     'Login failed and its session rotation could not be fully revoked.',
                     [
                         'accountId' => $account->id,
-                        'detail' => $revocationFailure->getMessage(),
+                        'reason' => 'session-revocation-failed',
                     ],
                 );
             }

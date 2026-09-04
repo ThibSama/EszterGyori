@@ -33,6 +33,9 @@ final class ConfigurationTest extends TestCase
         return [
             'environment' => 'production',
             'logLevel' => 'warn',
+            'privacy' => [
+                'logPseudonymizationKey' => str_repeat('a', 64),
+            ],
             'paths' => [
                 'content' => '../data/content',
                 'tmp' => '../var/tmp',
@@ -89,15 +92,16 @@ final class ConfigurationTest extends TestCase
             self::fail('the example loaded with its placeholder password still in it');
         } catch (ConfigurationException $exception) {
             self::assertSame(
-                ['database.password', 'notifications.email.password'],
+                ['privacy.logPseudonymizationKey', 'database.password', 'notifications.email.password'],
                 array_column($exception->issues(), 'path'),
                 'the documented secret placeholders must be the only invalid values',
             );
         }
 
-        // With the one placeholder replaced, every other key in the file is valid
+        // With the placeholders replaced, every other key in the file is valid
         // and complete. That is what makes it usable documentation.
         $raw = self::example();
+        $raw['privacy'] = ['logPseudonymizationKey' => str_repeat('b', 64)];
         /** @var array<string, mixed> $database */
         $database = $raw['database'];
         $database['password'] = 'a-real-password';
@@ -130,7 +134,7 @@ final class ConfigurationTest extends TestCase
         $raw = self::example();
 
         self::assertSame(
-            ['environment', 'logLevel', 'paths', 'database', 'session', 'notifications'],
+            ['environment', 'logLevel', 'privacy', 'paths', 'database', 'session', 'notifications'],
             array_keys($raw),
         );
 
@@ -175,6 +179,43 @@ final class ConfigurationTest extends TestCase
         self::assertSame($this->root . '/public_html', $config->publicDir);
         self::assertSame($this->root . '/var/log/app.log', $config->logFile());
         self::assertTrue($config->isProduction());
+    }
+
+    public function testProductionRequiresAPrivatePseudonymizationKeyWithoutEchoingIt(): void
+    {
+        $raw = $this->valid();
+        unset($raw['privacy']);
+
+        try {
+            Configuration::fromArray($raw, $this->root);
+            self::fail('production accepted no log pseudonymization key');
+        } catch (ConfigurationException $exception) {
+            self::assertContains('privacy.logPseudonymizationKey', array_column($exception->issues(), 'path'));
+        }
+
+        $secret = 'recognizable-private-secret-that-must-never-be-echoed';
+        $raw['privacy'] = ['logPseudonymizationKey' => $secret];
+        self::assertSame($secret, Configuration::fromArray($raw, $this->root)->logPseudonymizationKey);
+
+        foreach (['short', 'CHANGE_ME'] as $invalid) {
+            $raw['privacy'] = ['logPseudonymizationKey' => $invalid];
+            try {
+                Configuration::fromArray($raw, $this->root);
+                self::fail('production accepted an unsafe log pseudonymization key');
+            } catch (ConfigurationException $exception) {
+                self::assertStringNotContainsString($invalid, $exception->getMessage());
+                self::assertContains('privacy.logPseudonymizationKey', array_column($exception->issues(), 'path'));
+            }
+        }
+    }
+
+    public function testThePseudonymizationKeyIsOptionalOutsideProductionAndNeverDefaulted(): void
+    {
+        $raw = $this->valid();
+        $raw['environment'] = 'test';
+        unset($raw['privacy']);
+
+        self::assertNull(Configuration::fromArray($raw, $this->root)->logPseudonymizationKey);
     }
 
     public function testAMissingFileIsFatal(): void

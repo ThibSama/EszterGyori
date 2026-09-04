@@ -36,6 +36,8 @@ final class Configuration
          * derivative can be rebuilt, and nothing must be able to request one.
          */
         public readonly string $mediaOriginalsDir,
+        /** Null outside production when login identities need not be correlatable. */
+        public readonly ?string $logPseudonymizationKey,
         /**
          * Null when no operational database is configured. That is legal outside
          * production — the public read-only surface needs no SQL at all — and
@@ -164,6 +166,7 @@ final class Configuration
         }
 
         $isProduction = $environment === 'production';
+        $logPseudonymizationKey = self::logPseudonymizationKey($raw, $isProduction, $issues);
         $database = self::database($raw, $isProduction, $issues);
         $session = self::session($raw, $isProduction, $issues);
         $smtp = self::smtp($raw, $isProduction, $issues);
@@ -182,10 +185,67 @@ final class Configuration
             $contractsDir,
             $publicDir,
             $mediaOriginalsDir,
+            $logPseudonymizationKey,
             $database,
             $session,
             $smtp,
         );
+    }
+
+    /**
+     * @param array<mixed> $raw
+     * @param list<array{path: string, message: string}> $issues
+     * @param-out list<array{path: string, message: string}> $issues
+     */
+    private static function logPseudonymizationKey(array $raw, bool $isProduction, array &$issues): ?string
+    {
+        /** @var mixed $privacy */
+        $privacy = $raw['privacy'] ?? null;
+
+        if ($privacy === null) {
+            if ($isProduction) {
+                $issues[] = ['path' => 'privacy.logPseudonymizationKey', 'message' => 'is required in production.'];
+            }
+
+            return null;
+        }
+        if (!\is_array($privacy)) {
+            $issues[] = ['path' => 'privacy', 'message' => 'must be an array.'];
+
+            return null;
+        }
+
+        /** @var mixed $value */
+        $value = $privacy['logPseudonymizationKey'] ?? null;
+        if ($value === null || (\is_string($value) && trim($value) === '')) {
+            if ($isProduction) {
+                $issues[] = ['path' => 'privacy.logPseudonymizationKey', 'message' => 'is required in production.'];
+            }
+
+            return null;
+        }
+        if (!\is_string($value)) {
+            $issues[] = [
+                'path' => 'privacy.logPseudonymizationKey',
+                'message' => 'must be a string or null.',
+            ];
+
+            return null;
+        }
+
+        if (str_starts_with($value, 'CHANGE_ME') || \in_array($value, ['CHANGEME', 'password'], true)) {
+            $issues[] = [
+                'path' => 'privacy.logPseudonymizationKey',
+                'message' => 'is still a placeholder.',
+            ];
+        } elseif (\strlen($value) < 32) {
+            $issues[] = [
+                'path' => 'privacy.logPseudonymizationKey',
+                'message' => 'must contain at least 32 characters.',
+            ];
+        }
+
+        return $value;
     }
 
     /**
