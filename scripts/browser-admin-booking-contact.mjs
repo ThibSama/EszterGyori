@@ -430,8 +430,8 @@ async function main() {
     headers: { accept: "application/json", "content-type": "application/json" },
     body: JSON.stringify({ mode: "reference", reference: created.reference }),
   });
-  const serverBooking = query.body?.bookings?.[0];
   assert(query.response.status === 200, "final admin booking query failed");
+  const serverBooking = query.body?.booking;
   for (const [field, value] of Object.entries(updatedContact)) {
     assert(serverBooking?.[field] === value, `invalid edit changed server field ${field}`);
   }
