@@ -15,50 +15,31 @@ use Eszter\Auth\SessionStore;
 use Eszter\Booking\BookingApi;
 use Eszter\Booking\BookingDomainContract;
 use Eszter\Booking\PdoBookingApi;
+use Eszter\Composition\AdminContentRoutes;
+use Eszter\Composition\AdminMediaRoutes;
+use Eszter\Composition\AuthRoutes;
+use Eszter\Composition\AuthenticatedServices;
+use Eszter\Composition\BookingRoutes;
+use Eszter\Composition\KernelServices;
+use Eszter\Composition\PublicRoutes;
 use Eszter\Config\Configuration;
 use Eszter\Config\ConfigurationException;
-use Eszter\Contract\StructuralValidator;
-use Eszter\Database\Database;
 use Eszter\Contract\ContentValidator;
 use Eszter\Contract\ContractArtifactException;
 use Eszter\Contract\ContractArtifacts;
-use Eszter\Http\Endpoint\AdminDraftReadEndpoint;
-use Eszter\Http\Endpoint\AdminDraftSaveEndpoint;
-use Eszter\Http\Endpoint\AdminMediaDeleteEndpoint;
+use Eszter\Contract\StructuralValidator;
+use Eszter\Database\Database;
 use Eszter\Http\Endpoint\AdminMediaEndpoint;
-use Eszter\Http\Endpoint\AdminMediaListEndpoint;
-use Eszter\Http\Endpoint\AdminMediaUploadEndpoint;
-use Eszter\Http\Endpoint\AdminPublishEndpoint;
-use Eszter\Http\Endpoint\AdminResetEndpoint;
-use Eszter\Http\Endpoint\AdminBookingsMutationEndpoint;
-use Eszter\Http\Endpoint\AdminBookingsQueryEndpoint;
-use Eszter\Http\Endpoint\AdminBookingMoveAvailabilityEndpoint;
-use Eszter\Http\Endpoint\AdminBookingsSummaryEndpoint;
-use Eszter\Http\Endpoint\AdminAvailabilityQueryEndpoint;
-use Eszter\Http\Endpoint\AdminAvailabilityWeeklyEndpoint;
-use Eszter\Http\Endpoint\AdminAvailabilityExceptionsEndpoint;
-use Eszter\Http\Endpoint\AuthLoginEndpoint;
-use Eszter\Http\Endpoint\AuthLogoutEndpoint;
 use Eszter\Http\Endpoint\AuthSessionEndpoint;
 use Eszter\Http\Endpoint\ExportedPageReader;
-use Eszter\Http\Endpoint\HealthEndpoint;
-use Eszter\Http\Endpoint\PublicContentEndpoint;
-use Eszter\Http\Endpoint\PublicPageEndpoint;
-use Eszter\Http\Endpoint\PublicBookingAvailabilityEndpoint;
-use Eszter\Http\Endpoint\PublicBookableServicesEndpoint;
-use Eszter\Http\Endpoint\PublicBookingCreateEndpoint;
-use Eszter\Http\EntityTag;
 use Eszter\Http\ErrorCatalog;
 use Eszter\Http\HttpException;
-use Eszter\Http\PublicPageBootstrap;
 use Eszter\Http\Request;
 use Eszter\Http\RequestId;
 use Eszter\Http\Response;
 use Eszter\Http\Router;
-use Eszter\Media\ImagePipeline;
 use Eszter\Media\ManagedMediaReferenceGuard;
 use Eszter\Media\MediaContract;
-use Eszter\Media\MediaIngest;
 use Eszter\Media\MediaLibrary;
 use Eszter\Media\PhpUploadTransport;
 use Eszter\Media\UploadTransport;
@@ -110,6 +91,16 @@ use Eszter\Support\SystemClock;
  * answers 500 on any path. The contract states that separately under
  * `bootstrapFailure`, rather than as a status of an endpoint, so it cannot be read
  * as a failure mode of health itself.
+ *
+ * ## Route surfaces (ESZ-105)
+ *
+ * Endpoint construction and registration are owned by five dedicated
+ * composition classes — {@see PublicRoutes}, {@see AuthRoutes},
+ * {@see AdminContentRoutes}, {@see AdminMediaRoutes} and {@see BookingRoutes} —
+ * grouped by feature surface. This root still decides *whether* a surface
+ * exists (the registration conditions below are the frozen ones) and still
+ * constructs every shared service once, handing the composers a readonly
+ * {@see KernelServices} snapshot plus their own inputs.
  */
 final class Kernel
 {
@@ -284,12 +275,13 @@ final class Kernel
                 $clock,
             );
 
+        $router = new Router();
         $kernel = new self(
             $config,
             $artifacts,
             $validator,
             $storage,
-            new Router(),
+            $router,
             $errors,
             $requestIds,
             $logger,
@@ -300,33 +292,61 @@ final class Kernel
             $rateLimits,
         );
 
-        $kernel->registerPublicRoutes(
-            $publishedContentReader ?? $storage,
-            $exportedPageReader ?? new ExportedPageFile($config->publicDir),
+        // ESZ-105: the surfaces are composed by dedicated classes. This root
+        // keeps the wiring — it constructs every service below once and hands
+        // the same instances to every composer — and it keeps the *conditions*
+        // under which a surface exists; the composers own which concrete
+        // endpoints realise each surface and how they are registered.
+        $services = new KernelServices(
+            $artifacts,
+            $validator,
+            $structural,
+            $storage,
+            $media,
+            $mediaLibrary,
+            $logger,
             $clock,
         );
-        if ($bookingApi !== null) {
-            $kernel->registerPublicBookingRoutes($bookingApi, $structural, $logger);
-        }
+        $authenticated = null;
+
+        // The public surface is reachable on every deployment, database or
+        // not. The two seam arguments resolve to their production defaults
+        // here, next to the parameters of {@see boot()} that document them.
+        (new PublicRoutes(
+            $services,
+            $publishedContentReader ?? $storage,
+            $exportedPageReader ?? new ExportedPageFile($config->publicDir),
+        ))->register($router);
 
         if ($accounts !== null && $sessions !== null) {
-            $kernel->registerAuthenticatedRoutes(
-                $accounts,
+            // The authenticated surfaces — auth, admin content, admin media
+            // and the admin half of the booking surface — exist only where
+            // there is a session store to keep sessions in.
+            //
+            // The authenticator's login transition (ESZ-134) is transactional
+            // exactly when this kernel built the SQL wiring itself — the
+            // account directory and the session store then share this
+            // Database. In the seam-driven replay wiring the seams carry their
+            // own (or no) persistence, so passing this Database would open a
+            // real connection behind the doubles; there the rotation is
+            // compensated rather than rolled back.
+            $authenticated = new AuthenticatedServices(
+                new Authenticator($accounts, $sessions, $clock, $logger, $sqlWiring ? $database : null),
                 $sessions,
-                $clock,
-                $logger,
-                $structural,
-                $uploadTransport ?? new PhpUploadTransport(),
-                $bookingApi,
-                // The login transition (ESZ-134) is transactional exactly when
-                // this kernel built the SQL wiring itself — the account
-                // directory and the session store then share this Database. In
-                // the seam-driven replay wiring the seams carry their own (or no)
-                // persistence, so passing this Database would open a real
-                // connection behind the doubles; there the rotation is
-                // compensated rather than rolled back.
-                $sqlWiring ? $database : null,
+                CsrfGuard::fromArtifacts($artifacts),
             );
+
+            (new AuthRoutes($services, $authenticated))->register($router);
+            (new AdminContentRoutes($services, $authenticated))->register($router);
+            (new AdminMediaRoutes(
+                $services,
+                $authenticated,
+                $uploadTransport ?? new PhpUploadTransport(),
+            ))->register($router);
+        }
+
+        if ($bookingApi !== null) {
+            (new BookingRoutes($services, $bookingApi, $authenticated))->register($router);
         }
 
         // Logged after wiring, so the line reports what this request can actually
@@ -341,336 +361,6 @@ final class Kernel
         ]);
 
         return $kernel;
-    }
-
-    /**
-     * The frozen public surface, and nothing else.
-     *
-     * Every path registered here must already exist in `http-contract.json`.
-     * `/api/admin/*` and `/api/auth/*` stay unregistered on purpose: the contract
-     * freezes them at a structured 404, so routing one before it is contracted
-     * would be a silent breaking change.
-     */
-    private function registerPublicRoutes(
-        PublishedContentReader $reader,
-        ExportedPageReader $pages,
-        Clock $clock,
-    ): void {
-        $contract = $this->artifacts->httpContract();
-        /** @var array<string, mixed> $caching */
-        $caching = $contract['caching'] ?? [];
-        /** @var mixed $cacheControl */
-        $cacheControl = $caching['cacheControl'] ?? null;
-
-        if (!\is_string($cacheControl)) {
-            throw new \RuntimeException('http-contract.json has no caching.cacheControl.');
-        }
-
-        $this->router->register(
-            'GET',
-            HealthEndpoint::PATH,
-            HealthEndpoint::fromArtifacts($this->artifacts, $clock),
-        );
-
-        $etags = EntityTag::fromContract($contract);
-
-        $this->router->register(
-            'GET',
-            PublicContentEndpoint::PATH,
-            new PublicContentEndpoint($reader, $this->validator, $etags, $cacheControl),
-        );
-
-        // ESZ-021: `/` joined the frozen surface. Until Package 2.1 the front
-        // controller was mounted at `/api` and the contract carried a standing PHP
-        // exemption saying so; the static export removed the Node server that used
-        // to answer here, so the page is now this service's to serve and the
-        // exemption is gone.
-        //
-        // The same `EntityTag` instance backs both routes, which is what makes
-        // `page.etagMatchesContentEndpoint` true by construction rather than by
-        // two implementations agreeing.
-        /** @var mixed $publicPage */
-        $publicPage = $contract['publicPage'] ?? null;
-        /** @var mixed $pageContentType */
-        $pageContentType = \is_array($publicPage) ? ($publicPage['contentType'] ?? null) : null;
-
-        if (!\is_string($pageContentType)) {
-            throw new \RuntimeException('http-contract.json has no publicPage.contentType.');
-        }
-
-        $page = new PublicPageEndpoint(
-            $pages,
-            $reader,
-            $this->validator,
-            PublicPageBootstrap::fromArtifacts($this->artifacts),
-            $etags,
-            $cacheControl,
-            $pageContentType,
-            $this->logger,
-        );
-
-        // Registered under both methods rather than special-cased in the router:
-        // the contract lists `["GET", "HEAD"]` for this path, and the 405 `Allow`
-        // header is built from what is registered, so this is what makes
-        // `page.post.methodNotAllowed` answer `Allow: GET, HEAD`.
-        $this->router->register('GET', PublicPageEndpoint::PATH, $page);
-        $this->router->register('HEAD', PublicPageEndpoint::PATH, $page);
-    }
-
-    /**
-     * The authenticated surface (ESZ-025 / ESZ-026).
-     *
-     * Registered separately from {@see registerPublicRoutes()} because the two
-     * have opposite invariants. The public routes must be reachable on every
-     * deployment; these must be reachable only where there is a database to keep
-     * sessions in, and `Configuration` guarantees that production is such a place.
-     *
-     * `/admin` itself is *not* registered here and never will be. It is a static
-     * file served by Apache, it enforces nothing, and every guarantee about who may
-     * do what is made by these three routes and the ones that will join them
-     * (`auth.accessControl`).
-     */
-    private function registerAuthenticatedRoutes(
-        AccountDirectory $accounts,
-        SessionManager $sessions,
-        Clock $clock,
-        Logger $logger,
-        StructuralValidator $structural,
-        UploadTransport $uploadTransport,
-        ?BookingApi $bookingApi,
-        ?Database $loginDatabase,
-    ): void {
-        $authenticator = new Authenticator($accounts, $sessions, $clock, $logger, $loginDatabase);
-        $csrf = CsrfGuard::fromArtifacts($this->artifacts);
-
-        $this->router->register('GET', AuthSessionEndpoint::PATH, new AuthSessionEndpoint($authenticator));
-        $this->router->register(
-            'POST',
-            AuthLoginEndpoint::PATH,
-            new AuthLoginEndpoint($authenticator, $sessions, $csrf, $structural),
-        );
-        $this->router->register(
-            'POST',
-            AuthLogoutEndpoint::PATH,
-            new AuthLogoutEndpoint($authenticator, $sessions, $csrf),
-        );
-
-        $this->registerAdminContentRoutes($authenticator, $sessions, $csrf, $structural, $logger);
-        $this->registerAdminMediaRoutes(
-            $authenticator,
-            $sessions,
-            $csrf,
-            $structural,
-            $logger,
-            $clock,
-            $uploadTransport,
-        );
-        if ($bookingApi !== null) {
-            $shared = [$bookingApi, $structural, $logger, $authenticator, $sessions, $csrf];
-            $this->router->register(
-                'POST',
-                AdminBookingsQueryEndpoint::PATH,
-                new AdminBookingsQueryEndpoint(...$shared),
-            );
-            $this->router->register(
-                'POST',
-                AdminBookingMoveAvailabilityEndpoint::PATH,
-                new AdminBookingMoveAvailabilityEndpoint(...$shared),
-            );
-            $this->router->register(
-                'PATCH',
-                AdminBookingsMutationEndpoint::PATH,
-                new AdminBookingsMutationEndpoint(...$shared),
-            );
-
-            // ESZ-063/064/065. Gated on the same `$bookingApi !== null` condition
-            // as the routes above and for the same reason: without booking use
-            // cases these would only ever answer 500.
-            $this->router->register(
-                'POST',
-                AdminBookingsSummaryEndpoint::PATH,
-                new AdminBookingsSummaryEndpoint(...$shared),
-            );
-            $this->router->register(
-                'POST',
-                AdminAvailabilityQueryEndpoint::PATH,
-                new AdminAvailabilityQueryEndpoint(...$shared),
-            );
-            $this->router->register(
-                'PUT',
-                AdminAvailabilityWeeklyEndpoint::PATH,
-                new AdminAvailabilityWeeklyEndpoint(...$shared),
-            );
-            $this->router->register(
-                'PATCH',
-                AdminAvailabilityExceptionsEndpoint::PATH,
-                new AdminAvailabilityExceptionsEndpoint(...$shared),
-            );
-        }
-    }
-
-    private function registerPublicBookingRoutes(
-        BookingApi $booking,
-        StructuralValidator $structural,
-        Logger $logger,
-    ): void {
-        $dependencies = [$booking, $structural, $logger];
-        $this->router->register(
-            'GET',
-            PublicBookableServicesEndpoint::PATH,
-            new PublicBookableServicesEndpoint(...$dependencies),
-        );
-        $this->router->register(
-            'POST',
-            PublicBookingAvailabilityEndpoint::PATH,
-            new PublicBookingAvailabilityEndpoint(...$dependencies),
-        );
-        $this->router->register(
-            'POST',
-            PublicBookingCreateEndpoint::PATH,
-            new PublicBookingCreateEndpoint(...$dependencies),
-        );
-    }
-
-    /**
-     * The admin media surface (ESZ-036 / ESZ-037).
-     *
-     * Gated on the same condition as the content surface and for the same
-     * reason: a deployment with no session store can authenticate nobody, so
-     * routing these would only produce endpoints that answer 401 forever.
-     *
-     * Three verbs on one path, registered separately, so the 405 `Allow` header is
-     * built from what is registered and reports `DELETE, GET, POST` without
-     * anything restating it. There is no `{id}` route: `Router` is exact-path by
-     * construction, and `mediaDeleteRequestSchema` argues why the id travels in the
-     * body instead.
-     *
-     * The delete endpoint takes the real {@see ContentStorage}, not the
-     * `PublishedContentReader` seam the public routes accept, because it must read
-     * the *authoritative* draft as well as the published document — and the seam
-     * exists to fake published reads, which is exactly what a reference check must
-     * not be given.
-     */
-    private function registerAdminMediaRoutes(
-        Authenticator $authenticator,
-        SessionManager $sessions,
-        CsrfGuard $csrf,
-        StructuralValidator $structural,
-        Logger $logger,
-        Clock $clock,
-        UploadTransport $uploadTransport,
-    ): void {
-        $images = new ImagePipeline($this->media);
-
-        $shared = [
-            $authenticator,
-            $sessions,
-            $csrf,
-            $this->media,
-            $this->mediaLibrary,
-            $structural,
-            $logger,
-        ];
-
-        $this->router->register(
-            'GET',
-            AdminMediaEndpoint::PATH,
-            new AdminMediaListEndpoint(...$shared),
-        );
-        $this->router->register(
-            'POST',
-            AdminMediaEndpoint::PATH,
-            new AdminMediaUploadEndpoint(...$shared, ingest: new MediaIngest(
-                $this->media,
-                $images,
-                $this->mediaLibrary,
-                $structural,
-                $uploadTransport,
-                $clock,
-                $logger,
-            )),
-        );
-        $this->router->register(
-            'DELETE',
-            AdminMediaEndpoint::PATH,
-            new AdminMediaDeleteEndpoint(...$shared, storage: $this->storage),
-        );
-    }
-
-    /**
-     * The admin content surface (ESZ-030/031/032/033).
-     *
-     * Registered alongside `/api/auth/*` rather than beside the public routes,
-     * and gated on the same condition, because they share the thing that makes
-     * them possible: a session store. A deployment with no database has nowhere
-     * to keep a session, so it can authenticate nobody, so routing these would
-     * only produce endpoints that answer 401 forever. `Configuration` guarantees
-     * production is never such a deployment.
-     *
-     * These routes read and write through {@see ContentStorage} directly — the
-     * real one, not the `PublishedContentReader` seam the public routes accept.
-     * That seam exists so the conformance suite can replay storage *failures*
-     * against a read-only surface; a writing surface has to be exercised against
-     * a real directory, because atomic replacement, locking and the revision
-     * sequence are precisely what a fixture would fake away.
-     *
-     * `/api/admin/content/draft` is registered under two methods on one path, so
-     * the 405 `Allow` header is built from what is registered and reports
-     * `GET, PUT` without anything restating it.
-     */
-    private function registerAdminContentRoutes(
-        Authenticator $authenticator,
-        SessionManager $sessions,
-        CsrfGuard $csrf,
-        StructuralValidator $structural,
-        Logger $logger,
-    ): void {
-        /** @var array<string, mixed> $adminContent */
-        $adminContent = $this->artifacts->adminContentContract();
-        /** @var mixed $cacheControl */
-        $cacheControl = $adminContent['cacheControl'] ?? null;
-        /** @var mixed $revisionHeader */
-        $revisionHeader = $adminContent['revisionHeader'] ?? null;
-
-        if (!\is_string($cacheControl) || !\is_string($revisionHeader)) {
-            throw new \RuntimeException(
-                'http-contract.json has no adminContent.cacheControl/revisionHeader.',
-            );
-        }
-
-        $dependencies = [
-            $authenticator,
-            $sessions,
-            $csrf,
-            $this->storage,
-            $this->validator,
-            $structural,
-            $this->artifacts,
-            $logger,
-            $cacheControl,
-            $revisionHeader,
-        ];
-
-        $this->router->register(
-            'GET',
-            AdminDraftReadEndpoint::PATH,
-            new AdminDraftReadEndpoint(...$dependencies),
-        );
-        $this->router->register(
-            'PUT',
-            AdminDraftSaveEndpoint::PATH,
-            new AdminDraftSaveEndpoint(...$dependencies),
-        );
-        $this->router->register(
-            'POST',
-            AdminPublishEndpoint::PATH,
-            new AdminPublishEndpoint(...$dependencies),
-        );
-        $this->router->register(
-            'POST',
-            AdminResetEndpoint::PATH,
-            new AdminResetEndpoint(...$dependencies),
-        );
     }
 
     public function handle(Request $request): Response

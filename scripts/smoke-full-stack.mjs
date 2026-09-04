@@ -14,6 +14,7 @@ const cookies = new Map();
 let server;
 let serverExit;
 let bookingReference = null;
+let bookingUpdatedAt = null;
 let authenticatedCsrf = null;
 
 function run(command, args) {
@@ -100,11 +101,23 @@ async function waitUntilReady() {
 
 async function cleanupBooking() {
   if (bookingReference === null || authenticatedCsrf === null) return;
+  if (typeof bookingUpdatedAt !== "string" || bookingUpdatedAt === "") {
+    // ESZ-139: a cancel without the booking's current updatedAt token is
+    // knowingly invalid and would be rejected, so a failure before the smoke
+    // reached a fresh authoritative token leaves the disposable booking behind.
+    process.stderr.write("full-stack smoke: cleanup skipped — no fresh authoritative updatedAt token was reached.\n");
+    return;
+  }
   try {
     await json(
       "/api/admin/bookings",
       "PATCH",
-      { action: "cancel", reference: bookingReference, reason: "Full-stack smoke cleanup" },
+      {
+        action: "cancel",
+        reference: bookingReference,
+        reason: "Full-stack smoke cleanup",
+        expectedUpdatedAt: bookingUpdatedAt,
+      },
       { "x-csrf-token": authenticatedCsrf },
     );
   } catch {
@@ -236,19 +249,39 @@ try {
     { mode: "reference", reference: bookingReference },
   );
   assert(query.response.status === 200, `Admin booking query returned ${query.response.status}.`);
+  // ESZ-145: the reference read serves the booking's current facts as `booking`
+  // beside one bounded `historyPage`; the old `bookings` array is gone.
   assert(
-    Array.isArray(query.body?.bookings) && query.body.bookings.some((booking) => booking.reference === bookingReference),
+    query.body?.booking !== null && typeof query.body?.booking === "object",
+    "Reference query did not return the ESZ-145 booking envelope.",
+  );
+  const queriedBooking = query.body.booking;
+  assert(
+    queriedBooking.reference === bookingReference,
     "Created booking is not visible through the authenticated admin surface.",
   );
+  // ESZ-139: every update/move/cancel mutation must carry the booking's current
+  // updatedAt token; the reference read just provided a fresh authoritative one.
+  assert(
+    typeof queriedBooking.updatedAt === "string" && queriedBooking.updatedAt !== "",
+    "Reference query returned a booking without its optimistic-concurrency updatedAt.",
+  );
+  bookingUpdatedAt = queriedBooking.updatedAt;
 
   const cancelled = await json(
     "/api/admin/bookings",
     "PATCH",
-    { action: "cancel", reference: bookingReference, reason: "Full-stack smoke cleanup" },
+    {
+      action: "cancel",
+      reference: bookingReference,
+      reason: "Full-stack smoke cleanup",
+      expectedUpdatedAt: bookingUpdatedAt,
+    },
     { "x-csrf-token": authenticatedCsrf },
   );
   assert(cancelled.response.status === 200, `Booking cleanup returned ${cancelled.response.status}.`);
   bookingReference = null;
+  bookingUpdatedAt = null;
 
   const logout = await json(
     "/api/auth/logout",
