@@ -315,24 +315,33 @@ final class NotificationJobRepository
      *
      * The exhaustion check reads the attempt count charged by the claim, so the
      * fifth failure is terminal rather than scheduling a sixth attempt the
-     * `chk_notification_jobs_attempts` constraint would refuse anyway.
+     * `chk_notification_jobs_attempts` constraint would refuse anyway. A
+     * terminal exhaustion stores the frozen `attempts_exhausted` code, whatever
+     * the transport's own transient code was.
      *
-     * @return string The status actually written.
+     * Every write here is guarded on the lease, like the other outcome writers:
+     * the runner may have lost the row while the transport was working, and the
+     * caller must then neither count nor log anything as if it had persisted.
+     *
+     * @return 'pending'|'failed'|null The status actually written, or null when
+     *                                 the guarded UPDATE affected zero rows —
+     *                                 the job is no longer this runner's and
+     *                                 nothing was persisted.
      */
-    public function markTransientFailure(NotificationJob $job, string $owner, string $errorCode): string
+    public function markTransientFailure(NotificationJob $job, string $owner, string $errorCode): ?string
     {
         $this->assertErrorCode($errorCode);
 
         if ($this->policy->attemptsExhausted($job->attempts)) {
-            $this->markTerminalFailure($job, $owner, 'attempts_exhausted');
-
-            return 'failed';
+            return $this->markTerminalFailure($job, $owner, 'attempts_exhausted')
+                ? 'failed'
+                : null;
         }
 
         $now = $this->clock->now();
         $delay = $this->policy->backoffSeconds($job->attempts);
 
-        $this->database->run(
+        $statement = $this->database->run(
             'UPDATE notification_jobs SET'
             . ' status = :pending, lease_owner = NULL, lease_expires_at_utc = NULL,'
             . ' next_attempt_at_utc = :next, last_error_code = :code,'
@@ -350,10 +359,19 @@ final class NotificationJobRepository
             ],
         );
 
+        if ($statement->rowCount() !== 1) {
+            return null;
+        }
+
         return 'pending';
     }
 
-    /** Terminal failure: a permanent refusal, or a spent attempt budget. */
+    /**
+     * Terminal failure: a permanent refusal, or a spent attempt budget.
+     *
+     * @return bool Whether the guarded write persisted; false means the job was
+     *              no longer this runner's to mark and nothing was stored.
+     */
     public function markTerminalFailure(NotificationJob $job, string $owner, string $errorCode): bool
     {
         $this->assertErrorCode($errorCode);
@@ -367,6 +385,9 @@ final class NotificationJobRepository
      * `$owner` is null when the job was swept while still `pending` — the
      * catch-up sweep never claims — and set when a claimed job turned out to be
      * stale after all.
+     *
+     * @return bool Whether the guarded write persisted; false means the job was
+     *              no longer this runner's to mark and nothing was stored.
      */
     public function markSkipped(int $jobId, ?string $owner, string $errorCode): bool
     {

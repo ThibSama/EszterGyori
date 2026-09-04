@@ -11,6 +11,7 @@ use Eszter\Notification\NotificationChannelSettings;
 use Eszter\Notification\NotificationException;
 use Eszter\Notification\NotificationJob;
 use Eszter\Notification\NotificationJobRepository;
+use Eszter\Notification\NotificationInstant;
 use Eszter\Notification\NotificationPolicy;
 use Eszter\Notification\NotificationRunner;
 use Eszter\Notification\NotificationScheduler;
@@ -781,7 +782,435 @@ final class NotificationSqlTest extends TestCase
         $this->database->beginTransaction();
     }
 
+    // --- ESZ-111: the persisted transition is authoritative ----------------
+
+    public function testESZ111SuccessfulDeliveryWhoseLeaseWasLostIsNeverReportedSent(): void
+    {
+        $bookingId = $this->seedBooking();
+        $this->jobs->enqueue($bookingId, 'email', 'booking_confirmation', 'esz111.sent.lost', $this->clock->now());
+
+        // While the transport works, the lease expires and a second runner
+        // takes the job over. The transport really delivered — the database,
+        // not the transport, decides what the runner may claim.
+        $transport = new RecordingTransport('email');
+        $transport->before = $this->secondRunnerTakesOver();
+
+        $result = $this->runner($transport)->run($this->owner('slow'), 10);
+
+        self::assertSame(1, $result->claimed);
+        self::assertSame(0, $result->sent);
+        self::assertSame(0, $result->retried);
+        self::assertSame(0, $result->failed);
+        self::assertSame(0, $result->skipped);
+        self::assertSame(1, $result->leasesLost);
+        self::assertSame(1, $transport->delivered, 'the transport really delivered');
+
+        // The old runner recorded nothing: the row is still the second
+        // runner's, and it is not `sent`.
+        $job = $this->jobs->findByIdempotencyKey('esz111.sent.lost');
+        self::assertInstanceOf(NotificationJob::class, $job);
+        self::assertSame('processing', $job->status);
+        self::assertSame(2, $job->attempts);
+        self::assertNull($job->sentAtUtc);
+        self::assertSame('lease_expired', $job->lastErrorCode);
+
+        // One delivery, one record: the second runner completes it as sent.
+        $owner = $job->leaseOwner;
+        self::assertIsString($owner);
+        self::assertTrue($this->jobs->markSent($job, $owner));
+
+        $after = $this->jobs->findByIdempotencyKey('esz111.sent.lost');
+        self::assertInstanceOf(NotificationJob::class, $after);
+        self::assertSame('sent', $after->status);
+
+        // No `notification.sent` was logged for a delivery the runner could
+        // not persist.
+        self::assertSame([], $this->logLines('notification.sent'));
+        $this->assertLeaseLostLines($this->logLines('notification.leaseLost'));
+    }
+
+    public function testESZ111TransientFailureWhoseLeaseWasLostIsNeitherRetriedNorFailed(): void
+    {
+        $bookingId = $this->seedBooking();
+        $this->jobs->enqueue($bookingId, 'email', 'booking_confirmation', 'esz111.retry.lost', $this->clock->now());
+
+        $transport = new FailingTransport('email', new TransientDeliveryException('transport_transient'));
+        $transport->before = $this->secondRunnerTakesOver();
+
+        $result = $this->runner($transport)->run($this->owner('slow'), 10);
+
+        self::assertSame(1, $result->claimed);
+        self::assertSame(0, $result->retried);
+        self::assertSame(0, $result->failed);
+        self::assertSame(0, $result->skipped);
+        self::assertSame(1, $result->leasesLost);
+
+        // The transient failure was never persisted: no backoff was scheduled,
+        // no terminal failure was written — the row is still the second
+        // runner's.
+        $job = $this->jobs->findByIdempotencyKey('esz111.retry.lost');
+        self::assertInstanceOf(NotificationJob::class, $job);
+        self::assertSame('processing', $job->status);
+        self::assertSame(2, $job->attempts);
+        self::assertSame('lease_expired', $job->lastErrorCode);
+
+        self::assertSame([], $this->logLines('notification.retry'));
+        self::assertSame([], $this->logLines('notification.failed'));
+        $this->assertLeaseLostLines($this->logLines('notification.leaseLost'));
+    }
+
+    public function testESZ111PermanentFailureWhoseLeaseWasLostDoesNotFailTheJob(): void
+    {
+        $bookingId = $this->seedBooking();
+        $this->jobs->enqueue($bookingId, 'email', 'booking_confirmation', 'esz111.fail.lost', $this->clock->now());
+
+        $transport = new FailingTransport('email', new PermanentDeliveryException('transport_permanent'));
+        $transport->before = $this->secondRunnerTakesOver();
+
+        $result = $this->runner($transport)->run($this->owner('slow'), 10);
+
+        self::assertSame(1, $result->claimed);
+        self::assertSame(0, $result->failed);
+        self::assertSame(0, $result->retried);
+        self::assertSame(1, $result->leasesLost);
+
+        // A permanent refusal by a runner that no longer owns the row must not
+        // kill the notification: the job is still the second runner's, alive.
+        $job = $this->jobs->findByIdempotencyKey('esz111.fail.lost');
+        self::assertInstanceOf(NotificationJob::class, $job);
+        self::assertSame('processing', $job->status);
+        self::assertSame(2, $job->attempts);
+        self::assertSame('lease_expired', $job->lastErrorCode);
+
+        $owner = $job->leaseOwner;
+        self::assertIsString($owner);
+        self::assertTrue($this->jobs->markSent($job, $owner));
+
+        $after = $this->jobs->findByIdempotencyKey('esz111.fail.lost');
+        self::assertInstanceOf(NotificationJob::class, $after);
+        self::assertSame('sent', $after->status);
+
+        self::assertSame([], $this->logLines('notification.failed'));
+        $this->assertLeaseLostLines($this->logLines('notification.leaseLost'));
+    }
+
+    public function testESZ111StaleReminderWhoseLeaseWasLostIsNeverCountedSkipped(): void
+    {
+        $bookingId = $this->seedBooking();
+
+        // The front job keeps the transport busy while the reminder's window
+        // closes; the reminder behind it was claimed before that, so it must be
+        // re-checked — and this time its lease is taken over before the check.
+        $this->jobs->enqueue($bookingId, 'email', 'booking_confirmation', 'esz111.front.key', $this->clock->now());
+        $behindId = $this->jobs->enqueue(
+            $bookingId,
+            'email',
+            'booking_reminder',
+            'esz111.behind.key',
+            $this->clock->now(),
+        );
+
+        $transport = new RecordingTransport('email');
+        $transport->before = $this->secondRunnerSeizesBehindJob($behindId);
+
+        $result = $this->runner($transport)->run($this->owner('slow'), 10);
+
+        self::assertSame(2, $result->claimed);
+        self::assertSame(1, $result->sent, 'the front job, whose lease nobody took');
+        self::assertSame(0, $result->skipped);
+        self::assertSame(1, $result->leasesLost, 'the reminder: stale, but no longer ours to skip');
+        self::assertSame(0, $result->retried);
+        self::assertSame(0, $result->failed);
+
+        // The old runner's skip never landed: the reminder is still the second
+        // runner's, not `skipped`.
+        $behind = $this->jobs->find($behindId);
+        self::assertInstanceOf(NotificationJob::class, $behind);
+        self::assertSame('processing', $behind->status);
+        self::assertSame(2, $behind->attempts);
+        self::assertSame('lease_expired', $behind->lastErrorCode);
+
+        self::assertSame([], $this->logLines('notification.skipped'));
+        $this->assertLeaseLostLines($this->logLines('notification.leaseLost'));
+
+        // The rightful owner still decides: the late reminder is skipped once.
+        $owner = $behind->leaseOwner;
+        self::assertIsString($owner);
+        self::assertTrue($this->jobs->markSkipped($behind->id, $owner, 'reminder_window_expired'));
+
+        $final = $this->jobs->find($behindId);
+        self::assertInstanceOf(NotificationJob::class, $final);
+        self::assertSame('skipped', $final->status);
+        self::assertSame(1, $this->rowCount("SELECT COUNT(*) AS n FROM notification_jobs WHERE status = 'skipped'"));
+    }
+
+    public function testESZ111ATransientFailureThatExhaustsTheBudgetPersistsFailedAndLogsIt(): void
+    {
+        $bookingId = $this->seedBooking();
+        $this->jobs->enqueue($bookingId, 'email', 'booking_confirmation', 'esz111.exhausted', $this->clock->now());
+
+        $transport = new FailingTransport('email', new TransientDeliveryException('transport_transient'));
+
+        for ($attempt = 1; $attempt <= $this->policy->maxAttempts; ++$attempt) {
+            $result = $this->runner($transport)->run($this->owner('one'), 10);
+            self::assertSame(1, $result->claimed, "attempt {$attempt} did not claim");
+
+            if ($attempt < $this->policy->maxAttempts) {
+                self::assertSame(1, $result->retried, "attempt {$attempt} did not schedule a retry");
+                $this->clock->advanceSeconds($this->policy->backoffSeconds($attempt) + 1);
+            } else {
+                self::assertSame(0, $result->retried, 'the exhausted job was reported as a retry');
+                self::assertSame(1, $result->failed, 'the exhausted job did not persist as failed');
+            }
+        }
+
+        $job = $this->jobs->findByIdempotencyKey('esz111.exhausted');
+        self::assertInstanceOf(NotificationJob::class, $job);
+        self::assertSame('failed', $job->status);
+        self::assertSame($this->policy->maxAttempts, $job->attempts);
+        self::assertSame('attempts_exhausted', $job->lastErrorCode);
+
+        // The first four failures were retries and were logged as such; the
+        // fifth is a persisted terminal failure and the log says `failed`,
+        // never `retry`.
+        $retries = $this->logLines('notification.retry');
+        self::assertCount($this->policy->maxAttempts - 1, $retries);
+        foreach ($retries as $line) {
+            self::assertSame('pending', $line['status'] ?? null, 'a retry line did not log `pending`');
+            self::assertSame('transport_transient', $line['errorCode'] ?? null);
+        }
+
+        $failures = $this->logLines('notification.failed');
+        self::assertCount(1, $failures);
+        self::assertSame('failed', $failures[0]['status'] ?? null);
+        self::assertSame('attempts_exhausted', $failures[0]['errorCode'] ?? null);
+    }
+
+    public function testESZ111OrdinarySentOutcomeCountsOnceAndLogsItsStoredStatus(): void
+    {
+        $bookingId = $this->seedBooking();
+        $this->jobs->enqueue($bookingId, 'email', 'booking_confirmation', 'esz111.ok.sent', $this->clock->now());
+
+        $result = $this->runner(new RecordingTransport('email'))->run($this->owner('one'), 10);
+
+        self::assertSame(1, $result->claimed);
+        self::assertSame(1, $result->sent);
+
+        $job = $this->jobs->findByIdempotencyKey('esz111.ok.sent');
+        self::assertInstanceOf(NotificationJob::class, $job);
+        self::assertSame('sent', $job->status);
+        self::assertNotNull($job->sentAtUtc);
+
+        $lines = $this->logLines('notification.sent');
+        self::assertCount(1, $lines);
+        self::assertSame('sent', $lines[0]['status'] ?? null);
+    }
+
+    public function testESZ111OrdinaryRetryOutcomeCountsOnceAndLogsItsStoredStatus(): void
+    {
+        $bookingId = $this->seedBooking();
+        $this->jobs->enqueue($bookingId, 'email', 'booking_confirmation', 'esz111.ok.retry', $this->clock->now());
+
+        $transport = new FailingTransport('email', new TransientDeliveryException('transport_transient'));
+        $result = $this->runner($transport)->run($this->owner('one'), 10);
+
+        self::assertSame(1, $result->claimed);
+        self::assertSame(1, $result->retried);
+
+        $job = $this->jobs->findByIdempotencyKey('esz111.ok.retry');
+        self::assertInstanceOf(NotificationJob::class, $job);
+        self::assertSame('pending', $job->status);
+        self::assertSame('transport_transient', $job->lastErrorCode);
+
+        $lines = $this->logLines('notification.retry');
+        self::assertCount(1, $lines);
+        self::assertSame('pending', $lines[0]['status'] ?? null);
+        self::assertSame([], $this->logLines('notification.failed'));
+    }
+
+    public function testESZ111OrdinaryFailedOutcomeCountsOnceAndLogsItsStoredStatus(): void
+    {
+        $bookingId = $this->seedBooking();
+        $this->jobs->enqueue($bookingId, 'email', 'booking_confirmation', 'esz111.ok.failed', $this->clock->now());
+
+        $transport = new FailingTransport('email', new PermanentDeliveryException('transport_permanent'));
+        $result = $this->runner($transport)->run($this->owner('one'), 10);
+
+        self::assertSame(1, $result->claimed);
+        self::assertSame(1, $result->failed);
+
+        $job = $this->jobs->findByIdempotencyKey('esz111.ok.failed');
+        self::assertInstanceOf(NotificationJob::class, $job);
+        self::assertSame('failed', $job->status);
+        self::assertSame('transport_permanent', $job->lastErrorCode);
+
+        $lines = $this->logLines('notification.failed');
+        self::assertCount(1, $lines);
+        self::assertSame('failed', $lines[0]['status'] ?? null);
+        self::assertSame('transport_permanent', $lines[0]['errorCode'] ?? null);
+    }
+
+    public function testESZ111OrdinarySkippedOutcomeCountsOnceAndLogsItsStoredStatus(): void
+    {
+        $bookingId = $this->seedBooking();
+
+        // The front job's delivery crosses the reminder's grace window, so the
+        // reminder behind it is re-checked after claiming and deliberately
+        // skipped — with its lease intact, this time.
+        $this->jobs->enqueue($bookingId, 'email', 'booking_confirmation', 'esz111.ok.front', $this->clock->now());
+        $this->jobs->enqueue($bookingId, 'email', 'booking_reminder', 'esz111.ok.behind', $this->clock->now());
+
+        $clock = $this->clock;
+        $grace = $this->policy->reminderGraceMinutes;
+        $transport = new RecordingTransport('email');
+        $transport->before = static function () use ($clock, $grace): void {
+            $clock->advanceMinutes($grace + 1);
+        };
+
+        $result = $this->runner($transport)->run($this->owner('one'), 10);
+
+        self::assertSame(2, $result->claimed);
+        self::assertSame(1, $result->sent);
+        self::assertSame(1, $result->skipped);
+        self::assertSame(0, $result->leasesLost);
+
+        $behind = $this->jobs->findByIdempotencyKey('esz111.ok.behind');
+        self::assertInstanceOf(NotificationJob::class, $behind);
+        self::assertSame('skipped', $behind->status);
+        self::assertSame('reminder_window_expired', $behind->lastErrorCode);
+
+        $lines = $this->logLines('notification.skipped');
+        self::assertCount(1, $lines);
+        self::assertSame('skipped', $lines[0]['status'] ?? null);
+        self::assertSame('reminder_window_expired', $lines[0]['errorCode'] ?? null);
+    }
+
     // --- helpers ------------------------------------------------------------
+
+    /**
+     * The ESZ-111 second-runner takeover for a run whose whole batch is the one
+     * job under test: while the first runner's transport is working, the lease
+     * expires and a second runner's tick — real repository methods, real
+     * guards — recovers the job and claims it.
+     *
+     * @return \Closure(): void
+     */
+    private function secondRunnerTakesOver(): \Closure
+    {
+        return function (): void {
+            $this->clock->advanceSeconds($this->policy->leaseSeconds + 1);
+            self::assertSame(1, $this->jobs->recoverAbandonedLeases());
+            self::assertCount(1, $this->jobs->claimDue($this->owner('fast'), 10, ['email']));
+        };
+    }
+
+    /**
+     * The ESZ-111 seizure behind a slow front job: while the first job of the
+     * batch is being delivered, the clock crosses both the lease expiry and the
+     * reminder grace window, and a second runner's tick recovers and re-claims
+     * exactly the reminder that is now late. The recovery and the claim are the
+     * repository's own statements, scoped to that one row so the front job
+     * keeps its lease.
+     *
+     * @return \Closure(): void
+     */
+    private function secondRunnerSeizesBehindJob(int $jobId): \Closure
+    {
+        return function () use ($jobId): void {
+            $this->clock->advanceMinutes($this->policy->reminderGraceMinutes + 1);
+            $now = $this->clock->now();
+
+            $statement = $this->database->run(
+                'UPDATE notification_jobs SET status = :pending, lease_owner = NULL,'
+                . ' lease_expires_at_utc = NULL, last_error_code = :code,'
+                . ' updated_at = :updatedAt, status_changed_at = :changedAt'
+                . ' WHERE id = :id AND status = :processing AND lease_expires_at_utc <= :cutoff',
+                [
+                    'pending' => 'pending',
+                    'code' => 'lease_expired',
+                    'updatedAt' => $this->clock->nowIso(),
+                    'changedAt' => $this->clock->nowIso(),
+                    'id' => $jobId,
+                    'processing' => 'processing',
+                    'cutoff' => NotificationInstant::database($now),
+                ],
+            );
+            self::assertSame(1, $statement->rowCount(), 'the late reminder was not recovered');
+
+            $statement = $this->database->run(
+                'UPDATE notification_jobs SET status = :processing, lease_owner = :owner,'
+                . ' lease_expires_at_utc = :expires, attempts = attempts + 1,'
+                . ' updated_at = :updatedAt, status_changed_at = :changedAt'
+                . ' WHERE id = :id AND status = :pending AND next_attempt_at_utc <= :cutoff'
+                . ' AND attempts < :maxAttempts',
+                [
+                    'processing' => 'processing',
+                    'owner' => $this->owner('fast'),
+                    'expires' => NotificationInstant::plusSeconds($now, $this->policy->leaseSeconds),
+                    'updatedAt' => $this->clock->nowIso(),
+                    'changedAt' => $this->clock->nowIso(),
+                    'id' => $jobId,
+                    'pending' => 'pending',
+                    'cutoff' => NotificationInstant::database($now),
+                    'maxAttempts' => $this->policy->maxAttempts,
+                ],
+            );
+            self::assertSame(1, $statement->rowCount(), 'the second runner could not claim the late reminder');
+        };
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function logLines(string $message): array
+    {
+        $lines = [];
+
+        foreach (explode("\n", trim($this->logContents())) as $line) {
+            if ($line === '') {
+                continue;
+            }
+
+            $decoded = json_decode($line, true);
+            if (\is_array($decoded) && ($decoded['message'] ?? null) === $message) {
+                $lines[] = $decoded;
+            }
+        }
+
+        return $lines;
+    }
+
+    /**
+     * ESZ-111 proof 7: a lease-loss line is allowlisted, never presents the
+     * claim-time `processing` snapshot as the current state (no `status` key),
+     * and carries no customer fact.
+     *
+     * @param list<array<string, mixed>> $lines
+     */
+    private function assertLeaseLostLines(array $lines): void
+    {
+        self::assertNotSame([], $lines, 'no lease-loss line was logged');
+
+        foreach ($lines as $line) {
+            self::assertSame('warn', $line['level'] ?? null);
+            self::assertSame('lease_lost', $line['errorCode'] ?? null);
+            self::assertArrayNotHasKey('status', $line, 'a lease-loss line presented a status');
+
+            foreach (array_keys($line) as $key) {
+                self::assertTrue(
+                    \in_array($key, ['ts', 'level', 'message'], true)
+                        || $this->policy->isLogFieldAllowed((string) $key),
+                    "a lease-loss line carried `{$key}`",
+                );
+            }
+
+            $encoded = json_encode($line);
+            self::assertIsString($encoded);
+            foreach (['Cliente Exemple', 'cliente@example.test', '+336', 'allergique'] as $secret) {
+                self::assertStringNotContainsString($secret, $encoded, $secret);
+            }
+        }
+    }
 
     private function seedBooking(string $reference = self::REFERENCE): int
     {

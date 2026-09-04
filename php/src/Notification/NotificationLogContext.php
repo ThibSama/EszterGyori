@@ -29,7 +29,13 @@ final class NotificationLogContext
         NotificationPolicy $policy,
         array $extra = [],
     ): array {
-        return self::filter($policy, [
+        // `array_replace`, not the `+` union: the claim-time snapshot below is
+        // exactly the field an outcome log must be able to correct. The job as
+        // the runner holds it is always `processing`, so a line announcing a
+        // persisted `sent`, `pending`, `failed` or `skipped` — or omitting the
+        // status after a lost lease (`null`, dropped by the filter) — has to be
+        // able to override it.
+        return self::filter($policy, array_replace([
             'jobId' => $job->id,
             'bookingReference' => $job->bookingReference,
             'channel' => $job->channel,
@@ -38,7 +44,7 @@ final class NotificationLogContext
             'attempts' => $job->attempts,
             'dueAtUtc' => $job->dueAtUtc,
             'leaseOwner' => $job->leaseOwner,
-        ] + $extra);
+        ], $extra));
     }
 
     /**

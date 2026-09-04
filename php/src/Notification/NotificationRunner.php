@@ -147,8 +147,17 @@ final class NotificationRunner
     /**
      * Delivers one claimed job and records the outcome.
      *
-     * @return string The status written, or `lease_lost` when the row was no
-     *                longer this runner's to write.
+     * The persisted database transition is authoritative: every guarded outcome
+     * writer reports whether its UPDATE affected a row, and only a persisted
+     * transition is counted, logged with its actual status, or returned. A
+     * transport that succeeded is never reported as sent if the lease was lost
+     * while it worked, and nothing is retried or rewritten after ownership loss.
+     *
+     * @return string The status that persisted (`sent`, `pending`, `failed`,
+     *                `skipped`), or `lease_lost` when the job was no longer
+     *                this runner's to write — nothing was persisted then, and
+     *                the log line carries no status, because the row's current
+     *                state belongs to whoever took the lease over.
      */
     private function deliver(NotificationJob $job, string $owner): string
     {
@@ -156,10 +165,16 @@ final class NotificationRunner
         // own grace window while queued behind a slow transport, and the whole
         // point of the policy is that a reminder is never delivered late.
         if ($this->jobs->isStale($job)) {
-            $this->jobs->markSkipped($job->id, $owner, 'reminder_window_expired');
-            $this->logJob('info', 'notification.skipped', $job, ['errorCode' => 'reminder_window_expired']);
+            if ($this->jobs->markSkipped($job->id, $owner, 'reminder_window_expired')) {
+                $this->logJob('info', 'notification.skipped', $job, [
+                    'errorCode' => 'reminder_window_expired',
+                    'status' => 'skipped',
+                ]);
 
-            return 'skipped';
+                return 'skipped';
+            }
+
+            return $this->leaseLost($job);
         }
 
         $started = hrtime(true);
@@ -167,18 +182,18 @@ final class NotificationRunner
         try {
             $this->transports->get($job->channel)->deliver($job);
         } catch (TransientDeliveryException $exception) {
-            $status = $this->jobs->markTransientFailure($job, $owner, $exception->errorCode);
-            $this->logJob('warn', 'notification.retry', $job, [
-                'errorCode' => $exception->errorCode,
-                'status' => $status,
-                'durationMs' => self::elapsedMs($started),
-            ]);
-
-            return $status;
+            return $this->recordTransientFailure($job, $owner, $exception->errorCode, $started);
         } catch (PermanentDeliveryException $exception) {
-            $this->jobs->markTerminalFailure($job, $owner, $exception->errorCode);
+            if (!$this->jobs->markTerminalFailure($job, $owner, $exception->errorCode)) {
+                // The lease expired while the transport was working and another
+                // runner took the job. Reported, never rewritten: the new owner
+                // is the one entitled to record an outcome.
+                return $this->leaseLost($job, $started);
+            }
+
             $this->logJob('warn', 'notification.failed', $job, [
                 'errorCode' => $exception->errorCode,
+                'status' => 'failed',
                 'durationMs' => self::elapsedMs($started),
             ]);
 
@@ -190,26 +205,16 @@ final class NotificationRunner
             // class name is not written either, since a custom exception class
             // could be named after anything.
             unset($exception);
-            $status = $this->jobs->markTransientFailure($job, $owner, 'transport_transient');
-            $this->logJob('warn', 'notification.retry', $job, [
-                'errorCode' => 'transport_transient',
-                'status' => $status,
-                'durationMs' => self::elapsedMs($started),
-            ]);
 
-            return $status;
+            return $this->recordTransientFailure($job, $owner, 'transport_transient', $started);
         }
 
         if (!$this->jobs->markSent($job, $owner)) {
             // The lease expired while the transport was working and another
             // runner took the job. Reported, never rewritten: the new owner is
-            // the one entitled to record an outcome.
-            $this->logJob('warn', 'notification.leaseLost', $job, [
-                'errorCode' => 'lease_lost',
-                'durationMs' => self::elapsedMs($started),
-            ]);
-
-            return 'lease_lost';
+            // the one entitled to record an outcome. A delivery the transport
+            // really made is not a DB `sent` this runner is allowed to claim.
+            return $this->leaseLost($job, $started);
         }
 
         $this->logJob('info', 'notification.sent', $job, [
@@ -218,6 +223,72 @@ final class NotificationRunner
         ]);
 
         return 'sent';
+    }
+
+    /**
+     * Records a transient failure and reports what actually persisted.
+     *
+     * The failure is a retry only when the row went back to `pending`. Once the
+     * attempt budget is spent, the persisted outcome is terminal `failed` with
+     * the frozen `attempts_exhausted` code — whatever the transport's transient
+     * code was — and it is logged as the failure it is, never as a retry. A
+     * null answer means the lease was lost, nothing was persisted, and the job
+     * must not be retried or rewritten.
+     */
+    private function recordTransientFailure(
+        NotificationJob $job,
+        string $owner,
+        string $errorCode,
+        int|float $started,
+    ): string {
+        $status = $this->jobs->markTransientFailure($job, $owner, $errorCode);
+
+        if ($status === null) {
+            return $this->leaseLost($job, $started);
+        }
+
+        if ($status === 'failed') {
+            $this->logJob('warn', 'notification.failed', $job, [
+                'errorCode' => 'attempts_exhausted',
+                'status' => 'failed',
+                'durationMs' => self::elapsedMs($started),
+            ]);
+
+            return 'failed';
+        }
+
+        $this->logJob('warn', 'notification.retry', $job, [
+            'errorCode' => $errorCode,
+            'status' => 'pending',
+            'durationMs' => self::elapsedMs($started),
+        ]);
+
+        return 'pending';
+    }
+
+    /**
+     * Reports a lease lost between the claim and the outcome write.
+     *
+     * The row is no longer this runner's: whoever took the lease over may
+     * already have delivered, retried or retired it, so the line must not
+     * present the claim-time `processing` snapshot as the current state. The
+     * status key is overridden to null — and dropped by the allowlist filter —
+     * because the current DB status is unknown to this runner.
+     */
+    private function leaseLost(NotificationJob $job, int|float|null $started = null): string
+    {
+        $context = [
+            'errorCode' => 'lease_lost',
+            'status' => null,
+        ];
+
+        if ($started !== null) {
+            $context['durationMs'] = self::elapsedMs($started);
+        }
+
+        $this->logJob('warn', 'notification.leaseLost', $job, $context);
+
+        return 'lease_lost';
     }
 
     private static function elapsedMs(int|float $startedNs): int
