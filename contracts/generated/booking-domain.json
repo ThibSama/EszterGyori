@@ -11,6 +11,7 @@
     "source": "SiteContent.services.items[].id",
     "keyPattern": "^[a-z][a-z0-9-]{1,63}$",
     "labelMaxLength": 160,
+    "labelSource": "The booking label stored beside a service key is that item's title from the validated published SiteContent document, mirrored at provisioning time; re-provisioning after a published title change updates it. It is never operator-supplied and never falls back to a draft, the defaults or an existing row.",
     "durationMinutes": {
       "min": 5,
       "max": 480

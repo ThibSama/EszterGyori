@@ -558,6 +558,13 @@ Boundaries:
   buffers, active state and audit timestamps; editorial descriptions and media remain
   in SiteContent. No migration or boot path seeds rows. Provisioning is an explicit,
   repeat-safe `php/bin/provision-booking-service.php` action.
+- The booking label is not an independent editorial authority (AUD-14): it mirrors the
+  title of the matching item in the validated *published* SiteContent document.
+  Provisioning (and the development bootstrap) derives it from that document through
+  the content-storage/contract-validation path and persists exactly the item title;
+  the CLI accepts no free `--label`, refuses when no published content exists or the
+  key has no unique item, and re-provisioning after a published title change updates
+  the stored mirror.
 - Availability is stored as ISO weekday plus local `DATE`/`TIME` rules and one replacing
   exception per local date. Those wall-clock values are interpreted exclusively in the
   IANA zone `Europe/Paris`; PHP, MySQL and host timezone defaults are irrelevant. No
@@ -658,9 +665,11 @@ Boundaries:
   card link to it; a `?service=<canonical-key>` hint may preselect a service only after
   the server confirms that key is active.
 - `GET /api/booking/services` exposes only active canonical keys, booking labels and
-  durations. The browser intersects those keys with published `SiteContent` services,
-  preserving editorial titles and descriptions without copying them into SQL or the
-  booking contract.
+  durations. The booking label is the published SiteContent title for that key,
+  mirrored at provisioning time (AUD-14) — the browser still intersects the returned
+  keys with published `SiteContent` services and renders the editorial title and
+  description from there, so the SQL mirror and the CMS cannot diverge into two
+  authoritative names for one service.
 - Seven-day navigation is bounded to the API's 90-day Paris-local horizon. Dates and
   slots become selectable only from a validated `POST /api/booking/availability`
   response; the browser computes no availability. Service, date and range changes clear

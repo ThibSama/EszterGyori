@@ -118,11 +118,23 @@ After migrations, provision application records with the dedicated commands only
 needed; they are not schema steps:
 
 ```sh
-/usr/bin/php app/bin/provision-booking-service.php --config=/usr/home/<FTP_LOGIN>/eszter/config/config.php
+/usr/bin/php app/bin/provision-booking-service.php --config=/usr/home/<FTP_LOGIN>/eszter/config/config.php --key=brows --duration=90 --buffer-before=15 --buffer-after=15
 /usr/bin/php app/bin/provision-admin.php --config=/usr/home/<FTP_LOGIN>/eszter/config/config.php
 ```
 
 The admin password is read interactively or from standard input, never an argument.
+Repeat `provision-booking-service.php` per service key to update or disable
+(`--disable`) it.
+
+The booking command takes no `--label` (AUD-14): the stored booking label is the
+title of the matching item in the *published* SiteContent document — the item whose
+`id` is the `--key` — so the CMS stays the single label authority and re-provisioning
+after a published title change refreshes the stored copy. The command therefore
+refuses, without touching `booking_services`, when the key is unknown or when no
+published content exists yet: publish the site content from the admin editor (or let
+the first site request initialize the content store with the canonical defaults)
+before first provisioning. Unknown keys, invalid published content and the now-rejected
+`--label` option all exit non-zero and change no row.
 
 ## 4. Configure SMTP and the cron entries
 

@@ -13,11 +13,14 @@ use Eszter\Booking\AvailabilityWindow;
 use Eszter\Booking\BookableServiceRepository;
 use Eszter\Booking\BookingDomainContract;
 use Eszter\Booking\BookingSerializationLock;
+use Eszter\Booking\BookingServiceLabelResolver;
 use Eszter\Booking\BookingTimePolicy;
 use Eszter\Booking\WeeklyAvailabilityRule;
 use Eszter\Config\Configuration;
+use Eszter\Contract\ContentValidator;
 use Eszter\Contract\ContractArtifacts;
 use Eszter\Database\Database;
+use Eszter\Storage\ContentStorage;
 use Eszter\Support\SystemClock;
 
 require_once __DIR__ . '/../vendor/autoload.php';
@@ -86,10 +89,27 @@ function bootstrapDevelopmentMain(array $arguments): int
             $bookingContract,
             new BookingSerializationLock($database),
         );
+        // AUD-14: development seeding derives every booking label from the
+        // same authority as production provisioning — the published
+        // SiteContent item for the key, read through the configured
+        // content-storage/contract-validation path (which seeds the canonical
+        // defaults when the store is empty, exactly as the site itself does).
+        // This file therefore holds no hard-coded second copy of editorial
+        // titles.
+        $storage = new ContentStorage(
+            $config->contentDir,
+            $config->tmpDir,
+            $config->lockDir,
+            $artifacts,
+            ContentValidator::create($artifacts),
+            $clock,
+        );
+        $labelResolver = new BookingServiceLabelResolver($bookingContract);
+        $published = $storage->readPublished();
         foreach (bootstrapDevelopmentServices() as $service) {
             $services->provision(
                 $service['key'],
-                $service['label'],
+                $labelResolver->resolve($service['key'], $published),
                 $service['duration'],
                 $service['bufferBefore'],
                 $service['bufferAfter'],
@@ -235,21 +255,18 @@ function bootstrapDevelopmentCredentials(string $path): array
 /**
  * Development-only, deterministic operational fixtures.
  *
- * @return list<array{key: string, label: string, duration: int, bufferBefore: int, bufferAfter: int}>
+ * Keys and operational values only: the stored label is derived from the
+ * published SiteContent at bootstrap time (AUD-14), never hard-coded here.
+ *
+ * @return list<array{key: string, duration: int, bufferBefore: int, bufferAfter: int}>
  */
 function bootstrapDevelopmentServices(): array
 {
     return [
-        ['key' => 'brows', 'label' => 'Sourcils', 'duration' => 90, 'bufferBefore' => 15, 'bufferAfter' => 15],
-        ['key' => 'eyeliner', 'label' => 'Eyeliner', 'duration' => 120, 'bufferBefore' => 15, 'bufferAfter' => 15],
-        ['key' => 'lips', 'label' => 'Lèvres', 'duration' => 120, 'bufferBefore' => 15, 'bufferAfter' => 15],
-        [
-            'key' => 'freckles',
-            'label' => 'Taches de rousseur',
-            'duration' => 60,
-            'bufferBefore' => 15,
-            'bufferAfter' => 15,
-        ],
+        ['key' => 'brows', 'duration' => 90, 'bufferBefore' => 15, 'bufferAfter' => 15],
+        ['key' => 'eyeliner', 'duration' => 120, 'bufferBefore' => 15, 'bufferAfter' => 15],
+        ['key' => 'lips', 'duration' => 120, 'bufferBefore' => 15, 'bufferAfter' => 15],
+        ['key' => 'freckles', 'duration' => 60, 'bufferBefore' => 15, 'bufferAfter' => 15],
     ];
 }
 

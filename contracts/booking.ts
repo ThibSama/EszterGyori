@@ -37,7 +37,12 @@ export const BOOKING_DOMAIN_VERSION = 7;
  */
 export const BOOKING_TIME_ZONE = "Europe/Paris";
 
-/** Reuse the CMS's stable business identifiers; never copy editorial titles. */
+/**
+ * Reuse the CMS's stable business identifiers as keys; a key is never an
+ * editorial title. The stored booking label (see `services.labelSource`) is
+ * the matching published item's title mirrored at provisioning — a cache of
+ * the SiteContent authority, never an independent copy.
+ */
 export const bookableServiceKeys = serviceItemIds;
 export type BookableServiceKey = (typeof bookableServiceKeys)[number];
 
@@ -575,6 +580,18 @@ export const bookingDomainContract = {
     source: "SiteContent.services.items[].id",
     keyPattern: BOOKING_SERVICE_KEY_PATTERN,
     labelMaxLength: BOOKING_SERVICE_LABEL_MAX_LENGTH,
+    /**
+     * AUD-14 — where a stored booking label may come from. There is exactly one
+     * authority: the *published* SiteContent services item whose `id` is the
+     * service key. Provisioning persists exactly that item's title (trimmed of
+     * boundary whitespace only) and re-provisioning after a published title
+     * change refreshes the stored label; an operator-supplied `--label`, a
+     * draft, the canonical defaults or a pre-existing row are never an
+     * authority, and a missing key or unreadable published content refuses
+     * provisioning before any row changes.
+     */
+    labelSource:
+      "The booking label stored beside a service key is that item's title from the validated published SiteContent document, mirrored at provisioning time; re-provisioning after a published title change updates it. It is never operator-supplied and never falls back to a draft, the defaults or an existing row.",
     durationMinutes: {
       min: BOOKING_SERVICE_DURATION_MIN_MINUTES,
       max: BOOKING_SERVICE_DURATION_MAX_MINUTES,

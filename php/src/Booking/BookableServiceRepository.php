@@ -56,6 +56,14 @@ final class BookableServiceRepository
      * implicitly: an operator or a future authenticated admin action must supply
      * every value deliberately.
      *
+     * AUD-14: `$label` is **not** free operator text. Every provisioning entry
+     * point (the CLI and the development bootstrap) resolves it from the
+     * validated published SiteContent item whose `id` is `$key`
+     * ({@see BookingServiceLabelResolver}) — the stored label is a mirror of
+     * the CMS title, never an independent authority. This method only validates
+     * and persists what it is given; it never invents, defaults or re-uses a
+     * label itself.
+     *
      * Provisioning rewrites exactly the facts a slot validation reads —
      * `is_active`, duration and both buffers — so it takes the booking
      * serialization boundary first, inside its transaction (ESZ-146): a

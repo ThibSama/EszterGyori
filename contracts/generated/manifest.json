@@ -91,7 +91,7 @@
     },
     {
       "file": "booking-domain.json",
-      "sha256": "66071ff0c6853e6338dd4196cda58d6db9ba17301e54716bd1037c93cdc8d93b"
+      "sha256": "b219a2698f9194ee3a23614b170919f45b64ba2672f09878e74786189c27b861"
     },
     {
       "file": "error-envelope.schema.json",
