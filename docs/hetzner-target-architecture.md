@@ -632,6 +632,12 @@ Boundaries:
 - `booking_history` appends `created`, `moved`, `cancelled` and `customer_updated`
   events in the same transaction as their change. The booking row remains the source of
   truth for current state.
+- Admin booking reads are bounded (ESZ-145): range pages and mutation responses carry
+  current-state booking facts only — zero history SQL per booking and no history array on
+  the wire — and only the exact `mode=reference` detail read serves history, as one fixed
+  page of at most 50 chronological events beside the booking, with explicit `hasMore` and
+  a strictly advancing `eventId` cursor over the monotonic row id (`adminViews.historyPage`
+  in the booking-domain artifact).
 
 ### Package 5.1 public booking flow (ESZ-050 through ESZ-055)
 

@@ -77,6 +77,19 @@ export const BOOKING_ADMIN_RANGE_PAGE_SIZE = 200;
 export const BOOKING_ADMIN_RANGE_MAX_PAGES = 250;
 
 /**
+ * ESZ-145 — the fixed page capacity of one booking history read.
+ *
+ * `mode=reference` returns at most this many history events per request and
+ * always states `hasMore` and the typed continuation cursor, so no caller can
+ * mistake a page for the whole audit trail. 50 keeps a detail response small
+ * (one busy booking can hold thousands of events) while making a long trail a
+ * handful of round trips. Like the range page size it is deliberately not a
+ * client parameter: a page size a caller could raise is a bound the caller
+ * could remove.
+ */
+export const BOOKING_ADMIN_HISTORY_PAGE_SIZE = 50;
+
+/**
  * ESZ-144 — the bound on each confirmed-entry detail collection of the
  * operational summary.
  *
@@ -649,7 +662,18 @@ export const bookingDomainContract = {
       termination:
         "A client may walk at most the maxPages pages per range before it must stop and report the range as incomplete; a correct server always terminates earlier because every page strictly advances the cursor.",
       exactReference:
-        "mode=reference stays an exact lookup by booking reference and is unaffected by pagination.",
+        "mode=reference stays an exact lookup by booking reference and is unaffected by range pagination.",
+    },
+    historyPage: {
+      pageSize: BOOKING_ADMIN_HISTORY_PAGE_SIZE,
+      membership:
+        "Only mode=reference carries history, as one fixed page of the booking's own append-only events in chronological order; range reads and mutation responses carry current-state booking facts only and never a history array, so a page of 200 bookings costs a constant number of queries and no per-booking history read.",
+      ordering:
+        "History events are ordered by the monotonic booking_history row id, which is also the continuation key: chronological order with a stable tie-break is impossible to fake because the id is assigned by the row itself.",
+      cursor:
+        "An optional typed history cursor {eventId} names the id of the last event the previous page exposed. The next page begins strictly after it (id > eventId), so re-sending a cursor cannot loop and paging cannot duplicate or skip an event; an absent cursor is the first page. The server validates the cursor's shape and refuses a non-positive id before reading.",
+      hasMore:
+        "The server fetches pageSize+1 events and reports hasMore from the surplus row; when more events exist the response says so and hands back the strictly advancing cursor of its last exposed event, so a page is never silently truncated.",
     },
     summary: {
       counts:

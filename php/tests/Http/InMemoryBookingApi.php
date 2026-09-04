@@ -89,6 +89,25 @@ final class InMemoryBookingApi implements BookingApi
     /** @return array<string, mixed> */
     public function adminQuery(array $request): array
     {
+        // ESZ-145: the fixture mirrors the split surfaces — a range read is a
+        // page of current-state facts, a reference read adds one bounded
+        // history page beside the booking.
+        if (($request['mode'] ?? null) === 'reference') {
+            return [
+                'booking' => $this->adminBooking('confirmed', '2026-06-15T07:00:00.000Z'),
+                'historyPage' => [
+                    'pageSize' => $this->contract->adminHistoryPageSize,
+                    'hasMore' => false,
+                    'nextCursor' => null,
+                    'events' => [[
+                        'type' => 'created',
+                        'actor' => 'public',
+                        'occurredAt' => '2026-06-13T12:00:00.000Z',
+                    ]],
+                ],
+            ];
+        }
+
         return [
             'bookings' => [$this->adminBooking('confirmed', '2026-06-15T07:00:00.000Z')],
             'page' => [
@@ -393,11 +412,6 @@ final class InMemoryBookingApi implements BookingApi
             'cancellationReason' => $cancelled ? 'Indisponible' : null,
             'createdAt' => '2026-06-13T12:00:00.000Z',
             'updatedAt' => '2026-06-13T12:00:00.000Z',
-            'history' => [[
-                'type' => $cancelled ? 'cancelled' : 'created',
-                'actor' => $cancelled ? 'admin' : 'public',
-                'occurredAt' => '2026-06-13T12:00:00.000Z',
-            ]],
         ];
     }
 }

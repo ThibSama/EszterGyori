@@ -1242,6 +1242,7 @@ final class HttpContractConformanceTest extends TestCase
             case 'publicBookingResponse':
             case 'adminBookingsResponse':
             case 'adminBookingResponse':
+            case 'adminBookingReferenceResponse':
             case 'adminBookingsSummaryResponse':
             case 'adminAvailabilityResponse':
             case 'adminAvailabilityWeeklyResponse':
@@ -1253,6 +1254,7 @@ final class HttpContractConformanceTest extends TestCase
                     'publicBookingResponse' => 'public-booking-response.schema.json',
                     'adminBookingsResponse' => 'admin-bookings-response.schema.json',
                     'adminBookingResponse' => 'admin-booking-response.schema.json',
+                    'adminBookingReferenceResponse' => 'admin-booking-reference-response.schema.json',
                     'adminBookingsSummaryResponse' => 'admin-bookings-summary-response.schema.json',
                     'adminAvailabilityResponse' => 'admin-availability-response.schema.json',
                     'adminAvailabilityWeeklyResponse' => 'admin-availability-weekly-response.schema.json',
@@ -1277,6 +1279,24 @@ final class HttpContractConformanceTest extends TestCase
                     self::assertSame($pageSize, $body['page']['pageSize']);
                     self::assertFalse($body['page']['hasMore']);
                     self::assertNull($body['page']['nextCursor']);
+                }
+                if ($expected['body'] === 'adminBookingReferenceResponse') {
+                    // ESZ-145: the reference detail read serves the booking's
+                    // current facts beside exactly one bounded history page;
+                    // the fixture's trail is one event, so the page says it is
+                    // complete and carries no dangling continuation. Both page
+                    // sizes are the domain's own numbers.
+                    $contract = BookingDomainContract::fromArtifacts($artifacts);
+                    self::assertSame($contract->adminHistoryPageSize, $body['historyPage']['pageSize']);
+                    self::assertFalse($body['historyPage']['hasMore']);
+                    self::assertNull($body['historyPage']['nextCursor']);
+                    self::assertArrayNotHasKey(
+                        'history',
+                        $body['booking'],
+                        'current-state facts must not carry a history array',
+                    );
+                    self::assertArrayHasKey('booking', $body);
+                    self::assertCount(1, $body['historyPage']['events']);
                 }
                 if ($expected['body'] === 'adminBookingsSummaryResponse') {
                     // `summary.cancelledNeverInflatesConfirmed`, at the transport

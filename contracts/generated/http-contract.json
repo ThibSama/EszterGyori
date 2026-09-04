@@ -690,8 +690,8 @@
       },
       "optimisticConcurrency": "Admin booking responses expose the canonical UTC millisecond updatedAt, which doubles as the V1 optimistic-concurrency token of the row — there is no separate revision column. Update, move and cancel require expectedUpdatedAt and, inside the mutation transaction after the authoritative row lock and before any write, history append or notification scheduling, compare it byte-for-byte with the current updatedAt. A mismatch is 409 REVISION_CONFLICT and writes nothing; a fresh token lets the mutation proceed and store an updatedAt strictly later than the token it was granted against, even when the application clock returns the same millisecond or moves backward — the state timestamps advance by one derived mutation instant.",
       "move": "Authenticated move availability resolves the booking server-side and delegates to SlotEngine while excluding only itself. Mutation retains reference and service, requires confirmed state, and transactionally recomputes the submitted returned instant.",
-      "history": "Append-only created, moved, cancelled and customer_updated events; the bookings row remains authoritative current state.",
-      "adminQuery": "An authenticated read, no CSRF. mode=reference is an exact lookup. mode=range returns the bookings whose start falls in the requested Paris-civil window, deterministically ordered and paginated per adminViews.rangeRead: pageSize rows at most, a typed cursor for the next page, hasMore detected with a pageSize+1 probe — no row is silently clipped.",
+      "history": "Append-only created, moved, cancelled and customer_updated events; the bookings row remains authoritative current state. ESZ-145: history is served only by mode=reference, one fixed page of at most 50 chronological events with explicit hasMore and a strictly advancing typed cursor; range reads and mutation responses carry current-state booking facts only and never a history array.",
+      "adminQuery": "An authenticated read, no CSRF. mode=reference is an exact lookup returning the booking's current facts beside one bounded page of its history (adminViews.historyPage: at most 50 events, chronological, hasMore from a pageSize+1 probe, typed eventId continuation). mode=range returns the bookings whose start falls in the requested Paris-civil window, deterministically ordered and paginated per adminViews.rangeRead: pageSize rows at most, a typed cursor for the next page, hasMore detected with a pageSize+1 probe — no row is silently clipped. Range rows carry current-state facts only: a range page costs a constant number of queries whatever its row count, and never one history read per booking.",
       "adminSummary": "An authenticated read, no CSRF. Counts and nextConfirmedStartsAtUtc are exact SQL aggregations over the whole window; the today/upcoming entry lists are confirmed-only and bounded at adminViews.summary.listedEntriesMax with listings.todayComplete/upcomingComplete stating whether each list is complete."
     },
     "availabilityAdministration": {
@@ -3297,7 +3297,7 @@
     {
       "id": "admin.bookings.query.post.ok",
       "endpoint": "/api/admin/bookings/query",
-      "description": "An authenticated read query lists full booking records and durable history without CSRF.",
+      "description": "An authenticated range read lists the current-state booking records with their pagination facts and no per-booking history, without CSRF.",
       "request": {
         "method": "POST",
         "path": "/api/admin/bookings/query",
@@ -3314,6 +3314,51 @@
       "expect": {
         "status": 200,
         "body": "adminBookingsResponse"
+      }
+    },
+    {
+      "id": "admin.bookings.query.post.referenceOk",
+      "endpoint": "/api/admin/bookings/query",
+      "description": "ESZ-145 — the reference detail read returns the booking's current facts beside one fixed, bounded page of its history with explicit pagination metadata, without CSRF.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/bookings/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"reference\",\"reference\":\"bk_00000000000000000000000000000000\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminBookingReferenceResponse"
+      }
+    },
+    {
+      "id": "admin.bookings.query.post.malformedHistoryCursor",
+      "endpoint": "/api/admin/bookings/query",
+      "description": "ESZ-145 — a history continuation cursor is typed and validated: a reference request whose eventId is not a positive integer is refused by the schema before any read.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/bookings/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"reference\",\"reference\":\"bk_00000000000000000000000000000000\",\"historyCursor\":{\"eventId\":0}}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
       }
     },
     {

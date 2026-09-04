@@ -27,6 +27,7 @@ use Eszter\Booking\InvalidBookingTransitionException;
 use Eszter\Booking\SlotEngine;
 use Eszter\Booking\WeeklyAvailabilityRule;
 use Eszter\Config\SessionSettings;
+use Eszter\Contract\StructuralValidator;
 use Eszter\Database\Database;
 use Eszter\Http\Request;
 use Eszter\Http\Response;
@@ -1085,12 +1086,18 @@ final class SqlIntegrationTest extends TestCase
 
         self::assertSame($id, $this->bookings->find($reference)?->id);
         self::assertSame('cancelled', $cancelled['booking']['state']);
-        self::assertSame('Cliente Corrigée', $queried['bookings'][0]['customerName']);
-        self::assertSame('2026-06-15T08:00:00.000Z', $queried['bookings'][0]['startsAtUtc']);
+        self::assertSame('Cliente Corrigée', $queried['booking']['customerName']);
+        self::assertSame('2026-06-15T08:00:00.000Z', $queried['booking']['startsAtUtc']);
+        // ESZ-145: the reference read serves the trail as its own bounded
+        // page beside the booking's current-state facts.
+        self::assertArrayNotHasKey('history', $queried['booking']);
         self::assertSame(
             ['created', 'customer_updated', 'moved', 'cancelled'],
-            array_column($queried['bookings'][0]['history'], 'type'),
+            array_column($queried['historyPage']['events'], 'type'),
         );
+        self::assertSame($this->bookingContract->adminHistoryPageSize, $queried['historyPage']['pageSize']);
+        self::assertFalse($queried['historyPage']['hasMore']);
+        self::assertNull($queried['historyPage']['nextCursor']);
         $availableAfterCancellation = $this->bookingApi->availability([
             'serviceKey' => 'brows',
             'fromDate' => '2026-06-15',
@@ -1120,9 +1127,14 @@ final class SqlIntegrationTest extends TestCase
         self::assertSame('cancelled', $updated['booking']['state']);
         self::assertSame('Nouvelle Représentante', $updated['booking']['customerName']);
         self::assertSame('representante@example.test', $updated['booking']['customerEmail']);
+        // ESZ-145: a mutation response carries only the updated current-state
+        // booking — no history array and no history read. The audit trail is
+        // still complete and ordered, served by the reference read.
+        self::assertArrayNotHasKey('history', $updated['booking']);
+        $trail = $this->bookingApi->adminQuery(['mode' => 'reference', 'reference' => $reference]);
         self::assertSame(
             ['created', 'cancelled', 'customer_updated'],
-            array_column($updated['booking']['history'], 'type'),
+            array_column($trail['historyPage']['events'], 'type'),
         );
     }
 
@@ -1150,7 +1162,7 @@ final class SqlIntegrationTest extends TestCase
             array_column($this->bookingApi->adminQuery([
                 'mode' => 'reference',
                 'reference' => $source['reference'],
-            ])['bookings'][0]['history'], 'type'),
+            ])['historyPage']['events'], 'type'),
         );
     }
 
@@ -1252,7 +1264,7 @@ final class SqlIntegrationTest extends TestCase
             'reference' => $reference,
             // ESZ-139: the PATCH carries the booking's own token, read from
             // the authenticated query just above.
-            'expectedUpdatedAt' => (string) ($query->decodedBody()['bookings'][0]['updatedAt'] ?? ''),
+            'expectedUpdatedAt' => (string) ($query->decodedBody()['booking']['updatedAt'] ?? ''),
             'customerName' => 'Cliente HTTP',
             'customerEmail' => 'cliente@example.test',
             'customerPhone' => null,
@@ -2215,7 +2227,7 @@ final class SqlIntegrationTest extends TestCase
         // The recovery the UI performs: re-read by reference, then retry with
         // the authoritative token — only that succeeds.
         $reRead = $this->bookingApi->adminQuery(['mode' => 'reference', 'reference' => $reference]);
-        self::assertSame($currentToken, $reRead['bookings'][0]['updatedAt']);
+        self::assertSame($currentToken, $reRead['booking']['updatedAt']);
 
         $retried = $this->bookingApi->adminMutate([
             'action' => 'cancel',
@@ -2271,7 +2283,7 @@ final class SqlIntegrationTest extends TestCase
             (string) json_encode(['mode' => 'reference', 'reference' => $reference]),
         ));
         self::assertSame(200, $query->status);
-        $token = (string) ($query->decodedBody()['bookings'][0]['updatedAt'] ?? '');
+        $token = (string) ($query->decodedBody()['booking']['updatedAt'] ?? '');
 
         $aUpdate = $kernel->handle(new Request(
             'PATCH',
@@ -2350,10 +2362,10 @@ final class SqlIntegrationTest extends TestCase
             ],
             (string) json_encode(['mode' => 'reference', 'reference' => $reference]),
         ));
-        self::assertSame('Cliente Gagnante', $after->decodedBody()['bookings'][0]['customerName'] ?? null);
+        self::assertSame('Cliente Gagnante', $after->decodedBody()['booking']['customerName'] ?? null);
         self::assertSame(
             ['created', 'customer_updated'],
-            array_column($after->decodedBody()['bookings'][0]['history'] ?? [], 'type'),
+            array_column($after->decodedBody()['historyPage']['events'] ?? [], 'type'),
         );
     }
 
@@ -3536,6 +3548,91 @@ final class SqlIntegrationTest extends TestCase
         return $references;
     }
 
+    /**
+     * ESZ-145 — attaches a statement recorder to the suite connection, runs
+     * `$work`, detaches it again, and returns the statements it executed.
+     *
+     * The recording window is exactly `$work`, so statements a test runs to
+     * seed its dataset are never counted. The observer receives statement text
+     * only — never bound values — and is detached in a `finally`, so a failed
+     * assertion cannot leak counting into the next test.
+     *
+     * @param \Closure(): mixed $work
+     * @return list<string>
+     */
+    private function recordedStatements(\Closure $work): array
+    {
+        $statements = [];
+        $this->database->observeStatements(function (string $sql) use (&$statements): void {
+            $statements[] = $sql;
+        });
+
+        try {
+            $work();
+        } finally {
+            $this->database->observeStatements(null);
+        }
+
+        return $statements;
+    }
+
+    /**
+     * @param list<string> $statements
+     * @return list<string> the statements that touch booking_history
+     */
+    private function historyStatements(array $statements): array
+    {
+        return array_values(array_filter(
+            $statements,
+            static fn (string $sql): bool => str_contains($sql, 'booking_history'),
+        ));
+    }
+
+    /**
+     * ESZ-145 — bulk-inserts `$count` history events for one booking,
+     * bypassing the repository exactly as insertRawBookings does: the proof
+     * datasets must hold thousands of events, which per-call appends would
+     * not make practical.
+     *
+     * Every event stores a distinct occurred instant — NOW plus its ordinal
+     * in milliseconds — strictly increasing with the auto-increment id, so
+     * chronological wire order is provable from the event payloads alone.
+     */
+    private function insertRawHistoryEvents(int $bookingId, int $count): void
+    {
+        $base = new \DateTimeImmutable(self::NOW);
+
+        foreach (\array_chunk(range(1, $count), 200) as $chunk) {
+            $values = [];
+            $parameters = [];
+            foreach ($chunk as $ordinal) {
+                $occurred = IsoTimestamp::format($base->modify("+{$ordinal} milliseconds"));
+                // The booking id is interpolated deliberately, like the fixed
+                // 'brows' service in insertRawBookings: native prepares forbid
+                // reusing one named parameter, and the id is the test's own.
+                $values[] = "({$bookingId}, 'moved', 'admin', :details{$ordinal}, :occurred{$ordinal})";
+                $parameters["details{$ordinal}"] = '{}';
+                $parameters["occurred{$ordinal}"] = $occurred;
+            }
+            $this->database->run(
+                'INSERT INTO booking_history (booking_id, event_type, actor_type, details_json, occurred_at)'
+                . ' VALUES ' . implode(', ', $values),
+                $parameters,
+            );
+        }
+    }
+
+    /** @return list<int> the history row ids of one booking, in row-id order */
+    private function historyIds(int $bookingId): array
+    {
+        $rows = $this->database->fetchAll(
+            'SELECT id FROM booking_history WHERE booking_id = :booking ORDER BY id',
+            ['booking' => $bookingId],
+        );
+
+        return array_map(static fn (array $row): int => (int) ($row['id'] ?? 0), $rows);
+    }
+
     /** @return list<array<string, mixed>> */
     private function rangeRows(string $fromUtc, string $untilUtc): array
     {
@@ -3900,8 +3997,13 @@ final class SqlIntegrationTest extends TestCase
         self::assertSame($this->bookingContract->adminRangePageSize, $first['page']['pageSize']);
 
         $byReference = $this->bookingApi->adminQuery(['mode' => 'reference', 'reference' => $reference]);
-        self::assertSame($reference, $byReference['bookings'][0]['reference']);
-        self::assertFalse($byReference['page']['hasMore']);
+        self::assertSame($reference, $byReference['booking']['reference']);
+        self::assertFalse($byReference['historyPage']['hasMore']);
+        self::assertSame(
+            $this->bookingContract->adminHistoryPageSize,
+            $byReference['historyPage']['pageSize'],
+        );
+        self::assertArrayNotHasKey('history', $byReference['booking']);
 
         $outOfWindowCursors = [
             // Before the window.
@@ -3977,6 +4079,334 @@ final class SqlIntegrationTest extends TestCase
             array_column($summary['upcoming'], 'startsAtUtc'),
         );
         self::assertSame('2026-06-14T18:00:00.000Z', $summary['nextConfirmedStartsAtUtc']);
+    }
+
+    // --- ESZ-145: bounded admin booking SQL and bounded history payload -----
+
+    /**
+     * ESZ-145 — one range page costs a constant number of queries, whatever
+     * its row count, and performs zero history reads. Fixture: an empty range
+     * and a full 200-booking page in the same window shape.
+     */
+    public function testEs145ARangePageCostsAConstantNumberOfQueriesAndNeverReadsHistory(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+
+        $emptyStatements = $this->recordedStatements(function (): void {
+            $page = $this->bookingApi->adminQuery([
+                'mode' => 'range',
+                'fromDate' => '2026-08-01',
+                'untilDate' => '2026-08-01',
+            ]);
+            self::assertSame([], $page['bookings']);
+        });
+        self::assertCount(1, $emptyStatements, 'an empty range page must cost exactly one query');
+        self::assertSame([], $this->historyStatements($emptyStatements));
+
+        $rows = [];
+        for ($i = 0; $i < 200; ++$i) {
+            $rows[] = ['start' => $this->dbStart('2026-07-01T06:00:00Z', $i)];
+        }
+        self::assertCount(200, $this->insertRawBookings($rows));
+
+        $fullStatements = $this->recordedStatements(function (): void {
+            $page = $this->bookingApi->adminQuery([
+                'mode' => 'range',
+                'fromDate' => '2026-07-01',
+                'untilDate' => '2026-07-01',
+            ]);
+            self::assertCount(200, $page['bookings']);
+            self::assertFalse($page['page']['hasMore']);
+            self::assertNull($page['page']['nextCursor']);
+            foreach ($page['bookings'] as $booking) {
+                self::assertArrayNotHasKey('history', $booking, 'range rows carry current-state facts only');
+            }
+        });
+
+        // The full page costs the same single query as the empty range — the
+        // cost is constant in the row count, never one query per booking —
+        // and no statement touches booking_history at all.
+        self::assertCount(1, $fullStatements, 'a 200-booking page must cost exactly one query');
+        self::assertSame([], $this->historyStatements($fullStatements));
+    }
+
+    /**
+     * ESZ-145 — walking a representative 1000-booking dataset stays at one
+     * query per booking page: five pages, five statements, zero history reads.
+     */
+    public function testEs145WalkingAThousandBookingsStaysAtOneQueryPerBookingPage(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+
+        $rows = [];
+        for ($i = 0; $i < 1000; ++$i) {
+            $rows[] = ['start' => $this->dbStart('2026-07-02T04:00:00Z', $i)];
+        }
+        $inserted = $this->insertRawBookings($rows);
+        self::assertCount(1000, $inserted);
+
+        $walked = [];
+        $pages = 0;
+        $statements = $this->recordedStatements(function () use (&$walked, &$pages): void {
+            $cursor = null;
+            do {
+                $request = [
+                    'mode' => 'range',
+                    'fromDate' => '2026-07-02',
+                    'untilDate' => '2026-07-02',
+                ];
+                if ($cursor !== null) {
+                    $request['cursor'] = $cursor;
+                }
+                $page = $this->bookingApi->adminQuery($request);
+                ++$pages;
+                self::assertLessThanOrEqual(
+                    $this->bookingContract->adminRangePageSize,
+                    \count($page['bookings']),
+                );
+                $walked = [...$walked, ...array_column($page['bookings'], 'reference')];
+                $cursor = $page['page']['hasMore'] ? $page['page']['nextCursor'] : null;
+            } while ($page['page']['hasMore']);
+        });
+
+        // 1000 bookings at the fixed 200-row page size is exactly five pages,
+        // and the whole walk cost five statements — O(pages), never O(rows).
+        self::assertSame(5, $pages, '1000 bookings at 200 per page is exactly five pages');
+        self::assertCount(5, $statements, 'one statement per booking page, never one per booking');
+        self::assertSame($inserted, $walked, 'the walk reached every booking exactly once, in order');
+        self::assertSame([], $this->historyStatements($statements));
+    }
+
+    /**
+     * ESZ-145 — a reference read of a booking with thousands of history rows
+     * returns at most one fixed 50-event page, keeps chronological order,
+     * says more exists and hands back the strictly advancing cursor of its
+     * last exposed event.
+     */
+    public function testEs145AReferenceReadBoundsHistoryToOneFixedPageOfFiftyEvents(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
+        $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
+        $reference = (string) $created['reference'];
+        $bookingId = $this->bookings->find($reference)?->id;
+        self::assertIsInt($bookingId);
+
+        // 2500 further events: the trail the old unbounded payload loaded whole.
+        $this->insertRawHistoryEvents($bookingId, 2500);
+        self::assertCount(2501, $this->historyIds($bookingId));
+
+        $page = null;
+        $statements = $this->recordedStatements(function () use ($reference, &$page): void {
+            $page = $this->bookingApi->adminQuery(['mode' => 'reference', 'reference' => $reference]);
+        });
+        self::assertIsArray($page);
+
+        $ids = $this->historyIds($bookingId);
+        self::assertSame($this->bookingContract->adminHistoryPageSize, $page['historyPage']['pageSize']);
+        self::assertTrue($page['historyPage']['hasMore'], '2501 events cannot fit one 50-event page');
+        self::assertCount(50, $page['historyPage']['events'], 'at most 50 events per reference read');
+        self::assertSame(
+            ['eventId' => $ids[49]],
+            $page['historyPage']['nextCursor'],
+            "the cursor is the last exposed event's own row id",
+        );
+
+        // Chronological order is observable on the wire: the seeded occurred
+        // instants are strictly increasing with the row id.
+        $occurred = array_column($page['historyPage']['events'], 'occurredAt');
+        for ($i = 1, $count = \count($occurred); $i < $count; ++$i) {
+            self::assertGreaterThan($occurred[$i - 1], $occurred[$i], 'events must keep chronological order');
+        }
+
+        // The response is bounded: 50 events plus the booking's current facts.
+        // The old whole-trail payload would have serialised 2501 events.
+        self::assertLessThan(16_000, \strlen((string) json_encode($page)));
+
+        // Exactly two statements: one booking lookup and one bounded history
+        // probe (LIMIT 51) — never 2501 history reads.
+        self::assertCount(2, $statements, 'a reference read costs two statements');
+        self::assertCount(1, $this->historyStatements($statements), 'exactly one history query for the page probe');
+    }
+
+    /**
+     * ESZ-145 — paging a thousands-event trail reaches every event, in order,
+     * without duplication or gaps, and terminates with hasMore cleared.
+     */
+    public function testEs145PagingAHistoryTrailReachesEveryEventAndTerminates(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
+        $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
+        $reference = (string) $created['reference'];
+        $bookingId = $this->bookings->find($reference)?->id;
+        self::assertIsInt($bookingId);
+
+        $this->insertRawHistoryEvents($bookingId, 2500);
+        $total = 2501;
+
+        // The trail the server must reproduce exactly: the created event at
+        // NOW, then one moved event per seeded millisecond, id order.
+        $expected = [self::NOW];
+        for ($ordinal = 1; $ordinal < $total; ++$ordinal) {
+            $expected[] = IsoTimestamp::format(
+                (new \DateTimeImmutable(self::NOW))->modify("+{$ordinal} milliseconds"),
+            );
+        }
+
+        $seen = [];
+        $pages = 0;
+        $statements = $this->recordedStatements(function () use ($reference, &$seen, &$pages): void {
+            $cursor = null;
+            do {
+                $request = ['mode' => 'reference', 'reference' => $reference];
+                if ($cursor !== null) {
+                    $request['historyCursor'] = ['eventId' => $cursor];
+                }
+                $response = $this->bookingApi->adminQuery($request);
+                ++$pages;
+                self::assertLessThanOrEqual(50, \count($response['historyPage']['events']));
+                $seen = [...$seen, ...array_column($response['historyPage']['events'], 'occurredAt')];
+                if ($response['historyPage']['hasMore']) {
+                    $next = $response['historyPage']['nextCursor'];
+                    self::assertIsArray($next);
+                    self::assertGreaterThan($cursor ?? 0, $next['eventId'], 'the cursor must strictly advance');
+                    $cursor = $next['eventId'];
+                } else {
+                    self::assertNull($response['historyPage']['nextCursor']);
+                    $cursor = null;
+                }
+            } while ($response['historyPage']['hasMore']);
+        });
+
+        // ceil(2501/50) = 51 pages, the last one short; every event arrived
+        // exactly once, in chronological order, and the walk terminated.
+        self::assertSame(51, $pages, 'the walk must stop once hasMore clears');
+        self::assertSame($expected, $seen, 'the pages reproduced the whole trail without duplicate or gap');
+        self::assertSame(51 * 2, \count($statements), 'one booking lookup + one page probe per reference read');
+        self::assertCount(51, $this->historyStatements($statements));
+    }
+
+    /**
+     * ESZ-145 — mutating a booking that carries thousands of history rows
+     * appends its one new event and never loads the trail: exactly one
+     * statement touches booking_history, and it is the INSERT.
+     */
+    public function testEs145MutatingABookingWithThousandsOfHistoryEventsNeverLoadsItsHistory(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
+        $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
+        $reference = (string) $created['reference'];
+        $bookingId = $this->bookings->find($reference)?->id;
+        self::assertIsInt($bookingId);
+
+        $this->insertRawHistoryEvents($bookingId, 2000);
+
+        // The optimistic token is read before the recording window opens.
+        $token = $this->bookingToken($reference);
+
+        $statements = $this->recordedStatements(function () use ($reference, $token): void {
+            $updated = $this->bookingApi->adminMutate([
+                'action' => 'update',
+                'reference' => $reference,
+                'expectedUpdatedAt' => $token,
+                'customerName' => 'Cliente Esz145',
+                'customerEmail' => 'esz145@example.test',
+                'customerPhone' => null,
+                'customerNote' => null,
+            ]);
+            self::assertSame('Cliente Esz145', $updated['booking']['customerName']);
+            self::assertArrayNotHasKey('history', $updated['booking'], 'the mutation response is current-state only');
+        });
+
+        $history = $this->historyStatements($statements);
+        self::assertCount(1, $history, 'the mutation appends exactly one history event');
+        self::assertStringStartsWith('INSERT INTO booking_history', $history[0], 'it never SELECTs the trail');
+        // Row lock + customer update + stored re-read + history append.
+        self::assertCount(4, $statements, 'the mutation is a fixed small statement set');
+    }
+
+    /**
+     * ESZ-145 — the real range, reference and mutation HTTP responses still
+     * validate against the generated schemas, on MySQL and through the real
+     * front controller.
+     */
+    public function testEs145RealAdminResponsesValidateAgainstTheGeneratedSchemas(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
+        $this->accounts->provision($this->email(self::EMAIL), self::PASSWORD, true);
+        $kernel = $this->bootAgainstMysql();
+
+        $created = $kernel->handle(new Request(
+            'POST',
+            '/api/bookings',
+            ['content-type' => 'application/json'],
+            (string) json_encode($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z')),
+        ));
+        self::assertSame(201, $created->status);
+        $reference = (string) ($created->decodedBody()['reference'] ?? '');
+
+        $anonymous = $kernel->handle(new Request('GET', '/api/auth/session'));
+        /** @var array<string, mixed> $anonymousBody */
+        $anonymousBody = $anonymous->decodedBody();
+        $login = $this->login(
+            $kernel,
+            self::cookieValue($anonymous),
+            (string) $anonymousBody['csrfToken'],
+            self::PASSWORD,
+        );
+        $sessionId = self::cookieValue($login);
+        /** @var array<string, mixed> $loginBody */
+        $loginBody = $login->decodedBody();
+        $sessionHeaders = [
+            'cookie' => $this->cookieName() . '=' . $sessionId,
+            'content-type' => 'application/json',
+        ];
+
+        $range = $kernel->handle(new Request(
+            'POST',
+            '/api/admin/bookings/query',
+            $sessionHeaders,
+            (string) json_encode(['mode' => 'range', 'fromDate' => '2026-06-15', 'untilDate' => '2026-06-15']),
+        ));
+        self::assertSame(200, $range->status);
+        $rangeBody = $range->decodedBody();
+        self::assertSame($reference, $rangeBody['bookings'][0]['reference'] ?? null);
+        self::assertArrayNotHasKey('history', $rangeBody['bookings'][0]);
+
+        $referenceResponse = $kernel->handle(new Request(
+            'POST',
+            '/api/admin/bookings/query',
+            $sessionHeaders,
+            (string) json_encode(['mode' => 'reference', 'reference' => $reference]),
+        ));
+        self::assertSame(200, $referenceResponse->status);
+
+        $mutation = $kernel->handle(new Request(
+            'PATCH',
+            '/api/admin/bookings',
+            $sessionHeaders + [$this->csrfHeader() => (string) $loginBody['csrfToken']],
+            (string) json_encode([
+                'action' => 'update',
+                'reference' => $reference,
+                'expectedUpdatedAt' => (string) ($referenceResponse->decodedBody()['booking']['updatedAt'] ?? ''),
+                'customerName' => 'Cliente Schéma',
+                'customerEmail' => 'schema@example.test',
+                'customerPhone' => null,
+                'customerNote' => null,
+            ]),
+        ));
+        self::assertSame(200, $mutation->status);
+
+        $structural = new StructuralValidator(TestEnvironment::artifacts());
+        self::assertSame([], $structural->validate($rangeBody, 'admin-bookings-response.schema.json'));
+        self::assertSame(
+            [],
+            $structural->validate($referenceResponse->decodedBody(), 'admin-booking-reference-response.schema.json'),
+        );
+        self::assertSame([], $structural->validate($mutation->decodedBody(), 'admin-booking-response.schema.json'));
     }
 
     // --- ESZ-134: login is fail-closed after session rotation -----------------

@@ -38,6 +38,7 @@ final class BookingDomainContract
         public readonly int $slotMaxResults,
         public readonly int $adminRangePageSize,
         public readonly int $adminRangeMaxPages,
+        public readonly int $adminHistoryPageSize,
         public readonly int $adminSummaryListedEntriesMax,
         public readonly array $states,
         public readonly string $initialState,
@@ -66,6 +67,7 @@ final class BookingDomainContract
         $buffer = self::block($services, 'bufferMinutes');
         $adminViews = self::block($document, 'adminViews');
         $rangeRead = self::block($adminViews, 'rangeRead');
+        $historyPage = self::block($adminViews, 'historyPage');
         $summary = self::block($adminViews, 'summary');
         $consentNotices = self::block($document, 'consentNotices');
         $consentNoticeIds = self::consentNoticeIds($consentNotices);
@@ -91,6 +93,7 @@ final class BookingDomainContract
             self::positiveInt($limits, 'maxResults'),
             self::positiveInt($rangeRead, 'pageSize'),
             self::positiveInt($rangeRead, 'maxPages'),
+            self::positiveInt($historyPage, 'pageSize'),
             self::positiveInt($summary, 'listedEntriesMax'),
             self::stringList($states, 'values'),
             self::string($states, 'initial'),

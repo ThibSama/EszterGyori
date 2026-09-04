@@ -48,9 +48,36 @@ final class Database
 
     private readonly ?ApplicationSnapshotLock $snapshotLock;
 
+    /**
+     * ESZ-145 test seam: an optional observer invoked once per executed
+     * statement with the statement text, so a proof can count queries
+     * deterministically without logging bind values.
+     *
+     * Production never sets it — it exists so the SQL suite can attach a
+     * counting closure to the very `Database` instance a kernel or repository
+     * is wired to and assert exact statement counts around one use case. The
+     * statement text is deliberately the only thing the observer receives:
+     * parameters (and therefore the values they carry) never leave the
+     * prepared-statement path.
+     *
+     * @var \Closure(string): void|null
+     */
+    private ?\Closure $statementObserver = null;
+
     public function __construct(private readonly DatabaseSettings $settings, ?string $lockDirectory = null)
     {
         $this->snapshotLock = $lockDirectory === null ? null : new ApplicationSnapshotLock($lockDirectory);
+    }
+
+    /**
+     * ESZ-145 — attaches or detaches the statement observer.
+     *
+     * @param \Closure(string): void|null $observer receives the text of every
+     *     statement the database executes from this point on; null detaches.
+     */
+    public function observeStatements(?\Closure $observer): void
+    {
+        $this->statementObserver = $observer;
     }
 
     /** Wraps an already-open handle. Used by the integration suite. */
@@ -121,6 +148,8 @@ final class Database
     /** @param array<string, scalar|null> $parameters */
     private function runUnlocked(string $sql, array $parameters): \PDOStatement
     {
+        $this->statementObserver?->__invoke($sql);
+
         try {
             $statement = $this->pdo()->prepare($sql);
             $statement->execute($parameters);
@@ -177,6 +206,8 @@ final class Database
 
     private function executeRawUnlocked(string $sql, string $operation): void
     {
+        $this->statementObserver?->__invoke($sql);
+
         try {
             $this->pdo()->exec($sql);
         } catch (\PDOException $exception) {

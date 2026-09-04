@@ -94,7 +94,9 @@ try {
     $expectedUpdatedAt = $arguments[3] ?? null;
     if ($expectedUpdatedAt === null || $expectedUpdatedAt === '') {
         $read = $api->adminQuery(['mode' => 'reference', 'reference' => $reference]);
-        $expectedUpdatedAt = (string) ($read['bookings'][0]['updatedAt'] ?? '');
+        // ESZ-145: the reference read returns the booking under `booking`
+        // beside its bounded history page; the token is a current-state fact.
+        $expectedUpdatedAt = (string) ($read['booking']['updatedAt'] ?? '');
     }
 
     if (!touch($readyPath)) {

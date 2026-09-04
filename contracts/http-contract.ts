@@ -2,6 +2,7 @@ import { z } from "zod";
 import { isoTimestampSchema } from "./content-envelopes.js";
 import { SITE_CONTENT_SCHEMA_VERSION, siteContentSchema } from "./site-content.js";
 import {
+  BOOKING_ADMIN_HISTORY_PAGE_SIZE,
   BOOKING_ADMIN_RANGE_PAGE_SIZE,
   BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES,
   BOOKING_CONSENT_CURRENT_NOTICE_ID,
@@ -707,6 +708,22 @@ export const adminBookingsCursorSchema = z
   .strict();
 
 /**
+ * ESZ-145 — the typed continuation of one booking history walk.
+ *
+ * The cursor names the monotonic `booking_history` row id of the last event
+ * the previous page exposed. The next page begins strictly after that id in
+ * ascending id order — the same order history events are stored and served in
+ * — which is what makes paging advance without duplication or gaps. A cursor
+ * is opaque to the client: echo it, never build one. The server validates the
+ * id's shape and refuses a non-positive one before reading.
+ */
+export const bookingHistoryCursorSchema = z
+  .object({
+    eventId: z.number().int().min(1),
+  })
+  .strict();
+
+/**
  * ESZ-144 — the pagination facts every admin booking read response carries.
  *
  * `pageSize` is the fixed server page capacity, `hasMore` is true exactly when
@@ -723,7 +740,18 @@ export const adminBookingsPageSchema = z
   .strict();
 
 export const adminBookingsQueryRequestSchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("reference"), reference: bookingReferenceSchema }).strict(),
+  z
+    .object({
+      mode: z.literal("reference"),
+      reference: bookingReferenceSchema,
+      /**
+       * ESZ-145 — optional history continuation. `eventId` is the monotonic
+       * booking_history row id of the last event the previous page exposed;
+       * the next page begins strictly after it. Absent means the first page.
+       */
+      historyCursor: bookingHistoryCursorSchema.optional(),
+    })
+    .strict(),
   z
     .object({
       mode: z.literal("range"),
@@ -750,6 +778,33 @@ export const bookingHistoryEventSchema = z
   })
   .strict();
 
+/**
+ * ESZ-145 — the pagination facts of one booking history page.
+ *
+ * `pageSize` is the fixed server page capacity (50 events), `events` holds at
+ * most that many events in chronological order, `hasMore` is true exactly when
+ * a further page of the same booking's history exists, and `nextCursor`
+ * carries the typed cursor for that next page — the id of the last exposed
+ * event — null whenever `hasMore` is false. The server detects a further page
+ * by fetching pageSize+1 events, never by clipping.
+ */
+export const adminBookingHistoryPageSchema = z
+  .object({
+    pageSize: z.literal(BOOKING_ADMIN_HISTORY_PAGE_SIZE),
+    hasMore: z.boolean(),
+    nextCursor: bookingHistoryCursorSchema.nullable(),
+    events: z.array(bookingHistoryEventSchema),
+  })
+  .strict();
+
+/**
+ * ESZ-145 — the current-state booking facts every admin response carries.
+ *
+ * Deliberately no `history` array: range reads and mutation responses return
+ * exactly these facts (and zero history SQL per booking), and the reference
+ * detail read returns them beside one fixed history page rather than embedding
+ * an unbounded trail inside the booking object.
+ */
 export const adminBookingSchema = z
   .object({
     reference: bookingReferenceSchema,
@@ -773,7 +828,6 @@ export const adminBookingSchema = z
      * mutation. There is deliberately no separate revision column.
      */
     updatedAt: isoTimestampSchema,
-    history: z.array(bookingHistoryEventSchema),
   })
   .strict();
 
@@ -781,6 +835,17 @@ export const adminBookingsResponseSchema = z
   .object({
     bookings: z.array(adminBookingSchema),
     page: adminBookingsPageSchema,
+  })
+  .strict();
+
+/**
+ * ESZ-145 — the reference detail read: the booking's current facts beside one
+ * fixed, explicitly bounded page of its history.
+ */
+export const adminBookingReferenceResponseSchema = z
+  .object({
+    booking: adminBookingSchema,
+    historyPage: adminBookingHistoryPageSchema,
   })
   .strict();
 
@@ -1098,9 +1163,9 @@ export const bookingApiPolicy = {
   move:
     "Authenticated move availability resolves the booking server-side and delegates to SlotEngine while excluding only itself. Mutation retains reference and service, requires confirmed state, and transactionally recomputes the submitted returned instant.",
   history:
-    "Append-only created, moved, cancelled and customer_updated events; the bookings row remains authoritative current state.",
+    "Append-only created, moved, cancelled and customer_updated events; the bookings row remains authoritative current state. ESZ-145: history is served only by mode=reference, one fixed page of at most 50 chronological events with explicit hasMore and a strictly advancing typed cursor; range reads and mutation responses carry current-state booking facts only and never a history array.",
   adminQuery:
-    "An authenticated read, no CSRF. mode=reference is an exact lookup. mode=range returns the bookings whose start falls in the requested Paris-civil window, deterministically ordered and paginated per adminViews.rangeRead: pageSize rows at most, a typed cursor for the next page, hasMore detected with a pageSize+1 probe — no row is silently clipped.",
+    "An authenticated read, no CSRF. mode=reference is an exact lookup returning the booking's current facts beside one bounded page of its history (adminViews.historyPage: at most 50 events, chronological, hasMore from a pageSize+1 probe, typed eventId continuation). mode=range returns the bookings whose start falls in the requested Paris-civil window, deterministically ordered and paginated per adminViews.rangeRead: pageSize rows at most, a typed cursor for the next page, hasMore detected with a pageSize+1 probe — no row is silently clipped. Range rows carry current-state facts only: a range page costs a constant number of queries whatever its row count, and never one history read per booking.",
   adminSummary:
     "An authenticated read, no CSRF. Counts and nextConfirmedStartsAtUtc are exact SQL aggregations over the whole window; the today/upcoming entry lists are confirmed-only and bounded at adminViews.summary.listedEntriesMax with listings.todayComplete/upcomingComplete stating whether each list is complete.",
 } as const;
@@ -2163,6 +2228,7 @@ export const contractBodyMatchers = [
   "publicBookingResponse",
   "adminBookingsResponse",
   "adminBookingResponse",
+  "adminBookingReferenceResponse",
   "adminBookingsSummaryResponse",
   "adminAvailabilityResponse",
   "adminAvailabilityWeeklyResponse",
@@ -4032,7 +4098,8 @@ export const httpContractCases: HttpContractCase[] = [
   {
     id: "admin.bookings.query.post.ok",
     endpoint: ADMIN_BOOKINGS_QUERY_PATH,
-    description: "An authenticated read query lists full booking records and durable history without CSRF.",
+    description:
+      "An authenticated range read lists the current-state booking records with their pagination facts and no per-booking history, without CSRF.",
     request: {
       method: "POST",
       path: ADMIN_BOOKINGS_QUERY_PATH,
@@ -4041,6 +4108,36 @@ export const httpContractCases: HttpContractCase[] = [
     },
     auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
     expect: { status: 200, body: "adminBookingsResponse" },
+  },
+  {
+    id: "admin.bookings.query.post.referenceOk",
+    endpoint: ADMIN_BOOKINGS_QUERY_PATH,
+    description:
+      "ESZ-145 — the reference detail read returns the booking's current facts beside one fixed, bounded page of its history with explicit pagination metadata, without CSRF.",
+    request: {
+      method: "POST",
+      path: ADMIN_BOOKINGS_QUERY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody:
+        '{"mode":"reference","reference":"bk_00000000000000000000000000000000"}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "adminBookingReferenceResponse" },
+  },
+  {
+    id: "admin.bookings.query.post.malformedHistoryCursor",
+    endpoint: ADMIN_BOOKINGS_QUERY_PATH,
+    description:
+      "ESZ-145 — a history continuation cursor is typed and validated: a reference request whose eventId is not a positive integer is refused by the schema before any read.",
+    request: {
+      method: "POST",
+      path: ADMIN_BOOKINGS_QUERY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody:
+        '{"mode":"reference","reference":"bk_00000000000000000000000000000000","historyCursor":{"eventId":0}}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
   },
   {
     id: "admin.bookings.query.post.unauthenticated",

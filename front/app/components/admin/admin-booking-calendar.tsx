@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { adminBookingMutationRequestSchema } from "@eszter/contracts";
 import { useAdminSession } from "./admin-session-provider";
 import {
+  asReferenceResult,
   loadBookingsRange,
   type AdminApiFailure,
   type AdminBooking,
@@ -134,7 +135,9 @@ export function AdminBookingCalendar() {
     }
     // ESZ-139: the calendar adopts the authoritative reloaded row — the whole
     // UI keeps working from it, never from the copy the tab held before.
-    const fresh = result.value.bookings[0] ?? null;
+    // ESZ-145: the reference envelope is the booking beside its history page;
+    // the calendar adopts the current-state booking and ignores the trail.
+    const fresh = asReferenceResult(result.value)?.booking ?? null;
     if (fresh) setBookings((current) => replaceBooking(current, fresh));
     return fresh;
   }, [api, handleFailure]);

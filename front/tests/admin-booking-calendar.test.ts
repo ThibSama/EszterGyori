@@ -42,7 +42,6 @@ function booking(overrides: Partial<AdminBooking> = {}): AdminBooking {
     cancellationReason: null,
     createdAt: "2026-08-20T10:00:00.000Z",
     updatedAt: "2026-08-20T10:00:00.000Z",
-    history: [{ type: "created", actor: "public", occurredAt: "2026-08-20T10:00:00.000Z" }],
     ...overrides,
   };
 }

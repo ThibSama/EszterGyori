@@ -83,7 +83,14 @@
       "hasMore": "The server fetches pageSize+1 rows and reports hasMore from the surplus row; a page is never silently clipped to a smaller answer than the range holds.",
       "maxPages": 250,
       "termination": "A client may walk at most the maxPages pages per range before it must stop and report the range as incomplete; a correct server always terminates earlier because every page strictly advances the cursor.",
-      "exactReference": "mode=reference stays an exact lookup by booking reference and is unaffected by pagination."
+      "exactReference": "mode=reference stays an exact lookup by booking reference and is unaffected by range pagination."
+    },
+    "historyPage": {
+      "pageSize": 50,
+      "membership": "Only mode=reference carries history, as one fixed page of the booking's own append-only events in chronological order; range reads and mutation responses carry current-state booking facts only and never a history array, so a page of 200 bookings costs a constant number of queries and no per-booking history read.",
+      "ordering": "History events are ordered by the monotonic booking_history row id, which is also the continuation key: chronological order with a stable tie-break is impossible to fake because the id is assigned by the row itself.",
+      "cursor": "An optional typed history cursor {eventId} names the id of the last event the previous page exposed. The next page begins strictly after it (id > eventId), so re-sending a cursor cannot loop and paging cannot duplicate or skip an event; an absent cursor is the first page. The server validates the cursor's shape and refuses a non-positive id before reading.",
+      "hasMore": "The server fetches pageSize+1 events and reports hasMore from the surplus row; when more events exist the response says so and hands back the strictly advancing cursor of its last exposed event, so a page is never silently truncated."
     },
     "summary": {
       "counts": "today/upcoming confirmed and cancelled counts are dedicated SQL aggregations over the whole window, never arithmetic over a capped detail list, so a bounded list cannot make a count wrong.",

@@ -188,9 +188,46 @@ final class PdoBookingApi implements BookingApi
                 throw new BookingNotFoundException(self::requiredString($request, 'reference'));
             }
 
+            // ESZ-145: the reference read is the only admin surface that
+            // serves history, and it serves exactly one bounded page beside
+            // the booking's current facts. The typed cursor names the id of
+            // the last event the previous page exposed; the page begins
+            // strictly after it, so the walk advances until the trail ends.
+            $cursor = $request['historyCursor'] ?? null;
+            $afterId = null;
+            if ($cursor !== null) {
+                if (!\is_array($cursor)) {
+                    throw new BookingValidationException('historyCursor', 'History cursor is malformed.');
+                }
+                /** @var array<string, mixed> $cursor */
+                $afterId = self::historyCursorEventId($cursor);
+            }
+
+            $page = $this->history->pageForBooking(
+                $booking->id,
+                $this->contract->adminHistoryPageSize,
+                $afterId,
+            );
+
+            $events = array_map(
+                static fn (BookingHistoryEvent $event): array => self::historyEventPayload($event),
+                $page['events'],
+            );
+
+            $nextCursor = null;
+            if ($page['hasMore'] && $page['events'] !== []) {
+                $last = $page['events'][\count($page['events']) - 1];
+                $nextCursor = ['eventId' => $last->id];
+            }
+
             return [
-                'bookings' => [$this->adminBookingPayload($booking)],
-                'page' => $this->pageMeta(false, null),
+                'booking' => $this->adminBookingPayload($booking),
+                'historyPage' => [
+                    'pageSize' => $this->contract->adminHistoryPageSize,
+                    'hasMore' => $page['hasMore'],
+                    'nextCursor' => $page['hasMore'] ? $nextCursor : null,
+                    'events' => $events,
+                ],
             ];
         }
 
@@ -832,7 +869,16 @@ final class PdoBookingApi implements BookingApi
         ];
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * ESZ-145 — current-state booking facts only.
+     *
+     * Deliberately no `history` array and no history read: a range page of
+     * many bookings and every mutation response pay for exactly zero history
+     * SQL per booking. History is served only by the reference read, as its
+     * own bounded page.
+     *
+     * @return array<string, mixed>
+     */
     private function adminBookingPayload(Booking $booking): array
     {
         return [
@@ -849,12 +895,36 @@ final class PdoBookingApi implements BookingApi
             'cancellationReason' => $booking->cancellationReason,
             'createdAt' => $booking->createdAt,
             'updatedAt' => $booking->updatedAt,
-            'history' => array_map(static fn (BookingHistoryEvent $event): array => [
-                'type' => $event->type,
-                'actor' => $event->actor,
-                'occurredAt' => $event->occurredAt,
-            ], $this->history->forBooking($booking->id)),
         ];
+    }
+
+    /** @return array{type: string, actor: string, occurredAt: string} */
+    private static function historyEventPayload(BookingHistoryEvent $event): array
+    {
+        return [
+            'type' => $event->type,
+            'actor' => $event->actor,
+            'occurredAt' => $event->occurredAt,
+        ];
+    }
+
+    /**
+     * ESZ-145 — the typed history continuation, re-validated in the domain.
+     *
+     * The schema already guarantees the cursor is an object with an integer
+     * `eventId`; the domain re-checks that the id is positive, because a
+     * continuation can never legitimately point at or before the first row.
+     *
+     * @param array<string, mixed> $cursor
+     */
+    private static function historyCursorEventId(array $cursor): int
+    {
+        $eventId = $cursor['eventId'] ?? null;
+        if (!\is_int($eventId) || $eventId < 1) {
+            throw new BookingValidationException('historyCursor', 'History cursor is malformed.');
+        }
+
+        return $eventId;
     }
 
     /** @param array<string, mixed> $request */

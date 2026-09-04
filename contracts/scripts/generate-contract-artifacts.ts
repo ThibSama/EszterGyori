@@ -64,6 +64,7 @@ import {
   apiErrorMessages,
   authSessionResponseSchema,
   adminBookingMutationRequestSchema,
+  adminBookingReferenceResponseSchema,
   adminBookingResponseSchema,
   adminBookingsQueryRequestSchema,
   adminBookingsResponseSchema,
@@ -334,15 +335,24 @@ const schemaTargets: SchemaTarget[] = [
   {
     file: "admin-bookings-query-request.schema.json",
     title: "AdminBookingsQueryRequest",
-    description: "Authenticated exact-reference or bounded-range booking query.",
+    description:
+      "Authenticated exact-reference (with optional typed history cursor) or bounded-range booking query.",
     schema: adminBookingsQueryRequestSchema,
     io: "input",
   },
   {
     file: "admin-bookings-response.schema.json",
     title: "AdminBookingsResponse",
-    description: "Authenticated booking records with minimal durable history.",
+    description: "Authenticated current-state booking records with their pagination facts.",
     schema: adminBookingsResponseSchema,
+    io: "output",
+  },
+  {
+    file: "admin-booking-reference-response.schema.json",
+    title: "AdminBookingReferenceResponse",
+    description:
+      "The reference detail read: one booking's current-state facts beside one fixed, bounded page of its history.",
+    schema: adminBookingReferenceResponseSchema,
     io: "output",
   },
   {

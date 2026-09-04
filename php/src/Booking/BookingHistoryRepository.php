@@ -44,10 +44,46 @@ final class BookingHistoryRepository
         );
     }
 
-    /** @return list<BookingHistoryEvent> */
-    public function forBooking(int $bookingId): array
+    /**
+     * ESZ-145 — one fixed page of a booking's history, oldest first.
+     *
+     * The continuation is the monotonic history row id: rows are served in
+     * ascending id order and the caller asks for the events strictly after
+     * `$afterId`, so paging can neither duplicate nor skip an event and a
+     * replayed cursor cannot loop. The query fetches `$pageSize + 1` rows so
+     * `hasMore` is decided from the surplus row: a page is never silently
+     * clipped to a smaller answer than the trail holds. The page size is not
+     * a caller-chosen bound — the API passes the domain's own fixed size —
+     * but a non-positive value is still refused here rather than trusted.
+     *
+     * @return array{events: list<BookingHistoryEvent>, hasMore: bool}
+     */
+    public function pageForBooking(int $bookingId, int $pageSize, ?int $afterId = null): array
     {
-        return array_map(static function (array $row): BookingHistoryEvent {
+        if ($pageSize < 1) {
+            throw new BookingValidationException('historyPageSize', 'History page size must be positive.');
+        }
+        if ($afterId !== null && $afterId < 1) {
+            throw new BookingValidationException('historyCursor', 'History cursor is malformed.');
+        }
+
+        $parameters = ['booking' => $bookingId];
+        $after = '';
+        if ($afterId !== null) {
+            $after = ' AND id > :after_id';
+            $parameters['after_id'] = $afterId;
+        }
+
+        $rows = $this->database->fetchAll(
+            'SELECT id, booking_id, event_type, actor_type, details_json, occurred_at'
+            . ' FROM booking_history WHERE booking_id = :booking' . $after
+            . ' ORDER BY id LIMIT ' . ($pageSize + 1),
+            $parameters,
+        );
+
+        $hasMore = \count($rows) > $pageSize;
+
+        $events = array_map(static function (array $row): BookingHistoryEvent {
             $id = $row['id'] ?? null;
             $storedBookingId = $row['booking_id'] ?? null;
             $type = $row['event_type'] ?? null;
@@ -75,10 +111,8 @@ final class BookingHistoryRepository
             }
 
             return new BookingHistoryEvent($id, $storedBookingId, $type, $actor, $resolvedDetails, $occurred);
-        }, $this->database->fetchAll(
-            'SELECT id, booking_id, event_type, actor_type, details_json, occurred_at'
-            . ' FROM booking_history WHERE booking_id = :booking ORDER BY id',
-            ['booking' => $bookingId],
-        ));
+        }, \array_slice($rows, 0, $pageSize));
+
+        return ['events' => $events, 'hasMore' => $hasMore];
     }
 }

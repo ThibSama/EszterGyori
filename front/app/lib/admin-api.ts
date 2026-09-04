@@ -24,7 +24,9 @@ import {
   mediaLibraryResponseSchema,
   mediaUploadResponseSchema,
   adminBookingsResponseSchema,
+  adminBookingReferenceResponseSchema,
   adminBookingResponseSchema,
+  bookingHistoryCursorSchema,
   bookingAvailabilityResponseSchema,
   adminBookingsSummaryResponseSchema,
   adminAvailabilityResponseSchema,
@@ -47,8 +49,25 @@ import { parseRetryAfterSeconds } from "./retry-after";
 export type AdminBooking = z.infer<typeof adminBookingResponseSchema>["booking"];
 export type AdminBookingsCursor = { startsAtUtc: string; reference: string };
 export type AdminBookingsPage = z.infer<typeof adminBookingsResponseSchema>["page"];
+/**
+ * ESZ-145 — the typed history continuation of the reference detail read. The
+ * `eventId` is the monotonic history row id of the last event the previous
+ * page exposed; the next page begins strictly after it. Opaque: echo it, never
+ * build one.
+ */
+export type AdminBookingHistoryCursor = z.infer<typeof bookingHistoryCursorSchema>;
+export type AdminBookingHistoryPage = z.infer<
+  typeof adminBookingReferenceResponseSchema
+>["historyPage"];
 export type AdminBookingsQuery =
-  | { mode: "reference"; reference: string }
+  | {
+      mode: "reference";
+      reference: string;
+      // ESZ-145 — optional continuation for the booking's history pages.
+      // Absent means the first page of its trail. The calendar sends none:
+      // it adopts the current-state booking and never walks history in V1.
+      historyCursor?: AdminBookingHistoryCursor;
+    }
   | {
       mode: "range";
       fromDate: string;
@@ -57,10 +76,35 @@ export type AdminBookingsQuery =
       // the wire schema has no null cursor, so the type does not either.
       cursor?: AdminBookingsCursor;
     };
-export type AdminBookingsQueryResult = {
+/**
+ * ESZ-145 — the query result splits by mode. A range read is a page of
+ * current-state booking facts with its pagination envelope and no history. The
+ * reference detail read is the booking's current facts beside one fixed,
+ * bounded page of its history. {@link asRangeResult} and
+ * {@link asReferenceResult} narrow a parsed result to the side the caller
+ * asked for.
+ */
+export type AdminBookingsRangeResult = {
   bookings: AdminBooking[];
   page: AdminBookingsPage;
 };
+export type AdminBookingsReferenceResult = {
+  booking: AdminBooking;
+  historyPage: AdminBookingHistoryPage;
+};
+export type AdminBookingsQueryResult = AdminBookingsRangeResult | AdminBookingsReferenceResult;
+
+/** Narrowing for the range callers: a parsed range page has `bookings`. */
+export function asRangeResult(value: AdminBookingsQueryResult): AdminBookingsRangeResult | null {
+  return "bookings" in value ? value : null;
+}
+
+/** Narrowing for the reference callers: a parsed reference read has `booking`. */
+export function asReferenceResult(
+  value: AdminBookingsQueryResult,
+): AdminBookingsReferenceResult | null {
+  return "booking" in value ? value : null;
+}
 /**
  * ESZ-139 — every admin booking mutation carries the booking's own `updatedAt`
  * as `expectedUpdatedAt`: the V1 optimistic-concurrency token of the row, sent
@@ -634,9 +678,15 @@ export function createAdminApiClient(
         body: JSON.stringify(input),
       });
       if (!response.ok) return response;
-      // The page envelope stays attached: hasMore/nextCursor are contract
-      // facts the caller (or loadBookingsRange) must see, never stripped.
-      return parsed(adminBookingsResponseSchema, response.body);
+      // ESZ-145: the response envelope is per-mode. A range read is a page of
+      // current-state facts (the page envelope stays attached: hasMore and
+      // nextCursor are contract facts loadBookingsRange must see, never
+      // stripped); the reference read is the booking beside its one bounded
+      // history page.
+      if (input.mode === "range") {
+        return parsed(adminBookingsResponseSchema, response.body);
+      }
+      return parsed(adminBookingReferenceResponseSchema, response.body);
     },
 
     async moveAvailability(input) {
@@ -737,7 +787,16 @@ export async function loadBookingsRange(
     });
     if (!result.ok) return result;
 
-    const { bookings, page } = result.value;
+    // The range request's schema already guarantees the parsed value is a
+    // range page; the narrowing keeps the union honest for the type checker.
+    const rangeResult = asRangeResult(result.value);
+    if (rangeResult === null) {
+      return failure({
+        kind: "malformed-response",
+        message: ADMIN_API_MESSAGES.malformedResponse,
+      });
+    }
+    const { bookings, page } = rangeResult;
 
     if (bookings.length === 0) {
       // An empty page is the server saying the range is exhausted — but only

@@ -1,7 +1,7 @@
 {
   "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
   "title": "AdminBookingsQueryRequest",
-  "description": "Authenticated exact-reference or bounded-range booking query.",
+  "description": "Authenticated exact-reference (with optional typed history cursor) or bounded-range booking query.",
   "x-eszter-io": "input",
   "x-eszter-contentSchemaVersion": 1,
   "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
@@ -17,6 +17,20 @@
         "reference": {
           "type": "string",
           "pattern": "^bk_[0-9a-f]{32}$"
+        },
+        "historyCursor": {
+          "type": "object",
+          "properties": {
+            "eventId": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "eventId"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [

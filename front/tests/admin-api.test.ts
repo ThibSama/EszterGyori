@@ -201,11 +201,6 @@ test("booking contact update patches the admin route with the exact nullable bod
     cancellationReason: "Indisponible",
     createdAt: "2026-08-20T10:00:00.000Z",
     updatedAt: "2026-08-22T10:00:00.000Z",
-    history: [
-      { type: "created", actor: "public", occurredAt: "2026-08-20T10:00:00.000Z" },
-      { type: "cancelled", actor: "admin", occurredAt: "2026-08-21T10:00:00.000Z" },
-      { type: "customer_updated", actor: "admin", occurredAt: "2026-08-22T10:00:00.000Z" },
-    ],
   };
   const { calls, fetchImpl } = stubFetch([{ status: 200, body: { booking: serverBooking } }]);
 
