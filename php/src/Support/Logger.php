@@ -48,6 +48,9 @@ final class Logger
      *        seam-injectable — a stream is only kept when `fileperms()` shows
      *        {@see FILE_MODE} — so a seam can force the silence path but cannot
      *        make an unverified restriction look applied.
+     * @param (\Closure(resource, string): (int|false))|null $write Narrowest test
+     *        seam for a failed or short write. When provided it replaces only
+     *        fwrite(2); production passes null and logging remains best-effort.
      */
     public function __construct(
         private readonly string $filePath,
@@ -55,6 +58,7 @@ final class Logger
         private readonly Clock $clock,
         private readonly bool $alsoStderr = false,
         private readonly ?\Closure $setFileMode = null,
+        private readonly ?\Closure $write = null,
     ) {
         $this->threshold = self::LEVELS[$level] ?? self::LEVELS['info'];
     }
@@ -90,16 +94,34 @@ final class Logger
             return;
         }
 
-        $line = json_encode(
-            ['ts' => $this->clock->nowIso(), 'level' => $level, 'message' => $message] + $context,
-            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR,
-        );
+        $event = ['ts' => $this->clock->nowIso(), 'level' => $level, 'message' => $message];
+        $flags = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR;
+
+        try {
+            $line = $this->encode($event + $context, $flags);
+        } catch (\Throwable) {
+            // JsonSerializable::jsonSerialize() may throw even under
+            // JSON_PARTIAL_OUTPUT_ON_ERROR. Keep the diagnostic, but omit the
+            // entire context so neither its values nor the exception escape.
+            $line = json_encode($event, $flags);
+        }
 
         if ($line === false) {
             return;
         }
 
         $this->write($line . "\n");
+    }
+
+    /**
+     * json_encode() can invoke userland JsonSerializable code and propagate its exception.
+     *
+     * @param array<string, mixed> $event
+     * @throws \Throwable
+     */
+    private function encode(array $event, int $flags): string|false
+    {
+        return json_encode($event, $flags);
     }
 
     private function write(string $line): void
@@ -118,7 +140,15 @@ final class Logger
             return;
         }
 
-        @fwrite($stream, $line);
+        try {
+            if ($this->write === null) {
+                @fwrite($stream, $line);
+            } else {
+                ($this->write)($stream, $line);
+            }
+        } catch (\Throwable) {
+            // Request-path logging is best-effort, including injected failures.
+        }
     }
 
     /**
@@ -137,34 +167,10 @@ final class Logger
      */
     private function open(): bool
     {
-        $directory = \dirname($this->filePath);
-        if (!is_dir($directory) && !@mkdir($directory, 0o770, true) && !is_dir($directory)) {
-            return false;
-        }
+        $opened = (new LogSink($this->filePath, $this->setFileMode))->open();
+        $handle = $opened['handle'];
 
-        $previousUmask = umask(0o077);
-
-        try {
-            $handle = @fopen($this->filePath, 'ab');
-        } finally {
-            umask($previousUmask);
-        }
-
-        if ($handle === false) {
-            // Logging must never be the reason a request fails. A host that
-            // denies the log path degrades to silence, not to a 500.
-            return false;
-        }
-
-        $applied = $this->setFileMode === null
-            ? @chmod($this->filePath, self::FILE_MODE)
-            : ($this->setFileMode)($this->filePath, self::FILE_MODE);
-
-        $actual = @fileperms($this->filePath);
-
-        if ($applied !== true || $actual === false || ($actual & 0o777) !== self::FILE_MODE) {
-            fclose($handle);
-
+        if ($handle === null) {
             return false;
         }
 

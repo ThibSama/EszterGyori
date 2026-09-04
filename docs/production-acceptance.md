@@ -4,6 +4,20 @@ Status: **prepared, not accepted**. This procedure has not been run against a
 deployed target. Running repository tests or the read-only mode does not close
 ESZ-086.
 
+Before either read-only or state-changing acceptance can complete, the operator must
+run the host-side log-sink preflight against the deployed configuration and record
+`preflight:production PASS`:
+
+```sh
+cd /usr/home/<FTP_LOGIN>/eszter/app && /usr/bin/php bin/preflight-production.php \
+  --config=/usr/home/<FTP_LOGIN>/eszter/config/config.php
+```
+
+This prerequisite proves that the configured application log can be created, opened,
+restricted to `0600` and written. The HTTP acceptance pass is unchanged and contains
+no logging check: readiness proves serving dependencies only, so it cannot replace
+the host preflight or declare production acceptable by itself.
+
 ## Authorization boundary
 
 The harness needs an explicit HTTPS origin even for read-only checks:
@@ -12,12 +26,13 @@ The harness needs an explicit HTTPS origin even for read-only checks:
 ESZTER_ACCEPTANCE_TARGET_URL=https://<DEPLOYED-ORIGIN>/ npm run acceptance:production
 ```
 
-Read-only mode runs the project readiness probe (`scripts/readiness.mjs`,
+Read-only mode runs the unchanged project readiness probe (`scripts/readiness.mjs`,
 ESZ-127/AUD-22) against the origin: `/api/health` (liveness under its frozen
 contract), the homepage bootstrap, the published `/api/content` envelope, and
 `/api/booking/services` reaching at least one active bookable service — the
 surface that would fail if MySQL/booking were unavailable while the service
-stayed live. It cannot log in, upload, book, mutate or cancel.
+stayed live. It cannot log in, upload, book, mutate or cancel, and it does not test
+the host log target.
 
 State-changing mode is deliberately cumbersome. The deployment owner must approve
 the target, the admin account and a mailbox that may receive the test messages, then

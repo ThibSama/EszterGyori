@@ -142,3 +142,12 @@ enveloppe publiée et au moins un service réservable — utiliser la sonde en l
 seule du projet : `npm run readiness:probe -- --origin=https://<origine>/`
 (`scripts/readiness.mjs`, ESZ-127). Elle est réutilisée par le mode lecture seule de
 l’acceptance de production.
+
+La commande hôte `/usr/bin/php bin/preflight-production.php
+--config=/usr/home/<FTP_LOGIN>/eszter/config/config.php` est obligatoire avant le
+déploiement et avant de clôturer l’acceptation. Elle prouve, avec l’identité PHP
+d’exécution, la création du répertoire cible, l’ouverture du journal en ajout, son
+mode effectif exact `0600`, puis une écriture complète et vidée vers le fichier. La
+sonde HTTP ESZ-127 prouve uniquement les dépendances de service : elle ne contrôle
+pas ces préconditions hôte, ne remplace pas ce preflight et ne suffit jamais seule à
+déclarer la production acceptable.

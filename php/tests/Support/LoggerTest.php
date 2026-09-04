@@ -34,9 +34,13 @@ final class LoggerTest extends TestCase
         TestEnvironment::removeDirectory($this->root);
     }
 
-    private function logger(string $path, ?\Closure $setFileMode = null): Logger
-    {
-        return new Logger($path, 'debug', new FrozenClock(self::NOW), false, $setFileMode);
+    private function logger(
+        string $path,
+        ?\Closure $setFileMode = null,
+        ?\Closure $write = null,
+        string $level = 'debug',
+    ): Logger {
+        return new Logger($path, $level, new FrozenClock(self::NOW), false, $setFileMode, $write);
     }
 
     public function testANewLogFileIsBorn0600UnderAHostileUmaskAndRestoresIt(): void
@@ -117,5 +121,137 @@ final class LoggerTest extends TestCase
         $logger->error('still nothing to say');
 
         self::assertFileDoesNotExist($this->root . '/blocker/app.log');
+    }
+
+    public function testFailedAndShortWritesNeverEscapeOrWriteAFalseSuccess(): void
+    {
+        $failedPath = $this->root . '/failed.log';
+        $shortPath = $this->root . '/short.log';
+
+        $this->logger(
+            $failedPath,
+            null,
+            static fn ($stream, string $line): false => false,
+        )->info('failed write');
+        $this->logger(
+            $shortPath,
+            null,
+            static fn ($stream, string $line): int => \strlen($line) - 1,
+        )->error('short write');
+
+        self::assertSame('', file_get_contents($failedPath));
+        self::assertSame('', file_get_contents($shortPath));
+    }
+
+    public function testPartialJsonValuesStayValidAndDoNotCrashLogging(): void
+    {
+        $path = $this->root . '/partial.log';
+        $resource = fopen('php://memory', 'rb');
+        self::assertIsResource($resource);
+        $circular = [];
+        $circular['self'] = &$circular;
+
+        try {
+            $this->logger($path)->info('resource', ['problem' => $resource]);
+            $this->logger($path)->info('circular', ['problem' => $circular]);
+        } finally {
+            fclose($resource);
+        }
+
+        $lines = $this->decodedLines($path);
+        self::assertCount(2, $lines);
+        self::assertNull($lines[0]['problem']);
+        self::assertIsArray($lines[1]['problem']);
+        self::assertNull($lines[1]['problem']['self']);
+    }
+
+    public function testThrowingJsonSerializableDropsContextWithoutLeakingOrCrashing(): void
+    {
+        $path = $this->root . '/throwing-context.log';
+        $context = new class implements \JsonSerializable {
+            public function jsonSerialize(): mixed
+            {
+                throw new \RuntimeException('raw-sensitive-exception-detail');
+            }
+        };
+
+        $this->logger($path)->error('safe message', [
+            'unsafe' => $context,
+            'secret' => 'must-be-dropped-with-context',
+        ]);
+
+        $contents = (string) file_get_contents($path);
+        $lines = $this->decodedLines($path);
+        self::assertCount(1, $lines);
+        self::assertSame([
+            'ts' => self::NOW,
+            'level' => 'error',
+            'message' => 'safe message',
+        ], $lines[0]);
+        self::assertStringNotContainsString('raw-sensitive-exception-detail', $contents);
+        self::assertStringNotContainsString('must-be-dropped-with-context', $contents);
+        self::assertStringNotContainsString('JsonSerializable', $contents);
+    }
+
+    public function testContextCannotOverrideEnvelopeButIntentionalStringContextIsPreserved(): void
+    {
+        $path = $this->root . '/context.log';
+        $this->logger($path)->warn('authoritative message', [
+            'ts' => 'forged timestamp',
+            'level' => 'debug',
+            'message' => 'forged message',
+            'customer_note' => 'intentional sensitive string',
+        ]);
+
+        $line = $this->decodedLines($path)[0];
+        self::assertSame(self::NOW, $line['ts']);
+        self::assertSame('warn', $line['level']);
+        self::assertSame('authoritative message', $line['message']);
+        self::assertSame('intentional sensitive string', $line['customer_note']);
+    }
+
+    public function testHealthyWarnLoggerWritesStrictJsonLinesFiltersAndRestoresUmask(): void
+    {
+        $path = $this->root . '/healthy.jsonl';
+        $originalUmask = umask(0o000);
+
+        try {
+            $logger = $this->logger($path, null, null, 'warn');
+            $logger->debug('skip debug');
+            $logger->info('skip info');
+            $logger->warn('keep warn', ['attempt' => 1]);
+            $logger->error('keep error', ['attempt' => 2]);
+            $restoredUmask = umask(0o000);
+        } finally {
+            umask($originalUmask);
+        }
+
+        self::assertSame(0o000, $restoredUmask);
+        self::assertSame(Logger::FILE_MODE, fileperms($path) & 0o777);
+        $lines = $this->decodedLines($path);
+        self::assertCount(2, $lines);
+        self::assertSame(['warn', 'error'], array_column($lines, 'level'));
+
+        foreach ($lines as $line) {
+            self::assertIsString($line['ts']);
+            self::assertIsString($line['level']);
+            self::assertIsString($line['message']);
+        }
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function decodedLines(string $path): array
+    {
+        $contents = rtrim((string) file_get_contents($path), "\n");
+
+        return array_map(
+            static function (string $line): array {
+                /** @var array<string, mixed> $decoded */
+                $decoded = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
+
+                return $decoded;
+            },
+            explode("\n", $contents),
+        );
     }
 }

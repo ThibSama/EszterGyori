@@ -96,6 +96,19 @@ only, and a production `notifications.email.encryption = none` is refused at
 configuration load, before the runner can claim or deliver anything. `none` exists
 for development/test relays only, where plaintext SMTP is deliberate.
 
+After installing the release and its private `0600` configuration, run the required
+host-side production preflight as the same runtime identity that serves PHP:
+
+```sh
+cd /usr/home/<FTP_LOGIN>/eszter/app && /usr/bin/php bin/preflight-production.php \
+  --config=/usr/home/<FTP_LOGIN>/eszter/config/config.php
+```
+
+`preflight:production PASS` proves that the configured application log can be
+created, opened for append, restricted to exactly `0600`, written completely and
+flushed. It leaves one context-free probe line in `var/log/app.log`. A non-zero exit
+blocks deployment completion; correct the named host component and rerun it.
+
 ## 3. Provision or update the database
 
 Create the empty database and account in the Hetzner control panel, then put the
@@ -241,14 +254,17 @@ without the contract change that would make it safe.
 
 ## 7. Live acceptance still required
 
-Before launch, prove on the actual host: Apache applies both `.htaccess` files; HTTPS
-and security headers are present — including the `Content-Security-Policy` and
+Before launch, prove on the actual host: the required production preflight above
+reports `preflight:production PASS`; Apache applies both `.htaccess` files; HTTPS and
+security headers are present — including the `Content-Security-Policy` and
 `Permissions-Policy` ESZ-084 added, which need `mod_headers`; private sibling paths
 are unreachable; the PHP version/extensions match; config mode is `0600`; a migration
 second run is a no-op; the exclusive cron runs on schedule; one approved SMTP message
 reaches its mailbox; and one backup has been taken and restored into a scratch
-database. The repository's browser and deployed-origin smoke gates remain `NOT RUN`
-until those prerequisites exist.
+database. The host-side preflight is required before deployment or acceptance can be
+completed. A passing HTTP readiness probe proves serving dependencies only and, by
+itself, must never declare production acceptable. The repository's browser and
+deployed-origin smoke gates remain `NOT RUN` until those prerequisites exist.
 
 Enable the HTTPS redirect and HSTS only once a certificate exists. Both are committed
 commented-out rather than omitted, because a browser remembers HSTS long after the
