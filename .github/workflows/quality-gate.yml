@@ -1,0 +1,148 @@
+name: Eszter Quality
+
+# ESZ-125 — repo-owned canonical quality gate.
+#
+# One job on one Ubuntu GitHub-hosted runner. It attests the exact triggering
+# commit, provisions the repository toolchain (Node, PHP + extensions +
+# Composer, npm/Composer locked dependencies, Docker engine and Google Chrome
+# for the canonical SQL/browser gates) and then runs exactly one canonical
+# `npm run validate` — never a parallel split, never a reimplementation of the
+# gate in YAML. ESZ-124 owns gate ordering, disposable-MySQL provisioning,
+# cleanup and the fail-closed local semantics inside `scripts/validate.mjs`.
+#
+# The claim made here is repo-owned/local quality only. `smoke:deployed-http`
+# and `security:config` are deployment-owned evidence whose subject (a
+# deployed origin/host) does not exist in this repository: they stay NOT RUN
+# and deferred in every run of this workflow, and nothing here is a
+# release/deployment PASS. No deployment credentials, no Vercel coupling.
+#
+# Least privilege: `contents: read` and nothing else — no secrets are read,
+# no write permission is granted, and the checkout does not persist
+# credentials.
+#
+# Triggers:
+#   - pushes to phase/9-consolidation and master;
+#   - pull requests targeting those two integration branches (the run
+#     validates the merge commit GitHub computed, i.e. GITHUB_SHA);
+#   - workflow_dispatch for manual reruns of an existing commit.
+#
+# Failure semantics: every step fails the job on any error (no
+# continue-on-error, no fallback that turns missing Docker/Chrome/PHP/MySQL or
+# a browser failure into success). The exact-SHA attestation runs before the
+# canonical validation and aborts the job on any mismatch.
+
+on:
+  push:
+    branches: [phase/9-consolidation, master]
+  pull_request:
+    branches: [phase/9-consolidation, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality-gate:
+    name: quality-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      # Check out the exact SHA that triggered this run (push/PR merge
+      # commit/workflow_dispatch target). `ref` is explicit so the workflow
+      # never silently validates a later branch tip.
+      - name: Check out the exact triggering SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Toolchain. Node 24 mirrors the project's current validation
+      # environment (Node 24.18 locally).
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # actions/setup-node v7.0.0
+        with:
+          node-version: "24"
+
+      # PHP 8.5 mirrors the current validation environment (PHP 8.5.4
+      # locally); composer.json accepts >=8.2 with a platform pin of 8.2.0.
+      # Extensions: mbstring/zlib are declared requirements, gd/pdo_mysql are
+      # exercised by the canonical gates (media re-encode, real-MySQL suites),
+      # zip/curl are what a locked Composer install needs to fetch dists.
+      # Composer itself is provided by the same action.
+      - name: Set up PHP 8.5, Composer and extensions
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # shivammathur/setup-php 2.37.2
+        with:
+          php-version: "8.5"
+          coverage: none
+          extensions: mbstring, zlib, gd, pdo_mysql, zip, curl
+          tools: composer:v2
+
+      # ESZ-125 exact-SHA attestation: the canonical validation must run on
+      # the commit that triggered this workflow. `git rev-parse HEAD` is
+      # compared mechanically against GITHUB_SHA and the job aborts on any
+      # mismatch — this runs before any dependency install or gate.
+      - name: Attest the exact workflow SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "HEAD_SHA=$head_sha"
+          if [ "$head_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::head SHA ($head_sha) differs from GITHUB_SHA ($GITHUB_SHA) — refusing to validate an unattested commit."
+            exit 1
+          fi
+          echo "exact-sha-attestation=pass ($head_sha)"
+
+      # Docker is the engine the canonical SQL gates provision their
+      # disposable MySQL 8.4 with (scripts/sql-test-mysql.mjs); the browser
+      # gates additionally run headless Google Chrome against disposable
+      # Apache/PHP/MySQL containers. Both are verified explicitly before
+      # validation — a missing engine/browser is a failed job, never a skip.
+      - name: Verify the Docker engine
+        run: docker info --format 'Docker server {{.ServerVersion}} ({{.OperatingSystem}})'
+
+      - name: Ensure and verify Google Chrome
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v google-chrome >/dev/null 2>&1; then
+            echo "google-chrome is not preinstalled on this runner image; installing the vendor .deb"
+            curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/google-chrome-stable.deb
+            sudo dpkg -i /tmp/google-chrome-stable.deb >/dev/null 2>&1 || sudo apt-get -f -y install >/dev/null
+            rm -f /tmp/google-chrome-stable.deb
+          fi
+          google-chrome --version
+
+      # Locked dependency bootstrap, exactly as the local gates expect:
+      # php/vendor is not committed, front/out is produced by the build stage
+      # of the canonical run itself.
+      - name: Install contracts dependencies
+        run: npm ci --prefix contracts
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix front
+
+      - name: Install PHP dependencies (including dev)
+        run: composer install --working-dir=php --no-interaction --no-progress --prefer-dist
+
+      # ESZ-124's canonical fail-closed gate — run exactly once, unmodified.
+      # Ordering, provisioning, cleanup and the local/deferred distinction are
+      # owned by scripts/validate.mjs.
+      - name: Canonical npm run validate
+        run: npm run validate
+
+      - name: Write the quality summary
+        if: always()
+        shell: bash
+        env:
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "## Eszter quality-gate — repo-owned quality"
+            echo ""
+            echo "- Trigger SHA: \`$GITHUB_SHA\`"
+            echo "- Canonical command: \`npm run validate\`"
+            echo "- Repo-owned quality outcome: $OUTCOME"
+            echo "- Deployed-host evidence (\`smoke:deployed-http\`, \`security:config\`) remains deferred and separate — this run is **not** a release/deployment PASS."
+          } >> "$GITHUB_STEP_SUMMARY"
