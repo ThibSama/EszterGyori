@@ -172,7 +172,7 @@ const gates = [
     cwd: ".",
     command: ["node", "scripts/build-production-artifact.mjs"],
     proves:
-      "ESZ-080/082: the static export, generated contracts, PHP runtime, migrations and production-only locked Composer dependencies form a deterministic archive; only public_html is web-facing, no secret/config or source/test/cache artifact is included, Symfony Mailer and both production operator entry points are present, and Node is build-time only.",
+      "ESZ-080/082: the static export, generated contracts, PHP runtime, migrations and production-only locked Composer dependencies form a deterministic archive; only public_html is web-facing, no secret/config or source/test/cache artifact is included, Symfony Mailer and both production operator entry points are present, and Node is build-time only. ESZ-126 adds source identity to the same manifest: packaging requires a clean committed candidate of ThibSama/EszterGyori (staged or unstaged tracked drift refuses before anything is emitted, ignored build outputs are allowed), the manifest carries a Git-derived provenance object with the canonical repository and the exact 40-hex HEAD, and the built-in verifier attests that provenance — directory tree and archived manifest — against the enclosing checkout's identity/HEAD, so a valid artifact can always be tied to the commit that produced it.",
   },
 
   // ── Stage 6 — PHP validation ──────────────────────────────────────────────────

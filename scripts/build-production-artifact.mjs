@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { committedCandidateProvenance } from "./production-provenance.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(repoRoot, "dist");
@@ -100,7 +101,7 @@ function normalizeModes() {
   });
 }
 
-function createManifest() {
+function createManifest(provenance) {
   const files = {};
   const directories = [];
   walk(artifactRoot, (path, stat) => {
@@ -120,11 +121,28 @@ function createManifest() {
     publicRoot: "public_html",
     phpMinimum: "8.2",
     nodeRuntimeRequired: false,
+    // ESZ-126. Source identity derived from Git, not branch, timestamp, path
+    // or hostname — a clean committed candidate of the canonical repository.
+    provenance,
     directories: directories.sort(),
     files,
   };
   writeFileSync(join(artifactRoot, "ARTIFACT-MANIFEST.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   chmodSync(join(artifactRoot, "ARTIFACT-MANIFEST.json"), 0o640);
+}
+
+// ESZ-126. Before any packaging side effect, prove the source identity: the
+// checkout must be the canonical repository with a resolvable HEAD, and its
+// tracked index/worktree must match that commit exactly. Staged or unstaged
+// tracked drift refuses packaging before anything is emitted, so modified
+// source can never claim the parent commit. Ignored dependencies and build
+// outputs (front/out, dist/, node_modules, php/vendor, …) are not tracked and
+// do not take part in the comparison.
+let provenance;
+try {
+  provenance = committedCandidateProvenance(repoRoot);
+} catch (error) {
+  fail(error.message);
 }
 
 requirePath(join(repoRoot, "front", "out", "index.html"), "static export (run the frontend build first)");
@@ -178,7 +196,7 @@ for (const directory of [
 }
 
 normalizeModes();
-createManifest();
+createManifest(provenance);
 run("node", [join(repoRoot, "scripts", "verify-production-artifact.mjs"), "--skip-archive"]);
 run("tar", [
   "--sort=name",

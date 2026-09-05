@@ -11,15 +11,60 @@ import {
   rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  attestationErrors,
+  resolveHeadCommit,
+  resolveRepositoryIdentity,
+} from "./production-provenance.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(repoRoot, "dist");
-const artifactRoot = join(distRoot, "eszter-production");
-const archivePath = join(distRoot, "eszter-production.tar.gz");
+
+// ESZ-126. The verifier can prove any artifact tree: the packaged tree inside
+// this repository by default, or an extracted artifact elsewhere via
+// --artifact-root/--archive (used by tamper checks and by deployment-side
+// verification of an extracted release).
+function flagValue(name) {
+  const index = process.argv.indexOf(name);
+  return index === -1 ? undefined : process.argv[index + 1];
+}
+
+const artifactRoot = flagValue("--artifact-root") ?? join(distRoot, "eszter-production");
+const archivePath = flagValue("--archive") ?? join(distRoot, "eszter-production.tar.gz");
+const expectRepository = flagValue("--expect-repository");
+const expectCommit = flagValue("--expect-commit");
 const skipArchive = process.argv.includes("--skip-archive");
 const errors = [];
+
+// ── ESZ-126: trusted provenance attestation ────────────────────────────────────
+// Inside the source repository the manifest is attested against the current
+// Git identity and HEAD. For an extracted artifact outside a repository the
+// operator must supply trusted --expect-repository/--expect-commit values;
+// the verifier never falls back to syntax-only validation.
+let expectedRepository;
+let expectedCommit;
+if (expectRepository !== undefined || expectCommit !== undefined) {
+  if (expectRepository === undefined || expectCommit === undefined) {
+    errors.push("--expect-repository and --expect-commit must be supplied together");
+  } else {
+    expectedRepository = expectRepository;
+    expectedCommit = expectCommit;
+  }
+} else if (existsSync(join(repoRoot, ".git"))) {
+  try {
+    expectedRepository = resolveRepositoryIdentity(repoRoot);
+    expectedCommit = resolveHeadCommit(repoRoot);
+  } catch (error) {
+    errors.push(`cannot attest provenance against the enclosing repository: ${error.message}`);
+  }
+} else {
+  errors.push(
+    "cannot attest provenance: no Git repository encloses this artifact and no " +
+      "trusted --expect-repository/--expect-commit values were supplied",
+  );
+}
 
 function rel(path) {
   return relative(artifactRoot, path).split(sep).join("/");
@@ -118,6 +163,15 @@ if (existsSync(manifestPath)) {
     if (manifest.format !== "eszter-production-artifact/v1") errors.push("unexpected manifest format");
     if (manifest.publicRoot !== "public_html") errors.push("manifest publicRoot is not public_html");
     if (manifest.nodeRuntimeRequired !== false) errors.push("manifest must declare nodeRuntimeRequired=false");
+    if (expectedRepository !== undefined && expectedCommit !== undefined) {
+      for (const problem of attestationErrors(
+        manifest.provenance,
+        expectedRepository,
+        expectedCommit,
+      )) {
+        errors.push(`provenance: ${problem}`);
+      }
+    }
     const actualFiles = entries
       .filter(({ stat, name }) => stat.isFile() && name !== "ARTIFACT-MANIFEST.json")
       .map(({ name }) => name)
@@ -163,14 +217,37 @@ for (const [entryPoint, expected] of [
 
 if (!skipArchive) {
   if (!existsSync(archivePath)) {
-    errors.push("missing deterministic archive: dist/eszter-production.tar.gz");
+    errors.push(`missing deterministic archive: ${relative(repoRoot, archivePath)}`);
   } else {
+    // ESZ-126: attest the provenance of the manifest bytes packaged *inside*
+    // the archive, not only of the working-directory manifest. A tampered
+    // archived manifest fails here even before the determinism rebuild.
+    const archiveMember = `${basename(artifactRoot)}/ARTIFACT-MANIFEST.json`;
+    const archiveRead = spawnSync("tar", ["-xOf", archivePath, archiveMember], { encoding: "utf8" });
+    if (archiveRead.status !== 0) {
+      errors.push(`archive does not contain a readable manifest member ${archiveMember}`);
+    } else {
+      try {
+        const archivedManifest = JSON.parse(archiveRead.stdout);
+        if (expectedRepository !== undefined && expectedCommit !== undefined) {
+          for (const problem of attestationErrors(
+            archivedManifest.provenance,
+            expectedRepository,
+            expectedCommit,
+          )) {
+            errors.push(`archive provenance: ${problem}`);
+          }
+        }
+      } catch (error) {
+        errors.push(`archive manifest cannot be parsed: ${error.message}`);
+      }
+    }
     const temporary = mkdtempSync(join(tmpdir(), "eszter-artifact-"));
     const secondTar = join(temporary, "comparison.tar");
     const secondArchive = `${secondTar}.gz`;
     const result = spawnSync("tar", [
       "--sort=name", "--mtime=@0", "--owner=0", "--group=0", "--numeric-owner",
-      "-cf", secondTar, "-C", distRoot, "eszter-production",
+      "-cf", secondTar, "-C", dirname(artifactRoot), basename(artifactRoot),
     ], { encoding: "utf8" });
     if (result.status !== 0) errors.push(`determinism check could not build comparison archive: ${result.stderr.trim()}`);
     else {
