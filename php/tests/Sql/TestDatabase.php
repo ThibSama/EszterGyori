@@ -22,10 +22,11 @@ use Eszter\Support\SystemClock;
  *   ESZTER_TEST_DB_USERNAME=eszter
  *   ESZTER_TEST_DB_PASSWORD=…
  *
- * When they are absent, `scripts/validate.mjs` reports both gates as NOT RUN with
- * that as the reason. `docs/v1-quality-gates.md` is explicit that NOT RUN is never
- * a pass — the point of declaring them is that the gap stays visible rather than
- * being silently absent.
+ * Since ESZ-112 the variables no longer need to be arranged by hand:
+ * `scripts/validate.mjs` and `scripts/sql-gates.mjs` provision an isolated MySQL 8.4
+ * instance (`scripts/sql-test-mysql.mjs`) and export these variables to the suites
+ * when the caller did not. An externally supplied `ESZTER_TEST_DB_DSN` is preserved
+ * and used as-is.
  *
  * ## MySQL, not SQLite
  *

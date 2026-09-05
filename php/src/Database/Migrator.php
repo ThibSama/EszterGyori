@@ -265,6 +265,17 @@ final class Migrator
      * deploy. The rule is narrow on purpose — it recognises the guarded forms this
      * project actually uses, and anything else must be made obviously safe rather
      * than argued about at 2am.
+     *
+     * ESZ-112 extends the same stance to row-mutating DML. A migration that fails
+     * part-way runs again, and no guard clause can make an UPDATE or a DELETE
+     * mechanically verifiable as repeat-safe — the rows it affects can differ on
+     * the second run, and REPLACE, TRUNCATE and RENAME have no guarded form at
+     * all. They are therefore refused outright: only DML and DDL whose repetition
+     * the migrator verifies mechanically (IF NOT EXISTS / IF EXISTS / INSERT
+     * IGNORE / an information_schema guard) may appear in a migration, and no
+     * comment or flag may waive that rule. Frozen migrations 0001–0015 contain
+     * none of the refused statements, so the strengthened rule changes nothing
+     * they do.
      */
     private static function assertIdempotentDdl(string $file, string $sql): void
     {
@@ -278,16 +289,39 @@ final class Migrator
                 || str_starts_with($head, 'INSERT IGNORE')
                 || str_starts_with($head, 'SET ');
 
+            if ($isGuarded) {
+                continue;
+            }
+
             $isUnguardedDdl = str_starts_with($head, 'CREATE ')
                 || str_starts_with($head, 'DROP ')
                 || str_starts_with($head, 'ALTER ')
                 || str_starts_with($head, 'INSERT ');
 
-            if ($isUnguardedDdl && !$isGuarded) {
+            if ($isUnguardedDdl) {
                 throw DatabaseException::invariant(
                     'A migration statement is not safe to re-run. MySQL commits implicitly '
                     . 'around DDL, so a migration that fails part-way must be able to run again. '
                     . 'Use IF NOT EXISTS / IF EXISTS, or an information_schema guard.',
+                    ['file' => $file, 'statement' => $head],
+                );
+            }
+
+            $isUnverifiableMutation = str_starts_with($head, 'UPDATE ')
+                || str_starts_with($head, 'DELETE ')
+                || str_starts_with($head, 'REPLACE ')
+                || str_starts_with($head, 'TRUNCATE ')
+                || str_starts_with($head, 'RENAME ');
+
+            if ($isUnverifiableMutation) {
+                throw DatabaseException::invariant(
+                    'A migration statement is refused because running it twice cannot be '
+                    . 'verified mechanically safe. Migrations re-run after a partial '
+                    . 'application, so they may contain only statements with a guarded form '
+                    . 'the migrator recognises (IF NOT EXISTS / IF EXISTS / INSERT IGNORE / '
+                    . 'an information_schema guard). UPDATE, DELETE, REPLACE, TRUNCATE and '
+                    . 'RENAME have no such form, so each is refused before anything executes '
+                    . '— and no comment or flag may waive the rule.',
                     ['file' => $file, 'statement' => $head],
                 );
             }

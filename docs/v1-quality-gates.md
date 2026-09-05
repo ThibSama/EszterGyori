@@ -39,7 +39,7 @@ Companion documents:
 | --- | --- | --- | --- |
 | **PASS** | The gate executed and its assertions held. | Yes | none |
 | **FAIL** | The gate executed and its assertions did not hold, or its tooling errored. | No | exit 1 |
-| **NOT RUN** | The gate is declared but a prerequisite component does not exist (no PHP, no database, no deployed origin, no browser runner). | **No** | none |
+| **NOT RUN** | The gate is declared but a prerequisite component does not exist (no PHP, no deployed origin, no browser runner). | **No** | none |
 
 Three rules govern NOT RUN, and they are what keep the policy honest:
 
@@ -50,6 +50,10 @@ Three rules govern NOT RUN, and they are what keep the policy honest:
 - A gate may only be NOT RUN while its subject genuinely does not exist. It **must**
   flip to executing on the commit that introduces its subject. Adding PHP without
   activating the PHP gates is itself a review failure.
+- **A missing database stopped being a NOT RUN case in ESZ-112.** The SQL stage's
+  subject exists and the runner provisions the disposable MySQL it needs, so a SQL gate
+  that cannot execute reports FAIL. NOT RUN now names only subjects the repository does
+  not contain — a deployed origin or a broader browser workflow.
 
 The runner's exit code is 0 when nothing failed, 1 when any gate failed, 2 on a runner
 error. **Exit 0 with NOT RUN gates present does not mean "V1 is validated"** — it means
@@ -69,7 +73,7 @@ The order is the specification. Each stage assumes the previous one held.
 | **4. Frontend behaviour** | `front:test` | Executable |
 | **5. Build** | contracts `dist/`, frontend production export, deterministic production deployment artifact | Executable |
 | **6. PHP validation** | composer validate, lint, static analysis, unit tests, parity-corpus replay, full `http-contract.json` replay, media, booking domain, document-root routing, sensitive-file permission enforcement (`security:filesystem`) | Executable |
-| **7. SQL** | migration, integration and notification queue tests | Executable **when `ESZTER_TEST_DB_DSN` names a disposable MySQL database**; NOT RUN otherwise |
+| **7. SQL** | migration, integration, rate-limit, backup-restore and notification queue tests | Executable — the runner provisions a disposable MySQL 8.4 instance when `ESZTER_TEST_DB_DSN` is absent (ESZ-112), and honours an external DSN as-is |
 | **8. HTTP smoke** | local PHP server plus deployed-origin checks | Local executable; deployed origin **Not run** |
 | **9. Browser scenarios** | admin-preview CSP, CMS media pipeline; public, full admin and booking | Focused CSP/media proofs executable; broader scenarios **Not run** |
 | **10. Security and configuration** | deployed exposure, headers and permissions | **Not run** |
@@ -339,15 +343,20 @@ What stage 6 does **not** yet prove, and says so rather than being silently abse
 
 ### Stage 7 — SQL
 
-Executable since ESZ-023, **conditionally**. The schema, the migrator and both suites
-exist; what they need is somewhere to run. Both gates read `ESZTER_TEST_DB_DSN` (with
-`ESZTER_TEST_DB_USERNAME` and `ESZTER_TEST_DB_PASSWORD`) and, when it is absent, report
-NOT RUN naming *that* as the missing prerequisite — which is a materially smaller gap
-than the one recorded here before, where the subject itself did not exist.
+Executable by default since ESZ-112. The schema, the migrator and the five suites
+exist; what they need is a server to run against. When the caller supplies
+`ESZTER_TEST_DB_DSN` (with `ESZTER_TEST_DB_USERNAME` and `ESZTER_TEST_DB_PASSWORD`) that
+database is used as-is. When it is absent, the runner provisions one isolated MySQL 8.4
+container itself (`scripts/sql-test-mysql.mjs`) — random identity and host port,
+generated test-only credentials, a database whose name ends in `_test` — exports its DSN
+to the suites, and removes the container and its volume on success, on failure and on
+interruption. A SQL gate that still cannot execute reports FAIL: provisioning failed, or
+the external database behind the DSN is unusable. NOT RUN has been retired for this stage
+— the missing-infrastructure case that justified it no longer exists.
 
 | Gate | Command | Proves |
 | --- | --- | --- |
-| `sql:migrations` | `vendor/bin/phpunit --testsuite sql-migrations` | Every migration applies repeat-safely and in order. Booking coverage proves table shape, constraints, exception-window/history foreign keys, the singleton serialization row and indexes on real MySQL, plus the deliberate absence of a generated-slot table. ESZ-130 adds migration 0013: the guarded ADD KEY on `admin_sessions.absolute_expires_at` re-runs cleanly after a partial application, and EXPLAIN proves both session-deadline indexes (0002 idle, 0013 absolute) answer the bounded GC deletes as index-range reads with no table scan and no filesort. ESZ-142 adds migration 0014: the guarded ADD COLUMN stores the bounded-ASCII consent_notice_id (ascii_bin) beside consent_at_utc with a CHECK restating the catalog id pattern and NULL legal only as the pre-catalog marker; applying it over a database that already holds bookings preserves them byte for byte (NULL notice id, consent instant untouched) while new inserts carry the id, and over-long or non-lowercase ids are refused by the schema. |
+| `sql:migrations` | `vendor/bin/phpunit --testsuite sql-migrations` | Every migration applies repeat-safely and in order. Booking coverage proves table shape, constraints, exception-window/history foreign keys, the singleton serialization row and indexes on real MySQL, plus the deliberate absence of a generated-slot table. ESZ-130 adds migration 0013: the guarded ADD KEY on `admin_sessions.absolute_expires_at` re-runs cleanly after a partial application, and EXPLAIN proves both session-deadline indexes (0002 idle, 0013 absolute) answer the bounded GC deletes as index-range reads with no table scan and no filesort. ESZ-142 adds migration 0014: the guarded ADD COLUMN stores the bounded-ASCII consent_notice_id (ascii_bin) beside consent_at_utc with a CHECK restating the catalog id pattern and NULL legal only as the pre-catalog marker; applying it over a database that already holds bookings preserves them byte for byte (NULL notice id, consent instant untouched) while new inserts carry the id, and over-long or non-lowercase ids are refused by the schema. ESZ-112 hardens the read-time guard into a migration-DML rule: a statement whose head is an unguarded row mutation (UPDATE, DELETE, REPLACE, TRUNCATE or RENAME) is refused before anything executes, because the migrator cannot verify that running it twice is mechanically safe; only guarded forms (IF NOT EXISTS / IF EXISTS / INSERT IGNORE / information_schema-guarded statements) are admitted, and no comment or flag can waive the refusal. |
 | `sql:integration` | `vendor/bin/phpunit --testsuite sql-integration` | Admin auth and the booking backend against real MySQL, including HTTP auth/CSRF, availability, atomic create/move/cancel/history and Package 6.2 availability administration. ESZ-087 drives two independent PHP processes through the production Kernel and `POST /api/bookings` for the same valid slot: exactly one 201 confirmation, one 409 `SLOT_UNAVAILABLE`, one confirmed booking/history occurrence and one confirmation/reminder job pair. ESZ-074 additionally proves lifecycle jobs commit atomically with booking/history, duplicate-safe confirmation/cancellation identities, exact T−24h reminders, move supersession and rescheduling, terminal skips outside catch-up, cancellation retirement and rollback of all three tables when a producer fails. ESZ-130 bounds the anonymous-session bootstrap end to end: repeated no-cookie reads admit exactly the frozen burst (10) then answer 429 `RATE_LIMITED` with `Retry-After` and no `Set-Cookie`, adding zero `admin_sessions` rows; invented, malformed and expired cookies are each a fresh charge and never adopt the supplied id; a retained cookie reuses and touches one anonymous session and spends none of the new-bootstrap allowance; the bounded two-pass sweep drains 900 idle- and absolute-expired rows through real bootstrap wiring in 400/400/100 batches, leaves live rows untouched, converges to zero changes, and answers the opaque 500 with no row and no cookie when a real MySQL SIGNAL fails the sweep DELETE; an admitted bootstrap cookie and CSRF still log in while cross-paired cookie/token is refused; and neither limiter rows nor the debug log expose the address, any session id or any CSRF token. ESZ-142 proves that a public creation stores the request's consent notice id beside the consent instant, that a missing or unknown id (or any attempt to send notice text instead) is refused before insertion with zero rows or history, that admin contact updates never rewrite the stored consent facts, and that retention erasure preserves consent_at_utc and consent_notice_id — for catalog-era and legacy rows alike — while erasing the customer PII. ESZ-145 bounds admin booking SQL and history payloads against the same real MySQL through a statement recorder on the suite connection: one range page costs exactly one query whether the window holds 0 or 200 bookings and performs zero `booking_history` reads, a 1000-booking walk costs exactly five queries (one per page) and reproduces every reference in order, a booking with 2501 history events serves at most one fixed 50-event reference page with correct `hasMore` and a strictly advancing `eventId` cursor, paging that trail reaches all 2501 events without duplicate or gap in 51 pages and terminates, a contact-update mutation of a booking with 2000 history rows runs exactly four statements whose single `booking_history` one is the event INSERT — the trail is never SELECTed — and the real range/reference/mutation HTTP responses validate against the generated admin-bookings, admin-booking-reference and admin-booking response schemas. ESZ-109 proves the AUD-14 label authority through the real provisioning CLI against this database: provisioning stores the title of the matching item of the validated published SiteContent document (written through the real content-storage/contract-validation path), a published title change followed by re-provisioning refreshes the stored mirror, `--label` is refused (exit 2, zero rows), an unknown key is refused (exit 2, zero rows), and missing or invalid published content refuses (exit 1) with an existing row byte-untouched. ESZ-110 proves the rollback-only semantics of `Database::transactional()` against real MySQL, no savepoints: a nested transaction whose failure is caught by intermediate code dooms the shared physical transaction, so the outer callback writing around it and returning normally is refused its commit with the generic doomed-transaction `DatabaseException` and none of the writes — before or after the caught failure — survive (two-level and three-level nesting alike); an uncaught nested failure still rethrows its original exception after the rollback; successful nesting still commits every level exactly once; a doomed termination and an explicit `rollBack()` both leave the same `Database` instance able to start fresh, committable transactions; and a caught nested failure inside a `consistentSnapshot` refuses the snapshot's commit the same way. |
 | `sql:rate-limits` | `vendor/bin/phpunit --testsuite sql-rate-limits` | ESZ-084 against real MySQL, because every guarantee the limiter makes is a property of the **store** rather than of the algorithm — an in-memory double would satisfy all of them by construction and prove none. Allowance is spent across separate charges and survives them, which is the whole point on a runtime where each request is its own process; it is restored exactly one emission interval later and not a millisecond earlier; a refused charge writes nothing, so hammering a full bucket cannot lengthen its own penalty; two subjects and two scopes never share a row; an idle bucket recovers its whole burst but accumulates no credit beyond it; no address or e-mail is stored in clear; a row is never sweepable while it is still refusing; and two independent operating-system processes racing the last allowance admit exactly one. ESZ-130 adds the anonymous-session bootstrap bucket to the same store: its frozen rule (30 per hour, burst 10, one 120-second emission interval) admits exactly ten charges at one instant, refuses the eleventh, restores one unit exactly one emission interval later, and two independent processes racing its last allowance still admit exactly one. |
 | `sql:backup-restore` | `vendor/bin/phpunit --testsuite sql-backup-restore` | ESZ-083's restore proof plus ESZ-097's snapshot proof. A realistic deployment is restored into a **second empty database and directory** and checked through SQL/content/media. A controlled callback mutates two tables between their reads and proves the dump and row counts remain on one MySQL consistent snapshot. A backup worker then pauses after SQL export, a second process attempts one correlated SQL + draft mutation, and the archive is proved wholly pre-mutation while the live deployment becomes wholly post-mutation after the barrier releases. Integrity, exclusions and restore refusals remain covered. |
@@ -359,6 +368,13 @@ Isolation is the requirement, not a preference:
   name does not end in `_test`, because these suites drop and truncate tables and a
   naming rule is a cheap way to make pointing them at something real impossible rather
   than merely discouraged.
+- Since ESZ-112 the instance itself is disposable too. When no external
+  `ESZTER_TEST_DB_DSN` is set, `scripts/sql-test-mysql.mjs` starts one MySQL 8.4
+  container per run — random identity and host port, generated test-only credentials —
+  and the runner removes the container and its anonymous volume afterwards. The
+  `eszter_dev` instance behind `compose.dev.yml`, its persistent volume, and any
+  database a human created are never reused or reset: the container is created from the
+  image alone and its whole state dies with the run.
 - Each `sql:integration` test runs inside a transaction that is rolled back afterwards.
   `TRUNCATE` is deliberately not used per test: on MySQL it commits implicitly and would
   defeat the rollback it was meant to help.
@@ -526,9 +542,11 @@ full PHP conformance replay and real built-in-server smoke. The distinction is d
 are not blocked by infrastructure that does not exist yet, and nobody can mistake that
 for the release bar.
 
-Stage 7 sits between the two since ESZ-023. It is not infrastructure that does not
-exist — the schema and both suites are committed — so a contributor touching SQL is
-expected to run it, and running it needs nothing more than a throwaway MySQL:
+Stage 7 sits between the two since ESZ-023, and since ESZ-112 it needs nothing but a
+Docker engine: when the variables below are absent, the runner provisions one isolated
+MySQL 8.4 instance for the run and removes it when the run ends — on success, on
+failure and on interruption. A caller who already runs a disposable MySQL can supply it
+instead, and it is used as-is:
 
 ```
 ESZTER_TEST_DB_DSN='mysql:host=127.0.0.1;port=3306;dbname=eszter_test;charset=utf8mb4' \
@@ -536,8 +554,9 @@ ESZTER_TEST_DB_USERNAME=eszter ESZTER_TEST_DB_PASSWORD=… \
 npm run validate
 ```
 
-Without those variables the SQL gates report NOT RUN, which is still not a pass and
-still blocks a release.
+Either way the five SQL gates execute — a run that cannot provision (no Docker engine)
+or whose database is unusable reports FAIL for them, never NOT RUN, and NOT RUN still
+blocks a release wherever it appears.
 
 ---
 

@@ -184,6 +184,100 @@ final class MigrationTest extends TestCase
         }
     }
 
+    public function testAnUnsafeUpdateMigrationIsRefusedBeforeExecution(): void
+    {
+        $directory = TestEnvironment::makeTempDirectory('eszter-migrations');
+
+        try {
+            // ESZ-112: a bare UPDATE is not repeat-safe DML. A migration that
+            // fails part-way runs again, and the second run of an UPDATE can
+            // touch different rows — nothing in the statement makes the guard
+            // able to verify otherwise, so it is refused like unguarded DDL.
+            file_put_contents(
+                $directory . '/0001_unsafe.sql',
+                "CREATE TABLE IF NOT EXISTS t (id INT);\nUPDATE t SET id = id + 1;",
+            );
+
+            $this->expectException(DatabaseException::class);
+            $this->expectExceptionMessageMatches('/mechanically safe/');
+
+            $this->migrator($directory)->migrate();
+        } finally {
+            TestEnvironment::removeDirectory($directory);
+            // The whole file is scanned at read time, before any statement
+            // runs: the guarded CREATE beside the UPDATE never applied either.
+            self::assertSame(
+                [],
+                $this->database->fetchAll("SHOW TABLES LIKE 't'"),
+            );
+        }
+    }
+
+    public function testAnUnsafeDeleteMigrationIsRefusedBeforeExecution(): void
+    {
+        $directory = TestEnvironment::makeTempDirectory('eszter-migrations');
+
+        try {
+            // Same rule, DELETE side (ESZ-112): deleting rows is a mutation
+            // whose repetition the guard cannot verify, so it never executes.
+            file_put_contents(
+                $directory . '/0001_unsafe.sql',
+                "CREATE TABLE IF NOT EXISTS t (id INT);\nDELETE FROM t WHERE id = 1;",
+            );
+
+            $this->expectException(DatabaseException::class);
+            $this->expectExceptionMessageMatches('/mechanically safe/');
+
+            $this->migrator($directory)->migrate();
+        } finally {
+            TestEnvironment::removeDirectory($directory);
+            self::assertSame(
+                [],
+                $this->database->fetchAll("SHOW TABLES LIKE 't'"),
+            );
+        }
+    }
+
+    public function testUnrecognisedRowMutatingDmlIsRefusedBeforeExecution(): void
+    {
+        // REPLACE INTO and TRUNCATE carry the same property as UPDATE/DELETE
+        // (ESZ-112): no guarded form the migrator recognises, so repeated
+        // execution cannot be verified mechanically. Each gets its own
+        // directory because the guard stops at the first offending statement.
+        foreach (
+            [
+                'REPLACE INTO t (id) VALUES (1)',
+                'TRUNCATE TABLE t',
+            ] as $statement
+        ) {
+            $directory = TestEnvironment::makeTempDirectory('eszter-migrations');
+
+            try {
+                file_put_contents(
+                    $directory . '/0001_unsafe.sql',
+                    "CREATE TABLE IF NOT EXISTS t (id INT);\n{$statement};",
+                );
+
+                try {
+                    $this->migrator($directory)->migrate();
+                    self::fail("The statement `{$statement}` should have been refused.");
+                } catch (DatabaseException $exception) {
+                    self::assertStringContainsString(
+                        'mechanically safe',
+                        $exception->getMessage(),
+                        $statement,
+                    );
+                }
+            } finally {
+                TestEnvironment::removeDirectory($directory);
+                self::assertSame(
+                    [],
+                    $this->database->fetchAll("SHOW TABLES LIKE 't'"),
+                );
+            }
+        }
+    }
+
     public function testAMisnamedMigrationFileIsRefusedRatherThanSkipped(): void
     {
         $directory = TestEnvironment::makeTempDirectory('eszter-migrations');

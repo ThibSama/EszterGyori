@@ -41,8 +41,9 @@
 
     <!--
       ESZ-023. Both suites need ESZTER_TEST_DB_DSN pointing at a disposable MySQL
-      database whose name ends in `_test`; without it every test in them skips and
-      `scripts/validate.mjs` reports the gate as NOT RUN, which is never a pass.
+      database whose name ends in `_test`. Since ESZ-112 the validate runner
+      provisions exactly that (`scripts/sql-test-mysql.mjs`) when the variable is
+      absent, so these gates execute by default instead of reporting NOT RUN.
       They are separate suites because they are separate gates: `sql:migrations`
       proves the schema can be built, `sql:integration` proves the repositories
       work against the schema it built.

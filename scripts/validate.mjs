@@ -6,9 +6,15 @@
  * outcomes per gate: PASS, FAIL or NOT RUN.
  *
  * NOT RUN is never a pass. Gates that depend on components this repository does not
- * contain yet (MySQL, a deployed origin, a browser runner) are declared here with the
+ * contain yet (a deployed origin, a browser runner) are declared here with the
  * reason they cannot execute, so the gap stays visible instead of being silently
  * absent. They are printed, counted, and excluded from the success claim.
+ *
+ * The SQL gates stopped being NOT RUN in ESZ-112: the disposable MySQL they need
+ * is provisioned by this runner itself (`scripts/sql-test-mysql.mjs`) when no
+ * `ESZTER_TEST_DB_DSN` is supplied, and removed again when the run ends. A SQL
+ * gate that still cannot execute — provisioning failed, or an external DSN was
+ * set but the database behind it is unusable — is a FAIL, never a NOT RUN.
  *
  * PHP is the only backend as of Package 1.2 (ESZ-015). The Express reference service
  * was retired once `php:http-contract` replayed the same generated artifact green, so
@@ -19,7 +25,8 @@
 
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { dockerEngineAvailable, provisionSqlTestMySql } from "./sql-test-mysql.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -339,12 +346,14 @@ const gates = [
 
   // ── Stage 7 — SQL ─────────────────────────────────────────────────────────────
   //
-  // ESZ-023 built the schema, the migrator and both suites, so these two gates are
-  // no longer unconditionally NOT RUN. What they still need is somewhere to run:
-  // a disposable MySQL database, named by ESZTER_TEST_DB_DSN. Without it they
-  // report NOT RUN naming the missing prerequisite rather than the missing
-  // subject, which is a different — and much smaller — gap than the one that was
-  // recorded here before.
+  // ESZ-023 built the schema, the migrator and both suites. Since ESZ-112 this
+  // stage never reports NOT RUN for infrastructure reasons: when no external
+  // ESZTER_TEST_DB_DSN is supplied, the runner provisions one isolated MySQL 8.4
+  // instance (`scripts/sql-test-mysql.mjs`), exports a DSN whose database name
+  // ends in `_test` to the gates, and removes the container/volume on success,
+  // failure and interruption. An external ESZTER_TEST_DB_DSN is preserved and
+  // used as-is. Only a gate whose *subject* does not exist may be NOT RUN; a SQL
+  // gate that cannot execute reports FAIL.
   //
   // MySQL specifically, not SQLite. The engine is the thing under test: `utf8mb4`
   // collations, `ON DUPLICATE KEY UPDATE`, `GET_LOCK`, foreign keys, and above all
@@ -358,7 +367,7 @@ const gates = [
     command: ["vendor/bin/phpunit", "--no-progress", "--testsuite", "sql-migrations"],
     unavailable: sqlDatabaseUnavailable,
     proves:
-      "Every migration applies to an empty database in order, is idempotent on re-run, and leaves schema_migrations consistent. It also proves the booking tables, constraints, foreign keys, indexes, singleton serialization row and durable history on MySQL, and proves there is no persisted slot table. ESZ-070 adds notification_jobs: its enum, identity, error-code, lease, sent-instant and attempt-ceiling CHECKs are each proved to refuse a bad row, its idempotency key is proved unique, and deleting a booking a notification refers to is proved to be refused rather than cascading. ESZ-140 adds migration 0011: the guarded ALTERs re-run cleanly after a partial application, the schema restates the retention artifact (the erasure column and CHECK, and a status CHECK that admits `retired` and no non-frozen status), the database itself refuses to repopulate an erased booking, and a `retired` job row satisfies every terminal constraint. ESZ-130 adds migration 0013: the guarded ADD KEY on `admin_sessions.absolute_expires_at` completes cleanly when re-run after a partial application, and EXPLAIN proves that both session-deadline indexes (the 0002 idle one and the 0013 absolute one) answer the bounded GC deletes as index-range reads with no table scan and no filesort. ESZ-142 adds migration 0014: the guarded ADD COLUMN stores the bounded-ASCII consent_notice_id (ascii_bin) beside consent_at_utc with a CHECK restating the catalog id pattern and NULL legal only as the pre-catalog marker; applying it over a database that already holds bookings preserves them byte for byte (NULL notice id, consent instant untouched) while new inserts carry the id, and over-long or non-lowercase ids are refused by the schema. Runs only against a disposable database whose name ends in `_test`.",
+      "Every migration applies to an empty database in order, is idempotent on re-run, and leaves schema_migrations consistent. It also proves the booking tables, constraints, foreign keys, indexes, singleton serialization row and durable history on MySQL, and proves there is no persisted slot table. ESZ-070 adds notification_jobs: its enum, identity, error-code, lease, sent-instant and attempt-ceiling CHECKs are each proved to refuse a bad row, its idempotency key is proved unique, and deleting a booking a notification refers to is proved to be refused rather than cascading. ESZ-140 adds migration 0011: the guarded ALTERs re-run cleanly after a partial application, the schema restates the retention artifact (the erasure column and CHECK, and a status CHECK that admits `retired` and no non-frozen status), the database itself refuses to repopulate an erased booking, and a `retired` job row satisfies every terminal constraint. ESZ-130 adds migration 0013: the guarded ADD KEY on `admin_sessions.absolute_expires_at` completes cleanly when re-run after a partial application, and EXPLAIN proves that both session-deadline indexes (the 0002 idle one and the 0013 absolute one) answer the bounded GC deletes as index-range reads with no table scan and no filesort. ESZ-142 adds migration 0014: the guarded ADD COLUMN stores the bounded-ASCII consent_notice_id (ascii_bin) beside consent_at_utc with a CHECK restating the catalog id pattern and NULL legal only as the pre-catalog marker; applying it over a database that already holds bookings preserves them byte for byte (NULL notice id, consent instant untouched) while new inserts carry the id, and over-long or non-lowercase ids are refused by the schema. ESZ-112 hardens the read-time guard into a migration-DML rule: a statement whose head is an unguarded row mutation (UPDATE, DELETE, REPLACE, TRUNCATE or RENAME) is refused before anything executes, because running it twice cannot be verified mechanically safe; only guarded forms (IF NOT EXISTS / IF EXISTS / INSERT IGNORE / an information_schema guard) are admitted, and no comment or flag can waive the refusal. Runs against a disposable MySQL instance the runner provisions itself when no ESZTER_TEST_DB_DSN is set (scripts/sql-test-mysql.mjs), and against the caller's external DSN when one is set; the database name always ends in `_test`.",
   },
   {
     id: "sql:integration",
@@ -487,7 +496,7 @@ const gates = [
 ];
 
 /**
- * The prerequisite both SQL gates share.
+ * The prerequisite the SQL gates share.
  *
  * Returns a reason when the gate cannot run, null when it can. Deliberately not a
  * connection attempt: a gate runner that talked to a database would need its own
@@ -495,14 +504,24 @@ const gates = [
  * would then disagree with the suite it is about to start. Presence of the
  * variable is the prerequisite; whether the server behind it works is the suite's
  * problem, and the suite reports it as a FAIL rather than as an absence.
+ *
+ * ESZ-112: an absent variable no longer makes the gate NOT RUN. When no external
+ * DSN is supplied, `runValidation()` provisions a disposable MySQL 8.4 instance
+ * (`scripts/sql-test-mysql.mjs`) before the SQL stage and exports its DSN here.
+ * Only when that provisioning cannot even be attempted — no Docker engine — is
+ * there a reason to report; the run itself then FAILs rather than NOT RUNs.
  */
 function sqlDatabaseUnavailable() {
   if (process.env.ESZTER_TEST_DB_DSN) return null;
+  if (dockerEngineAvailable()) return null;
 
   return (
-    "No test database is configured. Set ESZTER_TEST_DB_DSN (plus ESZTER_TEST_DB_USERNAME " +
-    "and ESZTER_TEST_DB_PASSWORD) to a disposable MySQL database whose name ends in `_test`. " +
-    "The schema, the migrations and both suites exist; only the server is missing."
+    "No test database is configured and no Docker engine is reachable to provision " +
+    "the disposable MySQL 8.4 test instance. Set ESZTER_TEST_DB_DSN (plus " +
+    "ESZTER_TEST_DB_USERNAME and ESZTER_TEST_DB_PASSWORD) to a disposable MySQL " +
+    "database whose name ends in `_test`, or start Docker and let the runner " +
+    "provision one (scripts/sql-test-mysql.mjs). The schema, the migrations and " +
+    "the suites exist; only the server is missing."
   );
 }
 
@@ -534,12 +553,17 @@ function runGate(gate) {
   return {
     status: FAIL,
     durationMs,
-    detail: `exit ${result.status}`,
+    detail: result.signal ? `terminated by ${result.signal}` : `exit ${result.status}`,
     output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trimEnd(),
+    // An operator's Ctrl-C reaches the whole process group, so the gate child
+    // dies by SIGINT/SIGTERM while this runner's own handler is still deferred
+    // (spawnSync does not dispatch signal callbacks). The caller stops the run
+    // when it sees one of these.
+    signal: result.signal ?? null,
   };
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.help) {
@@ -552,6 +576,10 @@ function main() {
         "",
         "Exit codes: 0 = no gate failed, 1 = at least one gate failed, 2 = runner error.",
         "NOT RUN gates never count as passes.",
+        "",
+        "When ESZTER_TEST_DB_DSN is absent, the SQL gates provision a disposable",
+        "MySQL 8.4 instance for the run (scripts/sql-test-mysql.mjs) and remove it",
+        "when the run ends. An external ESZTER_TEST_DB_DSN is used as-is.",
         "",
       ].join("\n"),
     );
@@ -567,57 +595,167 @@ function main() {
     return 0;
   }
 
+  return runValidation({ json: args.json });
+}
+
+/**
+ * ESZ-112 — the runnable core.
+ *
+ * `main()` is the CLI; this is the validation. A restricted `ids` list runs only
+ * the named gates, in their declared order — `scripts/sql-gates.mjs` uses it to
+ * run the five SQL gates through the exact same provisioning path as the full
+ * `npm run validate`.
+ *
+ * When any selected gate needs the disposable SQL database and no external
+ * `ESZTER_TEST_DB_DSN` is set, one instance is provisioned before the first gate
+ * runs and its environment is exported to every child. The instance is disposed
+ * in `finally`, so cleanup happens on success, on failure and on interruption
+ * (SIGINT/SIGTERM finish the gate in flight, then stop the run).
+ *
+ * A SQL gate whose provisioning failed is reported FAIL with the provisioning
+ * error — the missing infrastructure is a broken environment, not an absent
+ * subject, so NOT RUN would be a lie.
+ *
+ * @param {{ ids?: string[]|null, json?: boolean }} [options]
+ * @returns {Promise<number>} 0 = no gate failed, 1 = at least one gate failed,
+ *   130 = interrupted.
+ */
+export async function runValidation({ ids = null, json = false } = {}) {
+  const wanted = ids === null ? null : new Set(ids);
+  const gateList = ids === null ? gates : gates.filter((gate) => wanted.has(gate.id));
+  const sqlGateIds = new Set(
+    gates.filter((gate) => gate.unavailable === sqlDatabaseUnavailable).map((gate) => gate.id),
+  );
+  const runsSql = gateList.some((gate) => sqlGateIds.has(gate.id));
+
   const report = [];
   let currentStage = null;
   let failed = false;
+  let interrupted = false;
+  let sqlHandle = null;
+  let sqlEnvError = null;
 
-  for (const gate of gates) {
-    if (gate.stage !== currentStage) {
-      currentStage = gate.stage;
-      if (!args.json) process.stdout.write(`\n── ${currentStage} ${"─".repeat(Math.max(0, 58 - currentStage.length))}\n`);
-    }
-
-    // A gate is NOT RUN either because its subject does not exist (`status`) or
-    // because a prerequisite for running it is absent (`unavailable`). Both are
-    // reported identically, and neither is a pass.
-    const unavailableReason = gate.status === NOT_RUN ? gate.reason : gate.unavailable?.();
-
-    if (unavailableReason) {
-      report.push({ id: gate.id, stage: gate.stage, status: NOT_RUN, reason: unavailableReason });
-      if (!args.json) {
-        process.stdout.write(`  ${NOT_RUN.padEnd(8)} ${gate.id.padEnd(30)} ${unavailableReason}\n`);
+  // Provision the disposable instance before the first gate runs when no
+  // external DSN was supplied. The environment is exported to the process so
+  // `sqlDatabaseUnavailable()` answers null for every SQL gate and each child
+  // inherits the variables from `runGate`'s env spread.
+  if (runsSql && !process.env.ESZTER_TEST_DB_DSN) {
+    try {
+      sqlHandle = provisionSqlTestMySql();
+      Object.assign(process.env, sqlHandle.env);
+      if (!json) {
+        process.stdout.write(
+          `\nProvisioning the disposable SQL test MySQL (${sqlHandle.databaseName}, `
+          + `port ${sqlHandle.port}) — removed when the run ends.\n`,
+        );
       }
-      continue;
+    } catch (error) {
+      sqlEnvError = `SQL test database provisioning failed: ${error?.message ?? error}`;
     }
+  }
 
-    const outcome = runGate(gate);
-    report.push({ id: gate.id, stage: gate.stage, ...outcome });
+  if (sqlHandle) {
+    // Cleanup on interruption: the gate in flight finishes, then the loop stops
+    // and the `finally` below disposes the instance before the process exits.
+    const stop = (signal) => {
+      if (!interrupted) {
+        interrupted = true;
+        process.stderr.write(
+          `\nvalidate: ${signal} received — finishing the current gate, then stopping and removing the disposable MySQL.\n`,
+        );
+      }
+    };
+    process.once("SIGINT", () => stop("SIGINT"));
+    process.once("SIGTERM", () => stop("SIGTERM"));
+  }
 
-    if (!args.json) {
-      const seconds = (outcome.durationMs / 1000).toFixed(1);
-      process.stdout.write(`  ${outcome.status.padEnd(8)} ${gate.id.padEnd(30)} ${seconds}s\n`);
-      if (outcome.status === FAIL) {
-        process.stdout.write(`           ${outcome.detail}\n`);
-        if (outcome.output) {
-          process.stdout.write(
-            outcome.output
-              .split("\n")
-              .slice(-25)
-              .map((line) => `           │ ${line}`)
-              .join("\n") + "\n",
-          );
+  try {
+    for (const gate of gateList) {
+      if (interrupted) break;
+
+      if (gate.stage !== currentStage) {
+        currentStage = gate.stage;
+        if (!json) process.stdout.write(`\n── ${currentStage} ${"─".repeat(Math.max(0, 58 - currentStage.length))}\n`);
+      }
+
+      // A gate is NOT RUN either because its subject does not exist (`status`) or
+      // because a prerequisite for running it is absent (`unavailable`). Both are
+      // reported identically, and neither is a pass.
+      const unavailableReason = gate.status === NOT_RUN ? gate.reason : gate.unavailable?.();
+
+      // ESZ-112: a SQL gate whose provisioning failed is a broken environment,
+      // so it is FAIL — never NOT RUN, and never a run that could silently skip
+      // (phpunit exits 0 when every test marks itself skipped). This must not
+      // depend on `unavailableReason`: with Docker up, `sqlDatabaseUnavailable()`
+      // answers null even though the provisioning itself failed.
+      if (sqlEnvError && sqlGateIds.has(gate.id)) {
+        const outcome = { status: FAIL, durationMs: 0, detail: sqlEnvError };
+        report.push({ id: gate.id, stage: gate.stage, ...outcome });
+        if (!json) {
+          process.stdout.write(`  ${FAIL.padEnd(8)} ${gate.id.padEnd(30)} ${outcome.detail}\n`);
+        }
+        failed = true;
+        continue;
+      }
+
+      if (unavailableReason) {
+        report.push({ id: gate.id, stage: gate.stage, status: NOT_RUN, reason: unavailableReason });
+        if (!json) {
+          process.stdout.write(`  ${NOT_RUN.padEnd(8)} ${gate.id.padEnd(30)} ${unavailableReason}\n`);
+        }
+        continue;
+      }
+
+      const outcome = runGate(gate);
+      report.push({ id: gate.id, stage: gate.stage, ...outcome });
+
+      if (!json) {
+        const seconds = (outcome.durationMs / 1000).toFixed(1);
+        process.stdout.write(`  ${outcome.status.padEnd(8)} ${gate.id.padEnd(30)} ${seconds}s\n`);
+        if (outcome.status === FAIL) {
+          process.stdout.write(`           ${outcome.detail}\n`);
+          if (outcome.output) {
+            process.stdout.write(
+              outcome.output
+                .split("\n")
+                .slice(-25)
+                .map((line) => `           │ ${line}`)
+                .join("\n") + "\n",
+            );
+          }
         }
       }
-    }
 
-    if (outcome.status === FAIL) failed = true;
+      if (outcome.status === FAIL) failed = true;
+
+      // A gate child killed by an interrupt signal means the operator is
+      // stopping the run (Ctrl-C reaches the whole process group). Stop too —
+      // the disposable MySQL is disposed in the `finally` below — instead of
+      // starting the next gate.
+      if (outcome.signal === "SIGINT" || outcome.signal === "SIGTERM" || outcome.signal === "SIGHUP") {
+        interrupted = true;
+      }
+
+      // Yield to the event loop so a SIGINT that arrived between two gates can
+      // run its handler (spawnSync does not dispatch signal callbacks); the
+      // next iteration then sees `interrupted` and stops.
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  } finally {
+    if (sqlHandle) {
+      try {
+        sqlHandle.dispose();
+      } catch (error) {
+        process.stderr.write(`validate: could not remove the disposable MySQL: ${error?.message ?? error}\n`);
+      }
+    }
   }
 
   const passed = report.filter((entry) => entry.status === PASS).length;
   const failures = report.filter((entry) => entry.status === FAIL);
   const notRun = report.filter((entry) => entry.status === NOT_RUN).length;
 
-  if (args.json) {
+  if (json) {
     process.stdout.write(
       JSON.stringify({ passed, failed: failures.length, notRun, gates: report }, null, 2) + "\n",
     );
@@ -636,12 +774,18 @@ function main() {
     process.stdout.write("  Policy: docs/v1-quality-gates.md\n");
   }
 
+  if (interrupted) return 130;
   return failed ? 1 : 0;
 }
 
-try {
-  process.exitCode = main();
-} catch (error) {
-  process.stderr.write(`validate: runner error: ${error?.stack ?? error}\n`);
-  process.exitCode = 2;
+export { gates, sqlDatabaseUnavailable };
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().then(
+    (code) => { process.exitCode = code; },
+    (error) => {
+      process.stderr.write(`validate: runner error: ${error?.stack ?? error}\n`);
+      process.exitCode = 2;
+    },
+  );
 }

@@ -410,7 +410,19 @@ cd ..
 npm run validate               # every gate, in policy order
 ```
 
-### The SQL gates need a database, and say so when they lack one
+### The SQL gates need a database — and provide one when they lack it
+
+```bash
+npm run sql:gates                 # the five SQL gates, one disposable MySQL run (ESZ-112)
+npm run validate                  # every gate, including the same provisioning path
+```
+
+Since ESZ-112 the runner (`scripts/validate.mjs` / `scripts/sql-gates.mjs`) provisions an
+isolated MySQL 8.4 instance itself when no external database is supplied — one container
+per run, random identity and host port, credentials generated for the run, removed on
+success, failure and interruption. The `eszter_dev` development instance behind
+`compose.dev.yml` and its persistent volume are never touched. A caller who already has
+a disposable MySQL can keep supplying it, and it is used as-is instead of being replaced:
 
 ```bash
 export ESZTER_TEST_DB_DSN='mysql:host=127.0.0.1;port=3306;dbname=eszter_test;charset=utf8mb4'
@@ -420,15 +432,17 @@ export ESZTER_TEST_DB_PASSWORD=…
 vendor/bin/phpunit --testsuite sql-migrations
 vendor/bin/phpunit --testsuite sql-integration
 vendor/bin/phpunit --testsuite sql-notifications
+vendor/bin/phpunit --testsuite sql-rate-limits
+vendor/bin/phpunit --testsuite sql-backup-restore
 ```
 
-Without those variables all three gates report NOT RUN naming the missing prerequisite,
-which per `docs/v1-quality-gates.md` is never a pass. The suites refuse any database
-whose name does not end in `_test` — they drop and truncate tables, and a naming rule
-is a cheap way to make pointing them at something real impossible rather than merely
-discouraged. MySQL specifically, not SQLite: the implicit commit around DDL is the
-property the whole migrator is designed around, and an engine with transactional DDL
-would make that design look unnecessary while going green.
+Without those variables and without Docker, the SQL gates report FAIL (a broken
+environment) — never NOT RUN, which per `docs/v1-quality-gates.md` is not a pass. The
+suites refuse any database whose name does not end in `_test` — they drop and truncate
+tables, and a naming rule is a cheap way to make pointing them at something real
+impossible rather than merely discouraged. MySQL specifically, not SQLite: the implicit
+commit around DDL is the property the whole migrator is designed around, and an engine
+with transactional DDL would make that design look unnecessary while going green.
 
 ### Provisioning an admin
 
