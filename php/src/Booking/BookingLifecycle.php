@@ -87,8 +87,11 @@ final class BookingLifecycle
                 $this->clock->now(),
                 $consentNoticeId,
             );
-            $this->history->append($booking->id, 'created', 'public');
-            $this->notifications->created($booking);
+            // ESZ-131: the created event's row id is the lifecycle identity of
+            // the confirmation job scheduled just below; the two share this
+            // transaction, so the marker can never name a different occurrence.
+            $createdEventId = $this->history->append($booking->id, 'created', 'public');
+            $this->notifications->created($booking, $createdEventId);
 
             return $booking;
         });
@@ -199,11 +202,13 @@ final class BookingLifecycle
                 $reference,
             );
             $updated = $this->bookings->move($booking, $slot->startsAtUtc, $slot->endsAtUtc);
-            $this->history->append($booking->id, 'moved', 'admin', [
+            // ESZ-131: the moved event's row id marks the booking_moved job, so
+            // a later move or cancellation can prove it obsolete.
+            $movedEventId = $this->history->append($booking->id, 'moved', 'admin', [
                 'from' => IsoTimestamp::format(BookingRequestFields::databaseInstant($booking->startsAtUtc)),
                 'to' => IsoTimestamp::format($slot->startsAtUtc),
             ]);
-            $this->notifications->moved($booking, $updated);
+            $this->notifications->moved($booking, $updated, $movedEventId);
 
             return $updated;
         });
@@ -226,8 +231,9 @@ final class BookingLifecycle
             // row) and before any write, history or notification.
             $this->assertNotStale($expectedUpdatedAt, $booking);
             $cancelled = $this->bookings->transition($reference, 'cancelled', $reason);
-            $this->history->append($booking->id, 'cancelled', 'admin');
-            $this->notifications->cancelled($cancelled);
+            // ESZ-131: the cancelled event's row id marks the cancellation job.
+            $cancelledEventId = $this->history->append($booking->id, 'cancelled', 'admin');
+            $this->notifications->cancelled($cancelled, $cancelledEventId);
 
             return $cancelled;
         });

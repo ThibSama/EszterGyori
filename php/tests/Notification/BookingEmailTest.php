@@ -112,6 +112,7 @@ final class BookingEmailTest extends TestCase
             'bk_0123456789abcdef0123456789abcdef.email.booking_confirmation',
             2,
             'bk_0123456789abcdef0123456789abcdef',
+            9,
             'email',
             'booking_confirmation',
             '2026-06-13 12:00:00.000',

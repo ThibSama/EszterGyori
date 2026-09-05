@@ -177,6 +177,26 @@ final class NotificationRunner
             return $this->leaseLost($job);
         }
 
+        // ESZ-131: the delivery-time relevance re-check, before the transport
+        // boundary. A lifecycle transition that committed after this job was
+        // claimed (a move or cancellation that superseded only `pending` rows)
+        // makes it obsolete; it is then terminally skipped with the frozen
+        // supersession code — on the original attempt and on every retry — and
+        // is never rendered with facts that no longer describe its event.
+        $obsoleteCode = $this->jobs->obsoleteLifecycleCode($job);
+        if ($obsoleteCode !== null) {
+            if ($this->jobs->markSkipped($job->id, $owner, $obsoleteCode)) {
+                $this->logJob('info', 'notification.skipped', $job, [
+                    'errorCode' => $obsoleteCode,
+                    'status' => 'skipped',
+                ]);
+
+                return 'skipped';
+            }
+
+            return $this->leaseLost($job);
+        }
+
         $started = hrtime(true);
 
         try {

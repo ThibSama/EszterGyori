@@ -700,10 +700,10 @@ Boundaries:
   the status graph, the retry arithmetic, the lease duration, the grace window and the
   log allowlist are frozen in `booking-domain.json` under `notifications`; the
   migration's `CHECK` constraints restate the same sets where MySQL can enforce them.
-- Statuses are `pending`, `processing`, `sent`, `failed` and `skipped`. The last three
-  are terminal and nothing leaves them, which is what makes "delivered at most once" a
-  property of the graph rather than of the runner. `processing` is reachable only from
-  `pending`.
+- Statuses are `pending`, `processing`, `sent`, `failed`, `skipped` and `retired`
+  (ESZ-140). The last four are terminal and nothing leaves them, which is what makes
+  "delivered at most once" a property of the graph rather than of the runner.
+  `processing` is reachable only from `pending`.
 - `booking_id` references `bookings` with `ON DELETE RESTRICT`. Notification history is
   the record of what a customer was told and must not disappear with the appointment it
   describes; V1 never deletes a booking, so this refuses loudly on the day someone adds
@@ -728,6 +728,15 @@ Boundaries:
   becomes terminally `skipped` and is never delivered. Enforced twice: swept before
   claiming, and re-checked after claiming, because a batch can cross the boundary while
   queued behind a slow transport. Non-time-sensitive types never expire.
+- **Lifecycle coherence (ESZ-131).** Lifecycle e-mails are versioned by the
+  `booking_history` event that made them meaningful (`notification_jobs.lifecycle_event_id`,
+  a non-PII row id — never customer data). A move or cancellation supersedes the still-
+  pending confirmation and any still-pending earlier move to terminal `skipped` with
+  the frozen `superseded_by_move` / `superseded_by_cancellation` codes inside its own
+  transaction, so only the newest applicable move — or the cancellation — can deliver;
+  a job already claimed when the transition committed is re-checked against the same
+  ordering before the transport boundary and skipped with the same code. Reminders are
+  not lifecycle-versioned and keep their own rules.
 - **No backfill, no burst.** Every intended notification produces a row, always. One
   refused because its channel is off is written immediately as terminally `skipped`, so
   re-enabling SMS months later finds nothing pending to flush; the burst is prevented at
@@ -855,9 +864,18 @@ strictly worse and is a fallback, not a plan.
   Hetzner value is assumed. Provider messages and credentials never enter job errors or logs.
 - Create, move and cancel enqueue their e-mail in the same transaction as booking and
   history. Confirmed bookings get a reminder due exactly 24 hours before their Paris
-  appointment. A move terminally supersedes only the old pending reminder and creates a
-  new occurrence-keyed reminder; cancellation retires pending reminders. Sent history is
-  never rewritten, and an already-expired catch-up window is recorded as a terminal skip.
+  appointment. A move terminally supersedes the old pending reminder and creates a new
+  occurrence-keyed reminder; cancellation retires pending reminders. ESZ-131 extends
+  the same temporal coherence to the lifecycle e-mails: a move supersedes the still-
+  pending confirmation and any still-pending earlier move (terminal `skipped`,
+  `superseded_by_move`), a cancellation supersedes both (`superseded_by_cancellation`)
+  and remains deliverable for its own cancellation, and every lifecycle job records
+  the `booking_history` id of its own event so a job already claimed when the next
+  transition commits is re-checked against that ordering before the transport boundary
+  and skipped with the same code — delayed cron and transient retries never render an
+  obsolete e-mail from current facts. Reminders keep their catch-up, stale-window and
+  rescheduling rules and carry no lifecycle marker. Sent history is never rewritten,
+  and an already-expired catch-up window is recorded as a terminal skip.
 - A send failure retries with backoff and a bounded attempt count, then parks the row
   for operator attention rather than retrying forever. Implemented: five attempts,
   60/120/240/480-second backoff clamped at one hour, then terminal `failed`.

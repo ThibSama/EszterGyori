@@ -30,6 +30,10 @@ final class NotificationScheduler
     /**
      * Records one intended notification and returns what was decided.
      *
+     * @param int|null $lifecycleEventId ESZ-131 — for a lifecycle job, the
+     *     booking_history id of the event that makes it meaningful; stored on
+     *     the row so the runner can re-check relevance at delivery time.
+     *     Reminders and declined enqueues carry none.
      * @return array{jobId: int, status: string, errorCode: string|null}
      */
     public function schedule(
@@ -39,6 +43,7 @@ final class NotificationScheduler
         string $jobType,
         \DateTimeImmutable $dueAt,
         ?\DateTimeImmutable $identityAt = null,
+        ?int $lifecycleEventId = null,
     ): array {
         $key = $this->catchUp->idempotencyKey(
             $bookingReference,
@@ -56,6 +61,7 @@ final class NotificationScheduler
             $dueAt,
             $decision['status'],
             $decision['errorCode'],
+            $lifecycleEventId,
         );
 
         return [

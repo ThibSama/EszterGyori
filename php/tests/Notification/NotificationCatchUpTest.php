@@ -183,6 +183,7 @@ final class NotificationCatchUpTest extends TestCase
             'bk_' . str_repeat('a', 32) . '.email.booking_reminder',
             42,
             'bk_' . str_repeat('a', 32),
+            null,
             'email',
             'booking_reminder',
             '2026-06-14 08:00:00.000',

@@ -20,6 +20,17 @@ final class NotificationJob
         public readonly string $idempotencyKey,
         public readonly int $bookingId,
         public readonly string $bookingReference,
+        /**
+         * ESZ-131 — the booking_history id of the lifecycle event that made
+         * this job meaningful: the `created` event for a confirmation, the
+         * `moved` event for a booking_moved, the `cancelled` event for a
+         * cancellation. NULL for reminders and for jobs enqueued outside a
+         * lifecycle transaction. A non-PII ordering identity: the runner
+         * re-checks a claimed lifecycle job against later history events
+         * before transport, so an obsolete job is never delivered with
+         * facts that no longer describe its event.
+         */
+        public readonly ?int $lifecycleEventId,
         public readonly string $channel,
         public readonly string $jobType,
         public readonly string $dueAtUtc,
@@ -44,6 +55,7 @@ final class NotificationJob
             self::text($row, 'idempotency_key'),
             self::integer($row, 'booking_id'),
             self::text($row, 'reference'),
+            self::nullableInteger($row, 'lifecycle_event_id'),
             self::text($row, 'channel'),
             self::text($row, 'job_type'),
             self::text($row, 'due_at_utc'),
@@ -64,6 +76,22 @@ final class NotificationJob
 
         if (!\is_int($value)) {
             throw new NotificationException("notification_jobs.{$column} is not an integer.");
+        }
+
+        return $value;
+    }
+
+    /** @param array<string, mixed> $row */
+    private static function nullableInteger(array $row, string $column): ?int
+    {
+        $value = $row[$column] ?? null;
+
+        if ($value === null) {
+            return null;
+        }
+
+        if (!\is_int($value)) {
+            throw new NotificationException("notification_jobs.{$column} is not a nullable integer.");
         }
 
         return $value;

@@ -69,7 +69,7 @@ final class MigrationTest extends TestCase
 
         self::assertSame(
             ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
-             '0009', '0010', '0011', '0012', '0013', '0014'],
+             '0009', '0010', '0011', '0012', '0013', '0014', '0015'],
             $applied,
         );
     }
@@ -801,6 +801,44 @@ final class MigrationTest extends TestCase
         } finally {
             TestEnvironment::removeDirectory($directory);
         }
+    }
+
+    // --- ESZ-131: the lifecycle marker column ------------------------------
+
+    /**
+     * Migration 0015 adds the nullable lifecycle marker to notification_jobs:
+     * a BIGINT UNSIGNED that names the booking_history event a lifecycle job
+     * belongs to. Existing rows predating the marker keep a NULL (never an
+     * invented one), reminders carry none by construction, and the marker
+     * stays repeat-safe on re-run.
+     */
+    public function testMigration0015AddsTheNullableLifecycleMarkerColumn(): void
+    {
+        $this->migrator()->migrate();
+
+        $column = $this->column('notification_jobs', 'lifecycle_event_id');
+        self::assertSame('bigint', $column['DATA_TYPE']);
+        self::assertSame('YES', $column['IS_NULLABLE']);
+
+        // A pre-0015-style row (no marker column stated) lands with NULL, and a
+        // real lifecycle marker round-trips.
+        $bookingId = $this->seedBookingForNotifications();
+        $this->insertJob($bookingId, []);
+        $legacy = $this->database->fetchOne(
+            'SELECT lifecycle_event_id FROM notification_jobs WHERE booking_id = :booking',
+            ['booking' => $bookingId],
+        );
+        self::assertNull($legacy['lifecycle_event_id'] ?? null, 'a pre-marker row invented a lifecycle event');
+
+        $this->database->run(
+            'UPDATE notification_jobs SET lifecycle_event_id = :event WHERE booking_id = :booking',
+            ['event' => 41, 'booking' => $bookingId],
+        );
+        $updated = $this->database->fetchOne(
+            'SELECT lifecycle_event_id FROM notification_jobs WHERE booking_id = :booking',
+            ['booking' => $bookingId],
+        );
+        self::assertSame(41, $updated['lifecycle_event_id'] ?? null);
     }
 
     /**

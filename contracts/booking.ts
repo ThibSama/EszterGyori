@@ -254,11 +254,27 @@ export const notificationReservedErrorCodes = [
   "reminder_window_expired",
   "reminder_superseded",
   "booking_cancelled",
+  "superseded_by_move",
+  "superseded_by_cancellation",
   "channel_disabled",
   "transport_transient",
   "transport_permanent",
   "attempts_exhausted",
   NOTIFICATION_CUSTOMER_DATA_ERASURE_CODE,
+] as const;
+
+/**
+ * ESZ-131 — codes the booking lifecycle writes when a transition makes an
+ * earlier, still-undelivered lifecycle notification wrong. A move retires the
+ * pending confirmation and any pending earlier move with `superseded_by_move`;
+ * a cancellation retires both with `superseded_by_cancellation`. The runner
+ * stores the same codes when a claimed job is re-checked at delivery time and
+ * found obsolete, so the terminal outcome of an obsolete job never depends on
+ * whether the transition caught it pending or already claimed.
+ */
+export const notificationLifecycleSupersessionCodes = [
+  "superseded_by_move",
+  "superseded_by_cancellation",
 ] as const;
 
 /**
@@ -367,6 +383,18 @@ export const notificationPolicy = {
       "Re-enabling a channel never creates jobs for windows that have already passed. An enqueue for a disabled channel is recorded immediately as skipped, so there is no backlog to flush and re-enabling changes only what happens next.",
     burstControl:
       "One run claims at most its batch size, so even a large recovered backlog is drained across ticks rather than in one burst.",
+  },
+  lifecycle: {
+    marker:
+      "Each lifecycle job stores lifecycle_event_id: the booking_history row id of the event that made it meaningful — `created` for a booking_confirmation, `moved` for a booking_moved, `cancelled` for a booking_cancellation. booking_history is append-only with monotonic ids and every transition appends its event in the same transaction as the job it schedules, so the marker is an internal ordering identity, never customer PII. Reminders carry no marker: they are time-windowed, not lifecycle-versioned.",
+    supersede:
+      "A move makes every still-pending confirmation and every still-pending earlier move obsolete; a cancellation makes every still-pending confirmation and move obsolete. The transition supersedes them to the terminal `skipped` status with the frozen code (superseded_by_move / superseded_by_cancellation) inside its own transaction, so only the newest applicable move — or the cancellation — remains pending. `sent` jobs are delivery evidence and `processing` jobs already belong to a runner; neither is rewritten by a transition.",
+    deliveryTimeRelevance:
+      "A lifecycle job that was already claimed when the superseding transition committed is re-checked before the transport boundary: it is obsolete exactly when a `moved` or `cancelled` booking_history event with a greater id exists for its booking, and it is then terminally skipped with the same frozen code the transition would have stored. Delayed cron runs and transient retries therefore re-evaluate relevance on every attempt, and an obsolete job is never rendered with facts that no longer describe its event. No database transaction or row lock is held across the transport.",
+    cancellation:
+      "A booking_cancellation remains deliverable for its own cancellation: no lifecycle transition can follow a cancelled booking, so nothing supersedes it; customer-data retention (ESZ-140) remains the only path that retires it.",
+    reminders:
+      "Reminders keep their own rules untouched: catch-up decisions, the stale grace window and move-time rescheduling of the reminder of the superseded occurrence.",
   },
   runner: {
     defaultBatchSize: NOTIFICATION_DEFAULT_BATCH_SIZE,

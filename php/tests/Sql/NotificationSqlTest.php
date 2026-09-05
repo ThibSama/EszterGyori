@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Eszter\Tests\Sql;
 
+use Eszter\Booking\BookingHistoryRepository;
 use Eszter\Database\Database;
 use Eszter\Notification\LoggingNotificationTransport;
 use Eszter\Notification\NotificationCatchUpPolicy;
@@ -1083,6 +1084,263 @@ final class NotificationSqlTest extends TestCase
         self::assertCount(1, $lines);
         self::assertSame('skipped', $lines[0]['status'] ?? null);
         self::assertSame('reminder_window_expired', $lines[0]['errorCode'] ?? null);
+    }
+
+    // --- ESZ-131: delivery-time relevance of lifecycle jobs -----------------
+
+    public function testEs131AClaimedLifecycleJobSupersededBeforeTransportIsTerminallySkipped(): void
+    {
+        $bookingId = $this->seedBooking();
+        $history = new BookingHistoryRepository($this->database, $this->clock);
+
+        // The confirmation names its created event…
+        $createdEvent = $history->append($bookingId, 'created', 'public');
+        $jobId = $this->jobs->enqueue(
+            $bookingId,
+            'email',
+            'booking_confirmation',
+            'esz131.obsolete.key',
+            $this->clock->now(),
+            'pending',
+            null,
+            $createdEvent,
+        );
+
+        // …and a move commits after the job was claimed: the runner's own
+        // relevance re-check must refuse to transport it.
+        $history->append($bookingId, 'moved', 'admin');
+
+        $transport = new RecordingTransport('email');
+        $result = $this->runner($transport)->run($this->owner('one'), 10);
+
+        self::assertSame(1, $result->claimed);
+        self::assertSame(0, $result->sent);
+        self::assertSame(0, $result->retried);
+        self::assertSame(0, $result->failed);
+        self::assertSame(1, $result->skipped);
+        self::assertSame(0, $result->leasesLost);
+        self::assertSame(0, $transport->delivered, 'the obsolete confirmation reached the transport');
+
+        $job = $this->jobs->find($jobId);
+        self::assertInstanceOf(NotificationJob::class, $job);
+        self::assertSame('skipped', $job->status);
+        self::assertSame('superseded_by_move', $job->lastErrorCode);
+        self::assertSame(1, $job->attempts);
+        self::assertSame($createdEvent, $job->lifecycleEventId);
+
+        $lines = $this->logLines('notification.skipped');
+        self::assertCount(1, $lines);
+        self::assertSame('skipped', $lines[0]['status'] ?? null);
+        self::assertSame('superseded_by_move', $lines[0]['errorCode'] ?? null);
+        self::assertSame([], $this->logLines('notification.sent'));
+        self::assertSame([], $this->logLines('notification.retry'));
+    }
+
+    public function testEs131ACancellationMakesAStillRelevantMoveJobObsoleteWithItsOwnCode(): void
+    {
+        $bookingId = $this->seedBooking();
+        $history = new BookingHistoryRepository($this->database, $this->clock);
+
+        $movedEvent = $history->append($bookingId, 'moved', 'admin');
+        $jobId = $this->jobs->enqueue(
+            $bookingId,
+            'email',
+            'booking_moved',
+            'esz131.cancelled.key',
+            $this->clock->now(),
+            'pending',
+            null,
+            $movedEvent,
+        );
+
+        // The cancellation is the later event: the claimed move is obsolete
+        // with the cancellation code, exactly as the transition-time
+        // supersession would have stored it.
+        $history->append($bookingId, 'cancelled', 'admin');
+
+        $transport = new RecordingTransport('email');
+        $result = $this->runner($transport)->run($this->owner('one'), 10);
+
+        self::assertSame(1, $result->claimed);
+        self::assertSame(0, $result->sent);
+        self::assertSame(1, $result->skipped);
+        self::assertSame(0, $transport->delivered);
+
+        $job = $this->jobs->find($jobId);
+        self::assertInstanceOf(NotificationJob::class, $job);
+        self::assertSame('skipped', $job->status);
+        self::assertSame('superseded_by_cancellation', $job->lastErrorCode);
+    }
+
+    public function testEs131AStillRelevantConfirmationAndACancellationJobAreDeliveredNormally(): void
+    {
+        $bookingA = $this->seedBooking();
+        $bookingB = $this->seedBooking('bk_22222222222222222222222222222222');
+        $history = new BookingHistoryRepository($this->database, $this->clock);
+
+        $createdEvent = $history->append($bookingA, 'created', 'public');
+        $confirmationId = $this->jobs->enqueue(
+            $bookingA,
+            'email',
+            'booking_confirmation',
+            'esz131.relevant.confirmation',
+            $this->clock->now(),
+            'pending',
+            null,
+            $createdEvent,
+        );
+        // A cancellation job names its own cancelled event: no lifecycle
+        // transition can follow a cancellation, so the type is never
+        // re-checked at delivery and nothing supersedes it.
+        $cancelledEvent = $history->append($bookingB, 'cancelled', 'admin');
+        $cancellationId = $this->jobs->enqueue(
+            $bookingB,
+            'email',
+            'booking_cancellation',
+            'esz131.relevant.cancellation',
+            $this->clock->now(),
+            'pending',
+            null,
+            $cancelledEvent,
+        );
+        // A reminder carries no marker and is never lifecycle-superseded:
+        // reminders are time-windowed and keep their own rules.
+        $this->jobs->enqueue(
+            $bookingA,
+            'email',
+            'booking_reminder',
+            'esz131.relevant.reminder',
+            $this->clock->now()->modify('+1 day'),
+        );
+
+        $transport = new RecordingTransport('email');
+        $result = $this->runner($transport)->run($this->owner('one'), 10);
+
+        // The confirmation is still the newest event of its booking and the
+        // cancellation is terminal by state; only the reminder is not due.
+        self::assertSame(2, $result->claimed);
+        self::assertSame(2, $result->sent);
+        self::assertSame(0, $result->skipped);
+        self::assertSame(2, $transport->delivered);
+
+        $confirmation = $this->jobs->find($confirmationId);
+        self::assertInstanceOf(NotificationJob::class, $confirmation);
+        self::assertSame('sent', $confirmation->status);
+        $cancellation = $this->jobs->find($cancellationId);
+        self::assertInstanceOf(NotificationJob::class, $cancellation);
+        self::assertSame('sent', $cancellation->status);
+        self::assertSame($cancelledEvent, $cancellation->lifecycleEventId);
+    }
+
+    public function testEs131SupersedePendingLifecycleJobsNeverRewritesProcessingOrSentRows(): void
+    {
+        $bookingId = $this->seedBooking();
+
+        // A claimed move (processing) must stay untouched: it belongs to a
+        // runner, and only the runner's own relevance re-check may decide it.
+        $processingId = $this->jobs->enqueue(
+            $bookingId,
+            'email',
+            'booking_moved',
+            'esz131.supersede.processing',
+            $this->clock->now(),
+        );
+        $claimed = $this->jobs->claimDue($this->owner('one'), 10, ['email']);
+        self::assertCount(1, $claimed);
+        self::assertSame($processingId, $claimed[0]->id);
+
+        // A sent confirmation is delivery evidence and is never rewritten.
+        $sentId = $this->jobs->enqueue(
+            $bookingId,
+            'email',
+            'booking_confirmation',
+            'esz131.supersede.sent',
+            $this->clock->now(),
+        );
+        $sentOwner = $this->owner('two');
+        $sentClaim = $this->jobs->claimDue($sentOwner, 10, ['email']);
+        self::assertCount(1, $sentClaim);
+        $sentJob = $this->jobs->find($sentId);
+        self::assertInstanceOf(NotificationJob::class, $sentJob);
+        self::assertTrue($this->jobs->markSent($sentJob, $sentOwner));
+
+        // Two still-pending lifecycle jobs are what the transition retires.
+        $pendingConfirmation = $this->jobs->enqueue(
+            $bookingId,
+            'email',
+            'booking_confirmation',
+            'esz131.supersede.pending.one',
+            $this->clock->now(),
+        );
+        $pendingMove = $this->jobs->enqueue(
+            $bookingId,
+            'email',
+            'booking_moved',
+            'esz131.supersede.pending.two',
+            $this->clock->now(),
+        );
+        // A pending reminder keeps its own rescheduling rules.
+        $pendingReminder = $this->jobs->enqueue(
+            $bookingId,
+            'email',
+            'booking_reminder',
+            'esz131.supersede.pending.reminder',
+            $this->clock->now()->modify('+1 day'),
+        );
+
+        self::assertSame(2, $this->jobs->supersedePendingLifecycleJobs($bookingId, 'superseded_by_cancellation'));
+
+        foreach ([$pendingConfirmation, $pendingMove] as $id) {
+            $job = $this->jobs->find($id);
+            self::assertInstanceOf(NotificationJob::class, $job);
+            self::assertSame('skipped', $job->status, (string) $id);
+            self::assertSame('superseded_by_cancellation', $job->lastErrorCode, (string) $id);
+        }
+
+        $processing = $this->jobs->find($processingId);
+        self::assertInstanceOf(NotificationJob::class, $processing);
+        self::assertSame('processing', $processing->status, 'a claimed job was rewritten by the transition');
+        $sent = $this->jobs->find($sentId);
+        self::assertInstanceOf(NotificationJob::class, $sent);
+        self::assertSame('sent', $sent->status, 'a sent job was rewritten by the transition');
+        $reminder = $this->jobs->find($pendingReminder);
+        self::assertInstanceOf(NotificationJob::class, $reminder);
+        self::assertSame('pending', $reminder->status, 'a reminder was caught by lifecycle supersession');
+
+        // A second supersession finds nothing pending: the method is idempotent.
+        self::assertSame(0, $this->jobs->supersedePendingLifecycleJobs($bookingId, 'superseded_by_cancellation'));
+    }
+
+    public function testEs131EnqueueRoundTripsTheLifecycleMarkerAndRemindersCarryNone(): void
+    {
+        $bookingId = $this->seedBooking();
+        $history = new BookingHistoryRepository($this->database, $this->clock);
+
+        $createdEvent = $history->append($bookingId, 'created', 'public');
+        $lifecycleId = $this->jobs->enqueue(
+            $bookingId,
+            'email',
+            'booking_confirmation',
+            'esz131.marker.lifecycle',
+            $this->clock->now(),
+            'pending',
+            null,
+            $createdEvent,
+        );
+        $reminderId = $this->jobs->enqueue(
+            $bookingId,
+            'email',
+            'booking_reminder',
+            'esz131.marker.reminder',
+            $this->clock->now()->modify('+1 day'),
+        );
+
+        $lifecycle = $this->jobs->find($lifecycleId);
+        self::assertInstanceOf(NotificationJob::class, $lifecycle);
+        self::assertSame($createdEvent, $lifecycle->lifecycleEventId);
+        $reminder = $this->jobs->find($reminderId);
+        self::assertInstanceOf(NotificationJob::class, $reminder);
+        self::assertNull($reminder->lifecycleEventId);
     }
 
     // --- helpers ------------------------------------------------------------

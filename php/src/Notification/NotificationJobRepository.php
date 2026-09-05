@@ -82,6 +82,7 @@ final class NotificationJobRepository
         \DateTimeImmutable $dueAt,
         string $status = 'pending',
         ?string $errorCode = null,
+        ?int $lifecycleEventId = null,
     ): int {
         $this->assertChannel($channel);
         $this->assertJobType($jobType);
@@ -101,10 +102,10 @@ final class NotificationJobRepository
 
         $this->database->run(
             'INSERT INTO notification_jobs ('
-            . ' idempotency_key, booking_id, channel, job_type, due_at_utc, next_attempt_at_utc,'
+            . ' idempotency_key, booking_id, lifecycle_event_id, channel, job_type, due_at_utc, next_attempt_at_utc,'
             . ' status, attempts, last_error_code, created_at, updated_at, status_changed_at'
             . ') VALUES ('
-            . ' :key, :booking, :channel, :type, :due, :next, :status, 0, :code,'
+            . ' :key, :booking, :lifecycleEvent, :channel, :type, :due, :next, :status, 0, :code,'
             . ' :createdAt, :updatedAt, :changedAt'
             . ') ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)',
             // Every placeholder is distinct even where the value repeats: with
@@ -113,6 +114,7 @@ final class NotificationJobRepository
             [
                 'key' => $idempotencyKey,
                 'booking' => $bookingId,
+                'lifecycleEvent' => $lifecycleEventId,
                 'channel' => $channel,
                 'type' => $jobType,
                 'due' => $due,
@@ -429,6 +431,48 @@ final class NotificationJobRepository
         return $this->database->run($sql, $parameters)->rowCount();
     }
 
+    /**
+     * Terminally supersedes pending lifecycle jobs of one booking (ESZ-131).
+     *
+     * A move or cancellation makes every earlier, still-undelivered lifecycle
+     * notification wrong: a confirmation whose appointment has since moved or
+     * been cancelled, and a moved notification that an even newer move or the
+     * cancellation has overtaken. Only `pending` jobs are rewritten here — a
+     * `sent` job is delivery evidence, and a `processing` job is already owned
+     * by a runner, so the lifecycle transaction must not take it away from
+     * that runner. The claimed job is instead protected by the runner's own
+     * delivery-time relevance re-check ({@see obsoleteLifecycleCode()}), which
+     * reads the same booking_history ordering this supersession relies on.
+     *
+     * Reminders are deliberately not matched: they are time-windowed and keep
+     * their own rescheduling rules ({@see supersedePendingReminders()}).
+     */
+    public function supersedePendingLifecycleJobs(int $bookingId, string $errorCode): int
+    {
+        $this->assertErrorCode($errorCode);
+
+        // Frozen enum values from the artifact; see claimDue() for why the list
+        // is interpolated rather than bound. booking_cancellation is absent by
+        // construction: no lifecycle transition can follow a cancellation.
+        $typeList = "'booking_confirmation','booking_moved'";
+
+        return $this->database->run(
+            'UPDATE notification_jobs SET status = :skipped, last_error_code = :code,'
+            . ' updated_at = :updatedAt, status_changed_at = :changedAt'
+            . ' WHERE booking_id = :booking AND channel = :channel'
+            . " AND job_type IN ({$typeList}) AND status = :pending",
+            [
+                'skipped' => 'skipped',
+                'code' => $errorCode,
+                'updatedAt' => $this->clock->nowIso(),
+                'changedAt' => $this->clock->nowIso(),
+                'booking' => $bookingId,
+                'channel' => 'email',
+                'pending' => 'pending',
+            ],
+        )->rowCount();
+    }
+
     private function markTerminal(int $jobId, string $status, ?string $owner, string $errorCode): bool
     {
         $parameters = [
@@ -554,6 +598,58 @@ final class NotificationJobRepository
         );
 
         return $job->dueAtUtc < $cutoff;
+    }
+
+    /**
+     * The terminal code of a claimed lifecycle job that a later transition has
+     * overtaken, or null when the job is still the newest of its kind (ESZ-131).
+     *
+     * The supersession a lifecycle transition performs covers `pending` rows in
+     * the same transaction ({@see supersedePendingLifecycleJobs()}). This is the
+     * second half of the same rule, for rows that were already claimed when the
+     * transition committed: the runner re-checks them before the transport
+     * boundary, so an obsolete e-mail is skipped rather than delivered, and a
+     * delayed cron or a transient retry reaches the same decision on every
+     * attempt.
+     *
+     * The ordering authority is `booking_history`, whose ids are monotonic and
+     * whose `moved`/`cancelled` events are appended in the same transaction as
+     * the jobs they supersede: a lifecycle job is obsolete exactly when a
+     * `moved` or `cancelled` event with a greater id exists for its booking.
+     * The code names the transition that ended the job — the same code the
+     * transition-time supersession would have stored.
+     *
+     * A job without a recorded lifecycle event (a reminder, or a job enqueued
+     * outside a lifecycle transaction, which never happens through the booking
+     * API) is not checked: nothing in the queue can prove it obsolete, and the
+     * transition-time supersession — which needs no marker — is what retires
+     * such rows while they are pending.
+     */
+    public function obsoleteLifecycleCode(NotificationJob $job): ?string
+    {
+        if (!\in_array($job->jobType, ['booking_confirmation', 'booking_moved'], true)) {
+            return null;
+        }
+        if ($job->lifecycleEventId === null) {
+            return null;
+        }
+
+        // Frozen enum values from the artifact; see claimDue() for why the list
+        // is interpolated rather than bound.
+        $row = $this->database->fetchOne(
+            'SELECT event_type FROM booking_history'
+            . ' WHERE booking_id = :booking AND id > :event'
+            . " AND event_type IN ('moved', 'cancelled')"
+            . ' ORDER BY id DESC LIMIT 1',
+            [
+                'booking' => $job->bookingId,
+                'event' => $job->lifecycleEventId,
+            ],
+        );
+
+        $type = $row['event_type'] ?? null;
+
+        return $type === 'cancelled' ? 'superseded_by_cancellation' : ($type === 'moved' ? 'superseded_by_move' : null);
     }
 
     public function find(int $id): ?NotificationJob

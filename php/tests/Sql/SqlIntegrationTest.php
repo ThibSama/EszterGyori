@@ -27,6 +27,7 @@ use Eszter\Booking\InvalidBookingTransitionException;
 use Eszter\Booking\SlotEngine;
 use Eszter\Booking\WeeklyAvailabilityRule;
 use Eszter\Config\SessionSettings;
+use Eszter\Config\SmtpSettings;
 use Eszter\Contract\ContentValidator;
 use Eszter\Contract\StructuralValidator;
 use Eszter\Database\Database;
@@ -34,11 +35,20 @@ use Eszter\Database\DatabaseException;
 use Eszter\Http\Request;
 use Eszter\Http\Response;
 use Eszter\Kernel;
-use Eszter\Notification\NotificationPolicy;
+use Eszter\Notification\BookingEmailRenderer;
 use Eszter\Notification\BookingNotificationFactsRepository;
 use Eszter\Notification\BookingNotificationProducer;
+use Eszter\Notification\NotificationInstant;
+use Eszter\Notification\NotificationJob;
 use Eszter\Notification\NotificationJobRepository;
+use Eszter\Notification\NotificationPolicy;
+use Eszter\Notification\NotificationRunner;
+use Eszter\Notification\NotificationTransport;
+use Eszter\Notification\NotificationTransportRegistry;
 use Eszter\Notification\PermanentDeliveryException;
+use Eszter\Notification\SmtpFailureClassifier;
+use Eszter\Notification\SmtpNotificationTransport;
+use Eszter\Notification\TransientDeliveryException;
 use Eszter\Retention\BookingRetentionService;
 use Eszter\Retention\RetentionPolicy;
 use Eszter\Security\RateLimitPolicy;
@@ -46,7 +56,10 @@ use Eszter\Storage\ContentStorage;
 use Eszter\Support\Clock;
 use Eszter\Support\FrozenClock;
 use Eszter\Support\IsoTimestamp;
+use Eszter\Support\Logger;
 use Eszter\Tests\MovableClock;
+use Eszter\Tests\Notification\FixedEnabledChannels;
+use Eszter\Tests\Notification\RecordingMailer;
 use Eszter\Tests\TestEnvironment;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
@@ -121,7 +134,7 @@ final class SqlIntegrationTest extends TestCase
     private static bool $migrated = false;
 
     private Database $database;
-    private FrozenClock $clock;
+    private MovableClock $clock;
     private AdminAccountRepository $accounts;
     private PdoSessionStore $sessions;
     private BookableServiceRepository $bookingServices;
@@ -149,7 +162,7 @@ final class SqlIntegrationTest extends TestCase
 
         TestDatabase::truncateData($this->database);
 
-        $this->clock = new FrozenClock(self::NOW);
+        $this->clock = new MovableClock(self::NOW);
         $this->accounts = new AdminAccountRepository($this->database, $this->clock);
         $this->sessions = new PdoSessionStore($this->database, $this->clock);
         $this->bookingContract = BookingDomainContract::fromArtifacts(TestEnvironment::artifacts());
@@ -919,7 +932,7 @@ final class SqlIntegrationTest extends TestCase
         self::assertSame($this->bookingContract->currentConsentNoticeId, $row['consent_notice_id']);
     }
 
-    public function testBookingLifecycleProducesStableAtomicEmailJobsAndSupersedesReminders(): void
+    public function testBookingLifecycleProducesStableAtomicEmailJobsAndSupersedesOutdatedOnes(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
         $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
@@ -947,16 +960,30 @@ final class SqlIntegrationTest extends TestCase
             ['booking_confirmation', 'booking_reminder', 'booking_moved', 'booking_reminder'],
             array_column($moved, 'job_type'),
         );
+        // ESZ-131: the move itself supersedes the still-pending confirmation —
+        // its appointment no longer exists as confirmed — while the reminder of
+        // the superseded occurrence keeps its own rescheduling code, and the new
+        // occurrence schedules a fresh reminder at its own lead time.
+        self::assertSame('skipped', $moved[0]['status']);
+        self::assertSame('superseded_by_move', $moved[0]['last_error_code']);
         self::assertSame('skipped', $moved[1]['status']);
         self::assertSame('reminder_superseded', $moved[1]['last_error_code']);
+        self::assertSame('booking_moved', $moved[2]['job_type']);
+        self::assertSame('pending', $moved[2]['status']);
         self::assertSame('2026-06-14 08:00:00.000', $moved[3]['due_at_utc']);
 
         $this->adminMutateFresh('cancel', $booking->reference, ['reason' => null]);
         $cancelled = $this->notificationRows($booking->id);
+        self::assertSame('skipped', $cancelled[2]['status']);
+        self::assertSame('superseded_by_cancellation', $cancelled[2]['last_error_code']);
         self::assertSame('skipped', $cancelled[3]['status']);
         self::assertSame('booking_cancelled', $cancelled[3]['last_error_code']);
         self::assertSame('booking_cancellation', $cancelled[4]['job_type']);
         self::assertSame('pending', $cancelled[4]['status']);
+        self::assertSame(
+            ['booking_confirmation', 'booking_reminder', 'booking_moved', 'booking_reminder', 'booking_cancellation'],
+            array_column($cancelled, 'job_type'),
+        );
         self::assertCount(5, $cancelled);
         self::assertCount(3, $this->database->fetchAll(
             'SELECT id FROM booking_history WHERE booking_id = :booking',
@@ -1021,11 +1048,11 @@ final class SqlIntegrationTest extends TestCase
         $producer = new class ($jobs, $this->clock) implements BookingNotificationProducer {
             public function __construct(
                 private readonly NotificationJobRepository $jobs,
-                private readonly FrozenClock $clock,
+                private readonly Clock $clock,
             ) {
             }
 
-            public function created(Booking $booking): void
+            public function created(Booking $booking, int $lifecycleEventId): void
             {
                 $this->jobs->enqueue(
                     $booking->id,
@@ -1037,11 +1064,11 @@ final class SqlIntegrationTest extends TestCase
                 throw new \RuntimeException('forced producer failure');
             }
 
-            public function moved(Booking $before, Booking $after): void
+            public function moved(Booking $before, Booking $after, int $lifecycleEventId): void
             {
             }
 
-            public function cancelled(Booking $booking): void
+            public function cancelled(Booking $booking, int $lifecycleEventId): void
             {
             }
         };
@@ -1390,6 +1417,477 @@ final class SqlIntegrationTest extends TestCase
         self::assertSame(['email', 'email'], array_column($notifications, 'channel'));
         self::assertSame(['pending', 'pending'], array_column($notifications, 'status'));
         self::assertCount(2, array_unique(array_column($notifications, 'idempotency_key')));
+    }
+
+    // --- ESZ-131: booking lifecycle notifications are temporally coherent -----
+    //
+    // The defect: only pending reminders were superseded, so a delayed or
+    // retried confirmation — or an older move — could survive a later move or
+    // cancellation and be rendered at delivery time with facts reloaded from
+    // the current booking row, under an event type that no longer describes
+    // the appointment. The proofs below run the real booking lifecycle and the
+    // real runner against real MySQL: a superseding transition first retires
+    // the pending confirmation/move jobs in its own transaction, and a job
+    // that was already claimed when the transition committed is re-checked
+    // against booking_history before the transport boundary. Rendered facts
+    // are captured through the real facts repository, renderer and a recording
+    // mailer — never only through queue rows — and the runner counters and
+    // log lines are asserted against the persisted terminal outcomes.
+
+    public function testEs131Proof1ADelayedCronAfterAMoveNeverDeliversTheOldConfirmation(): void
+    {
+        $this->esz131Seed();
+        $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
+        $reference = (string) $created['reference'];
+        $booking = $this->bookings->find($reference);
+        self::assertNotNull($booking);
+
+        $initial = $this->esz131Rows($booking->id);
+        self::assertSame(['booking_confirmation', 'booking_reminder'], array_column($initial, 'job_type'));
+        self::assertSame(['pending', 'pending'], array_column($initial, 'status'));
+        // The lifecycle marker: the confirmation names its created event, while
+        // the reminder — time-windowed, not lifecycle-versioned — carries none.
+        self::assertNotNull($initial[0]['lifecycle_event_id']);
+        self::assertNull($initial[1]['lifecycle_event_id']);
+
+        // Cron never ran: the confirmation is still pending when the booking
+        // moves, well after the confirmation's due instant.
+        $this->clock->advanceMinutes(30);
+        $this->adminMutateFresh('move', $reference, ['startsAtUtc' => '2026-06-15T08:00:00.000Z']);
+
+        $mailer = new RecordingMailer();
+        $result = $this->esz131Runner($this->esz131RenderingTransport($mailer), $this->esz131Jobs())
+            ->run($this->esz131Owner('one'), 10);
+
+        // Only the newest lifecycle job was pending and due: the move.
+        self::assertSame(1, $result->claimed);
+        self::assertSame(1, $result->sent);
+        self::assertSame(0, $result->retried);
+        self::assertSame(0, $result->failed);
+        self::assertSame(0, $result->skipped);
+        self::assertSame(0, $result->leasesLost);
+
+        $rows = $this->esz131Rows($booking->id);
+        self::assertSame('skipped', $rows[0]['status'], 'the confirmation was not superseded by the move');
+        self::assertSame('superseded_by_move', $rows[0]['last_error_code']);
+        self::assertSame('sent', $rows[2]['status']);
+        self::assertNull($rows[2]['last_error_code']);
+        // Reminders keep their own rescheduling semantics untouched.
+        self::assertSame('skipped', $rows[1]['status']);
+        self::assertSame('reminder_superseded', $rows[1]['last_error_code']);
+        self::assertSame('pending', $rows[3]['status']);
+        self::assertSame('2026-06-14 08:00:00.000', $rows[3]['due_at_utc']);
+
+        // The transported and rendered e-mail matches the event that actually
+        // happened: a moved notice for the new instant — never a confirmation,
+        // never the old slot.
+        self::assertNotNull($mailer->message);
+        self::assertSame('Votre rendez-vous a été déplacé', $mailer->message->getSubject());
+        $text = (string) $mailer->message->getTextBody();
+        self::assertStringContainsString('Date et heure (Paris) : 15/06/2026 à 10:00', $text);
+        self::assertStringContainsString($reference, $text);
+        self::assertStringNotContainsString('Votre rendez-vous est confirmé', $text);
+        self::assertSame('cliente@example.test', $mailer->message->getTo()[0]->getAddress());
+
+        // Proof 8: one `notification.sent` for the move, no skipped line for a
+        // row the transition retired before it was ever claimed.
+        self::assertCount(1, $this->esz131LogLines('notification.sent'));
+        self::assertSame([], $this->esz131LogLines('notification.skipped'));
+    }
+
+    public function testEs131Proof2TwoMovesLeaveOnlyTheNewestMoveDeliverable(): void
+    {
+        $this->esz131Seed();
+        $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
+        $reference = (string) $created['reference'];
+        $booking = $this->bookings->find($reference);
+        self::assertNotNull($booking);
+
+        $this->clock->advanceMinutes(30);
+        $this->adminMutateFresh('move', $reference, ['startsAtUtc' => '2026-06-15T08:00:00.000Z']);
+        $this->clock->advanceMinutes(30);
+        $this->adminMutateFresh('move', $reference, ['startsAtUtc' => '2026-06-15T09:00:00.000Z']);
+
+        $mailer = new RecordingMailer();
+        $result = $this->esz131Runner($this->esz131RenderingTransport($mailer), $this->esz131Jobs())
+            ->run($this->esz131Owner('one'), 10);
+
+        self::assertSame(1, $result->claimed, 'only the newest move may be claimed');
+        self::assertSame(1, $result->sent);
+        self::assertSame(0, $result->retried);
+        self::assertSame(0, $result->skipped);
+        self::assertSame(0, $result->leasesLost);
+
+        $rows = $this->esz131Rows($booking->id);
+        self::assertSame(
+            [
+                'booking_confirmation', 'booking_reminder', 'booking_moved',
+                'booking_reminder', 'booking_moved', 'booking_reminder',
+            ],
+            array_column($rows, 'job_type'),
+        );
+        // Confirmation and the first move are terminally obsolete; the reminder
+        // rescheduling is untouched; only the second move is deliverable.
+        self::assertSame(
+            ['skipped', 'skipped', 'skipped', 'skipped', 'sent', 'pending'],
+            array_column($rows, 'status'),
+        );
+        self::assertSame(
+            ['superseded_by_move', 'reminder_superseded', 'superseded_by_move', 'reminder_superseded', null, null],
+            array_column($rows, 'last_error_code'),
+        );
+        self::assertSame(1, $this->esz131SentCount());
+        // Each move job names its own event; the delivered one is the newest.
+        self::assertNotNull($rows[2]['lifecycle_event_id']);
+        self::assertNotNull($rows[4]['lifecycle_event_id']);
+        self::assertLessThan(
+            (int) $rows[4]['lifecycle_event_id'],
+            (int) $rows[2]['lifecycle_event_id'],
+            'the delivered move is not the newest lifecycle event',
+        );
+
+        // Rendered facts: the newest slot, under the moved title.
+        self::assertNotNull($mailer->message);
+        self::assertSame('Votre rendez-vous a été déplacé', $mailer->message->getSubject());
+        self::assertStringContainsString(
+            'Date et heure (Paris) : 15/06/2026 à 11:00',
+            (string) $mailer->message->getTextBody(),
+        );
+    }
+
+    public function testEs131Proof3MoveThenCancelBeforeCronDeliversOnlyTheCancellation(): void
+    {
+        $this->esz131Seed();
+        $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
+        $reference = (string) $created['reference'];
+        $booking = $this->bookings->find($reference);
+        self::assertNotNull($booking);
+
+        $this->clock->advanceMinutes(30);
+        $this->adminMutateFresh('move', $reference, ['startsAtUtc' => '2026-06-15T08:00:00.000Z']);
+        $this->clock->advanceMinutes(30);
+        $this->adminMutateFresh('cancel', $reference, ['reason' => null]);
+
+        $mailer = new RecordingMailer();
+        $result = $this->esz131Runner($this->esz131RenderingTransport($mailer), $this->esz131Jobs())
+            ->run($this->esz131Owner('one'), 10);
+
+        self::assertSame(1, $result->claimed);
+        self::assertSame(1, $result->sent);
+        self::assertSame(0, $result->retried);
+        self::assertSame(0, $result->skipped);
+        self::assertSame(0, $result->leasesLost);
+
+        $rows = $this->esz131Rows($booking->id);
+        self::assertSame('skipped', $rows[0]['status'], 'confirmation survived the move');
+        self::assertSame('superseded_by_move', $rows[0]['last_error_code']);
+        self::assertSame('skipped', $rows[2]['status'], 'the move survived the cancellation');
+        self::assertSame('superseded_by_cancellation', $rows[2]['last_error_code']);
+        self::assertSame('skipped', $rows[3]['status']);
+        self::assertSame('booking_cancelled', $rows[3]['last_error_code']);
+        self::assertSame('sent', $rows[4]['status'], 'the cancellation was not delivered');
+        self::assertSame('booking_cancellation', $rows[4]['job_type']);
+        self::assertNull($rows[4]['last_error_code']);
+        self::assertSame(1, $this->esz131SentCount());
+
+        self::assertNotNull($mailer->message);
+        self::assertSame('Votre rendez-vous est annulé', $mailer->message->getSubject());
+        self::assertStringContainsString(
+            'Date et heure (Paris) : 15/06/2026 à 10:00',
+            (string) $mailer->message->getTextBody(),
+        );
+        self::assertStringNotContainsString('confirmé', (string) $mailer->message->getTextBody());
+        self::assertStringNotContainsString('déplacé', (string) $mailer->message->getTextBody());
+    }
+
+    public function testEs131Proof4ATransientFailureThenAMoveBeforeTheRetryNeverSendsTheConfirmation(): void
+    {
+        $this->esz131Seed();
+        $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
+        $reference = (string) $created['reference'];
+        $booking = $this->bookings->find($reference);
+        self::assertNotNull($booking);
+
+        // Attempt 1 fails transiently while the confirmation is still relevant.
+        $failing = new FailingTransport('email', new TransientDeliveryException('transport_transient'));
+        $first = $this->esz131Runner($failing, $this->esz131Jobs())->run($this->esz131Owner('one'), 10);
+        self::assertSame(1, $first->claimed);
+        self::assertSame(1, $first->retried);
+
+        $pending = $this->esz131Rows($booking->id)[0];
+        self::assertSame('pending', $pending['status']);
+        self::assertSame('transport_transient', $pending['last_error_code']);
+        self::assertSame(1, $pending['attempts']);
+
+        // The booking moves before the retry is due: the supersession catches
+        // the confirmation while it is pending and retires it terminally.
+        $this->clock->advanceMinutes(30);
+        $this->adminMutateFresh('move', $reference, ['startsAtUtc' => '2026-06-15T08:00:00.000Z']);
+        $this->clock->advanceSeconds($this->esz131Policy()->backoffSeconds(1) + 1);
+
+        $recording = new RecordingTransport('email');
+        $second = $this->esz131Runner($recording, $this->esz131Jobs())->run($this->esz131Owner('two'), 10);
+
+        // The retry tick delivers only the new move; the obsolete confirmation
+        // is terminal and was never attempted again.
+        self::assertSame(1, $second->claimed);
+        self::assertSame(1, $second->sent);
+        self::assertSame(0, $second->retried);
+        self::assertSame(0, $second->skipped);
+        self::assertSame(1, $recording->delivered);
+
+        $rows = $this->esz131Rows($booking->id);
+        self::assertSame('skipped', $rows[0]['status']);
+        self::assertSame('superseded_by_move', $rows[0]['last_error_code']);
+        self::assertSame(1, $rows[0]['attempts'], 'the obsolete confirmation was retried after the move');
+        self::assertSame('sent', $rows[2]['status']);
+        self::assertSame('booking_moved', $rows[2]['job_type']);
+        self::assertSame(1, $this->esz131SentCount());
+    }
+
+    public function testEs131Proof4BTheRetryItselfIsReCheckedBeforeTheTransportBoundary(): void
+    {
+        $this->esz131Seed();
+        $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
+        $reference = (string) $created['reference'];
+        $booking = $this->bookings->find($reference);
+        self::assertNotNull($booking);
+
+        // While attempt 1 is in flight (after the claim and its relevance
+        // check), the booking moves. The supersession cannot touch the claimed
+        // row, so the transient failure returns an already-obsolete job to
+        // pending.
+        $failing = new FailingTransport('email', new TransientDeliveryException('transport_transient'));
+        $failing->before = function () use ($reference): void {
+            $this->adminMutateFresh('move', $reference, ['startsAtUtc' => '2026-06-15T08:00:00.000Z']);
+        };
+
+        $first = $this->esz131Runner($failing, $this->esz131Jobs())->run($this->esz131Owner('one'), 10);
+        self::assertSame(1, $first->claimed);
+        self::assertSame(1, $first->retried);
+
+        $this->clock->advanceSeconds($this->esz131Policy()->backoffSeconds(1) + 1);
+
+        $mailer = new RecordingMailer();
+        $second = $this->esz131Runner($this->esz131RenderingTransport($mailer), $this->esz131Jobs())
+            ->run($this->esz131Owner('two'), 10);
+
+        // The retry tick claims the new move (sent) and the obsolete
+        // confirmation, whose delivery-time relevance re-check skips it before
+        // any transport runs.
+        self::assertSame(2, $second->claimed);
+        self::assertSame(1, $second->sent);
+        self::assertSame(1, $second->skipped);
+        self::assertSame(0, $second->retried);
+        self::assertSame(0, $second->failed);
+        self::assertSame(0, $second->leasesLost);
+
+        $rows = $this->esz131Rows($booking->id);
+        self::assertSame('skipped', $rows[0]['status']);
+        self::assertSame('superseded_by_move', $rows[0]['last_error_code']);
+        self::assertSame(2, $rows[0]['attempts']);
+        self::assertSame('sent', $rows[2]['status']);
+        self::assertSame(1, $this->esz131SentCount());
+
+        // Only the move was ever rendered: the obsolete confirmation reached
+        // neither SMTP nor the renderer on its retry.
+        self::assertNotNull($mailer->message);
+        self::assertSame('Votre rendez-vous a été déplacé', $mailer->message->getSubject());
+
+        // Proof 8: the persisted skip is counted once and logged with its
+        // stored status and the frozen supersession code.
+        $skippedLines = $this->esz131LogLines('notification.skipped');
+        self::assertCount(1, $skippedLines);
+        self::assertSame('skipped', $skippedLines[0]['status'] ?? null);
+        self::assertSame('superseded_by_move', $skippedLines[0]['errorCode'] ?? null);
+    }
+
+    public function testEs131Proof5AClaimedJobSupersededBeforeTransportIsNeverSentOrRetriedByItsStaleOwner(): void
+    {
+        $this->esz131Seed();
+        // X's confirmation is the front job that keeps the first runner busy
+        // while Y's booked move is overtaken by a second move.
+        $x = (string) $this->bookingApi->create(
+            $this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'),
+        )['reference'];
+        $this->clock->advanceMinutes(1);
+        $y = (string) $this->bookingApi->create(
+            $this->publicBookingRequest('brows', '2026-06-15T07:30:00.000Z'),
+        )['reference'];
+        $yBooking = $this->bookings->find($y);
+        self::assertNotNull($yBooking);
+
+        $this->clock->advanceMinutes(1);
+        $this->adminMutateFresh('move', $y, ['startsAtUtc' => '2026-06-15T08:00:00.000Z']);
+        $rowsBefore = $this->esz131Rows($yBooking->id);
+        $moveJob = null;
+        foreach ($rowsBefore as $row) {
+            if ($row['job_type'] === 'booking_moved') {
+                $moveJob = $row;
+            }
+        }
+        self::assertNotNull($moveJob, 'Y has no pending booking_moved job to claim');
+        $moveJobId = (int) $moveJob['id'];
+
+        // The first runner claims X's confirmation and Y's booked move. While
+        // the front job is being transported, the clock crosses the lease
+        // boundary, Y moves again, and a second runner recovers and re-claims
+        // the booked move — the superseding transition cannot rewrite a
+        // `processing` row, which is exactly why the delivery-time check
+        // exists.
+        $transport = new RecordingTransport('email');
+        $slowOwner = $this->esz131Owner('slow');
+        $fastOwner = $this->esz131Owner('fast');
+        $jobs = $this->esz131Jobs();
+        $transport->before = function () use ($y, $moveJobId, $fastOwner): void {
+            $this->clock->advanceSeconds($this->esz131Policy()->leaseSeconds + 1);
+            $this->adminMutateFresh('move', $y, ['startsAtUtc' => '2026-06-15T09:00:00.000Z']);
+
+            $now = $this->clock->now();
+            $statement = $this->database->run(
+                'UPDATE notification_jobs SET status = :pending, lease_owner = NULL,'
+                . ' lease_expires_at_utc = NULL, last_error_code = :code,'
+                . ' updated_at = :updatedAt, status_changed_at = :changedAt'
+                . ' WHERE id = :id AND status = :processing AND lease_expires_at_utc <= :cutoff',
+                [
+                    'pending' => 'pending',
+                    'code' => 'lease_expired',
+                    'updatedAt' => $this->clock->nowIso(),
+                    'changedAt' => $this->clock->nowIso(),
+                    'id' => $moveJobId,
+                    'processing' => 'processing',
+                    'cutoff' => NotificationInstant::database($now),
+                ],
+            );
+            self::assertSame(1, $statement->rowCount(), 'the booked move was not recovered');
+            $statement = $this->database->run(
+                'UPDATE notification_jobs SET status = :processing, lease_owner = :owner,'
+                . ' lease_expires_at_utc = :expires, attempts = attempts + 1,'
+                . ' updated_at = :updatedAt, status_changed_at = :changedAt'
+                . ' WHERE id = :id AND status = :pending AND next_attempt_at_utc <= :cutoff'
+                . ' AND attempts < :maxAttempts',
+                [
+                    'processing' => 'processing',
+                    'owner' => $fastOwner,
+                    'expires' => NotificationInstant::plusSeconds($now, $this->esz131Policy()->leaseSeconds),
+                    'updatedAt' => $this->clock->nowIso(),
+                    'changedAt' => $this->clock->nowIso(),
+                    'id' => $moveJobId,
+                    'pending' => 'pending',
+                    'cutoff' => NotificationInstant::database($now),
+                    'maxAttempts' => $this->esz131Policy()->maxAttempts,
+                ],
+            );
+            self::assertSame(1, $statement->rowCount(), 'the second runner could not claim the booked move');
+        };
+
+        $result = $this->esz131Runner($transport, $jobs)->run($slowOwner, 10);
+
+        // The stale owner delivered its own front job, and for the overtaken
+        // move it reported lease loss — never sent, never retried, never
+        // counted skipped on its own authority.
+        self::assertSame(2, $result->claimed);
+        self::assertSame(1, $result->sent);
+        self::assertSame(0, $result->retried);
+        self::assertSame(0, $result->failed);
+        self::assertSame(0, $result->skipped);
+        self::assertSame(1, $result->leasesLost);
+        self::assertSame(1, $transport->delivered, 'exactly the front job reached the transport');
+
+        $seized = $jobs->find($moveJobId);
+        self::assertInstanceOf(NotificationJob::class, $seized);
+        self::assertSame('processing', $seized->status);
+        self::assertSame(2, $seized->attempts);
+        self::assertSame('lease_expired', $seized->lastErrorCode);
+        self::assertSame($fastOwner, $seized->leaseOwner);
+
+        self::assertCount(1, $this->esz131LogLines('notification.sent'));
+        self::assertSame([], $this->esz131LogLines('notification.skipped'));
+        self::assertSame([], $this->esz131LogLines('notification.retry'));
+        self::assertSame([], $this->esz131LogLines('notification.failed'));
+        $lost = $this->esz131LogLines('notification.leaseLost');
+        self::assertCount(1, $lost);
+        self::assertSame('warn', $lost[0]['level'] ?? null);
+        self::assertSame('lease_lost', $lost[0]['errorCode'] ?? null);
+        self::assertArrayNotHasKey('status', $lost[0], 'a lease-loss line presented a status');
+
+        // The rightful owner still decides: the overtaken move is skipped with
+        // the supersession code, and the newest move delivers normally.
+        self::assertTrue($jobs->markSkipped($seized->id, $fastOwner, 'superseded_by_move'));
+        $final = $jobs->find($moveJobId);
+        self::assertInstanceOf(NotificationJob::class, $final);
+        self::assertSame('skipped', $final->status);
+        self::assertSame('superseded_by_move', $final->lastErrorCode);
+
+        $mailer = new RecordingMailer();
+        $secondRun = $this->esz131Runner($this->esz131RenderingTransport($mailer), $jobs)
+            ->run($fastOwner, 10);
+        self::assertSame(1, $secondRun->claimed);
+        self::assertSame(1, $secondRun->sent);
+        self::assertNotNull($mailer->message);
+        self::assertSame('Votre rendez-vous a été déplacé', $mailer->message->getSubject());
+        self::assertStringContainsString(
+            'Date et heure (Paris) : 15/06/2026 à 11:00',
+            (string) $mailer->message->getTextBody(),
+        );
+        // Exactly two deliveries across both runs: the front confirmation and
+        // the newest move. The overtaken move was never transported.
+        self::assertSame(2, $this->esz131SentCount());
+    }
+
+    public function testEs131Proof6ImmediateConfirmationMoveAndCancellationRenderTheirOwnFacts(): void
+    {
+        $this->esz131Seed();
+        $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
+        $reference = (string) $created['reference'];
+        $booking = $this->bookings->find($reference);
+        self::assertNotNull($booking);
+
+        // Immediate tick: the confirmation renders the created appointment.
+        $confirmationMailer = new RecordingMailer();
+        $first = $this->esz131Runner($this->esz131RenderingTransport($confirmationMailer), $this->esz131Jobs())
+            ->run($this->esz131Owner('one'), 10);
+        self::assertSame(1, $first->claimed);
+        self::assertSame(1, $first->sent);
+        self::assertNotNull($confirmationMailer->message);
+        self::assertSame('Votre rendez-vous est confirmé', $confirmationMailer->message->getSubject());
+        $text = (string) $confirmationMailer->message->getTextBody();
+        self::assertStringContainsString('Date et heure (Paris) : 15/06/2026 à 09:00', $text);
+        self::assertStringContainsString($reference, $text);
+        self::assertStringContainsString('Prestation : Sourcils', $text);
+        self::assertSame('cliente@example.test', $confirmationMailer->message->getTo()[0]->getAddress());
+
+        // One move: the moved notice renders the new slot.
+        $this->clock->advanceMinutes(30);
+        $this->adminMutateFresh('move', $reference, ['startsAtUtc' => '2026-06-15T08:00:00.000Z']);
+        $movedMailer = new RecordingMailer();
+        $second = $this->esz131Runner($this->esz131RenderingTransport($movedMailer), $this->esz131Jobs())
+            ->run($this->esz131Owner('two'), 10);
+        self::assertSame(1, $second->claimed);
+        self::assertSame(1, $second->sent);
+        self::assertNotNull($movedMailer->message);
+        self::assertSame('Votre rendez-vous a été déplacé', $movedMailer->message->getSubject());
+        self::assertStringContainsString(
+            'Date et heure (Paris) : 15/06/2026 à 10:00',
+            (string) $movedMailer->message->getTextBody(),
+        );
+
+        // The cancellation renders the appointment as it stood when cancelled.
+        $this->clock->advanceMinutes(30);
+        $this->adminMutateFresh('cancel', $reference, ['reason' => null]);
+        $cancellationMailer = new RecordingMailer();
+        $third = $this->esz131Runner($this->esz131RenderingTransport($cancellationMailer), $this->esz131Jobs())
+            ->run($this->esz131Owner('three'), 10);
+        self::assertSame(1, $third->claimed);
+        self::assertSame(1, $third->sent);
+        self::assertNotNull($cancellationMailer->message);
+        self::assertSame('Votre rendez-vous est annulé', $cancellationMailer->message->getSubject());
+        self::assertStringContainsString(
+            'Date et heure (Paris) : 15/06/2026 à 10:00',
+            (string) $cancellationMailer->message->getTextBody(),
+        );
+
+        self::assertSame(3, $this->esz131SentCount());
     }
 
     // --- ESZ-146: one serialization boundary for booking and bookability ----
@@ -7066,5 +7564,119 @@ final class SqlIntegrationTest extends TestCase
             'DROP TRIGGER IF EXISTS esz130_sweep_delete_failure',
             'drop esz130 sweep trigger',
         );
+    }
+
+    // --- ESZ-131 helpers ---------------------------------------------------
+
+    private function esz131Seed(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '12:00')]);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function esz131Rows(int $bookingId): array
+    {
+        return $this->database->fetchAll(
+            'SELECT id, job_type, status, attempts, last_error_code, due_at_utc, lifecycle_event_id'
+            . ' FROM notification_jobs WHERE booking_id = :booking ORDER BY id',
+            ['booking' => $bookingId],
+        );
+    }
+
+    private function esz131Jobs(): NotificationJobRepository
+    {
+        return new NotificationJobRepository(
+            $this->database,
+            $this->clock,
+            $this->esz131Policy(),
+        );
+    }
+
+    private function esz131Policy(): NotificationPolicy
+    {
+        return NotificationPolicy::fromArtifacts(TestEnvironment::artifacts());
+    }
+
+    private function esz131Runner(NotificationTransport $transport, NotificationJobRepository $jobs): NotificationRunner
+    {
+        return new NotificationRunner(
+            $jobs,
+            new NotificationTransportRegistry($this->esz131Policy(), [$transport]),
+            new FixedEnabledChannels(['email']),
+            $this->esz131Policy(),
+            new Logger($this->root . '/notifications.log', 'debug', $this->clock),
+        );
+    }
+
+    /**
+     * The real facts resolution + renderer, with a recording mailer standing in
+     * for SMTP: every delivered job is actually rendered from the booking's
+     * current facts, and the captured message is what the assertions read.
+     */
+    private function esz131RenderingTransport(RecordingMailer $mailer): SmtpNotificationTransport
+    {
+        $settings = new SmtpSettings(
+            'smtp.example.test',
+            587,
+            'none',
+            false,
+            null,
+            null,
+            'bonjour@example.test',
+            'Eszter Gyori',
+            10,
+            'Répondez à cet e-mail.',
+            'Prévenez-nous en cas d’empêchement.',
+        );
+
+        return new SmtpNotificationTransport(
+            $settings,
+            new BookingNotificationFactsRepository($this->database),
+            new BookingEmailRenderer($settings),
+            new SmtpFailureClassifier(),
+            $mailer,
+        );
+    }
+
+    private function esz131Owner(string $tag): string
+    {
+        return NotificationRunner::ownerFor('esz131-' . $tag, getmypid() ?: 1);
+    }
+
+    private function esz131SentCount(): int
+    {
+        $row = $this->database->fetchOne(
+            "SELECT COUNT(*) AS n FROM notification_jobs WHERE status = 'sent'",
+        );
+
+        return (int) ($row['n'] ?? 0);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function esz131LogLines(string $message): array
+    {
+        $path = $this->root . '/notifications.log';
+        $lines = [];
+        if (!is_file($path)) {
+            return $lines;
+        }
+
+        foreach (explode("\n", trim((string) file_get_contents($path))) as $line) {
+            if ($line === '') {
+                continue;
+            }
+
+            $decoded = json_decode($line, true);
+            if (\is_array($decoded) && ($decoded['message'] ?? null) === $message) {
+                $lines[] = $decoded;
+            }
+        }
+
+        return $lines;
     }
 }

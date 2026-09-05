@@ -16,8 +16,18 @@ final class BookingHistoryRepository
     ) {
     }
 
-    /** @param array<string, mixed> $details */
-    public function append(int $bookingId, string $type, string $actor, array $details = []): void
+    /**
+     * Appends one immutable event and returns its row id.
+     *
+     * The returned id is the event's stable position in the append-only trail.
+     * ESZ-131 uses it as the lifecycle identity of the notification jobs the
+     * same transaction schedules: the runner re-checks a claimed job against
+     * later events by comparing ids, so the ordering never depends on
+     * timestamps.
+     *
+     * @param array<string, mixed> $details
+     */
+    public function append(int $bookingId, string $type, string $actor, array $details = []): int
     {
         if (!\in_array($type, ['created', 'moved', 'cancelled', 'customer_updated'], true)) {
             throw new BookingValidationException('historyType', 'Unknown booking history event.');
@@ -42,6 +52,8 @@ final class BookingHistoryRepository
                 'occurred' => $this->clock->nowIso(),
             ],
         );
+
+        return (int) $this->database->pdo()->lastInsertId();
     }
 
     /**
