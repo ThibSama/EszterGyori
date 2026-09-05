@@ -1,91 +1,83 @@
 #!/usr/bin/env node
+/**
+ * ESZ-129 — the production-acceptance CLI.
+ *
+ * The CLI owns the authorization boundary and nothing else:
+ *
+ *   - the target must be an explicit HTTPS origin (no credentials, query,
+ *     fragment or path);
+ *   - state-changing and cleanup/resume modes require the exact live
+ *     confirmation phrase;
+ *   - every secret is read from the environment, never from arguments;
+ *   - read-only mode (no phrase) only runs the project readiness probe and
+ *     never mutates anything.
+ *
+ * The state-changing machinery — resource tracking, `expectedUpdatedAt`
+ * mutations, best-effort compensation, the unresolved-cleanup debt gate and
+ * the cleanup/resume mode — lives in `scripts/production-acceptance-core.mjs`
+ * and is driven by the tests directly against the disposable local
+ * full-stack fixture.
+ *
+ * Modes:
+ *   read-only   ESZTER_ACCEPTANCE_TARGET_URL=https://… npm run acceptance:production
+ *   authorized  … + the four secrets + --live-confirmation=<exact phrase>
+ *   cleanup     same authorization envelope as authorized, plus --cleanup:
+ *               resolves the origin's debt or reports there is none.
+ */
 
+import { pathToFileURL } from "node:url";
 import { probeReadiness, READINESS_COMPONENTS } from "./readiness.mjs";
+import {
+  runAuthorizedAcceptance,
+  runCleanupAcceptance,
+  UsageError,
+} from "./production-acceptance-core.mjs";
+import { debtDirFor } from "./acceptance-debt.mjs";
 
 const LIVE_CONFIRMATION = "I_AUTHORIZE_ESZTER_LIVE_MUTATIONS";
-const args = new Map(process.argv.slice(2).map((argument) => {
-  const match = argument.match(/^--([^=]+)(?:=(.*))?$/);
-  if (!match) throw new Error(`Unknown argument: ${argument}`);
-  return [match[1], match[2] ?? true];
-}));
 
-if (args.has("help")) {
-  process.stdout.write(`Usage:
+function usage() {
+  return `Usage:
   ESZTER_ACCEPTANCE_TARGET_URL=https://… npm run acceptance:production
   ESZTER_ACCEPTANCE_TARGET_URL=https://… ESZTER_ACCEPTANCE_ADMIN_EMAIL=… \\
     ESZTER_ACCEPTANCE_ADMIN_PASSWORD=… ESZTER_ACCEPTANCE_CUSTOMER_EMAIL=… \\
     npm run acceptance:production -- --live-confirmation=${LIVE_CONFIRMATION}
+  npm run acceptance:production -- --cleanup --live-confirmation=${LIVE_CONFIRMATION}
 
 Without the exact confirmation value, only read-only checks run. Secrets are read
 from the environment so they do not enter shell history or process arguments.
-`);
-  process.exit(0);
+
+--cleanup  resolves an unresolved cleanup debt for the target origin (it loads
+           the debt, authenticates only when a recorded step needs the admin
+           surface, retries the safe cleanup with authoritative re-queries and
+           deletes the debt record only after every recorded resource is
+           verified clean). There is no --force and no other escape hatch:
+           a state-changing run refuses to create any new mutation while
+           unresolved debt exists.
+`;
 }
 
-const targetValue = process.env.ESZTER_ACCEPTANCE_TARGET_URL;
-if (!targetValue) throw new Error("ESZTER_ACCEPTANCE_TARGET_URL is required.");
-const target = new URL(targetValue);
-if (target.protocol !== "https:" || target.username || target.password || target.search || target.hash) {
-  throw new Error("The target must be an explicit HTTPS origin with no credentials, query or fragment.");
-}
-if (target.pathname !== "/") throw new Error("The target must be an origin URL ending at `/`.");
-
-const confirmed = args.get("live-confirmation") === LIVE_CONFIRMATION;
-const marker = `ESZ-086-${new Date().toISOString().replaceAll(/[-:.TZ]/g, "").slice(0, 14)}-${crypto.randomUUID().slice(0, 8)}`;
-const cookies = new Map();
-let csrfToken = null;
-let mediaId = null;
-let bookingReference = null;
-let bookingCancelled = false;
-
-function cookieHeader() {
-  return [...cookies].map(([name, value]) => `${name}=${value}`).join("; ");
-}
-
-function rememberCookies(headers) {
-  for (const value of headers.getSetCookie?.() ?? []) {
-    const [pair] = value.split(";", 1);
-    const separator = pair.indexOf("=");
-    if (separator < 1) continue;
-    const name = pair.slice(0, separator);
-    const cookieValue = pair.slice(separator + 1);
-    if (cookieValue === "" || /max-age=0/i.test(value)) cookies.delete(name);
-    else cookies.set(name, cookieValue);
+/** Resolves the target URL and the authorization verdict. */
+export function parseTarget(env) {
+  const targetValue = env.ESZTER_ACCEPTANCE_TARGET_URL;
+  if (!targetValue) throw new Error("ESZTER_ACCEPTANCE_TARGET_URL is required.");
+  const target = new URL(targetValue);
+  if (target.protocol !== "https:" || target.username || target.password || target.search || target.hash) {
+    throw new Error("The target must be an explicit HTTPS origin with no credentials, query or fragment.");
   }
+  if (target.pathname !== "/") throw new Error("The target must be an origin URL ending at `/`.");
+  return target;
 }
 
-async function request(path, { method = "GET", body, headers = {}, csrf = false, expected = [200] } = {}) {
-  const requestHeaders = { accept: "application/json", ...headers };
-  if (cookies.size) requestHeaders.cookie = cookieHeader();
-  if (csrf) {
-    if (!csrfToken) throw new Error(`No CSRF token is available for ${method} ${path}.`);
-    requestHeaders["x-csrf-token"] = csrfToken;
+function parseArguments(argv) {
+  const args = new Map();
+  for (const argument of argv) {
+    const match = argument.match(/^--([^=]+)(?:=(.*))?$/);
+    if (!match) throw new Error(`Unknown argument: ${argument}`);
+    if (args.has(match[1])) throw new Error(`Duplicate argument: --${match[1]}`);
+    args.set(match[1], match[2] ?? true);
   }
-  if (body !== undefined && !(body instanceof FormData)) requestHeaders["content-type"] = "application/json";
-  const response = await fetch(new URL(path, target), {
-    method,
-    headers: requestHeaders,
-    body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body),
-    redirect: "manual",
-  });
-  rememberCookies(response.headers);
-  const text = await response.text();
-  let parsed = null;
-  if (text && response.headers.get("content-type")?.includes("application/json")) {
-    try { parsed = JSON.parse(text); } catch { throw new Error(`${method} ${path} returned malformed JSON.`); }
-  }
-  if (!expected.includes(response.status)) {
-    throw new Error(`${method} ${path}: expected ${expected.join("/")}, got ${response.status}: ${text.slice(0, 300)}`);
-  }
-  process.stdout.write(`PASS ${method} ${path} (${response.status})\n`);
-  return { response, body: parsed, text };
-}
-
-function dateInParis(offsetDays) {
-  const date = new Date(Date.now() + offsetDays * 86_400_000);
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit",
-  }).format(date);
+  return args;
 }
 
 /**
@@ -100,7 +92,7 @@ function dateInParis(offsetDays) {
  * is read-only by construction: no session, no upload, no booking, no cron,
  * no SMTP contact.
  */
-async function readOnlyChecks() {
+export async function readOnlyChecks(target) {
   const verdict = await probeReadiness(target.origin);
   for (const name of READINESS_COMPONENTS) {
     const component = verdict.components[name];
@@ -115,99 +107,91 @@ async function readOnlyChecks() {
   }
 }
 
-async function fullAcceptance() {
-  const email = process.env.ESZTER_ACCEPTANCE_ADMIN_EMAIL;
-  const password = process.env.ESZTER_ACCEPTANCE_ADMIN_PASSWORD;
-  const customerEmail = process.env.ESZTER_ACCEPTANCE_CUSTOMER_EMAIL;
-  if (!email || !password || !customerEmail) {
-    throw new Error("Full mode requires ESZTER_ACCEPTANCE_ADMIN_EMAIL, ESZTER_ACCEPTANCE_ADMIN_PASSWORD and ESZTER_ACCEPTANCE_CUSTOMER_EMAIL.");
+/**
+ * CLI entry point. `argv` and `env` are injectable so tests can exercise the
+ * authorization boundary in-process; the exit code is returned, never set.
+ *
+ * @returns {Promise<number>} 0 PASS, 1 FAIL, 2 usage
+ */
+export async function main(argv = process.argv.slice(2), env = process.env) {
+  let args;
+  try {
+    args = parseArguments(argv);
+  } catch (error) {
+    process.stderr.write(`FAIL ${error.message}\n`);
+    return 2;
   }
 
-  const session = await request("/api/auth/session");
-  csrfToken = session.body?.csrfToken;
-  const login = await request("/api/auth/login", {
-    method: "POST", csrf: true, body: { email, password },
-  });
-  if (login.body?.authenticated !== true) throw new Error("Admin login did not produce an authenticated session.");
-  csrfToken = login.body.csrfToken;
-
-  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR42mNkYGD4z8DAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==", "base64");
-  const form = new FormData();
-  form.append("file", new Blob([png], { type: "image/png" }), `${marker}.png`);
-  const upload = await request("/api/admin/media", { method: "POST", csrf: true, body: form, expected: [201] });
-  mediaId = upload.body?.asset?.id;
-  if (!/^med_[0-9a-f]{32}$/.test(mediaId ?? "")) throw new Error("Media upload returned no valid id.");
-  await request("/api/admin/media", { method: "DELETE", csrf: true, body: { id: mediaId }, expected: [204] });
-  mediaId = null;
-
-  const services = await request("/api/booking/services");
-  const service = services.body?.services?.[0];
-  if (!service?.key) throw new Error("No active booking service is available for acceptance.");
-  const availability = await request("/api/booking/availability", {
-    method: "POST",
-    body: { serviceKey: service.key, fromDate: dateInParis(2), untilDate: dateInParis(60) },
-  });
-  const slot = availability.body?.slots?.[0];
-  if (!slot?.startsAtUtc) throw new Error("No valid slot is available in the next 60 days; no booking was created.");
-
-  const created = await request("/api/bookings", {
-    method: "POST", expected: [201],
-    body: {
-      serviceKey: service.key,
-      startsAtUtc: slot.startsAtUtc,
-      customerName: marker,
-      customerEmail,
-      customerPhone: null,
-      customerNote: `${marker} isolated production acceptance; cancel after verification`,
-      // ESZ-142: the catalog's current consent notice id (booking-domain
-      // consentNotices); membership acceptance keeps this valid forever.
-      consentNoticeId: "booking-consent-v1",
-      consentAccepted: true,
-    },
-  });
-  bookingReference = created.body?.reference;
-  if (!/^bk_[0-9a-f]{32}$/.test(bookingReference ?? "")) throw new Error("Booking creation returned no valid reference.");
-
-  const query = await request("/api/admin/bookings/query", {
-    method: "POST", body: { mode: "reference", reference: bookingReference },
-  });
-  const booking = query.body?.bookings?.[0];
-  if (booking?.reference !== bookingReference || booking.state !== "confirmed") {
-    throw new Error("The acceptance booking is absent from the admin calendar/query surface.");
+  if (args.has("help")) {
+    process.stdout.write(usage());
+    return 0;
   }
-  await request("/api/admin/bookings", {
-    method: "PATCH", csrf: true,
-    body: {
-      action: "update", reference: bookingReference,
-      customerName: booking.customerName, customerEmail: booking.customerEmail,
-      customerPhone: booking.customerPhone, customerNote: `${marker} admin mutation verified`,
-    },
-  });
-  const cancelled = await request("/api/admin/bookings", {
-    method: "PATCH", csrf: true,
-    body: { action: "cancel", reference: bookingReference, reason: `${marker} cleanup` },
-  });
-  if (cancelled.body?.booking?.state !== "cancelled") throw new Error("Cleanup cancellation was not authoritative.");
-  bookingCancelled = true;
-  await request("/api/auth/logout", { method: "POST", csrf: true, expected: [204] });
 
-  process.stdout.write(`\nHTTP acceptance completed for ${marker}.\n`);
-  process.stdout.write(`Booking ${bookingReference} is cancelled; uploaded media was deleted.\n`);
-  process.stdout.write("LIVE-PENDING: run/observe the authorized SMTP cron and verify the confirmation and cancellation messages in the approved mailbox, including the booking reference.\n");
-  process.stdout.write("LIVE-PENDING: complete the browser viewport/interaction worksheet in docs/production-acceptance.md.\n");
+  let target;
+  try {
+    target = parseTarget(env);
+  } catch (error) {
+    process.stderr.write(`FAIL ${error.message}\n`);
+    return 1;
+  }
+
+  const confirmed = args.get("live-confirmation") === LIVE_CONFIRMATION;
+  const cleanupMode = args.has("cleanup");
+  const modeLabel = cleanupMode ? "CLEANUP/RESUME" : confirmed ? "AUTHORIZED STATE-CHANGING" : "READ-ONLY";
+  process.stdout.write(`Target: ${target.origin}\nMode: ${modeLabel}\n`);
+
+  try {
+    if (cleanupMode) {
+      if (!confirmed) {
+        process.stderr.write(
+          `FAIL state-changing cleanup requires the exact --live-confirmation=${LIVE_CONFIRMATION}.\n`,
+        );
+        return 1;
+      }
+      const outcome = await runCleanupAcceptance({
+        origin: target.origin,
+        adminEmail: env.ESZTER_ACCEPTANCE_ADMIN_EMAIL,
+        adminPassword: env.ESZTER_ACCEPTANCE_ADMIN_PASSWORD,
+        debtDir: debtDirFor(env),
+      });
+      return outcome.ok ? 0 : 1;
+    }
+
+    if (!confirmed) {
+      await readOnlyChecks(target);
+      process.stdout.write(
+        "Readiness PASS: liveness, public page, published content and booking services all answered. "
+        + `State-changing checks NOT RUN; exact --live-confirmation=${LIVE_CONFIRMATION} was not supplied.\n`,
+      );
+      return 0;
+    }
+
+    const result = await runAuthorizedAcceptance({
+      origin: target.origin,
+      adminEmail: env.ESZTER_ACCEPTANCE_ADMIN_EMAIL,
+      adminPassword: env.ESZTER_ACCEPTANCE_ADMIN_PASSWORD,
+      customerEmail: env.ESZTER_ACCEPTANCE_CUSTOMER_EMAIL,
+      debtDir: debtDirFor(env),
+    });
+    process.stdout.write("LIVE-PENDING: run/observe the authorized SMTP cron and verify the confirmation and cancellation messages in the approved mailbox, including the booking reference.\n");
+    process.stdout.write("LIVE-PENDING: complete the browser viewport/interaction worksheet in docs/production-acceptance.md.\n");
+    return 0;
+  } catch (error) {
+    if (error instanceof UsageError) {
+      process.stderr.write(`FAIL ${error.message}\n`);
+      return 2;
+    }
+    process.stderr.write(`FAIL ${error.message}\n`);
+    return 1;
+  }
 }
 
-try {
-  process.stdout.write(`Target: ${target.origin}\nMode: ${confirmed ? "AUTHORIZED STATE-CHANGING" : "READ-ONLY"}\n`);
-  await readOnlyChecks();
-  if (!confirmed) {
-    process.stdout.write(`Readiness PASS: liveness, public page, published content and booking services all answered. State-changing checks NOT RUN; exact --live-confirmation=${LIVE_CONFIRMATION} was not supplied.\n`);
-  } else {
-    await fullAcceptance();
-  }
-} catch (error) {
-  process.stderr.write(`FAIL ${error.message}\n`);
-  if (mediaId) process.stderr.write(`CLEANUP REQUIRED: delete media ${mediaId}.\n`);
-  if (bookingReference && !bookingCancelled) process.stderr.write(`CLEANUP REQUIRED: cancel booking ${bookingReference}.\n`);
-  process.exitCode = 1;
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().then(
+    (code) => { process.exitCode = code; },
+    (error) => {
+      process.stderr.write(`acceptance runner error: ${error?.stack ?? error}\n`);
+      process.exitCode = 2;
+    },
+  );
 }
