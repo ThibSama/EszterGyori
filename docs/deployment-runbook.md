@@ -298,8 +298,11 @@ second run is a no-op; the exclusive cron runs on schedule; one approved SMTP me
 reaches its mailbox; and one backup has been taken and restored into a scratch
 database. The host-side preflight is required before deployment or acceptance can be
 completed. A passing HTTP readiness probe proves serving dependencies only and, by
-itself, must never declare production acceptable. The repository's browser and
-deployed-origin smoke gates remain `NOT RUN` until those prerequisites exist.
+itself, must never declare production acceptable. The repository's local gates
+(`smoke:apache`, ESZ-114, executes the packaged artifact's own `.htaccess` under a
+real Apache; the browser gates prove Apache-applied journeys) run before push; the
+two deployment-owned gates (`smoke:deployed-http`, `security:config`) stay NOT RUN
+until the deployed prerequisites above exist.
 
 Enable the HTTPS redirect and HSTS only once a certificate exists. Both are committed
 commented-out rather than omitted, because a browser remembers HSTS long after the

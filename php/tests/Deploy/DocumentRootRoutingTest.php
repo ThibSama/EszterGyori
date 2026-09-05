@@ -14,10 +14,12 @@ use Eszter\Tests\TestEnvironment;
  * Document-root routing (ESZ-022).
  *
  * These assert the *table*, which is the thing `.htaccess` is generated from. It
- * is not a substitute for exercising Apache — `smoke:http` is what will do that,
- * once there is an origin to point it at — but it does cover the failures that
- * are actually likely: a rule added in the wrong position, a new path quietly
- * captured by the admin catch-all, or the API stopping being first.
+ * is not a substitute for exercising Apache — `smoke:apache` (ESZ-114) executes
+ * the packaged artifact's committed `.htaccess` under a real local Apache, and
+ * `smoke:deployed-http` will do the same against the deployed host — but it does
+ * cover the failures that are actually likely: a rule added in the wrong
+ * position, a new path quietly captured by the admin catch-all, or the API
+ * stopping being first.
  *
  * The path list mirrors a real `next build` under `trailingSlash: false`, because
  * the resolution of `/admin/login` depends entirely on whether the export emits
@@ -65,6 +67,7 @@ final class DocumentRootRoutingTest extends TestCase
         $file = DocumentRootRouting::STATIC_FILE;
         $admin = DocumentRootRouting::ADMIN_SHELL;
         $redirect = DocumentRootRouting::CANONICAL_REDIRECT;
+        $denied = DocumentRootRouting::DENIED;
 
         // path => [rule, target, why it matters]
         yield 'the site root is served by PHP' => ['/', 'public-page', $api];
@@ -73,6 +76,18 @@ final class DocumentRootRoutingTest extends TestCase
         yield 'an unknown API path still reaches PHP' => ['/api/nope', 'api', $api];
         yield 'a future admin API path reaches PHP' => ['/api/admin/content/draft', 'api', $api];
         yield 'the bare /api prefix reaches PHP' => ['/api', 'api', $api];
+
+        yield 'a dot-directory is denied by URL, not by absence' => [
+            '/.git/config', 'sensitive-path', $denied,
+        ];
+        yield 'a committed .env file is denied by URL' => ['/.env', 'sensitive-path', $denied];
+        yield 'a nested .env spelling is denied by URL' => [
+            '/data/.env.local', 'sensitive-path', $denied,
+        ];
+        yield 'a Composer manifest is denied by URL' => [
+            '/composer.json', 'sensitive-path', $denied,
+        ];
+        yield 'a private extension is denied by URL' => ['/secret.json', 'sensitive-path', $denied];
 
         yield 'hashed JS is served directly' => [
             '/_next/static/chunks/main-abc123.js', 'existing-file', $file,
@@ -125,6 +140,72 @@ final class DocumentRootRoutingTest extends TestCase
         self::assertSame('admin.html', $this->resolve('/admin/content/hero')['file']);
         self::assertSame('admin/login.html', $this->resolve('/admin/login')['file']);
         self::assertSame('admin.html', $this->resolve('/admin')['file']);
+    }
+
+    public function testSensitivePathsAreDeniedBeforeAnyFileRuleCanServeThem(): void
+    {
+        // ESZ-114. `FilesMatch` matches the basename of a file, so a deny list
+        // expressed on basenames cannot see a dot-DIRECTORY: with a planted
+        // `.git/config`, real Apache served the canary bytes. The committed
+        // deny classes therefore also run on the URL, where the dot-segment is
+        // always visible, before the existing-file rule. Files whose existence
+        // the table does not know (the fixture export has none of these) are
+        // still denied — the rule must not depend on a file existing to refuse
+        // it, any more than the basename layer does.
+        $denied = [
+            '/.env',
+            '/.env.local',
+            '/data/.env.production',
+            '/.git/config',
+            '/.git/HEAD',
+            '/admin/.git/config',
+            '/composer.json',
+            '/app/composer.lock',
+            '/package.json',
+            '/secret.json',
+            '/notes.md',
+            '/media/library.sql',
+            '/var/log/app.log',
+            // The one dotfile the export ships (front/public/.gitkeep): the
+            // basename FilesMatch layer already refused it before ESZ-114, so
+            // its 403 here is the same outcome Apache already produced.
+            '/.gitkeep',
+        ];
+        foreach ($denied as $path) {
+            $outcome = $this->resolve($path);
+            self::assertSame('sensitive-path', $outcome['rule'], $path);
+            self::assertSame(DocumentRootRouting::DENIED, $outcome['target'], $path);
+        }
+
+        // The deny classes never capture the real export: every legitimate
+        // request the table serves must resolve past them.
+        $served = [
+            '/',
+            '/index.html',
+            '/reservation',
+            '/reservation.html',
+            '/admin',
+            '/admin/login',
+            '/admin/login.html',
+            '/404.html',
+            '/_next/static/chunks/main-abc123.js',
+            '/_next/static/css/app-abc123.css',
+            '/media/portrait-01.webp',
+            '/robots.txt',
+            '/sitemap.xml',
+            '/manifest.webmanifest',
+            '/favicon.ico',
+            '/reservation/__next.reservation.__PAGE__.txt',
+            '/api/content',
+            '/api/nope',
+        ];
+        foreach ($served as $path) {
+            self::assertNotSame(
+                'sensitive-path',
+                $this->resolve($path)['rule'],
+                "{$path} is captured by the sensitive-path deny",
+            );
+        }
     }
 
     public function testTheApiIsResolvedBeforeAnythingCanShadowIt(): void

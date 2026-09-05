@@ -173,12 +173,18 @@ Rules:
 
 ### Web server hardening (`.htaccess`)
 
-- Deny access to `*.json`, `*.md`, `*.log`, `.git`, `.env*`, `composer.*` anywhere
-  under the document root.
+- Deny access to `*.json`, `*.md`, `*.log`, `.git` files **and directory contents**,
+  `.env*`, `composer.*` anywhere under the document root — enforced both on the
+  basename (`FilesMatch`) and on the URL (`sensitive-path` rewrite rule), because a
+  basename rule cannot see a dot-directory such as `/.git/config` (ESZ-114).
 - Disable directory indexing (`Options -Indexes`).
 - Disable PHP execution under `media/` — an upload that lands there must be inert —
   and whitelist the names it may serve at all (§7).
-- Suppress `X-Powered-By` / `Server` banners (`docs/runtime-inventory.md` 1.6).
+- Suppress the `X-Powered-By` banner with the `.htaccess` `Header unset` (PHP writes
+  it during content generation, after the `always` table has run). The Apache
+  `Server` banner is emitted by the httpd core after every header filter and cannot
+  be removed from `.htaccess`; it is set host-side via `ServerTokens`
+  (`docs/runtime-inventory.md` 1.6).
 - Force HTTPS and set HSTS, `X-Content-Type-Options: nosniff`, `Referrer-Policy`,
   and a CSP that permits only same-origin scripts.
 
@@ -903,24 +909,32 @@ strictly worse and is a fallback, not a plan.
 
 ## 12. Routing and deep links
 
-> **Built (ESZ-022).** The rules are declared in
+> **Built (ESZ-022, Apache-executed locally since ESZ-114).** The rules are declared in
 > `php/src/Deploy/DocumentRootRouting.php`, rendered into `php/public/.htaccess` by
 > `php/bin/generate-htaccess.php`, and covered by `php:routing` — which also fails if
-> the committed file drifts from the table. What is still unproven is Apache applying
-> it; that is `smoke:http`.
+> the committed file drifts from the table. `smoke:apache` (ESZ-114) additionally
+> serves the **packaged artifact** under a real local Apache and proves the routing,
+> the deny rules and the headers live; what remains unproven is the deployed host's
+> module set, `AllowOverride` and TLS — that is `smoke:deployed-http`.
 
 `.htaccess` rules, in this order — the order is the specification, not an implementation
 detail:
 
 1. `/api/...` → `public_html/api/index.php`. **First**, so no later catch-all can
    swallow an API route and turn a JSON 404 into an HTML page.
-2. Existing file or directory → served directly (assets, `media/`).
-3. `/` and public deep links (`/#prestations`, …) → the PHP-injected public page (§5).
+2. Committed private/VCS residue (`sensitive-path`): any request whose URL carries a
+   `.env`/`.git`/`.htpasswd` segment, a Composer/package manifest, or a sensitive
+   extension class is answered 403 before the existing-file rule can serve it — a
+   dot-**directory** such as `/.git/config`, which a basename deny cannot see, is
+   refused here (ESZ-114). The `FilesMatch` deny blocks below the table keep the
+   same classes by basename as a second layer.
+3. Existing file or directory → served directly (assets, `media/`).
+4. `/` and public deep links (`/#prestations`, …) → the PHP-injected public page (§5).
    Section anchors are client-side fragments and need no server rule; the fixed-navbar
    offset behaviour is already covered by the frontend suite.
-4. `/admin/...` → `public_html/admin/index.html`, so a refresh on a deep admin link
+5. `/admin/...` → `public_html/admin/index.html`, so a refresh on a deep admin link
    loads the shell instead of 404-ing.
-5. Anything else → the static 404 page for document requests, and the **JSON error
+6. Anything else → the static 404 page for document requests, and the **JSON error
    envelope** for anything under `/api`. A request to an unknown API path must never
    receive HTML: `docs/contract-freeze.md` freezes that 404 body.
 

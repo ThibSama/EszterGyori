@@ -67,6 +67,13 @@ final class HtaccessRenderer
         $phpFiles = self::PHP_FILE_PATTERN;
         $csp = self::contentSecurityPolicy();
         $permissions = self::permissionsPolicy();
+        // The deny classes are declared once on the routing table so the model
+        // and the generated rules cannot drift (DocumentRootRoutingTest asserts
+        // the committed file against this render).
+        $sensitiveDeny = implode("\n", array_map(
+            static fn (string $pattern): string => "    RewriteRule {$pattern} - [F,L]",
+            DocumentRootRouting::SENSITIVE_PATH_PATTERNS,
+        ));
 
         return <<<HTACCESS
             # {$banner}
@@ -130,30 +137,37 @@ final class HtaccessRenderer
                 RewriteCond %{DOCUMENT_ROOT}/\$1.html -f
                 RewriteRule ^(admin(?:/.*)?)\$ \$1.html [L]
 
-                # 6. A real file or directory is served as-is: hashed _next/ assets,
-                #    route payloads, media, icons and robots.txt.
+                # 6. Committed private and VCS residue is denied by URL before
+                #    the existing-file rule can serve it: .env and .git segments
+                #    (a dot-DIRECTORY such as /.git/config is invisible to the
+                #    basename FilesMatch layer below), Composer/package
+                #    manifests, and the sensitive extension classes.
+            {$sensitiveDeny}
+
+                # 7. A real file or directory is served as-is: hashed _next/
+                #    assets, route payloads, media, icons and robots.txt.
                 #
                 #    The root is excluded explicitly. `%{REQUEST_FILENAME}` for `/`
                 #    is the document root itself, which *is* a directory, so without
                 #    this condition the rule would match and end the chain — and with
                 #    DirectoryIndex disabled the site root would 403 instead of
-                #    reaching rule 8.
+                #    reaching rule 9.
                 RewriteCond %{REQUEST_URI} !^/$
                 RewriteCond %{REQUEST_FILENAME} -f [OR]
                 RewriteCond %{REQUEST_FILENAME} -d
                 RewriteRule ^ - [L]
 
-                # 7. Any other /admin path -> the shell, so a client-side route
+                # 8. Any other /admin path -> the shell, so a client-side route
                 #    survives a refresh instead of 404-ing.
                 RewriteRule ^admin(/.*)?\$ admin.html [L]
 
-                # 8. The site root -> the front controller, which injects the
+                # 9. The site root -> the front controller, which injects the
                 #    published content into the exported index.html (ESZ-021).
                 RewriteRule ^\$ api/index.php [QSA,L]
 
-                # 9. Anything else is the 404 document. Unknown /api paths never
-                #    reach here: rule 1 already claimed them, and they answer the
-                #    frozen JSON envelope instead.
+                # 10. Anything else is the 404 document. Unknown /api paths never
+                #     reach here: rule 1 already claimed them, and they answer the
+                #     frozen JSON envelope instead.
                 RewriteRule ^ - [L,R=404]
             </IfModule>
 
@@ -180,8 +194,16 @@ final class HtaccessRenderer
             </Files>
 
             <IfModule mod_headers.c>
-                Header always unset X-Powered-By
-                Header always unset Server
+                # PHP writes X-Powered-By during content generation, after the
+                # `always` header table has already been applied, so only the
+                # late plain `unset` sees it (verified against mod_php on
+                # Apache 2.4). Error responses never carried it — no PHP ran.
+                Header unset X-Powered-By
+
+                # The `Server` banner is emitted by the httpd core after every
+                # header filter has run, so no .htaccess directive can remove
+                # it; the host's ServerTokens setting is the control, and it
+                # stays deployment-owned evidence with TLS/HSTS.
                 Header always set X-Content-Type-Options "nosniff"
                 Header always set Referrer-Policy "strict-origin-when-cross-origin"
                 Header always set X-Frame-Options "SAMEORIGIN"

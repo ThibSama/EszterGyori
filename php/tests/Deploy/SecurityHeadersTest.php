@@ -19,12 +19,13 @@ use PHPUnit\Framework\TestCase;
  *
  * ## What this does not prove
  *
- * That Apache applies any of it. The committed `.htaccess` is what the routing
- * table renders, and `DocumentRootRoutingTest` proves the file matches the table
- * byte for byte — but whether the host has `mod_headers`, and whether the plan
- * honours a per-directory `Header always set`, is a property of a deployed origin.
- * `docs/v1-quality-gates.md` keeps `smoke:http` and `security:config` at NOT RUN
- * for that reason and this test does not change it.
+ * That Apache applies any of it is proved locally by `smoke:apache` (ESZ-114),
+ * which serves the packaged artifact under a real Apache with `mod_headers` and
+ * asserts the live response headers; whether the *deployed* host has the same
+ * modules and `AllowOverride`, and what its `ServerTokens` setting is, is a
+ * property of a deployed origin. `docs/v1-quality-gates.md` keeps
+ * `smoke:deployed-http` and `security:config` deferred NOT RUN for that reason
+ * and this test does not change it.
  */
 final class SecurityHeadersTest extends TestCase
 {
@@ -63,10 +64,34 @@ final class SecurityHeadersTest extends TestCase
         );
     }
 
-    public function testTheServerIdentifyingHeadersAreRemoved(): void
+    public function testTheIdentifyingHeadersFollowTheCommittedDisclosurePolicy(): void
     {
-        self::assertStringContainsString('Header always unset X-Powered-By', $this->documentRoot);
-        self::assertStringContainsString('Header always unset Server', $this->documentRoot);
+        // X-Powered-By is removed with the late plain `unset`: PHP writes the
+        // header during content generation, after the `always` table has been
+        // applied, so only the late unset sees it (verified against mod_php on
+        // Apache 2.4 — the `always` spelling leaves it in place).
+        self::assertSame(1, preg_match('/^\\s*Header unset X-Powered-By$/m', $this->documentRoot));
+        self::assertSame(
+            0,
+            preg_match('/^\\s*Header always unset X-Powered-By$/m', $this->documentRoot),
+            'the ineffective `always` spelling is present next to the working one',
+        );
+
+        // The `Server` banner is emitted by the httpd core after every header
+        // filter has run. mod_headers cannot remove it, so a committed
+        // `Header unset Server` would be a promise the file cannot keep; the
+        // control is the host's ServerTokens setting and stays deployment
+        // evidence (smoke:deployed-http / security:config), like TLS and HSTS.
+        self::assertSame(
+            0,
+            preg_match('/^\\s*Header (?:always )?unset Server$/m', $this->documentRoot),
+            'the generated file still promises to remove the core-emitted Server banner',
+        );
+        self::assertStringContainsString(
+            'ServerTokens',
+            $this->documentRoot,
+            'the generated file does not record why the Server banner is host-controlled',
+        );
     }
 
     /**

@@ -213,6 +213,17 @@ describe("ESZ-124 canonical gate declarations", () => {
     assert.ok(typeof fullStack.proves === "string" && fullStack.proves.includes("ESZ-124"));
   });
 
+  test("smoke:apache is a required executable gate on the canonical list", () => {
+    const apache = gates.find((gate) => gate.id === "smoke:apache");
+    assert.ok(apache, "smoke:apache must be declared");
+    assert.deepEqual(apache.command, ["node", "scripts/smoke-apache.mjs"]);
+    assert.notEqual(apache.deferred, true, "smoke:apache is repo-owned and required");
+    assert.equal(apache.stage, "8. HTTP smoke");
+    assert.ok(typeof apache.proves === "string" && apache.proves.includes("ESZ-114"));
+    assert.ok(/packaged/i.test(apache.proves), "smoke:apache must prove the packaged artifact, not source copies");
+    assert.ok(apache.proves.includes("403"), "smoke:apache must prove the deny rules as policy");
+  });
+
   test("the only deferred gates are exactly the deployment-owned allowlist", () => {
     const deferred = gates.filter((gate) => gate.deferred === true);
     assert.deepEqual(

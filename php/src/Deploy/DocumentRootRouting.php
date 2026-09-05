@@ -41,6 +41,35 @@ final class DocumentRootRouting
     /** The exported 404 document. */
     public const NOT_FOUND = 'static:404';
 
+    /** A committed private/VCS name or extension, denied with 403. */
+    public const DENIED = 'deny:403';
+
+    /**
+     * URL-path patterns of the committed private/VCS deny classes, expressed
+     * the way mod_rewrite sees the request (path without the leading slash).
+     *
+     * These are the same classes as the `FilesMatch` deny blocks below the
+     * rewrite table, but on the URL rather than on the file basename. The two
+     * layers see different things: `FilesMatch` matches the last path
+     * component, so it cannot see a *directory* such as `/.git` — a request
+     * for `/.git/config` would otherwise be served — while the URL always
+     * carries the dot-segment. Each pattern matches anywhere a segment
+     * boundary allows, so the deny holds at every depth, and none of them can
+     * shadow the `/api` rule, which runs first by design.
+     *
+     * Shared by {@see resolve()} and HtaccessRenderer so the model and the
+     * generated file cannot drift.
+     */
+    public const SENSITIVE_PATH_PATTERNS = [
+        // Dot-segment residue: `.env*`, `.git*`, `.htpasswd` — a file or a
+        // directory whose name starts with one of these is never addressable.
+        '(?:^|/)\.(?:env|git|htpasswd)',
+        // Composer/package manifests, at any depth, by their exact name.
+        '(?:^|/)(?:composer\.(?:json|lock)|package(?:-lock)?\.json)$',
+        // The private extension classes denied wherever a file name carries them.
+        '(?:^|/)[^/]+\.(?i:json|md|log|lock|neon|dist|example|sql|bak)$',
+    ];
+
     /** Exact public pages emitted by the static export, without their `.html` suffix. */
     public const PUBLIC_EXPORTED_PATHS = ['/reservation'];
 
@@ -79,6 +108,16 @@ final class DocumentRootRouting
                     'An admin path with an exported page (/admin/login -> admin/login.html) serves '
                     . 'that page, so a refresh or a direct link lands on the right screen.',
                 'target' => self::ADMIN_SHELL,
+            ],
+            [
+                'id' => 'sensitive-path',
+                'description' =>
+                    'Committed private and VCS residue (.env, .git and .htpasswd segments, '
+                    . 'Composer/package manifests, the sensitive extension classes) is denied by '
+                    . 'URL before the existing-file rule can serve it. The basename FilesMatch '
+                    . 'layer below cannot see a dot-directory such as /.git/config, so the URL is '
+                    . 'the layer that can.',
+                'target' => self::DENIED,
             ],
             [
                 'id' => 'existing-file',
@@ -151,6 +190,18 @@ final class DocumentRootRouting
 
             if ($fileExists($candidate)) {
                 return self::outcome('admin-page', self::ADMIN_SHELL, $candidate);
+            }
+        }
+
+        // The committed private/VCS deny classes, on the URL. This sits after
+        // the application rules (an unknown /api path must keep answering the
+        // JSON 404 envelope, never a rewrite-level 403) and before the
+        // existing-file rule, so a planted file or directory — including a
+        // dot-directory, which a basename rule cannot see — is refused before
+        // anything could serve it.
+        foreach (self::SENSITIVE_PATH_PATTERNS as $pattern) {
+            if (preg_match('#' . $pattern . '#', $relative) === 1) {
+                return self::outcome('sensitive-path', self::DENIED, null);
             }
         }
 

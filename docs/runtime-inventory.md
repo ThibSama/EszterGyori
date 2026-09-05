@@ -54,7 +54,7 @@ Companion documents:
 | 1.3 | Catch-all 404 | `app.use(...)` terminal handler | **Port** | Unknown routes return the JSON 404 envelope, never an HTML server error page. |
 | 1.4 | JSON body parsing + 64 KB limit | `express.json({ limit: "64kb" })` | **Port** | Malformed JSON → 400 `INVALID_JSON`. The limit is contract data (`requestBodyLimit`). |
 | 1.5 | Centralised error handler | `errorHandler` in `app.ts` | **Port** | Mapping frozen: `SyntaxError`→400, `HttpError`→its status, `ZodError`→400 `INVALID_CONFIGURATION`, otherwise 500 `INTERNAL_ERROR`. |
-| 1.6 | `x-powered-by` disabled | `app.disable("x-powered-by")` | **Port** | PHP must suppress `X-Powered-By` / `Server` version banners equivalently. |
+| 1.6 | `x-powered-by` disabled | `app.disable("x-powered-by")` | **Port** | The `.htaccess` `Header unset X-Powered-By` removes the PHP banner (a late plain `unset` sees the header PHP writes during content generation). The Apache `Server` banner is core-emitted after every header filter — a host `ServerTokens` setting, not application code; verified live at deployment. |
 | 1.7 | Express weak ETag on error bodies | Express default | **Remove** | Incidental. The contract only forbids a `"published-<n>"` ETag on errors; PHP need not reproduce the weak validator. |
 | 1.8 | Graceful shutdown (SIGINT/SIGTERM, 5 s timeout) | `API/src/server.ts` | **Remove** | Per-request PHP processes have no long-lived socket to drain. Belongs to the process manager. |
 | 1.9 | Listen on host/port, ephemeral-port testing | `startServer` | **Replace** | Owned by the web server, not application code. |

@@ -103,7 +103,7 @@ The order is the specification. Each stage assumes the previous one held.
 | **5. Build** | contracts `dist/`, frontend production export, deterministic production deployment artifact | Executable |
 | **6. PHP validation** | composer validate, lint, static analysis, unit tests, parity-corpus replay, full `http-contract.json` replay, media, booking domain, document-root routing, sensitive-file permission enforcement (`security:filesystem`) | Executable |
 | **7. SQL** | migration, integration, rate-limit, backup-restore and notification queue tests | Executable — the runner provisions a disposable MySQL 8.4 instance when `ESZTER_TEST_DB_DSN` is absent (ESZ-112), and honours an external DSN as-is |
-| **8. HTTP smoke** | `smoke:local-php` (built-in server surface) + `php:smoke:full-stack` (ESZ-124: composed product over disposable MySQL) | Local executable; deployed-origin checks **deferred NOT RUN** |
+| **8. HTTP smoke** | `smoke:local-php` (built-in server surface) + `php:smoke:full-stack` (ESZ-124: composed product over disposable MySQL) + `smoke:apache` (ESZ-114: the packaged artifact under real Apache) | Local executable; deployed-origin checks **deferred NOT RUN** |
 | **9. Browser scenarios** | admin-preview CSP, CMS media pipeline, public site, full admin workflow, composed booking workflow | **Executable** — real Chrome against the disposable Apache/PHP/MySQL stack (ESZ-113); only deployed-origin checks remain **deferred NOT RUN** |
 | **10. Security and configuration** | deployed exposure, headers and permissions | **Deferred NOT RUN** — deployment-owned evidence whose host does not exist locally (ESZ-124) |
 
@@ -512,16 +512,72 @@ runner tests (`node --test scripts/validate.test.mjs scripts/smoke-full-stack.te
 ESZ-124), which assert that no container or scratch root survives any of the three
 outcomes, and that a failing smoke child makes canonical validation exit 1.
 
+`smoke:apache` (ESZ-114, `node scripts/smoke-apache.mjs`) is the packaged-artifact
+gate: the earlier Apache harnesses copied `front/out` and the source `php/public`
+into a disposable document root, so the committed `.htaccess` files were executed,
+but never the *production artifact* — the exact tree the runbook uploads. This gate
+builds and provenance-attests `dist/eszter-production.tar.gz` (ESZ-126: packaging
+refuses a dirty tree, and the verifier ties the archive to this checkout's HEAD),
+extracts it to disposable storage and verifies the untouched extraction against the
+manifest before serving it the way the runbook deploys it: the release tree is
+mounted so `public_html` is the Apache document root and `app/` is its private
+sibling runtime, with disposable config/data/log/tmp/media roots and — for the
+browser half — a disposable MySQL reached by the packaged runtime over the stack's
+own network. Through that origin it proves, with no mock and nothing leaving
+127.0.0.1:
+
+- **Routing:** `/` reaches the PHP content injection and `/index.html` redirects to
+  `/`; `/reservation` resolves while `/reservation.html` canonicalises; exported
+  admin pages (`/admin`, `/admin/login`, `/admin/preview`, `/admin/bookings`) and
+  an unknown admin deep link reach the admin shell; an unknown public route answers
+  the exported HTML 404 and an unknown `/api/*` keeps the frozen JSON 404 envelope;
+  hashed `/_next/static/` assets are served directly with the committed
+  `Cache-Control: public, max-age=31536000, immutable` while HTML documents carry no
+  immutable policy.
+- **Headers:** every response carries the committed CSP, `X-Content-Type-Options:
+  nosniff`, `Referrer-Policy`, `X-Frame-Options: SAMEORIGIN`, `Permissions-Policy`
+  (asserted byte-for-byte against the packaged `.htaccess`) and the disclosure
+  policy — `X-Powered-By` is absent. The Apache `Server` banner is emitted by the
+  httpd core after every header filter and cannot be removed from `.htaccess`
+  (the generated file documents this since ESZ-114); its `ServerTokens` control
+  stays deployment-owned evidence with TLS/HSTS.
+- **Deny rules as policy, not absence:** on a disposable extracted **copy** with
+  inert canaries planted, `.env`/`.env.local`, `.git/config` (a dot-directory that
+  a basename deny cannot see — real Apache served it before the ESZ-114
+  `sensitive-path` URL deny), `composer.json`/`composer.lock`, `package.json`,
+  `notes.md`, `secret.json` and PHP-like files (`shell.php`, `shell.phtml`) all
+  answer 403 with no canary byte and no PHP execution. Under `public_html/media`,
+  managed `med_<32 hex>.(jpg|png|webp)` canaries are served with immutable +
+  nosniff + inline headers, while non-managed names, staging names, double
+  extensions and PHP-like files are denied and never executed, and directory
+  listing stays off.
+- **A small real-Chrome pass** loads the public page, the reservation page, the
+  admin login and an unknown admin deep link under one Apache origin (the hydrated
+  login form implies the real anonymous-session bootstrap over the disposable
+  MySQL) and asserts that no same-origin critical asset is blocked by the served
+  CSP.
+
+Every container, network, Chrome profile, extraction and scratch root is removed on
+PASS, on failure and on interruption; its lifecycle is proved by the focused runner
+tests (`node --test scripts/smoke-apache.test.mjs`), which assert no `esz114*`
+container/network, temp extraction, Chrome process or occupied published port
+survives a PASS run or a forced failure, and that a failing child makes canonical
+validation exit 1.
+
 The `smoke:deployed-http` gate stays deferred NOT RUN until an origin exists. It adds
 `GET /api/content` ETag revalidation, a wrong method and `Allow`, HTTP→HTTPS redirect,
 security headers, `/admin` deep links and `/reservation` under the real host.
 
 The remaining deployed-origin gap is the production host configuration. The local
-smoke, `php:routing` and `php:public-page` exercise the built-in-server adapter, routing
-table and injection. `browser:admin-preview-csp` separately proves Apache applying the
-generated `.htaccess` in a controlled local production-style harness. It cannot prove
-that the deployed host enables the same modules and `AllowOverride`, terminates TLS or
-has the intended filesystem layout; `smoke:deployed-http` retains those obligations.
+smoke, `php:routing` and `php:public-page` exercise the built-in-server adapter,
+routing table and injection; `smoke:apache` (ESZ-114) executes the **packaged
+artifact**'s committed `.htaccess` under a real local Apache, and the browser gates
+prove Apache-applied journeys end to end. None of that proves the deployed host
+enables the same modules and `AllowOverride`, terminates TLS or has the intended
+filesystem layout; `smoke:deployed-http` retains those obligations, and the
+deployment-owned `security:config` gate keeps the host-level checks (secret
+reachability, PHP execution under `media/`, config permissions, the host's
+`ServerTokens`).
 
 Smoke tests assert the contract, not the copy. They must pass identically against a
 freshly deployed site with default content.

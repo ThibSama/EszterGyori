@@ -452,12 +452,20 @@ const gates = [
       "ESZ-124: the composed-product mutation proof over a disposable stack — real PHP built-in server, a disposable MySQL 8.4 container provisioned by the shared ESZ-112 primitive (scripts/sql-test-mysql.mjs), real migrations and deterministic development fixtures applied to it, and content/log/tmp/lock/media/credential state under one scratch root removed on every exit, on a collision-safe loopback port. The public injected page and generated assets, routing, availability, a real booking creation carrying the consent-notice id, the anonymous-session bootstrap, an authenticated admin login, the admin reference query and an admin cancel are all exercised over real MySQL rows; sessions, notifications and the booking die with the disposable stack.",
   },
   {
+    id: "smoke:apache",
+    stage: "8. HTTP smoke",
+    cwd: ".",
+    command: ["node", "scripts/smoke-apache.mjs"],
+    proves:
+      "ESZ-114: the PACKAGED production artifact (dist/eszter-production.tar.gz, built and provenance-attested against this checkout's HEAD) is extracted to disposable storage and served under real Apache the way the runbook deploys it — public_html as the document root, app/ as its private sibling, disposable config/data/log/tmp/media roots and a disposable MySQL. Through that origin it proves: / reaches the PHP content injection and /index.html redirects to /; /reservation resolves while /reservation.html canonicalises, exported admin pages and an unknown admin deep link reach the admin shell; unknown public routes answer the HTML 404 and unknown /api/* keeps the JSON API 404 envelope; hashed static assets are served directly with immutable caching; and responses carry the committed CSP, X-Content-Type-Options, Referrer-Policy, X-Frame-Options, Permissions-Policy and disclosure policy (X-Powered-By absent — the Apache Server banner is core-emitted and host-controlled). On a disposable extracted COPY with inert canaries planted, the sensitive-name rules are proved as 403 policy rather than 404 absence (.env, .git/config, Composer/package manifests, denied extensions, PHP-like files never executed), and under public_html/media managed med_<32hex>.(jpg|png|webp) canaries are served with immutable + nosniff + inline headers while non-managed and PHP-like names are denied and never executed. A small real-Chrome pass loads the public page, reservation, admin login and an unknown admin deep link under one Apache origin (real MySQL behind the session bootstrap) and asserts no same-origin critical asset is blocked by CSP. Every container, network, Chrome profile, extraction and scratch root is removed on PASS, on failure and on interruption.",
+  },
+  {
     id: "smoke:deployed-http",
     stage: "8. HTTP smoke",
     deferred: true,
     ownership: "deployment",
     reason:
-      "No deployed PHP origin to target. Local built-in-server routing is proved separately; what remains unproven here is Apache applying .htaccess plus deployment-owned TLS and headers.",
+      "No deployed PHP origin to target. Local built-in-server routing (smoke:local-php), the composed product over disposable MySQL (php:smoke:full-stack) and the packaged artifact under real Apache with the committed .htaccess (smoke:apache, ESZ-114) are proved locally; what remains unproven here is the DEPLOYED host applying that same .htaccess, plus deployment-owned certificate behaviour, HTTPS redirect, HSTS and host-specific headers.",
     proves:
       "Against a deployed origin: GET /api/content with ETag revalidation, 405 on a wrong method, HTTPS redirect and security headers, /admin deep links and /reservation under the real Apache configuration.",
   },
