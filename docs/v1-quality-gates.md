@@ -20,9 +20,17 @@ Companion documents:
 2. **Deterministic.** Same commit, same inputs, same verdict. No network in the
    currently executable gates, no wall-clock dependence, no ordering luck. Gates run
    sequentially with `TZ=UTC`, `CI=1`, `NO_COLOR=1`.
-3. **NOT RUN is not PASS.** A gate that cannot execute is printed, counted separately,
-   and excluded from any success claim. It is never silently skipped, and never
-   reported green.
+3. **Fail-closed since ESZ-124.** Every gate is exactly one of two kinds, decided by
+   metadata, never by its name. Repo-owned gates are **required**: they carry an
+   executable command, and canonical local success requires **PASS** from each of them.
+   A required gate that yields FAIL, NOT RUN, NOT VERIFIED or any other non-PASS status
+   fails the run — nothing can be pre-declared out of running. Deployment-owned evidence
+   whose subject does not exist yet (`smoke:deployed-http`, `security:config`) is
+   declared `deferred: true` with `ownership: "deployment"` and a reason: it is printed,
+   counted and reported as NOT RUN, never counted or worded as a release PASS, and does
+   not fail a local run. Deferral is a narrow policy (`DEFERRED_LIVE_GATES`), not a
+   per-gate choice: a deferred gate must carry no command, and an executable gate cannot
+   be re-categorised to dodge its proof (a declaration error, exit 2).
 4. **Ordered by cost and by dependency.** Cheap, foundational checks first, so the
    first failure is the most informative one available.
 5. **Contract before implementation.** No implementation gate can pass a behaviour the
@@ -37,27 +45,48 @@ Companion documents:
 
 | Outcome | Meaning | Counts as success? | Exit code impact |
 | --- | --- | --- | --- |
-| **PASS** | The gate executed and its assertions held. | Yes | none |
-| **FAIL** | The gate executed and its assertions did not hold, or its tooling errored. | No | exit 1 |
-| **NOT RUN** | The gate is declared but a prerequisite component does not exist (no deployed origin, no subject yet). | **No** | none |
+| **PASS** | A repo-owned gate executed and its assertions held. | Yes | none |
+| **FAIL** | A repo-owned gate executed and its assertions did not hold, or its tooling errored. | No | exit 1 |
+| **NOT RUN (required)** | A repo-owned gate could not execute because a declared prerequisite is absent. | **No — blocks** | **exit 1** |
+| **NOT RUN (deferred)** | Deployment-owned evidence (`deferred: true`, `ownership: "deployment"`) whose subject — a deployed origin or host — does not exist yet. | No — never counted or worded as a release PASS | none (local) |
 
-Three rules govern NOT RUN, and they are what keep the policy honest:
+Since ESZ-124 the model is enforced in the declaration metadata, not by gate names:
 
+- **Repo-owned gates are required and executable.** Every gate that is not deferred
+  must declare a `command`; a gate that pre-declares any `status` (NOT RUN, NOT
+  VERIFIED, even PASS) is a **declaration error** — outcomes are produced by running,
+  so a required gate can never be declared out of its proof. Exit 1 covers FAIL, a
+  required gate whose `unavailable` prerequisite is absent (NOT RUN), and any unknown
+  status a future change might produce.
+- **Deferred gates are a narrow, explicitly marked category.** The two
+  deployment-owned gates carry `deferred: true`, `ownership: "deployment"` and a
+  `reason` naming the missing subject. They must carry no command, and only the two ids
+  in `DEFERRED_LIVE_GATES` may be deferred at all — deferring anything else, or giving a
+  deferred gate a command, is a runner error (exit 2). The allowlist must be backed by
+  real declarations, so deleting a deferred gate from the canonical list is itself a
+  policy error.
+- **Reports expose the distinction.** Every JSON gate entry carries `required`,
+  `deferred` and `ownership` beside its status, and the summary splits `local`
+  (`{passed, failed, notRun, success}` — required gates only) from `deployment`
+  (`{deferred, gates}` — the visible NOT RUN evidence). The text report prints the same
+  split, marks deferred lines `[deferred, deployment-owned]`, and prints an explicit
+  local-success line: `Local success: PASS — every repo-owned/required gate passed.` is
+  the only wording that claims local validation, and deferred evidence is never folded
+  into it.
 - A NOT RUN gate must carry a **declared reason** naming the missing prerequisite.
 - **Missing tooling that should be present is a FAIL, not a NOT RUN.** If PHP exists in
   the repository and `php` is absent from the environment, that is a broken
   environment, not an unavailable gate.
-- A gate may only be NOT RUN while its subject genuinely does not exist. It **must**
-  flip to executing on the commit that introduces its subject. Adding PHP without
-  activating the PHP gates is itself a review failure.
 - **A missing database stopped being a NOT RUN case in ESZ-112.** The SQL stage's
   subject exists and the runner provisions the disposable MySQL it needs, so a SQL gate
-  that cannot execute reports FAIL. NOT RUN now names only subjects the repository does
-  not contain — a deployed origin or a broader browser workflow.
+  that cannot execute reports FAIL. Since ESZ-124, NOT RUN in a local run names only the
+  two deferred deployment-owned gates, each reporting why its subject does not exist.
 
-The runner's exit code is 0 when nothing failed, 1 when any gate failed, 2 on a runner
-error. **Exit 0 with NOT RUN gates present does not mean "V1 is validated"** — it means
-"everything currently checkable is green". The runner prints exactly that.
+The runner's exit code is 0 exactly when `local.success` is true: every repo-owned gate
+PASSed and none is NOT RUN. Exit 0 with the two deferred gates NOT RUN means
+"everything checkable locally is green" — never "V1 is validated": deferred live
+evidence must still be produced against the deployed host before a release, and the
+report says so rather than implying it.
 
 ---
 
@@ -74,9 +103,9 @@ The order is the specification. Each stage assumes the previous one held.
 | **5. Build** | contracts `dist/`, frontend production export, deterministic production deployment artifact | Executable |
 | **6. PHP validation** | composer validate, lint, static analysis, unit tests, parity-corpus replay, full `http-contract.json` replay, media, booking domain, document-root routing, sensitive-file permission enforcement (`security:filesystem`) | Executable |
 | **7. SQL** | migration, integration, rate-limit, backup-restore and notification queue tests | Executable — the runner provisions a disposable MySQL 8.4 instance when `ESZTER_TEST_DB_DSN` is absent (ESZ-112), and honours an external DSN as-is |
-| **8. HTTP smoke** | local PHP server plus deployed-origin checks | Local executable; deployed origin **Not run** |
-| **9. Browser scenarios** | admin-preview CSP, CMS media pipeline, public site, full admin workflow, composed booking workflow | **Executable** — real Chrome against the disposable Apache/PHP/MySQL stack (ESZ-113); only deployed-origin checks remain **Not run** |
-| **10. Security and configuration** | deployed exposure, headers and permissions | **Not run** |
+| **8. HTTP smoke** | `smoke:local-php` (built-in server surface) + `php:smoke:full-stack` (ESZ-124: composed product over disposable MySQL) | Local executable; deployed-origin checks **deferred NOT RUN** |
+| **9. Browser scenarios** | admin-preview CSP, CMS media pipeline, public site, full admin workflow, composed booking workflow | **Executable** — real Chrome against the disposable Apache/PHP/MySQL stack (ESZ-113); only deployed-origin checks remain **deferred NOT RUN** |
+| **10. Security and configuration** | deployed exposure, headers and permissions | **Deferred NOT RUN** — deployment-owned evidence whose host does not exist locally (ESZ-124) |
 
 > **Renumbered in Package 1.2 (ESZ-015).** The policy used to carry a stage 4,
 > *Implementation conformance*, whose only gate was `api:test` — the HTTP contract
@@ -430,9 +459,12 @@ being a schema 400.
 Each gate below is declared in `scripts/validate.mjs`. All of Stage 9 is now
 executable: the focused admin-preview CSP, media-pipeline, admin-auth and
 public proofs, and — since ESZ-113 — the broad `browser:admin` and
-`browser:booking` runners. What remains NOT RUN is the two deployed-origin
-checks (`smoke:deployed-http`, `security:config`), with their reasons, so the
-gap is inspectable rather than absent.
+`browser:booking` runners. Since ESZ-124 the only non-executable declarations
+are the two deployment-owned gates (`smoke:deployed-http`, `security:config`),
+each marked `deferred: true` / `ownership: "deployment"` with its reason, so
+the gap is inspectable rather than absent — and mechanically constrained:
+those two ids are the entire deferral allowlist (`DEFERRED_LIVE_GATES`), and a
+deferred gate can carry no command.
 
 ### Stage 8 — HTTP smoke
 
@@ -448,7 +480,39 @@ separate read-only probe `scripts/readiness.mjs` (npm `readiness:probe`, ESZ-127
 which production acceptance reuses against a deployed origin (see
 `docs/production-acceptance.md`).
 
-The separate `smoke:deployed-http` gate remains NOT RUN until an origin exists. It adds
+`php:smoke:full-stack` (ESZ-124) is the canonical composed-product gate and a required
+repo-owned gate: its child's exit code **is** the outcome, so no skipped PHPUnit and no
+missing infrastructure can ever read as PASS. The smoke is isolated and repeatable by
+construction, and it is a real mutation proof:
+
+- **MySQL is disposable.** One MySQL 8.4 container is provisioned through the shared
+  ESZ-112 primitive (`scripts/sql-test-mysql.mjs`) — random identity, collision-free
+  published host port, generated test-only credentials, anonymous volume. The real
+  migrations and the deterministic development fixtures are applied to it with the
+  `--config` CLIs. The persistent `eszter_dev` deployment (`compose.dev.yml`, its
+  volume, `config.development.php`, `php/var/development/*`) is never bootstrapped,
+  read or reset.
+- **Runtime state is scratch.** Content, logs, tmp, locks, media originals, admin
+  credentials and the configuration file live under one `mkdtemp` root
+  (`eszter-full-stack-*` in the system temp directory) that is deleted on every exit.
+- **The port is collision-safe.** An ephemeral loopback port is reserved per run
+  (`ESZTER_FULL_STACK_SMOKE_PORT` overrides for debugging).
+- **The flow is unchanged in strength.** Public page injection, generated assets,
+  routing contracts, deterministic availability, a real booking creation carrying the
+  ESZ-142 consent-notice id, the anonymous-session bootstrap, admin login, the ESZ-145
+  reference query and an admin cancel with the booking's optimistic-concurrency token,
+  then logout and a protected 401 reload — all over real PHP and real MySQL rows.
+- **No residue is possible.** The booking, its sessions, its notification jobs and its
+  logs die with the disposable backing state, and cleanup runs on PASS, on assertion
+  failure and on interruption (SIGINT/SIGTERM stop the server, remove the container and
+  volume, and delete the scratch root before the process exits).
+
+Its lifecycle — success, forced failure and interruption — is proved by the focused
+runner tests (`node --test scripts/validate.test.mjs scripts/smoke-full-stack.test.mjs`,
+ESZ-124), which assert that no container or scratch root survives any of the three
+outcomes, and that a failing smoke child makes canonical validation exit 1.
+
+The `smoke:deployed-http` gate stays deferred NOT RUN until an origin exists. It adds
 `GET /api/content` ETag revalidation, a wrong method and `Allow`, HTTP→HTTPS redirect,
 security headers, `/admin` deep links and `/reservation` under the real host.
 
@@ -577,7 +641,9 @@ trustworthy:
 
 Dependency advisory checks moved to the executable Stage 1
 `security:dependencies` gate in the ESZ-084 closure. Stage 10 runs against a deployed
-host, so it is reported separately and never gates a local run.
+host; `security:config` is therefore deferred deployment-owned evidence since
+ESZ-124 — reported NOT RUN with its reason in every local run, never counted or
+worded as a release PASS, and non-blocking for the local exit code.
 
 ---
 
@@ -585,14 +651,22 @@ host, so it is reported separately and never gates a local run.
 
 A V1 release requires:
 
-1. `npm run validate` exits 0 — every executable gate PASS.
-2. Stages 7–10 are executing, not NOT RUN, and green. **NOT RUN blocks a V1 release.**
+1. `npm run validate` exits 0 — since ESZ-124 that means `local.success`: every
+   repo-owned/required gate PASSed and none is NOT RUN (a required gate that is
+   NOT RUN, NOT VERIFIED or FAIL exits 1).
+2. The deployment-owned evidence is produced and green against the deployed host:
+   `smoke:deployed-http` and `security:config` execute there. **Deferred NOT RUN
+   blocks a release wherever the subject exists — the deferred local status is the
+   honest record of evidence not yet produced, never a release PASS.**
 3. A restore rehearsal has been performed and recorded (`docs/hetzner-target-architecture.md` §10).
 
 Local development requires the executable local gates through stage 8 — including the
-full PHP conformance replay and real built-in-server smoke. The distinction is deliberate: contributors
-are not blocked by infrastructure that does not exist yet, and nobody can mistake that
-for the release bar.
+full PHP conformance replay, the real built-in-server smoke and, since ESZ-124, the
+canonical `php:smoke:full-stack` mutation proof over its disposable MySQL. The
+distinction is deliberate: contributors are not blocked by deployment infrastructure
+that does not exist yet, the two deferred gates stay visible as NOT RUN, and the
+report's `Local success: PASS` line plus the deferred-evidence line make it impossible
+to mistake the local bar for the release bar.
 
 Stage 7 sits between the two since ESZ-023, and since ESZ-112 it needs nothing but a
 Docker engine: when the variables below are absent, the runner provisions one isolated
@@ -616,8 +690,11 @@ blocks a release wherever it appears.
 
 Adding a gate:
 
-1. Declare it in `scripts/validate.mjs` with its stage, its `proves` statement, and
-   either a command or a NOT RUN reason.
+1. Declare it in `scripts/validate.mjs` with its stage and its `proves` statement, and
+   either an executable `command` (a repo-owned gate — required, and required to PASS)
+   or `deferred: true` with `ownership: "deployment"` and a `reason` (deployment-owned
+   evidence — only legal for ids on the `DEFERRED_LIVE_GATES` allowlist, which adding a
+   gate to is a deliberate policy edit).
 2. Document it in §4 or §5 above.
 3. **Prove it fails.** Introduce the defect it targets and confirm the gate goes red.
    An unverified gate is an assumption with a green checkmark.

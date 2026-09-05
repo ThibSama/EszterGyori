@@ -2,13 +2,24 @@
 /**
  * ESZ-005 — the single validation entry point.
  *
- * Executes the V1 quality gates in their declared order and reports one of three
- * outcomes per gate: PASS, FAIL or NOT RUN.
+ * Executes the V1 quality gates in their declared order and reports one of
+ * three outcomes per gate: PASS, FAIL or NOT RUN.
  *
- * NOT RUN is never a pass. Gates that depend on components this repository does not
- * contain yet (a deployed origin, a browser runner) are declared here with the
- * reason they cannot execute, so the gap stays visible instead of being silently
- * absent. They are printed, counted, and excluded from the success claim.
+ * ESZ-124 made the policy fail-closed and full-stack. Every gate is exactly
+ * one of two kinds, decided by metadata rather than by its name:
+ *
+ *   - repo-owned gates are required: they carry an executable command and
+ *     canonical local success requires PASS from each of them. A required
+ *     gate that yields FAIL, NOT RUN (missing prerequisite), NOT VERIFIED or
+ *     any unknown non-PASS status fails validation — declared statuses are
+ *     not declarations, so nothing can be pre-declared out of running.
+ *   - deployment-owned evidence whose subject does not exist yet
+ *     (`smoke:deployed-http`, `security:config`) is declared `deferred: true`
+ *     with `ownership: "deployment"` and a reason. It stays visible as NOT
+ *     RUN, is never counted or worded as a release PASS, and does not fail a
+ *     local run. The allowlist in `DEFERRED_LIVE_GATES` is the complete set:
+ *     a deferred gate must carry no command and be on that list, so deferral
+ *     cannot be broadened by re-categorising an executable gate.
  *
  * The SQL gates stopped being NOT RUN in ESZ-112: the disposable MySQL they need
  * is provisioned by this runner itself (`scripts/sql-test-mysql.mjs`) when no
@@ -33,6 +44,15 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PASS = "PASS";
 const FAIL = "FAIL";
 const NOT_RUN = "NOT RUN";
+
+// ESZ-124 — the two kinds of gate. Repo-owned gates (no `deferred` marker)
+// are required and executable. Deployment-owned evidence whose subject does
+// not exist in this repository is declared `deferred: true` with
+// `ownership: "deployment"` and a reason; it is reported NOT RUN and never
+// counts as a release PASS. This set is the narrow escape hatch: a third
+// deferred gate is a deliberate policy edit, and an executable gate cannot
+// be deferred at all (enforced by `gateDeclarationProblems`).
+export const DEFERRED_LIVE_GATES = new Set(["smoke:deployed-http", "security:config"]);
 
 /**
  * Ordered gate declarations. Order is the policy: each stage assumes the previous one
@@ -416,9 +436,26 @@ const gates = [
       "The documented PHP development command starts a real built-in server; / renders the injected Eszter export, a generated frontend asset resolves, /api/health crosses the production front controller, and unknown public/API routes keep their HTML/JSON 404 contracts without a PHP routing or bootstrap fatal. /api/health is a liveness answer (it reads no file and touches no database), so this gate proves the live static HTTP surface only; composed-product readiness (published envelope + booking/MySQL) is the separate read-only probe scripts/readiness.mjs (ESZ-127) that production acceptance reuses.",
   },
   {
+    // ESZ-124 — canonical, required, and fully disposable. This smoke is the
+    // mandatory canonical mutation proof: a real booking is created, queried
+    // and cancelled over real PHP and MySQL, then the whole backing state
+    // (MySQL container and volume, scratch content/log/lock/credential root)
+    // is removed on PASS, on assertion failure and on interruption. It never
+    // bootstraps, reads or resets the persistent eszter_dev development
+    // stack; its exit code is the outcome, so a skipped PHPUnit or missing
+    // infrastructure can never read as PASS.
+    id: "php:smoke:full-stack",
+    stage: "8. HTTP smoke",
+    cwd: ".",
+    command: ["node", "scripts/smoke-full-stack.mjs"],
+    proves:
+      "ESZ-124: the composed-product mutation proof over a disposable stack — real PHP built-in server, a disposable MySQL 8.4 container provisioned by the shared ESZ-112 primitive (scripts/sql-test-mysql.mjs), real migrations and deterministic development fixtures applied to it, and content/log/tmp/lock/media/credential state under one scratch root removed on every exit, on a collision-safe loopback port. The public injected page and generated assets, routing, availability, a real booking creation carrying the consent-notice id, the anonymous-session bootstrap, an authenticated admin login, the admin reference query and an admin cancel are all exercised over real MySQL rows; sessions, notifications and the booking die with the disposable stack.",
+  },
+  {
     id: "smoke:deployed-http",
     stage: "8. HTTP smoke",
-    status: NOT_RUN,
+    deferred: true,
+    ownership: "deployment",
     reason:
       "No deployed PHP origin to target. Local built-in-server routing is proved separately; what remains unproven here is Apache applying .htaccess plus deployment-owned TLS and headers.",
     proves:
@@ -483,11 +520,12 @@ const gates = [
       "ESZ-113 in a real browser against the production-shaped isolated stack: development provisioning really created deterministic availability (six active weekly rules Monday–Saturday 09:00–17:00, no exception) and the public availability endpoint answers slots for it; a valid booking completes entirely through the public UI with its bk_ reference; persistence is visible through the real admin query API, real MySQL rows (booking + created history + consent notice id) and the authenticated admin calendar; the lifecycle jobs are enqueued exactly per contract — one pending booking_confirmation and one pending booking_reminder due T−24 h, attempts 0, nothing sent, no SMTP anywhere; invalid customer input is refused client-side with aria-invalid/aria-describedby and a focus move, writes no booking and preserves every entered value; and a second real tab confirming the same now-stale slot is refused by the real backend with the recovery notice, no duplicate booking and no duplicate notification, with the customer's details preserved for the next attempt. The same run asserts the reservation accessibility contract: skip-link keyboard behaviour, the promised focus movements, polite live regions, no fake grid ARIA, and 320 px reflow.",
   },
 
-  // ── Stage 10 — Security and configuration (not available) ─────────────────────
+  // ── Stage 10 — Security and configuration (deployment-owned, deferred) ───────
   {
     id: "security:config",
     stage: "10. Security and configuration",
-    status: NOT_RUN,
+    deferred: true,
+    ownership: "deployment",
     reason: "No deployed host or PHP configuration to inspect.",
     proves:
       "No secret is web-reachable, private paths return 404/403, directory indexing is off, PHP execution is disabled under media/, security headers are present, and config file permissions are 0600. Dependency advisories are no longer part of this live-only gate; security:dependencies executes in Stage 1.",
@@ -524,6 +562,152 @@ function sqlDatabaseUnavailable() {
   );
 }
 
+/**
+ * ESZ-124 — declaration model.
+ *
+ * Returns every problem found in `declared`, or an empty array. The check
+ * runs before anything executes so a misclassification is a runner error
+ * (exit 2), never a silent skip: an executable repo-owned gate cannot be
+ * marked deferred to dodge its proof, and a declared `status` is not a
+ * declaration at all — outcomes are produced by running, and NOT RUN is legal
+ * only as deferred deployment-owned evidence whose subject does not exist.
+ *
+ * The allowlist-presence half (`completePolicy`) applies to the canonical
+ * gate list only: an embedded runner that injects a *subset* of gates for a
+ * focused run (the policy tests, `sql-gates`) must not be forced to carry
+ * the two deployment-owned declarations with it.
+ *
+ * @param {object[]} declared
+ * @param {{ completePolicy?: boolean }} [options]
+ */
+export function gateDeclarationProblems(declared, { completePolicy = false } = {}) {
+  const problems = [];
+  const seenIds = new Set();
+
+  for (const gate of declared) {
+    if (typeof gate.id !== "string" || gate.id === "") {
+      problems.push("every gate must declare a non-empty string `id`.");
+      continue;
+    }
+    if (typeof gate.stage !== "string" || gate.stage === "") {
+      problems.push(`gate ${gate.id}: must declare a non-empty string stage.`);
+    }
+    if (seenIds.has(gate.id)) {
+      problems.push(`gate ${gate.id}: duplicated gate id.`);
+    }
+    seenIds.add(gate.id);
+
+    if (gate.deferred === true) {
+      if (Array.isArray(gate.command) && gate.command.length > 0) {
+        problems.push(
+          `gate ${gate.id}: a deferred gate must not carry an executable command — deferral exists only for deployment-owned evidence whose subject does not exist yet.`,
+        );
+      }
+      if (gate.ownership !== "deployment") {
+        problems.push(
+          `gate ${gate.id}: a deferred gate must declare ownership "deployment" — repo-owned gates are required and must execute.`,
+        );
+      }
+      if (!DEFERRED_LIVE_GATES.has(gate.id)) {
+        problems.push(
+          `gate ${gate.id}: only ${[...DEFERRED_LIVE_GATES].join(", ")} may be deferred; deferring any other gate is a deliberate policy change, not a metadata edit.`,
+        );
+      }
+      if (typeof gate.reason !== "string" || gate.reason === "") {
+        problems.push(
+          `gate ${gate.id}: a deferred gate must carry a reason naming the deployment subject that does not exist yet.`,
+        );
+      }
+      if (gate.status !== undefined || typeof gate.unavailable === "function") {
+        problems.push(
+          `gate ${gate.id}: a deferred gate is never executed, so it cannot declare a status or an unavailable prerequisite.`,
+        );
+      }
+    } else {
+      if (!Array.isArray(gate.command) || gate.command.length === 0 || typeof gate.command[0] !== "string") {
+        problems.push(
+          `gate ${gate.id}: a repo-owned gate must declare an executable command; only deployment-owned evidence may be deferred (deferred: true, ownership: "deployment", reason).`,
+        );
+      }
+      if (gate.status !== undefined || gate.reason !== undefined) {
+        problems.push(
+          `gate ${gate.id}: declared statuses are not declarations — outcomes are produced by running, and a required gate that does not PASS fails validation. NOT RUN is legal only as deferred deployment-owned evidence.`,
+        );
+      }
+    }
+  }
+
+  // The allowlist must be backed by real declarations: removing a deferred
+  // gate from the canonical list would silently erase it from every report.
+  // Checked only when this is the complete policy list, never for an
+  // injected subset of gates.
+  if (completePolicy) {
+    for (const id of DEFERRED_LIVE_GATES) {
+      const gate = declared.find((candidate) => candidate.id === id);
+      if (!gate || gate.deferred !== true) {
+        problems.push(
+          `deferred-live gate ${id} is named by the policy allowlist but is not declared deferred in the gate list.`,
+        );
+      }
+    }
+  }
+
+  return problems;
+}
+
+/**
+ * ESZ-124 — fail-closed outcome aggregation.
+ *
+ * Local success requires PASS from every repo-owned (required) gate. A
+ * required gate that is FAIL, NOT RUN or anything other than PASS blocks.
+ * NOT RUN on a deferred deployment-owned gate stays visible but is
+ * non-blocking and never counted as a pass. An unknown status is treated as
+ * a blocker, so a future status word cannot silently stop failing.
+ *
+ * @param {Array<{id: string, status: string, deferred?: boolean}>} report
+ * @param {boolean} interrupted
+ */
+export function summarize(report, interrupted = false) {
+  const deferredGates = [];
+  let passed = 0;
+  let failed = 0;
+  let notRun = 0;
+  let requiredNotRun = 0;
+  const blocked = [];
+
+  for (const entry of report) {
+    if (entry.status === PASS) {
+      passed += 1;
+      continue;
+    }
+    if (entry.status === NOT_RUN) {
+      notRun += 1;
+      if (entry.deferred === true) {
+        deferredGates.push(entry.id);
+        continue;
+      }
+      requiredNotRun += 1;
+      blocked.push(entry.id);
+      continue;
+    }
+    // FAIL or any unknown non-PASS status: fail closed.
+    failed += 1;
+    blocked.push(entry.id);
+  }
+
+  const success = !interrupted && failed === 0 && requiredNotRun === 0;
+  return {
+    passed,
+    failed,
+    notRun,
+    requiredNotRun,
+    blocked,
+    local: { passed, failed, notRun: requiredNotRun, success },
+    deployment: { deferred: deferredGates.length, gates: deferredGates },
+    code: interrupted ? 130 : success ? 0 : 1,
+  };
+}
+
 function parseArgs(argv) {
   return {
     list: argv.includes("--list"),
@@ -535,7 +719,7 @@ function parseArgs(argv) {
 function runGate(gate) {
   const started = Date.now();
   const result = spawnSync(gate.command[0], gate.command.slice(1), {
-    cwd: resolve(repoRoot, gate.cwd),
+    cwd: resolve(repoRoot, gate.cwd ?? "."),
     encoding: "utf8",
     shell: process.platform === "win32",
     env: { ...process.env, CI: "1", NO_COLOR: "1", TZ: "UTC" },
@@ -573,8 +757,12 @@ async function main() {
         "  --list   print the declared gates and exit without running anything",
         "  --json   emit a machine-readable report on stdout",
         "",
-        "Exit codes: 0 = no gate failed, 1 = at least one gate failed, 2 = runner error.",
-        "NOT RUN gates never count as passes.",
+        "Exit codes: 0 = local success (every repo-owned gate PASSed; deferred",
+        "deployment-owned evidence may remain NOT RUN), 1 = a required gate FAILed",
+        "or did not PASS, 2 = runner/declaration error, 130 = interrupted.",
+        "A required gate that is NOT RUN or NOT VERIFIED fails — NOT RUN is legal",
+        "only as deferred deployment-owned evidence (smoke:deployed-http,",
+        "security:config), which is never counted or worded as a release PASS.",
         "",
         "When ESZTER_TEST_DB_DSN is absent, the SQL gates provision a disposable",
         "MySQL 8.4 instance for the run (scripts/sql-test-mysql.mjs) and remove it",
@@ -585,54 +773,108 @@ async function main() {
     return 0;
   }
 
+  const problems = gateDeclarationProblems(gates, { completePolicy: true });
+  if (problems.length > 0) {
+    for (const problem of problems) {
+      process.stderr.write(`validate: gate declaration error: ${problem}\n`);
+    }
+    return 2;
+  }
+
   if (args.list) {
     for (const gate of gates) {
-      const state =
-        gate.status === NOT_RUN || gate.unavailable?.() ? "not run" : "executable";
+      const state = gate.deferred
+        ? "deferred (deployment-owned)"
+        : gate.unavailable?.()
+          ? "not run (missing prerequisite)"
+          : "executable";
       process.stdout.write(`${gate.stage.padEnd(34)} ${gate.id.padEnd(30)} ${state}\n`);
     }
     return 0;
   }
 
-  return runValidation({ json: args.json });
+  return (await runValidation({ json: args.json })).code;
 }
 
 /**
- * ESZ-112 — the runnable core.
+ * ESZ-112/ESZ-124 — the runnable core.
  *
- * `main()` is the CLI; this is the validation. A restricted `ids` list runs only
- * the named gates, in their declared order — `scripts/sql-gates.mjs` uses it to
- * run the five SQL gates through the exact same provisioning path as the full
- * `npm run validate`.
+ * `main()` is the CLI; this is the validation. A restricted `ids` list runs
+ * only the named gates, in their declared order — `scripts/sql-gates.mjs`
+ * uses it to run the five SQL gates through the exact same provisioning path
+ * as the full `npm run validate`. A caller may also substitute the gate list
+ * (`declared`) so the policy is testable on synthetic declarations.
+ *
+ * The gate declarations are checked before anything runs: every repo-owned
+ * gate must carry an executable command and no declared status, and every
+ * deferred gate must be deployment-owned, reason-bearing and on the narrow
+ * `DEFERRED_LIVE_GATES` allowlist. A declaration problem is a runner error
+ * (exit 2), never a silent skip.
  *
  * When any selected gate needs the disposable SQL database and no external
- * `ESZTER_TEST_DB_DSN` is set, one instance is provisioned before the first gate
- * runs and its environment is exported to every child. The instance is disposed
- * in `finally`, so cleanup happens on success, on failure and on interruption
- * (SIGINT/SIGTERM finish the gate in flight, then stop the run).
+ * `ESZTER_TEST_DB_DSN` is set, one instance is provisioned before the first
+ * gate runs and its environment is exported to every child. The instance is
+ * disposed in `finally`, so cleanup happens on success, on failure and on
+ * interruption (SIGINT/SIGTERM finish the gate in flight, then stop the run).
  *
  * A SQL gate whose provisioning failed is reported FAIL with the provisioning
  * error — the missing infrastructure is a broken environment, not an absent
  * subject, so NOT RUN would be a lie.
  *
- * @param {{ ids?: string[]|null, json?: boolean }} [options]
- * @returns {Promise<number>} 0 = no gate failed, 1 = at least one gate failed,
- *   130 = interrupted.
+ * ESZ-124 exit semantics (fail-closed): a required gate that yields anything
+ * other than PASS — FAIL, NOT RUN, NOT VERIFIED or an unknown status — makes
+ * the run exit 1. Deferred deployment-owned gates stay visible as NOT RUN and
+ * do not fail a local run, but they never count as PASS and the report
+ * distinguishes local success from deferred live evidence.
+ *
+ * @param {{ ids?: string[]|null, json?: boolean, declared?: object[], silent?: boolean }} [options]
+ * @returns {Promise<{code: number, report: object[], summary: object}>} code:
+ *   0 local success, 1 a required gate failed or did not PASS, 2 declaration
+ *   error, 130 = interrupted.
  */
-export async function runValidation({ ids = null, json = false } = {}) {
+export async function runValidation({ ids = null, json = false, declared = gates, silent = false } = {}) {
+  // The canonical list is the complete policy: the allowlist-presence check
+  // applies only to it, never to an injected subset of gates.
+  const problems = gateDeclarationProblems(declared, { completePolicy: declared === gates });
+  if (problems.length > 0) {
+    for (const problem of problems) {
+      process.stderr.write(`validate: gate declaration error: ${problem}\n`);
+    }
+    return {
+      code: 2,
+      report: [],
+      summary: {
+        problems,
+        passed: 0,
+        failed: 0,
+        notRun: 0,
+        requiredNotRun: 0,
+        blocked: [],
+        local: { passed: 0, failed: 0, notRun: 0, success: false },
+        deployment: { deferred: 0, gates: [] },
+        code: 2,
+      },
+    };
+  }
+
   const wanted = ids === null ? null : new Set(ids);
-  const gateList = ids === null ? gates : gates.filter((gate) => wanted.has(gate.id));
+  const gateList = ids === null ? declared : declared.filter((gate) => wanted.has(gate.id));
   const sqlGateIds = new Set(
-    gates.filter((gate) => gate.unavailable === sqlDatabaseUnavailable).map((gate) => gate.id),
+    declared.filter((gate) => gate.unavailable === sqlDatabaseUnavailable).map((gate) => gate.id),
   );
   const runsSql = gateList.some((gate) => sqlGateIds.has(gate.id));
 
   const report = [];
   let currentStage = null;
-  let failed = false;
   let interrupted = false;
   let sqlHandle = null;
   let sqlEnvError = null;
+
+  // Human output only; `silent` is for embedded runners (the focused policy
+  // tests) that assert on the returned report instead of parsing stdout.
+  const emit = (text) => {
+    if (!silent) process.stdout.write(text);
+  };
 
   // Provision the disposable instance before the first gate runs when no
   // external DSN was supplied. The environment is exported to the process so
@@ -642,8 +884,8 @@ export async function runValidation({ ids = null, json = false } = {}) {
     try {
       sqlHandle = provisionSqlTestMySql();
       Object.assign(process.env, sqlHandle.env);
-      if (!json) {
-        process.stdout.write(
+      if (!json && !silent) {
+        emit(
           `\nProvisioning the disposable SQL test MySQL (${sqlHandle.databaseName}, `
           + `port ${sqlHandle.port}) — removed when the run ends.\n`,
         );
@@ -674,13 +916,32 @@ export async function runValidation({ ids = null, json = false } = {}) {
 
       if (gate.stage !== currentStage) {
         currentStage = gate.stage;
-        if (!json) process.stdout.write(`\n── ${currentStage} ${"─".repeat(Math.max(0, 58 - currentStage.length))}\n`);
+        if (!json && !silent) emit(`\n── ${currentStage} ${"─".repeat(Math.max(0, 58 - currentStage.length))}\n`);
       }
 
-      // A gate is NOT RUN either because its subject does not exist (`status`) or
-      // because a prerequisite for running it is absent (`unavailable`). Both are
-      // reported identically, and neither is a pass.
-      const unavailableReason = gate.status === NOT_RUN ? gate.reason : gate.unavailable?.();
+      // ESZ-124 — every report entry exposes the policy metadata that lets a
+      // consumer tell local PASS evidence from deferred live evidence.
+      const meta = gate.deferred === true
+        ? { required: false, deferred: true, ownership: "deployment" }
+        : { required: true, deferred: false, ownership: "repo" };
+
+      if (gate.deferred === true) {
+        // Deployment-owned evidence whose subject does not exist: reported
+        // NOT RUN with its reason, visible in every report, never a pass and
+        // non-blocking for the local run.
+        report.push({ id: gate.id, stage: gate.stage, ...meta, status: NOT_RUN, reason: gate.reason });
+        if (!json && !silent) {
+          emit(
+            `  ${NOT_RUN.padEnd(8)} ${gate.id.padEnd(30)} [deferred, deployment-owned] ${gate.reason}\n`,
+          );
+        }
+        continue;
+      }
+
+      // A repo-owned gate is NOT RUN only when a declared prerequisite for
+      // running it is absent (`unavailable`). ESZ-124: that is a required
+      // gate that did not PASS, so it blocks the run (exit 1).
+      const unavailableReason = gate.unavailable?.();
 
       // ESZ-112: a SQL gate whose provisioning failed is a broken environment,
       // so it is FAIL — never NOT RUN, and never a run that could silently skip
@@ -689,32 +950,33 @@ export async function runValidation({ ids = null, json = false } = {}) {
       // answers null even though the provisioning itself failed.
       if (sqlEnvError && sqlGateIds.has(gate.id)) {
         const outcome = { status: FAIL, durationMs: 0, detail: sqlEnvError };
-        report.push({ id: gate.id, stage: gate.stage, ...outcome });
-        if (!json) {
-          process.stdout.write(`  ${FAIL.padEnd(8)} ${gate.id.padEnd(30)} ${outcome.detail}\n`);
+        report.push({ id: gate.id, stage: gate.stage, ...meta, ...outcome });
+        if (!json && !silent) {
+          emit(`  ${FAIL.padEnd(8)} ${gate.id.padEnd(30)} ${outcome.detail}\n`);
         }
-        failed = true;
         continue;
       }
 
       if (unavailableReason) {
-        report.push({ id: gate.id, stage: gate.stage, status: NOT_RUN, reason: unavailableReason });
-        if (!json) {
-          process.stdout.write(`  ${NOT_RUN.padEnd(8)} ${gate.id.padEnd(30)} ${unavailableReason}\n`);
+        report.push({ id: gate.id, stage: gate.stage, ...meta, status: NOT_RUN, reason: unavailableReason });
+        if (!json && !silent) {
+          emit(
+            `  ${NOT_RUN.padEnd(8)} ${gate.id.padEnd(30)} required gate did not run: ${unavailableReason}\n`,
+          );
         }
         continue;
       }
 
       const outcome = runGate(gate);
-      report.push({ id: gate.id, stage: gate.stage, ...outcome });
+      report.push({ id: gate.id, stage: gate.stage, ...meta, ...outcome });
 
-      if (!json) {
+      if (!json && !silent) {
         const seconds = (outcome.durationMs / 1000).toFixed(1);
-        process.stdout.write(`  ${outcome.status.padEnd(8)} ${gate.id.padEnd(30)} ${seconds}s\n`);
+        emit(`  ${outcome.status.padEnd(8)} ${gate.id.padEnd(30)} ${seconds}s\n`);
         if (outcome.status === FAIL) {
-          process.stdout.write(`           ${outcome.detail}\n`);
+          emit(`           ${outcome.detail}\n`);
           if (outcome.output) {
-            process.stdout.write(
+            emit(
               outcome.output
                 .split("\n")
                 .slice(-25)
@@ -724,8 +986,6 @@ export async function runValidation({ ids = null, json = false } = {}) {
           }
         }
       }
-
-      if (outcome.status === FAIL) failed = true;
 
       // A gate child killed by an interrupt signal means the operator is
       // stopping the run (Ctrl-C reaches the whole process group). Stop too —
@@ -750,31 +1010,54 @@ export async function runValidation({ ids = null, json = false } = {}) {
     }
   }
 
-  const passed = report.filter((entry) => entry.status === PASS).length;
-  const failures = report.filter((entry) => entry.status === FAIL);
-  const notRun = report.filter((entry) => entry.status === NOT_RUN).length;
+  const summary = summarize(report, interrupted);
 
-  if (json) {
-    process.stdout.write(
-      JSON.stringify({ passed, failed: failures.length, notRun, gates: report }, null, 2) + "\n",
+  if (json && !silent) {
+    emit(
+      JSON.stringify(
+        {
+          passed: summary.passed,
+          failed: summary.failed,
+          notRun: summary.notRun,
+          local: summary.local,
+          deployment: summary.deployment,
+          gates: report,
+        },
+        null,
+        2,
+      ) + "\n",
     );
-  } else {
-    process.stdout.write(`\n${"─".repeat(62)}\n`);
-    process.stdout.write(`  ${passed} passed   ${failures.length} failed   ${notRun} not run\n`);
-    if (failures.length > 0) {
-      process.stdout.write(`\n  Failed: ${failures.map((entry) => entry.id).join(", ")}\n`);
+  } else if (!silent) {
+    emit(`\n${"─".repeat(62)}\n`);
+    emit(
+      `  ${summary.passed} passed   ${summary.failed} failed   ${summary.notRun} not run\n`,
+    );
+    if (summary.local.success) {
+      emit("  Local success: PASS — every repo-owned/required gate passed.\n");
+      if (summary.deployment.deferred > 0) {
+        emit(
+          `  Deployment-owned evidence deferred, NOT RUN, not counted as release PASS: `
+          + `${summary.deployment.gates.join(", ")}.\n`,
+        );
+      }
+    } else {
+      emit(`  Local success: FAIL — ${summary.blocked.join(", ")}.\n`);
+      if (summary.requiredNotRun > 0) {
+        emit(
+          `  ${summary.requiredNotRun} required gate(s) could not execute and do not PASS.\n`,
+        );
+      }
+      if (summary.deployment.deferred > 0) {
+        emit(
+          `  Deployment-owned evidence deferred, NOT RUN, not counted as release PASS: `
+          + `${summary.deployment.gates.join(", ")}.\n`,
+        );
+      }
     }
-    if (notRun > 0) {
-      process.stdout.write(
-        `\n  ${notRun} gate(s) could not execute and are NOT passes.\n` +
-          "  Each NOT RUN line above names its missing prerequisite.\n",
-      );
-    }
-    process.stdout.write("  Policy: docs/v1-quality-gates.md\n");
+    emit("  Policy: docs/v1-quality-gates.md\n");
   }
 
-  if (interrupted) return 130;
-  return failed ? 1 : 0;
+  return { code: summary.code, report, summary };
 }
 
 export { gates, sqlDatabaseUnavailable };

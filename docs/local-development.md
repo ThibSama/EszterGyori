@@ -51,7 +51,7 @@ npm run php:smoke:full-stack
 This is intentionally stronger than `npm run php:smoke`.
 
 - `php:smoke` remains the lightweight routing/export smoke and starts the PHP launcher with `--skip-bootstrap`.
-- `php:smoke:full-stack` bootstraps MySQL, builds the real export, starts an isolated PHP server, then proves the composed product:
+- `php:smoke:full-stack` (canonical validate gate `php:smoke:full-stack` since ESZ-124) provisions one **disposable** MySQL 8.4 container through the shared ESZ-112 primitive (`scripts/sql-test-mysql.mjs`) — never the `eszter_dev` deployment or its volume — applies the real migrations and deterministic fixtures to it, keeps every byte of runtime state (content, logs, credentials, config) under one scratch root, builds the real export, and starts an isolated PHP server on a collision-safe loopback port, then proves the composed product:
   - public page;
   - reservation page;
   - a generated frontend asset;
@@ -61,12 +61,12 @@ This is intentionally stronger than `npm run php:smoke`.
   - atomic booking creation;
   - anonymous CSRF session;
   - admin login and rotated CSRF token;
-  - visibility of the created booking in the authenticated admin API;
-  - booking cancellation cleanup;
+  - visibility of the created booking in the authenticated admin API (ESZ-145 envelope);
+  - an admin cancel carrying the booking's optimistic-concurrency token;
   - server-side logout enforcement;
   - confirmed PHP server shutdown.
 
-A failure in any step is a failed smoke, not a `NOT RUN` or a page-level success.
+A failure in any step is a failed smoke, not a `NOT RUN` or a page-level success. The smoke's exit code is the gate outcome, so no skipped PHPUnit or missing infrastructure can read as PASS. Because the whole backing state is disposable, the booking, its sessions, its notification jobs and its logs leave no persistent residue: the container and its volume are removed and the scratch root deleted on PASS, on assertion failure and on interruption.
 
 ## Resetting local data
 

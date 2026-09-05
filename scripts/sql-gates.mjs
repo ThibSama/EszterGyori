@@ -38,4 +38,4 @@ for (const id of SQL_GATE_IDS) {
   }
 }
 
-process.exitCode = await runValidation({ ids: SQL_GATE_IDS });
+process.exitCode = (await runValidation({ ids: SQL_GATE_IDS })).code;
