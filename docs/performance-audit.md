@@ -213,12 +213,29 @@ explicit completeness flags. Migration 0012 adds the `(starts_at_utc, reference)
 index so each page stays an index-range read. Proved by `sql:integration` and
 `sql:migrations` (EXPLAIN).
 
-## What is still NOT RUN
+## ESZ-113 — real-browser lab measurements (superseding the paragraph above)
 
-No Lighthouse score, no Core Web Vitals, no field data, no device testing. There is
-no browser runner in this repository and none was added, because a number produced
-by inventing a runner is worse than an absent one. `docs/v1-quality-gates.md` keeps
-Stage 9 at NOT RUN, and NOT RUN is never a pass.
+The ESZ-085 record ended by stating there was no browser runner and none would be
+added. ESZ-113 added it: `browser:public` (Stage 9, `docs/v1-quality-gates.md`
+§5) now loads the real public page through the browser's own Performance
+observers and records **FCP, LCP and CLS** on every run, at phone and desktop
+viewport, against the disposable Apache/PHP/MySQL origin it stands up. No
+Lighthouse, no field Core Web Vitals, no SLO: the numbers are lab evidence taken
+on this machine's local stack, and the gate prints them precisely so a future
+measurement can be compared to a recorded sample rather than to a memory.
 
-The budgets above are arithmetic over built bytes and payload shapes. That is
-exactly as much as they claim.
+Recorded sample — 2026-09-05, `browser:public` green run (disposable local
+origin, headless Chrome, fresh profile, no thresholds):
+
+| Viewport | Load | FCP | LCP | CLS |
+| --- | --- | ---: | ---: | ---: |
+| 375 × 667 (phone) | 1st (cold) | 364 ms | 364 ms | 0 |
+| 1280 × 800 (desktop) | 2nd (same profile) | 648 ms | 648 ms | 0 |
+
+The desktop pass loaded after the phone pass in the same profile, so its static
+assets were already warm; the phone pass is the cold one. Values vary with the
+machine, and neither number is a promise about the deployed host — the
+deployment-owned measurement remains the one `smoke:deployed-http` and
+`security:config` wait for. The arithmetic ratchets (`front:budgets`, the payload
+budgets) are unchanged and remain the repo's only *thresholds*; the browser
+numbers above carry none by policy.

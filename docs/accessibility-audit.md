@@ -356,9 +356,18 @@ the attribute is there, which is what regresses when a component is refactored.
 They do not prove a screen reader says the right thing, that the reading order is
 sensible, or that a keyboard path through the reservation flow is comfortable.
 
-Nothing in this repository can prove those. There is no browser runner and none was
-added, because a fabricated audit result is worse than an absent one.
-`docs/v1-quality-gates.md` keeps Stage 9 at NOT RUN, and NOT RUN is never a pass.
+Since ESZ-113, real-browser runs close part of that gap without pretending to close
+all of it. `browser:public`, `browser:admin` and `browser:booking` (Stage 9,
+`docs/v1-quality-gates.md` §5) assert, on the exercised controls of the real
+running site: keyboard reachability (the skip link first in the tab order and
+visible on focus, a keyboard-only admin login, the reservation controls), the
+promised focus movements (skip-link landing, mobile-menu open/close and Escape
+restoration, review/confirmation/invalid-field/recovery-notice moves), live
+`role=status`/`role=alert` semantics that actually update, consistent
+`aria-expanded`/`aria-pressed` state, no fake grid ARIA, and 320 px reflow. What
+they still do not prove is unchanged: an assistive-technology pass and a full
+keyboard-only booking completion remain deployment-owned, because a headless
+browser cannot speak for NVDA or VoiceOver.
 
 ## Still deployment-owned
 

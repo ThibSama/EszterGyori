@@ -110,9 +110,10 @@ test("admin forms and editor messages expose live feedback", () => {
 // These are source assertions, like the ones above, and they are exact about what
 // that does and does not prove. It proves the attribute is *there*, which is what
 // regresses when a component is refactored; it does not prove a screen reader says
-// the right thing, and nothing in this repository can — there is no browser runner,
-// and `docs/v1-quality-gates.md` keeps the browser gates at NOT RUN rather than
-// letting a source grep stand in for one.
+// the right thing. The browser half of that gap is covered by the Stage 9 runners
+// since ESZ-113 (`browser:public`, `browser:admin`, `browser:booking` drive the
+// real DOM with real keyboard events); the assistive-technology half remains
+// deployment-owned. A source grep still stands in for neither.
 
 const reservationDetails = readFileSync(
   join(appRoot, "components", "reservation", "reservation-details.tsx"),

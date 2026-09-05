@@ -4,10 +4,11 @@
  *
  * ## What this is, and what it deliberately is not
  *
- * It is not a performance audit and it does not claim a Lighthouse score: there is
- * no browser runner in this repository, and inventing one of those numbers would be
- * worse than not having it. `docs/v1-quality-gates.md` keeps the browser gates at
- * NOT RUN for exactly that reason, and this gate does not change that.
+ * It is not a performance audit and it does not claim a Lighthouse score: it
+ * measures bytes over built artifacts, and inventing a browser number here would
+ * be worse than not having it. Real-browser lab measurements of FCP/LCP/CLS on
+ * the public page live in the `browser:public` runner (ESZ-113) and
+ * `docs/performance-audit.md`; neither is a field Core Web Vitals claim.
  *
  * What it is: a *ratchet*. Every budget below sits just above what the current
  * build actually produces, so the gate is silent today and speaks the moment

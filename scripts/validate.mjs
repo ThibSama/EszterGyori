@@ -456,7 +456,7 @@ const gates = [
     cwd: ".",
     command: ["node", "scripts/browser-public.mjs"],
     proves:
-      "ESZ-104 in a real browser under Apache applying the committed generated .htaccess: the public page renders the published content — hero and gallery media decode from their published sources, and the nav, gallery, contact and footer links resolve exactly as /api/content declares them; navigation clicks and direct deep links land below the fixed navbar; the layout holds at phone/tablet/desktop widths without horizontal overflow. ESZ-104 image policy: a same-origin managed image loads and decodes with no CSP violation, a cross-origin HTTPS image from a local TLS fixture loads and decodes under scheme-wide `https:`, an http: media source is refused as contract-invalid through the real draft-save envelope (400 VALIDATION_FAILED, draft unchanged) before any publication, and an intentionally injected http: <img> negative control is CSP-blocked while the same fixture origin demonstrably serves images outside the page. All fixtures are local; nothing leaves 127.0.0.1.",
+      "ESZ-104 in a real browser under Apache applying the committed generated .htaccess: the public page renders the published content — hero and gallery media decode from their published sources, and the nav, gallery, contact and footer links resolve exactly as /api/content declares them; navigation clicks and direct deep links land below the fixed navbar; the layout holds at phone/tablet/desktop widths without horizontal overflow. ESZ-113 extends the same run with the accessibility and performance evidence the audit docs promised: the skip link is first in the keyboard order, visible on focus and lands on #main-content; the mobile menu opens with focus on its first link and closes by Escape and by backdrop click with aria-expanded back to false and focus restored to the trigger, the closed menu absent from the DOM; 320 px reflow holds without document overflow; and FCP/LCP/CLS are captured through the browser's Performance observers at phone and desktop viewport as lab measurements on the disposable local origin (no field Core Web Vitals, no SLO). ESZ-104 image policy: a same-origin managed image loads and decodes with no CSP violation, a cross-origin HTTPS image from a local TLS fixture loads and decodes under scheme-wide `https:`, an http: media source is refused as contract-invalid through the real draft-save envelope (400 VALIDATION_FAILED, draft unchanged) before any publication, and an intentionally injected http: <img> negative control is CSP-blocked while the same fixture origin demonstrably serves images outside the page. All fixtures are local; nothing leaves 127.0.0.1.",
   },
   {
     id: "browser:admin-auth",
@@ -469,19 +469,18 @@ const gates = [
   {
     id: "browser:admin",
     stage: "9. Browser scenarios",
-    status: NOT_RUN,
-    reason:
-      "The focused ESZ-095, ESZ-096 and ESZ-101 runners cover preview CSP, the media pipeline and the authenticated sign-out workflow only. No deployed origin or project-owned runner covers this full authenticated editing workflow.",
+    cwd: ".",
+    command: ["node", "scripts/browser-admin.mjs"],
     proves:
-      "Admin: unauthenticated deep link redirects to login, login succeeds and rejects bad credentials, an edit saves to the server draft, publish updates the public site, and logout invalidates the session server-side.",
+      "ESZ-113 in a real browser against the production-shaped isolated stack (Apache applying the committed generated .htaccess, real PHP, disposable MySQL): an unauthenticated /admin deep link reaches the login gate by keyboard; bad credentials are refused indistinguishably through role=alert with no authenticated session row and the very same form then signs in; a valid login honours the ?next deep link and matches a real authenticated admin_sessions row server-side; an edit to server-backed content saves to the server draft (revision +1, draft != published), publishes, and the real public page then renders the published change; and logout removes the session row, leaves the pre-logout cookie authorising nothing, and a protected reload returns to the login gate. The same run asserts the accessibility contract on the exercised controls — keyboard reachability and a keyboard-only login, live status/alert regions that actually update, htmlFor labels, no contradictory ARIA state, and 320 px reflow on login and editor.",
   },
   {
     id: "browser:booking",
     stage: "9. Browser scenarios",
-    status: NOT_RUN,
-    reason: "No deployed origin or project-owned runner covers this broader booking scenario; Packages 5.1 and 7.2 are covered offline by frontend/API/routing, notification and real-MySQL producer tests.",
+    cwd: ".",
+    command: ["node", "scripts/browser-booking.mjs"],
     proves:
-      "Booking: a request submits, validates, persists, is visible in admin, and enqueues its notifications; invalid input is rejected without data loss.",
+      "ESZ-113 in a real browser against the production-shaped isolated stack: development provisioning really created deterministic availability (six active weekly rules Monday–Saturday 09:00–17:00, no exception) and the public availability endpoint answers slots for it; a valid booking completes entirely through the public UI with its bk_ reference; persistence is visible through the real admin query API, real MySQL rows (booking + created history + consent notice id) and the authenticated admin calendar; the lifecycle jobs are enqueued exactly per contract — one pending booking_confirmation and one pending booking_reminder due T−24 h, attempts 0, nothing sent, no SMTP anywhere; invalid customer input is refused client-side with aria-invalid/aria-describedby and a focus move, writes no booking and preserves every entered value; and a second real tab confirming the same now-stale slot is refused by the real backend with the recovery notice, no duplicate booking and no duplicate notification, with the customer's details preserved for the next attempt. The same run asserts the reservation accessibility contract: skip-link keyboard behaviour, the promised focus movements, polite live regions, no fake grid ARIA, and 320 px reflow.",
   },
 
   // ── Stage 10 — Security and configuration (not available) ─────────────────────

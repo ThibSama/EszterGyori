@@ -31,10 +31,11 @@ import {
  *
  * ## What this does not claim
  *
- * Nothing here is a timing measurement, and none of it involves a browser. There
- * is no browser runner in this repository and `docs/v1-quality-gates.md` keeps the
- * browser gates at NOT RUN; this is arithmetic over payload shapes, which is
- * exactly as much as a Node test can honestly prove.
+ * Nothing here is a timing measurement, and none of it involves a browser: it is
+ * arithmetic over payload shapes, which is exactly as much as a Node test can
+ * honestly prove. Browser-level measurements live in the Stage 9 runners
+ * (`browser:public` records FCP/LCP/CLS lab values since ESZ-113); this file
+ * bounds wire sizes, which no browser is needed to verify.
  */
 
 function bytes(payload: unknown): number {

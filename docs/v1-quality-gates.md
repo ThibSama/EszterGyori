@@ -39,7 +39,7 @@ Companion documents:
 | --- | --- | --- | --- |
 | **PASS** | The gate executed and its assertions held. | Yes | none |
 | **FAIL** | The gate executed and its assertions did not hold, or its tooling errored. | No | exit 1 |
-| **NOT RUN** | The gate is declared but a prerequisite component does not exist (no PHP, no deployed origin, no browser runner). | **No** | none |
+| **NOT RUN** | The gate is declared but a prerequisite component does not exist (no deployed origin, no subject yet). | **No** | none |
 
 Three rules govern NOT RUN, and they are what keep the policy honest:
 
@@ -75,7 +75,7 @@ The order is the specification. Each stage assumes the previous one held.
 | **6. PHP validation** | composer validate, lint, static analysis, unit tests, parity-corpus replay, full `http-contract.json` replay, media, booking domain, document-root routing, sensitive-file permission enforcement (`security:filesystem`) | Executable |
 | **7. SQL** | migration, integration, rate-limit, backup-restore and notification queue tests | Executable — the runner provisions a disposable MySQL 8.4 instance when `ESZTER_TEST_DB_DSN` is absent (ESZ-112), and honours an external DSN as-is |
 | **8. HTTP smoke** | local PHP server plus deployed-origin checks | Local executable; deployed origin **Not run** |
-| **9. Browser scenarios** | admin-preview CSP, CMS media pipeline; public, full admin and booking | Focused CSP/media proofs executable; broader scenarios **Not run** |
+| **9. Browser scenarios** | admin-preview CSP, CMS media pipeline, public site, full admin workflow, composed booking workflow | **Executable** — real Chrome against the disposable Apache/PHP/MySQL stack (ESZ-113); only deployed-origin checks remain **Not run** |
 | **10. Security and configuration** | deployed exposure, headers and permissions | **Not run** |
 
 > **Renumbered in Package 1.2 (ESZ-015).** The policy used to carry a stage 4,
@@ -159,7 +159,8 @@ exception replaces rather than merges with the weekly windows and removing it re
 them, and the editor is proved to render server-returned state, confirm destructive
 changes, and keep its `aria-invalid` / `aria-describedby` error wiring and its focus
 moves. What it does not prove is any of that in a real browser — that is `browser:admin`
-in stage 9, which stays NOT RUN.
+in stage 9, which ESZ-113 turned into an executable runner against the real
+Apache/PHP/MySQL stack.
 
 Since Package 3.2 it also covers the admin client against a stub `fetch`: what the API
 client sends (the frozen paths, the CSRF header, `expectedRevision` on every write, and
@@ -266,8 +267,11 @@ is a deliberate edit in the same commit as the growth.
 
 It measures gzip because that is what is transferred; raw size overstates the cost
 of minified code and understates the cost of anything already compressed. It is
-**not** a Lighthouse score and does not claim to be one — no browser is involved,
-and Stage 9 stays NOT RUN.
+**not** a Lighthouse score and does not claim to be one — no browser is involved.
+Real-browser lab measurements of FCP/LCP/CLS on the public page (phone and desktop
+viewport, disposable local origin) are captured by the `browser:public` runner
+(ESZ-113, Stage 9); they are lab evidence recorded in `docs/performance-audit.md`,
+not field Core Web Vitals.
 
 `deployment:artifact` then stages only the export and PHP production runtime, installs
 the Composer lock with `--no-dev`, writes a file/digest/mode manifest and builds the
@@ -335,9 +339,12 @@ What stage 6 does **not** yet prove, and says so rather than being silently abse
 | Not covered | Why |
 | --- | --- |
 | Live provider acceptance and mailbox receipt | Package 7.2 proves SMTP message construction and failure classification with a no-network mailer double. It deliberately does not contact a deployment-owned SMTP account or assert delivery into a real mailbox. SMS is outside Package 7.2 and remains unimplemented. |
-| The browser editor writing to the server draft, end to end | Package 3.1 covered the `/api/admin/content/*` server surface; Package 3.2 connected the editor to it and covered the client side against a stub `fetch` (`front:test`). What neither half proves is the two running together against one origin: that is `browser:admin` in stage 9, and it needs a deployment. |
 | Login throttling | `docs/hetzner-target-architecture.md` §6 asks for rate-limited, throttled login attempts keyed by account and by source address. ESZ-025 did not build it, so there is nothing to gate. Everything else §6 asks of authentication is built and covered. |
-| A real browser exercising `/admin` | Package 3.2 built the client flow — sign-in, draft load, save, conflict, publish, reset — and `front:test` drives every branch of it as units. The gap that remains is a real browser against a real origin: cookie attributes the `__Host-` prefix only enforces in one, and the redirect after sign-in. `browser:admin` in stage 9 stays NOT RUN. |
+
+The two rows that used to sit here — the browser editor writing to the server
+draft end to end, and a real browser exercising `/admin` — stopped being stage-6
+gaps in ESZ-113: `browser:admin` (Stage 9) now runs the real editor against the
+production-shaped Apache/PHP/MySQL stack, real cookies and all (§5).
 
 ---
 
@@ -420,11 +427,12 @@ being a schema 400.
 
 ## 5. Runtime smoke and deployment-owned gates
 
-Each gate below is declared in `scripts/validate.mjs`. The repository-local PHP smoke
-and the focused admin-preview CSP, media-pipeline, admin-auth and public browser proofs
-are executable; checks that require a deployed origin or the broader admin/booking
-browser workflows remain NOT RUN with their reason, so the gap is inspectable rather
-than absent.
+Each gate below is declared in `scripts/validate.mjs`. All of Stage 9 is now
+executable: the focused admin-preview CSP, media-pipeline, admin-auth and
+public proofs, and — since ESZ-113 — the broad `browser:admin` and
+`browser:booking` runners. What remains NOT RUN is the two deployed-origin
+checks (`smoke:deployed-http`, `security:config`), with their reasons, so the
+gap is inspectable rather than absent.
 
 ### Stage 8 — HTTP smoke
 
@@ -499,13 +507,57 @@ decodes under scheme-wide `https:` (browser trust bypass scoped to the disposabl
 Chrome profile), an `http:` media source is refused as contract-invalid through the
 real draft-save envelope (`400 VALIDATION_FAILED`, draft unchanged) before any
 publication, and an intentionally injected `http:` `<img>` is CSP-blocked while the
-same HTTP fixture origin demonstrably serves images outside the page. All fixtures
-are local; no request leaves `127.0.0.1`. The gate removes its containers, network,
-profile, credentials, TLS material and document root on every outcome.
+same HTTP fixture origin demonstrably serves images outside the page. Since ESZ-113
+the same run carries the accessibility proofs those audits only documented — the
+skip link is first in the keyboard order, visible on focus, and Enter lands on
+`#main-content`; the mobile menu opens with focus on its first link and closes by
+Escape and by backdrop click with `aria-expanded=false` and focus restored to the
+trigger; 320 px reflow holds without document overflow — and records FCP/LCP/CLS
+through the browser's Performance observers at phone and desktop viewport (lab
+measurements on the disposable origin, no SLO). All fixtures are local; no request
+leaves `127.0.0.1`. The gate removes its containers, network, profile, credentials,
+TLS material and document root on every outcome.
 
-Those focused proofs do not implement the broader `browser:admin` and `browser:booking`
-contracts below.
-Critical paths only — enough to catch a broken release, few enough to stay trustworthy:
+`browser:admin` (ESZ-113, `node scripts/browser-admin.mjs`) and `browser:booking`
+(ESZ-113, `node scripts/browser-booking.mjs`) implement the two broad contracts
+below. Both stand up the same production-shaped stack as `browser:public` — Apache
+applying the committed `.htaccess`, the PHP front controller, disposable MySQL,
+migrations and the development provisioning CLI, all isolated and removed on every
+exit path — and share their CDP/runtime helpers through `scripts/browser-stack.mjs`.
+
+`browser:admin` proves the full authenticated editing workflow in a real browser:
+an unauthenticated `/admin` deep link reaches the login gate by keyboard; bad
+credentials are refused indistinguishably via `role=alert` with no authenticated
+session row and the same form then signs in (the retry semantic is the existing
+credential refusal); a valid login honours `?next`, matches the real
+`admin_sessions` row and reaches the protected calendar and editor; an edited hero
+field saves to the server draft (revision +1), publishes, and the real public page
+renders the change; and logout removes the session row server-side, leaves the
+pre-logout cookie authorising nothing, and a protected reload returns to the login
+gate. The same run asserts keyboard reachability (including a keyboard-only login),
+live status/alert regions that update, `htmlFor` labels, consistent ARIA state on
+the exercised controls, and 320 px reflow on the login form and the editor.
+
+`browser:booking` proves the composed booking flow in real browser tabs: the
+provisioned availability rules really exist (six active weekly windows,
+Monday–Saturday 09:00–17:00, no exception) and the public availability endpoint
+answers deterministic slots; a booking completes entirely through the public UI and
+returns its `bk_…` reference; persistence is visible through the real admin query
+API, MySQL rows (booking, created history, consent notice id) and the admin
+calendar; the lifecycle notification jobs are enqueued exactly per contract — one
+pending `booking_confirmation`, one pending `booking_reminder` due T−24 h, no
+attempts, nothing sent, no SMTP in the stack; invalid customer input writes nothing
+and keeps every entered value; and a second tab confirming the same slot after the
+first tab booked it is refused by the real backend with the recovery notice and no
+duplicate booking or notification, its details preserved. The same run asserts the
+reservation accessibility contract: skip-link keyboard behaviour, the promised
+focus movements (review, confirmation, first invalid field, recovery notice), the
+polite live regions, and 320 px reflow.
+
+What the two runners deliberately do not claim: they run against a disposable local
+origin, not the deployed host — `smoke:deployed-http` and `security:config` keep
+those obligations — and they are critical-path proofs, few enough to stay
+trustworthy:
 
 - **Admin**: an unauthenticated deep link redirects to login; login succeeds and rejects
   bad credentials without enumerating users; an edit saves to the server draft; publish

@@ -16,6 +16,8 @@
     "browser:admin-preview-csp": "node scripts/browser-admin-preview-csp.mjs",
     "browser:media-pipeline": "node scripts/browser-media-pipeline.mjs",
     "browser:public": "node scripts/browser-public.mjs",
+    "browser:admin": "node scripts/browser-admin.mjs",
+    "browser:booking": "node scripts/browser-booking.mjs",
     "acceptance:production": "node scripts/production-acceptance.mjs",
     "preflight:production": "php php/bin/preflight-production.php",
     "readiness:probe": "node scripts/readiness-cli.mjs",

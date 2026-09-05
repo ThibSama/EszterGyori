@@ -732,6 +732,57 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc make libpng
   await cdp.send("Runtime.enable");
   await cdp.send("Network.enable");
   await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: setCspViolationListenerSource() });
+  // ESZ-113: real-browser performance evidence on the public page. The
+  // observers record FCP/LCP/CLS into a fresh object per document; the values
+  // are read back after the page has settled. These are lab measurements on
+  // this disposable local stack — never field Core Web Vitals, no SLO.
+  await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      window.__esz113Perf = { fcp: null, lcp: null, cls: 0, navType: performance.getEntriesByType?.("navigation")[0]?.type ?? null };
+      try {
+        new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            if (entry.name === "first-contentful-paint") window.__esz113Perf.fcp = entry.startTime;
+          }
+        }).observe({ type: "paint" });
+        new PerformanceObserver((list) => {
+          const entries = list.getEntries();
+          if (entries.length) window.__esz113Perf.lcp = Math.max(0, entries[entries.length - 1].startTime);
+        }).observe({ type: "largest-contentful-paint", buffered: true });
+        new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            if (!entry.hadRecentInput) window.__esz113Perf.cls += entry.value;
+          }
+        }).observe({ type: "layout-shift", buffered: true });
+      } catch (error) {
+        window.__esz113Perf.error = String(error);
+      }
+    })();`,
+  });
+
+  const measurePublicPerf = async (width, height, label, order) => {
+    await setViewport(cdp, width, height);
+    await navigateAndWait(cdp, `${origin}/`, `${label} performance load`, `Boolean(document.querySelector("h1"))`);
+    // Let late fonts/media and post-load layout settle before reading LCP/CLS.
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1500));
+    const perf = await evaluate(cdp, `(() => {
+      const value = window.__esz113Perf;
+      return value && !value.error
+        ? { fcp: Math.round(value.fcp ?? -1), lcp: Math.round(value.lcp ?? -1), cls: Math.round(value.cls * 1000) / 1000, navType: value.navType }
+        : { error: value?.error ?? "no metrics object" };
+    })()`);
+    assert(perf.error === undefined, `${label}: performance observers failed: ${perf.error}`);
+    assert(perf.fcp > 0 && perf.lcp > 0, `${label}: FCP/LCP missing: ${JSON.stringify(perf)}`);
+    assert(typeof perf.cls === "number" && perf.cls >= 0, `${label}: CLS not measurable: ${JSON.stringify(perf)}`);
+    perfResults.push(`${label} (${order} load, ${width}x${height}): FCP ${perf.fcp} ms, LCP ${perf.lcp} ms, CLS ${perf.cls}`);
+    return perf;
+  };
+
+  // Public-page measurements at phone then desktop viewport, before any
+  // authenticated or media work so the loads stay pristine.
+  const perfResults = [];
+  await measurePublicPerf(375, 667, "phone", "1st");
+  await measurePublicPerf(1280, 800, "desktop", "2nd");
 
   await setViewport(cdp, 1280, 800);
   await signIn(cdp, origin, credentials.email, credentials.password);
@@ -1012,6 +1063,175 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc make libpng
     layoutResults.push(`${label}: ${layout.clientWidth}px wide, no overflow`);
   }
 
+  // ── ESZ-113 keyboard proofs on the public page ───────────────────────────
+  const keyEvent = async (type, key, code, keyCode) => {
+    await cdp.send("Input.dispatchKeyEvent", {
+      type,
+      key,
+      code,
+      windowsVirtualKeyCode: keyCode,
+      nativeVirtualKeyCode: keyCode,
+    });
+  };
+  const pressKeySimple = async (key, code, keyCode) => {
+    await keyEvent("rawKeyDown", key, code, keyCode);
+    await keyEvent("keyUp", key, code, keyCode);
+  };
+
+  // Skip link: first focusable element, becomes visible on focus, and Enter
+  // moves focus to the main landmark it promises.
+  await setViewport(cdp, 1280, 800);
+  await navigateAndWait(cdp, `${origin}/`, "a11y: public home for the skip link", `Boolean(document.querySelector("h1"))`);
+  await evaluate(cdp, `window.scrollTo(0, 0)`);
+  await pressKeySimple("Tab", "Tab", 9);
+  await waitFor(
+    () => evaluate(cdp, `document.activeElement?.textContent?.trim() === "Aller au contenu principal"`),
+    "skip link focused",
+    10_000,
+  );
+  // The skip link slides into view (top: -6rem -> 0.75rem, 160 ms transition);
+  // wait for the transition to settle, then measure visibility.
+  const skipFocus = await waitFor(
+    () => evaluate(cdp, `(() => {
+      const element = document.activeElement;
+      const rect = element?.getBoundingClientRect();
+      const visible = Boolean(rect && rect.width > 0 && rect.height > 0
+        && rect.top < innerHeight && rect.bottom > 0 && rect.left < innerWidth && rect.right > 0);
+      if (!visible) return null;
+      return {
+        tag: element?.tagName.toLowerCase() ?? null,
+        text: (element?.textContent ?? "").trim(),
+        href: element?.getAttribute("href") ?? null,
+        visible,
+        top: Math.round(rect?.top ?? NaN),
+      };
+    })()`),
+    "skip link focused and settled into view",
+    3_000,
+  );
+  assert(
+    skipFocus.tag === "a" && skipFocus.text === "Aller au contenu principal" && skipFocus.href === "#main-content",
+    `Tab did not reach the skip link first: ${JSON.stringify(skipFocus)}`,
+  );
+  assert(skipFocus.visible, `the focused skip link is not visible on screen: ${JSON.stringify(skipFocus)}`);
+  await pressKeySimple("Enter", "Enter", 13);
+  await waitFor(
+    () => evaluate(cdp, `document.activeElement?.id === "main-content"`),
+    "skip-link focus landing on #main-content",
+  );
+
+  // Mobile menu: open focuses the first link, Escape closes and restores
+  // focus to the trigger, the backdrop click closes the same way, the closed
+  // menu is absent from the DOM, and aria-expanded/aria-controls agree with
+  // the real state at every step.
+  await setViewport(cdp, 375, 667);
+  await navigateAndWait(cdp, `${origin}/`, "a11y: public home for the mobile menu", `Boolean(document.querySelector("h1"))`);
+  const menuOpenLabel = content.navigation.menuOpenLabel;
+  const menuCloseLabel = content.navigation.menuCloseLabel;
+  const firstLinkLabel = content.navigation.links[0].label;
+  const closedMenu = await evaluate(cdp, `(() => {
+    const button = [...document.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-label") === ${esc(menuOpenLabel)});
+    return button
+      ? {
+          expanded: button.getAttribute("aria-expanded"),
+          controls: button.getAttribute("aria-controls"),
+          menuPresent: Boolean(document.getElementById("mobile-navigation-menu")),
+        }
+      : null;
+  })()`);
+  assert(closedMenu && closedMenu.expanded === "false", `the closed menu trigger does not declare aria-expanded=false: ${JSON.stringify(closedMenu)}`);
+  assert(closedMenu?.controls === "mobile-navigation-menu", "the menu trigger does not declare its controls");
+  assert(closedMenu?.menuPresent === false, "the closed mobile menu is still in the DOM");
+  // Open with retries: the exported HTML already contains the trigger button,
+  // so a click can land before React has hydrated and attached its handler.
+  // Each retry re-checks the real state instead of blindly toggling.
+  const openMobileMenu = async () => {
+    let state = null;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      state = await evaluate(cdp, `(() => {
+        const button = [...document.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-controls") === "mobile-navigation-menu");
+        return {
+          expanded: button?.getAttribute("aria-expanded") ?? null,
+          menuPresent: Boolean(document.getElementById("mobile-navigation-menu")),
+          activeText: document.activeElement?.textContent?.trim() ?? null,
+        };
+      })()`);
+      if (state.menuPresent && state.activeText === firstLinkLabel) return state;
+      if (state.expanded === "false") {
+        await evaluate(cdp, `(() => {
+          const button = [...document.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-controls") === "mobile-navigation-menu");
+          button?.click();
+          return Boolean(button);
+        })()`);
+      }
+      await new Promise((resolveWait) => setTimeout(resolveWait, 1000));
+    }
+    return state;
+  };
+  const openState = await openMobileMenu();
+  assert(openState?.menuPresent, `the mobile menu did not open: ${JSON.stringify(openState)}`);
+  assert(openState.activeText === firstLinkLabel, `the open menu did not focus its first link: ${JSON.stringify(openState)}`);
+  const openMenu = await evaluate(cdp, `(() => {
+    const button = [...document.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-label") === ${esc(menuCloseLabel)});
+    return {
+      expanded: button?.getAttribute("aria-expanded") ?? null,
+      mobileNavPresent: Boolean(document.querySelector('nav[aria-label="Navigation mobile"]')),
+      scrollLocked: document.body.style.overflow === "hidden",
+    };
+  })()`);
+  assert(openMenu.expanded === "true", "the open menu trigger does not declare aria-expanded=true");
+  assert(openMenu.mobileNavPresent, "the open menu is not exposed as the labelled mobile navigation");
+  assert(openMenu.scrollLocked, "the body scroll lock is not held while the menu is open");
+  await pressKeySimple("Escape", "Escape", 27);
+  await waitFor(
+    () => evaluate(cdp, `!document.getElementById("mobile-navigation-menu")`),
+    "Escape closing the mobile menu",
+  );
+  const closedByEscape = await evaluate(cdp, `(() => {
+    const element = document.activeElement;
+    return {
+      expanded: [...document.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-controls") === "mobile-navigation-menu")?.getAttribute("aria-expanded") ?? null,
+      focusLabel: element?.getAttribute("aria-label") ?? null,
+      scrollRestored: document.body.style.overflow !== "hidden",
+    };
+  })()`);
+  assert(closedByEscape.expanded === "false", "Escape did not close the menu state");
+  assert(closedByEscape.focusLabel === menuOpenLabel, `Escape did not restore focus to the trigger: ${closedByEscape.focusLabel}`);
+  assert(closedByEscape.scrollRestored, "Escape left the body scroll locked");
+
+  // Backdrop click: same close contract as Escape.
+  const reopenedState = await openMobileMenu();
+  assert(reopenedState?.menuPresent, `could not reopen the mobile menu: ${JSON.stringify(reopenedState)}`);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: 187, y: 620, button: "left", clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: 187, y: 620, button: "left", clickCount: 1 });
+  await waitFor(
+    () => evaluate(cdp, `!document.getElementById("mobile-navigation-menu")`),
+    "backdrop click closing the mobile menu",
+  );
+  const closedByBackdrop = await evaluate(cdp, `(() => ({
+    expanded: [...document.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-controls") === "mobile-navigation-menu")?.getAttribute("aria-expanded") ?? null,
+    focusLabel: document.activeElement?.getAttribute("aria-label") ?? null,
+  }))()`);
+  assert(closedByBackdrop.expanded === "false", "the backdrop click did not close the menu state");
+  assert(closedByBackdrop.focusLabel === menuOpenLabel, `the backdrop click did not restore focus to the trigger: ${closedByBackdrop.focusLabel}`);
+
+  // 320 px: no document overflow and the mobile trigger stays usable.
+  await setViewport(cdp, 320, 700);
+  await navigateAndWait(cdp, `${origin}/`, "public home at 320 px", `Boolean(document.querySelector("h1"))`);
+  const public320 = await evaluate(cdp, `(() => {
+    const html = document.documentElement;
+    const button = [...document.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-controls") === "mobile-navigation-menu");
+    const rect = button?.getBoundingClientRect();
+    return {
+      scrollWidth: html.scrollWidth,
+      clientWidth: html.clientWidth,
+      triggerUsable: Boolean(rect && rect.width > 0 && rect.height > 0 && rect.left >= -1 && rect.right <= html.clientWidth + 1),
+    };
+  })()`);
+  assert(public320.scrollWidth <= public320.clientWidth + 1, `public page overflows at 320 px: ${public320.scrollWidth} > ${public320.clientWidth}`);
+  assert(public320.triggerUsable, "the mobile menu trigger is not usable at 320 px");
+  await setViewport(cdp, 1280, 800);
+
   // ── The ESZ-104 CSP probe page: same-origin, cross-origin HTTPS, and an
   //    injected HTTP negative control, all under the committed .htaccess ─────
   writeFileSync(
@@ -1108,6 +1328,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc make libpng
   process.stdout.write(`negative control: injected ${plainUrl} blocked by img-src (violation + loadingFailed reason=csp); the fixture answered only the direct reachability probe\n`);
   process.stdout.write(`navigation: in-page clicks and ${ANCHOR_TARGETS.length} direct deep links land below the fixed navbar\n`);
   process.stdout.write(`layout: ${layoutResults.join("; ")}\n`);
+  process.stdout.write(`performance (lab measurements on the disposable local origin, no SLO): ${perfResults.join("; ")}\n`);
+  process.stdout.write("accessibility: skip link first in the keyboard order and visible on focus, Enter lands on #main-content; mobile menu open focuses its first link, Escape and the backdrop close it with aria-expanded and focus restored to the trigger; 320 px reflow holds without overflow\n");
   process.stdout.write(`envelope fidelity: hero + gallery alts, ${content.navigation.links.length} nav links, gallery/contact/footer links match /api/content\n`);
 }
 

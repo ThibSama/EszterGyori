@@ -83,14 +83,17 @@ What remains owed, in the order it matters:
   Retry-After handling). Everything else §6 specifies is.
 - ~~**The browser half of `/admin`.**~~ Built (Package 3.2). `/admin/login` posts to
   `/api/auth/login`, the editor reads and writes the server draft, and publish and reset
-  call their endpoints rather than re-implementing them. Still unproven *in a browser*:
-  `browser:admin` needs a deployed origin and a runner (§14).
-- **Live deployment acceptance.** The artifact and procedures are built locally, and the
-  focused browser gates (`browser:admin-preview-csp`, `browser:media-pipeline`,
-  `browser:admin-booking-contact`, `browser:public`, `browser:admin-auth`) run inside
-  `validate` against local Apache/PHP stacks, but `smoke:deployed-http`, `browser:admin`,
-  `browser:booking` and the live portion of `security:config` remain NOT RUN; no
-  `.htaccess`, SMTP account or cron entry has been exercised on **real hosting** (§14).
+  call their endpoints rather than re-implementing them. Proved *in a browser* since
+  ESZ-113: `browser:admin` runs the full authenticated workflow against the
+  production-shaped local Apache/PHP/MySQL stack. What still needs the deployed host is
+  the same-run behaviour under the hosting plan's own Apache configuration (§14).
+- **Live deployment acceptance.** The artifact and procedures are built locally, and
+  every Stage-9 browser gate (`browser:admin-preview-csp`, `browser:media-pipeline`,
+  `browser:admin-booking-contact`, `browser:public`, `browser:admin-auth`,
+  `browser:admin`, `browser:booking`) runs inside `validate` against local
+  Apache/PHP stacks, but `smoke:deployed-http` and the live portion of
+  `security:config` remain NOT RUN; no `.htaccess`, SMTP account or cron entry has
+  been exercised on **real hosting** (§14).
 
 ---
 
