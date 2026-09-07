@@ -18,6 +18,7 @@ import {
   resolveHeadCommit,
   resolveRepositoryIdentity,
 } from "./production-provenance.mjs";
+import { PRODUCTION_OPERATOR_COMMANDS } from "./production-runbook.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(repoRoot, "dist");
@@ -98,14 +99,26 @@ for (const file of [
   "app/vendor/symfony/mailer/Transport.php",
   "app/contracts/manifest.json",
   "app/migrations/0001_admin_accounts.sql",
-  "app/bin/migrate.php",
-  "app/bin/run-notification-jobs.php",
-  // ESZ-083. Required, not optional: an operator who cannot take a backup from
-  // the release they deployed has no backup, and the moment they discover that is
-  // the moment it is too late to fix.
-  "app/bin/backup.php",
-  "app/bin/restore.php",
+  // ESZ-083/ESZ-143. Required, not optional: an operator who cannot take a
+  // backup from the release they deployed has no backup, and the moment they
+  // discover that is the moment it is too late to fix. The same holds for every
+  // other command docs/deployment-runbook.md instructs them to run — omitting
+  // one from the artifact is a deterministic verification failure here, not a
+  // discovery made on the host.
+  ...PRODUCTION_OPERATOR_COMMANDS.map((command) => `app/bin/${command}`),
 ]) required(file);
+
+// The artifact carries the operator commands and nothing else under app/bin/:
+// development bootstrap, linting, static analysis, htaccess generation and
+// contract syncing are repository tooling and must not become release bytes.
+if (existsSync(join(artifactRoot, "app", "bin"))) {
+  const packagedBins = readdirSync(join(artifactRoot, "app", "bin")).sort();
+  const expectedBins = [...PRODUCTION_OPERATOR_COMMANDS].sort();
+  const unexpected = packagedBins.filter((name) => !expectedBins.includes(name));
+  if (unexpected.length > 0) {
+    errors.push(`unexpected command packaged under app/bin/: ${unexpected.join(", ")}`);
+  }
+}
 
 for (const directory of [
   "config",
@@ -203,14 +216,16 @@ if (existsSync(installedPath)) {
   if (!installed.includes('"name": "symfony/mailer"')) errors.push("Symfony Mailer is absent from production dependencies");
 }
 
-for (const [entryPoint, expected] of [
-  ["app/bin/migrate.php", "Usage: php bin/migrate.php"],
-  ["app/bin/run-notification-jobs.php", "Usage: php bin/run-notification-jobs.php"],
-  ["app/bin/backup.php", "Usage: php bin/backup.php"],
-  ["app/bin/restore.php", "Usage: php bin/restore.php"],
-]) {
+// ESZ-143. Every packaged operator command answers its own `--help` from the
+// artifact: exit 0, its own usage line, no configuration, no database and no
+// network. Presence proves a file was copied; this proves the file the operator
+// is told to run actually starts inside the release, with the production-only
+// Composer set that shipped beside it.
+for (const command of PRODUCTION_OPERATOR_COMMANDS) {
+  const entryPoint = `app/bin/${command}`;
+  if (!existsSync(join(artifactRoot, entryPoint))) continue;
   const result = spawnSync("php", [join(artifactRoot, entryPoint), "--help"], { encoding: "utf8" });
-  if (result.status !== 0 || !result.stdout.includes(expected)) {
+  if (result.status !== 0 || !result.stdout.includes(`Usage: php bin/${command}`)) {
     errors.push(`packaged PHP entry point failed its no-network help smoke: ${entryPoint}`);
   }
 }

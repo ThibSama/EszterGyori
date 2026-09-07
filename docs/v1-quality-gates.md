@@ -306,8 +306,30 @@ not field Core Web Vitals.
 the Composer lock with `--no-dev`, writes a file/digest/mode manifest and builds the
 archive twice to prove deterministic bytes. It rejects secrets/config, Node modules,
 tests, caches, source maps and private trees below `public_html`; it also requires
-Symfony Mailer, all migrations, the migration CLI and the explicit SMTP runner. This is
-an offline structural proof, not a claim that Apache has served the result.
+Symfony Mailer, all migrations and every operator command the deployment runbook tells
+a deployed operator to run. This is an offline structural proof, not a claim that
+Apache has served the result.
+
+Since ESZ-143 it no longer *inherits* its frontend. `front/out` is ignored by Git, so
+it takes no part in the ESZ-126 source identity: an export built from one commit could
+sit beside a clean checkout of another and be packaged into an artifact that
+truthfully attested the second. The packager therefore deletes `front/out` and rebuilds
+it from the tracked source of the candidate it is packaging, running the export
+verifier before a byte is copied. The freshness proof is structural — deletion and
+reconstruction — never a timestamp or a cache heuristic, and it costs one extra
+frontend build rather than a new trust assumption.
+
+`deployment:runbook` makes `docs/deployment-runbook.md` executable rather than
+aspirational. Its build procedure lives in one marked block that the gate parses and
+runs verbatim in a disposable clean checkout owning no export, no installed dependency
+set and no previous artifact — the failure it exists to prevent is the one it found:
+the runbook documented `npm run package:production` and `npm run verify:production-artifact`,
+and neither had ever been a script. A string assertion would have been perfectly
+satisfied by both. The same run carries the stale-output regression across *clean
+committed* source identities (each asserted clean first, so it can never pass by
+re-proving ESZ-126's drift guard) and reconciles the runbook's own `bin/*.php`
+invocations with the artifact: each is packaged, each answers its no-network `--help`
+from the release, repository tooling stays out, and omitting one fails verification.
 
 ### Stage 6 — PHP validation
 

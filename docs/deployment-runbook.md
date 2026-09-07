@@ -12,23 +12,66 @@ policy, and the only legitimate emergency procedure for relaxing it (recorded in
 minimal window, immediate restore, green `quality-gate` on the resulting `master` SHA),
 are in `docs/v1-quality-gates.md` §6c. There is no bypass account and no "push anyway".
 
+## 0. What this runbook proves, and what it does not
+
+The steps below are of two kinds and must never be read as one.
+
+**Local, repository-owned (§1).** Building and verifying the release is proved now,
+on every candidate, by the `deployment:artifact` and `deployment:runbook` gates:
+locked dependency installation, the frontend release build and export check,
+artifact generation, artifact verification, the archive's contents, and the presence
+of every packaged operator entry point. §1 is executed verbatim from this document
+by an automated procedure test in a clean checkout, so a command documented here
+that does not exist fails a gate rather than an operator.
+
+**Deployment-owned (§2 onwards).** Everything that needs the Hetzner account, a live
+`config/config.php`, a live MySQL database, an SMTP account, installed cron entries,
+TLS/HSTS, host filesystem ownership, a live restore rehearsal or a live log-maintenance
+run is Phase 10 work. None of it is proved by this repository, none of it is simulated
+with invented credentials, and nothing below may be reported as already proven.
+Every `<PLACEHOLDER>` is deployment-owned by construction.
+
 ## 1. Build the deterministic artifact
 
-On the build machine, from the repository root:
+Build-machine prerequisites: Node.js with npm, PHP 8.2 or newer, Composer, and `tar`
+with `gzip`. Nothing else is assumed, and none of these reach the artifact.
 
+On the build machine, from the repository root of a clean checkout of the candidate
+commit:
+
+<!-- runbook:production-build -->
 ```sh
 npm ci --prefix front
-composer install --working-dir=php --no-interaction
-npm run package:production
-npm run verify:production-artifact
+npm run artifact:production
+npm run artifact:verify
 ```
 
-The result is `dist/eszter-production.tar.gz`. The build uses the committed frontend
-and Composer lock files. Composer is installed into the staging tree with `--no-dev`
-and an authoritative class map. The verifier checks every staged file against
-`ARTIFACT-MANIFEST.json`, checks that a second archive is byte-identical, and rejects
-development packages, tests, caches, source maps, Node modules, configuration files
-and environment files. Node and Composer are build-time tools only.
+The result is `dist/eszter-production.tar.gz`. These three commands are the whole
+procedure: there is no preparatory build step to know about, because
+`artifact:production` builds the frontend itself.
+
+`npm ci --prefix front` installs the frontend from its committed lockfile; its
+`postinstall` builds the contract package the build needs. The PHP dependencies are
+*not* installed into `php/vendor` for this: the packager resolves the production-only
+Composer set from `php/composer.lock` directly into the artifact's staging tree with
+`--no-dev` and an authoritative class map, so a development `php/vendor` can never
+become release bytes.
+
+`npm run artifact:production` refuses to package anything but a clean committed
+candidate of the canonical repository (ESZ-126), then **rebuilds `front/out` from the
+current tracked source** — the previous export is deleted first and the export
+verifier runs before a single byte is copied. `front/out` is ignored by Git, so it is
+never part of the source identity the manifest attests; treating whatever happens to
+be on disk as authoritative would let a frontend built from one commit ship inside an
+artifact truthfully claiming another. It is rebuilt, never trusted (ESZ-143).
+
+`npm run artifact:verify` re-runs the verifier over the produced tree and archive on
+its own. The verifier checks every staged file against `ARTIFACT-MANIFEST.json`,
+attests the manifest's Git-derived provenance, checks that a second archive is
+byte-identical, requires every operator command of §2–§5 under `app/bin/` and runs
+each one's no-network `--help`, and rejects development packages, tests, caches,
+source maps, Node modules, configuration files and environment files. Node and
+Composer are build-time tools only; the deployed artifact needs neither.
 
 Upload the archive outside the document root, create the release directory and extract
 the archive's single top-level directory into it (use the hosting file manager or the

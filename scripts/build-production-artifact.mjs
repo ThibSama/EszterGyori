@@ -17,24 +17,24 @@ import {
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { committedCandidateProvenance } from "./production-provenance.mjs";
+import { PRODUCTION_OPERATOR_COMMANDS } from "./production-runbook.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(repoRoot, "dist");
 const artifactRoot = join(distRoot, "eszter-production");
 const archivePath = join(distRoot, "eszter-production.tar.gz");
 const tarPath = join(distRoot, "eszter-production.tar");
+const frontRoot = join(repoRoot, "front");
+const exportRoot = join(frontRoot, "out");
 
-const runtimeBins = [
-  "migrate.php",
-  "provision-admin.php",
-  "provision-booking-service.php",
-  "run-notification-jobs.php",
-  // ESZ-083. A backup tool that is not in the artifact is a backup tool the
-  // operator does not have on the day they need it, and the day they need it is
-  // never a day for uploading a script by hand.
-  "backup.php",
-  "restore.php",
-];
+// ESZ-083/ESZ-143. Every PHP command docs/deployment-runbook.md tells a deployed
+// operator to run, and only those. A backup tool that is not in the artifact is a
+// backup tool the operator does not have on the day they need it, and the day they
+// need it is never a day for uploading a script by hand — which is equally true of
+// the host preflight, the retention sweep and log maintenance. The list is shared
+// with the verifier, and the runbook procedure test asserts it is exactly what the
+// documented procedure asks for, so documentation and artifact cannot drift apart.
+const runtimeBins = [...PRODUCTION_OPERATOR_COMMANDS];
 
 function fail(message) {
   process.stderr.write(`package-production: ${message}\n`);
@@ -145,16 +145,38 @@ try {
   fail(error.message);
 }
 
-requirePath(join(repoRoot, "front", "out", "index.html"), "static export (run the frontend build first)");
 requirePath(join(repoRoot, "contracts", "generated", "manifest.json"), "generated contracts");
 requirePath(join(repoRoot, "php", "composer.lock"), "Composer lock file");
+
+// ESZ-143. The frontend prerequisite is rebuilt here, never inherited.
+//
+// front/out is ignored by Git, so it takes no part in the ESZ-126 source
+// identity above: a clean committed candidate B can sit on disk beside an
+// export produced from an entirely different commit A, and the old packager
+// copied whatever it found. The manifest would then truthfully attest B while
+// the frontend bytes came from A — a release nobody could reproduce and
+// nobody could detect after the fact.
+//
+// The fix is structural rather than a freshness heuristic: no timestamp is
+// consulted and no cache is trusted. The previous export is deleted, the
+// frontend is built again from the tracked source of this very candidate, and
+// the export verifier runs before a single byte is copied. Stale output cannot
+// survive deletion, so there is no state in which it can be shipped.
+requirePath(
+  join(frontRoot, "node_modules"),
+  "frontend dependencies (run: npm ci --prefix front)",
+);
+rmSync(exportRoot, { recursive: true, force: true });
+run("npm", ["run", "build", "--prefix", "front"]);
+run("npm", ["run", "verify:export", "--prefix", "front"]);
+requirePath(join(exportRoot, "index.html"), "rebuilt static export");
 
 mkdirSync(distRoot, { recursive: true });
 rmSync(artifactRoot, { recursive: true, force: true });
 rmSync(archivePath, { force: true });
 rmSync(tarPath, { force: true });
 
-copy(join(repoRoot, "front", "out"), join(artifactRoot, "public_html"));
+copy(exportRoot, join(artifactRoot, "public_html"));
 copy(join(repoRoot, "php", "public", "api", "index.php"), join(artifactRoot, "public_html", "api", "index.php"));
 copy(join(repoRoot, "php", "public", ".htaccess"), join(artifactRoot, "public_html", ".htaccess"));
 copy(join(repoRoot, "php", "public", "media", ".htaccess"), join(artifactRoot, "public_html", "media", ".htaccess"));
