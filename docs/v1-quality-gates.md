@@ -742,6 +742,62 @@ blocks a release wherever it appears.
 
 ---
 
+## 6b. Durable candidate evidence (ESZ-116)
+
+This section adds no gate and no second policy. `scripts/validate.mjs` remains the
+single fail-closed gate policy; ESZ-116 only makes the result of **one** canonical
+execution durable, so a candidate commit can still be audited after the CI logs and the
+step summary have expired.
+
+**Capture.** `npm run validate` optionally records itself to a file — `--report <path>`,
+or the `ESZTER_VALIDATION_REPORT` environment variable so CI still runs exactly
+`npm run validate`. Capturing is a side effect only: console output and the exit code
+are unchanged, and a report that cannot be written is a warning on stderr, never a
+different exit code. The file is versioned (`eszter-validation-report/v1`), carries the
+Git-derived canonical repository and 40-hex HEAD, and is written atomically. It records
+each gate's id, stage, status, required/deferred/ownership and duration plus **stable**
+failure metadata; arbitrary child stdout/stderr is deliberately never persisted, because
+that is where a credential, a cookie, a CSRF token or a customer address would leak into
+a published artifact.
+
+**Bundle.** `npm run evidence:generate` builds a versioned bundle
+(`eszter-candidate-evidence/v1`) from that one report plus the artifact outputs
+`deployment:artifact` already produced. It reuses the ESZ-126 provenance helpers, and
+everything in it is bound to `ThibSama/EszterGyori` and one full 40-hex commit:
+
+| File | Contents |
+| --- | --- |
+| `index.json` | the canonical index: every gate result, local-quality state, deployment/release state, artifact provenance, CI context, explicit evidence, baseline mapping and per-file digests |
+| `index.md` | the same facts, human-readable |
+| `validation-report.json` | the canonical validation report the index was built from |
+| `artifact-manifest.json` | the production artifact manifest, provenance included |
+| `eszter-production.tar.gz` | the packaged artifact, its SHA-256 recorded in the index |
+| `bundle.sha256` | digest of `index.json` — an identifier and a corruption check, not a signature |
+
+Local-quality state (`localQuality`) and deployment/release state (`deployment`) are
+separate structures. **"Release ready" is never derived from local success**:
+`deployment.releaseReady` is always `false` and `deployedHostEvidence` always
+`"pending"`, and a bundle claiming otherwise is refused.
+
+**Verification.** `npm run evidence:verify -- --bundle <dir> --expect-repository
+ThibSama/EszterGyori --expect-commit <sha>` is fail-closed. It re-hashes every
+referenced file and refuses: a repository or commit mismatch, an artifact whose
+provenance attests another commit, a tampered report/manifest/tarball, any required gate
+that is missing or not PASS, either deployment-owned gate that is no longer NOT RUN, a
+missing baseline family, a referenced gate id nothing declares, and any sensitive field
+anywhere in the index. Without a trusted expectation it fails rather than believing the
+bundle's claim about itself.
+
+**In CI.** `Eszter Quality` runs the canonical validation once with the report path set,
+then generates and verifies the bundle for the exact `GITHUB_SHA` and uploads it as
+`eszter-candidate-evidence-<full sha>`. Generation and verification run only after the
+validation succeeded, so no evidence step can turn a red gate green; a failed run keeps
+its partial report, whose `local.success: false` states the failure explicitly.
+
+Negative proofs: `node --test scripts/evidence-bundle.test.mjs`.
+
+---
+
 ## 7. Extending the policy
 
 Adding a gate:

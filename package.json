@@ -24,6 +24,8 @@
     "readiness:probe": "node scripts/readiness-cli.mjs",
     "php:lint": "php php/bin/lint.php",
     "baseline:verify": "node scripts/verify-project-baseline-matrix.mjs",
+    "evidence:generate": "node scripts/evidence-bundle.mjs generate",
+    "evidence:verify": "node scripts/evidence-bundle.mjs verify",
     "validate": "node scripts/validate.mjs"
   }
 }

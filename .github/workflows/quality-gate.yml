@@ -16,9 +16,22 @@ name: Eszter Quality
 # and deferred in every run of this workflow, and nothing here is a
 # release/deployment PASS. No deployment credentials, no Vercel coupling.
 #
+# ESZ-116 adds durable candidate evidence to that same single execution. The
+# canonical run writes its report to ESZTER_VALIDATION_REPORT (so the command
+# stays exactly `npm run validate`), a versioned evidence bundle is generated
+# from that one report plus the artifact outputs, the bundle is verified
+# against the exact GITHUB_SHA, and it is uploaded as an Actions artifact named
+# with the full commit SHA. Evidence is produced FROM the gate result and never
+# decides it: generation and verification run only after validation succeeded,
+# so no evidence step can turn a red gate green. A failed run still retains its
+# partial validation report, whose `local.success: false` states its own
+# failure explicitly.
+#
 # Least privilege: `contents: read` and nothing else — no secrets are read,
 # no write permission is granted, and the checkout does not persist
-# credentials.
+# credentials. Uploading an Actions artifact uses the runtime token, not
+# `GITHUB_TOKEN` permissions, so no permission is widened for it. Every action
+# is pinned to an immutable full commit SHA.
 #
 # Triggers:
 #   - pushes to phase/9-consolidation and master;
@@ -129,8 +142,52 @@ jobs:
       # ESZ-124's canonical fail-closed gate — run exactly once, unmodified.
       # Ordering, provisioning, cleanup and the local/deferred distinction are
       # owned by scripts/validate.mjs.
+      #
+      # The command is unchanged — `npm run validate`, once. The environment
+      # variable only asks that same execution to also record itself durably,
+      # so there is still exactly one canonical validation and CI never runs a
+      # second one to produce evidence.
       - name: Canonical npm run validate
+        env:
+          ESZTER_VALIDATION_REPORT: ${{ github.workspace }}/dist/evidence/validation-report.json
         run: npm run validate
+
+      # ESZ-116. Built from the report the canonical run just wrote plus the
+      # artifact outputs `deployment:artifact` produced. This step runs no
+      # gate and re-decides no gate outcome; it only reaches this point because
+      # the canonical validation above succeeded.
+      # The bundle is generated into the directory that already holds the
+      # report, so the uploaded artifact IS the bundle: a downloaded copy needs
+      # no unwrapping before `evidence:verify` can be pointed at it.
+      - name: Generate the durable candidate evidence bundle
+        run: npm run evidence:generate -- --report dist/evidence/validation-report.json --out dist/evidence
+
+      # Fail-closed re-check against the exact triggering commit: every
+      # referenced file is re-hashed, artifact provenance is attested, every
+      # required gate must be PASS, both deployment-owned gates must still be
+      # NOT RUN, all eight baseline families must be mapped, and nothing
+      # sensitive may appear. A bad bundle fails the job.
+      - name: Verify the candidate evidence for this SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run evidence:verify -- \
+            --bundle dist/evidence \
+            --expect-repository ThibSama/EszterGyori \
+            --expect-commit "$GITHUB_SHA"
+
+      # `if: always()` so a failed run still keeps its partial validation
+      # report — retained evidence of a failure, never a claim of success: the
+      # report states `local.success: false` and names the blocking gates, and
+      # on that path no bundle exists to be mistaken for a passing one.
+      - name: Upload the candidate evidence bundle
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4.6.2
+        with:
+          name: eszter-candidate-evidence-${{ github.sha }}
+          path: dist/evidence/
+          if-no-files-found: warn
+          retention-days: 90
 
       - name: Write the quality summary
         if: always()
@@ -144,5 +201,8 @@ jobs:
             echo "- Trigger SHA: \`$GITHUB_SHA\`"
             echo "- Canonical command: \`npm run validate\`"
             echo "- Repo-owned quality outcome: $OUTCOME"
+            echo "- Candidate evidence artifact: \`eszter-candidate-evidence-$GITHUB_SHA\` (\`index.json\`, \`index.md\`, \`validation-report.json\`, \`artifact-manifest.json\`, \`eszter-production.tar.gz\`)"
+            echo "- Verify a downloaded bundle with: \`npm run evidence:verify -- --bundle <download-dir> --expect-repository ThibSama/EszterGyori --expect-commit $GITHUB_SHA\`"
+            echo "- On a failed run the artifact retains only the partial \`validation-report.json\`, whose \`local.success: false\` states the failure explicitly."
             echo "- Deployed-host evidence (\`smoke:deployed-http\`, \`security:config\`) remains deferred and separate — this run is **not** a release/deployment PASS."
           } >> "$GITHUB_STEP_SUMMARY"

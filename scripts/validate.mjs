@@ -35,15 +35,121 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dockerEngineAvailable, provisionSqlTestMySql } from "./sql-test-mysql.mjs";
+import { resolveHeadCommit, resolveRepositoryIdentity } from "./production-provenance.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const PASS = "PASS";
 const FAIL = "FAIL";
 const NOT_RUN = "NOT RUN";
+
+/**
+ * ESZ-116 — the durable form of one canonical validation execution.
+ *
+ * The console output and the exit code stay the contract of this runner; the
+ * report file is an additional, optional side effect that records the SAME
+ * single execution so downstream evidence never needs a second validation
+ * run. It is versioned so a consumer can refuse a shape it does not know.
+ */
+export const VALIDATION_REPORT_FORMAT = "eszter-validation-report/v1";
+
+// Bound on the stable failure metadata kept per gate. Enough to name why a
+// gate failed ("exit 1", "terminated by SIGKILL", a provisioning error), never
+// enough to become a transcript.
+const DETAIL_LIMIT = 500;
+
+/**
+ * Stable, bounded, single-line failure metadata.
+ *
+ * Child stdout/stderr is deliberately NOT part of the durable report: it is
+ * arbitrary text produced by dozens of third-party tools, so it is exactly the
+ * place where a credential, a cookie, a CSRF token or a customer address would
+ * leak into a published evidence artifact. `detail` is metadata this runner
+ * generates itself; it is still normalised to one bounded line.
+ */
+function stableDetail(detail) {
+  if (typeof detail !== "string") return undefined;
+  const flattened = detail.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!flattened) return undefined;
+  return flattened.length > DETAIL_LIMIT ? `${flattened.slice(0, DETAIL_LIMIT - 1)}…` : flattened;
+}
+
+/**
+ * Project one in-memory gate result onto the durable report shape.
+ *
+ * The allowlist is the policy: only the declared policy metadata plus stable
+ * failure metadata survives. `output` (arbitrary child stdout/stderr) is
+ * dropped, and nothing that is not named here can reach the file.
+ */
+function durableGateEntry(entry) {
+  const durable = {
+    id: entry.id,
+    stage: entry.stage,
+    status: entry.status,
+    required: entry.required,
+    deferred: entry.deferred,
+    ownership: entry.ownership,
+  };
+  if (typeof entry.durationMs === "number") durable.durationMs = entry.durationMs;
+  const detail = stableDetail(entry.detail);
+  if (detail !== undefined) durable.detail = detail;
+  const reason = stableDetail(entry.reason);
+  if (reason !== undefined) durable.reason = reason;
+  if (entry.signal) durable.signal = entry.signal;
+  return durable;
+}
+
+/**
+ * Build the durable report for one canonical execution.
+ *
+ * Repository identity and commit are Git-derived through the ESZ-126 helpers,
+ * never taken from a caller, a branch name or an environment variable, so the
+ * report binds itself to the exact candidate it was produced on.
+ */
+export function durableValidationReport(report, summary, { cwd = repoRoot } = {}) {
+  return {
+    format: VALIDATION_REPORT_FORMAT,
+    candidate: {
+      repository: resolveRepositoryIdentity(cwd),
+      commit: resolveHeadCommit(cwd),
+    },
+    // Local, repo-owned quality only. Deferred deployment-owned evidence is
+    // reported separately and is never folded into this success.
+    local: summary.local,
+    deployment: summary.deployment,
+    counts: {
+      passed: summary.passed,
+      failed: summary.failed,
+      notRun: summary.notRun,
+      requiredNotRun: summary.requiredNotRun,
+    },
+    blocked: summary.blocked,
+    gates: report.map(durableGateEntry),
+  };
+}
+
+/**
+ * Write the durable report atomically: a reader (the evidence generator, a CI
+ * upload running with `if: always()`) never observes a half-written file, and
+ * a crashed run leaves either the previous report or none.
+ */
+function writeValidationReport(path, payload) {
+  const target = resolve(repoRoot, path);
+  mkdirSync(dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o644 });
+    renameSync(temporary, target);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+  return target;
+}
 
 // ESZ-124 — the two kinds of gate. Repo-owned gates (no `deferred` marker)
 // are required and executable. Deployment-owned evidence whose subject does
@@ -717,10 +823,19 @@ export function summarize(report, interrupted = false) {
 }
 
 function parseArgs(argv) {
+  // ESZ-116 — `--report <path>` / `--report=<path>` is the explicit form; the
+  // `ESZTER_VALIDATION_REPORT` environment variable is the CI form, so the
+  // workflow still executes exactly `npm run validate` with no extra argument.
+  const flag = argv.findIndex((argument) => argument === "--report" || argument.startsWith("--report="));
+  let report = null;
+  if (flag !== -1) {
+    report = argv[flag].startsWith("--report=") ? argv[flag].slice("--report=".length) : argv[flag + 1] ?? null;
+  }
   return {
     list: argv.includes("--list"),
     json: argv.includes("--json"),
     help: argv.includes("--help") || argv.includes("-h"),
+    report,
   };
 }
 
@@ -760,10 +875,14 @@ async function main() {
   if (args.help) {
     process.stdout.write(
       [
-        "Usage: node scripts/validate.mjs [--list] [--json]",
+        "Usage: node scripts/validate.mjs [--list] [--json] [--report <path>]",
         "",
         "  --list   print the declared gates and exit without running anything",
         "  --json   emit a machine-readable report on stdout",
+        "  --report also record this execution durably at <path> (ESZ-116).",
+        "           ESZTER_VALIDATION_REPORT is the equivalent environment form,",
+        "           so CI can still run exactly `npm run validate`. Writing the",
+        "           report never changes console output or the exit code.",
         "",
         "Exit codes: 0 = local success (every repo-owned gate PASSed; deferred",
         "deployment-owned evidence may remain NOT RUN), 1 = a required gate FAILed",
@@ -801,7 +920,7 @@ async function main() {
     return 0;
   }
 
-  return (await runValidation({ json: args.json })).code;
+  return (await runValidation({ json: args.json, reportPath: args.report })).code;
 }
 
 /**
@@ -835,12 +954,27 @@ async function main() {
  * do not fail a local run, but they never count as PASS and the report
  * distinguishes local success from deferred live evidence.
  *
- * @param {{ ids?: string[]|null, json?: boolean, declared?: object[], silent?: boolean }} [options]
+ * ESZ-116 report capture: when `reportPath` (or the `ESZTER_VALIDATION_REPORT`
+ * environment variable) names a file, THIS execution — the one and only
+ * canonical run — is additionally recorded there in the versioned durable
+ * shape. It is a side effect only: console output and the returned exit code
+ * are byte-for-byte what they were without it, and a report that cannot be
+ * written is a warning on stderr, never a different exit code. Turning a red
+ * run green (or a green run red) through evidence handling is exactly what
+ * this must not do.
+ *
+ * @param {{ ids?: string[]|null, json?: boolean, declared?: object[], silent?: boolean, reportPath?: string|null }} [options]
  * @returns {Promise<{code: number, report: object[], summary: object}>} code:
  *   0 local success, 1 a required gate failed or did not PASS, 2 declaration
  *   error, 130 = interrupted.
  */
-export async function runValidation({ ids = null, json = false, declared = gates, silent = false } = {}) {
+export async function runValidation({
+  ids = null,
+  json = false,
+  declared = gates,
+  silent = false,
+  reportPath = null,
+} = {}) {
   // The canonical list is the complete policy: the allowlist-presence check
   // applies only to it, never to an injected subset of gates.
   const problems = gateDeclarationProblems(declared, { completePolicy: declared === gates });
@@ -1019,6 +1153,22 @@ export async function runValidation({ ids = null, json = false, declared = gates
   }
 
   const summary = summarize(report, interrupted);
+
+  // ESZ-116 — durable capture of this execution. Written for a failed and an
+  // interrupted run too: a retained partial report whose `local.success` is
+  // false states its own failure explicitly, which is more useful than no
+  // evidence at all. Never affects `summary.code`.
+  const destination = reportPath ?? process.env.ESZTER_VALIDATION_REPORT ?? null;
+  if (destination) {
+    try {
+      const written = writeValidationReport(destination, durableValidationReport(report, summary));
+      if (!json && !silent) emit(`\n  Validation report written: ${written}\n`);
+    } catch (error) {
+      process.stderr.write(
+        `validate: could not write the validation report to ${destination}: ${error?.message ?? error}\n`,
+      );
+    }
+  }
 
   if (json && !silent) {
     emit(
