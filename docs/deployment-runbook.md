@@ -5,6 +5,13 @@ proves the deployable inputs; it does not claim that a host, domain, database, S
 account or cron entry exists. Replace every `<PLACEHOLDER>` below with a value from the
 hosting account. Never put those values in Git or in the production archive.
 
+Before any of this: the code you are deploying reached `master` through a pull request
+whose `quality-gate` check was green. Since ESZ-138 that is enforced by branch
+protection on `master`, not by convention — including for the repository owner. The
+policy, and the only legitimate emergency procedure for relaxing it (recorded incident,
+minimal window, immediate restore, green `quality-gate` on the resulting `master` SHA),
+are in `docs/v1-quality-gates.md` §6c. There is no bypass account and no "push anyway".
+
 ## 1. Build the deterministic artifact
 
 On the build machine, from the repository root:

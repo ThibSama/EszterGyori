@@ -798,6 +798,59 @@ Negative proofs: `node --test scripts/evidence-bundle.test.mjs`.
 
 ---
 
+## 6c. Enforcement on `master` (ESZ-138)
+
+§6 states the release bar; this section is what makes it a *rule* rather than a
+convention. Before ESZ-138 `master` was unprotected: the gate existed, ran, and could be
+ignored by anyone with push access — including its own maintainer on a tired evening.
+A gate that can be walked around is documentation, not a gate.
+
+**Mechanism.** GitHub *classic branch protection* on exactly `master` — the smallest
+native mechanism that expresses this policy. No repository ruleset is used; one
+mechanism, one place to read the truth.
+
+**Effective policy.**
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| Required pull request | yes, `required_approving_review_count: 0` | Changes reach `master` through a PR, never a direct push. Zero approvals is deliberate — one-maintainer operation stays possible, and ESZ-138 adds no review-count requirement. |
+| Required status check | exactly `quality-gate`, bound to `app_id: 15368` (GitHub Actions) | The repo-owned gate of §4–§6 must be green before integration. Binding the app id means a same-named status posted by any other app or by a raw commit-status API call cannot satisfy it. |
+| Strict (up to date) | `true` | The candidate is re-validated against the current `master` tip, so two independently-green branches cannot merge into a red result. |
+| `enforce_admins` | `true` | The owner/admin is covered by the rule. This is the setting that makes the gate real for a single-maintainer repository. |
+| Push restrictions | none | No standing bypass actor exists. An allowlist here would be a permanent hole with a name on it. |
+| Force pushes | disabled | Released history stays auditable; evidence bundles (§6b) are keyed to SHAs that must keep existing. |
+| Branch deletion | disabled | — |
+| Vercel checks | **not** required | Deployment-owned evidence never gates repo-owned integration (§5). |
+
+Read the live policy back with:
+
+```
+gh api repos/ThibSama/EszterGyori/branches/master/protection
+```
+
+**Emergency procedure.** The emergency path is *never* “push anyway”, and there is no
+permanent bypass account, machine token or exempt actor to make that possible — that is
+the whole point of the table above.
+
+For a recorded incident, and only then:
+
+1. **Record first.** Open the incident (ticket/entry) *before* touching protection:
+   what is broken, why waiting for the gate is the greater risk, who is acting.
+2. An administrator temporarily relaxes the specific setting that blocks the fix — no
+   more than that. Prefer the narrowest change; do not delete the protection wholesale.
+3. **Minimise the window.** Land the fix and restore the protection immediately, in the
+   same working session. The relaxed state is never left overnight.
+4. Restore by re-applying the policy in the table above and reading it back.
+5. **Settle the debt.** Obtain a green `quality-gate` on the resulting exact `master`
+   SHA. An incident may reorder validation against delivery; it never cancels it.
+6. Record in the incident the exact SHA, the window (relaxed → restored) and the run
+   that turned green.
+
+An emergency that skips step 1 or step 5 is not an emergency, it is an outage of the
+policy.
+
+---
+
 ## 7. Extending the policy
 
 Adding a gate:
