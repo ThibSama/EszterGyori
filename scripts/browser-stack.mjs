@@ -164,6 +164,73 @@ export function parisShortDateLabel(date) {
   }).format(new Date(`${date}T12:00:00Z`));
 }
 
+/**
+ * ESZ-116 — the reminder lead the booking domain enqueues at.
+ *
+ * `booking_reminder.due_at_utc` is exactly `starts_at_utc − 24 h`
+ * (BookingLifecycle, asserted verbatim by `browser:booking` against MySQL).
+ */
+export const REMINDER_LEAD_MINUTES = 24 * 60;
+
+/**
+ * How far *beyond* "not yet due" a candidate reminder instant must sit before a
+ * browser run is allowed to book the slot.
+ *
+ * `NotificationCatchUpPolicy` decides `pending` vs. `skipped` at enqueue time by
+ * comparing the reminder's due instant against the clock. A slot picked purely
+ * because it is the earliest future one can therefore be enqueued `skipped`
+ * — correctly — whenever the run happens to start after `start − 24 h`, which is
+ * exactly the nondeterminism that made this gate fail on a real CI clock.
+ *
+ * The margin is the wall-clock budget between *selecting* a slot and the backend
+ * *enqueueing* its jobs: everything the journey does in between (two Chrome
+ * tabs, the whole reservation flow, the stale-slot recovery path). An hour is
+ * far more than that path has ever needed and still leaves the choice inside the
+ * rendered date grid, so a slow CI runner cannot cross the reminder boundary
+ * mid-run.
+ */
+export const REMINDER_SAFETY_MARGIN_MINUTES = 60;
+
+/**
+ * The whole invariant, stated once:
+ *
+ *   startsAtUtc − REMINDER_LEAD_MINUTES ≥ now + safetyMarginMinutes
+ *
+ * i.e. the slot's reminder is still comfortably in the future, so the enqueue
+ * decision is `pending` and stays `pending` for the length of the run.
+ */
+export function reminderStaysPending(
+  startsAtUtc,
+  now,
+  safetyMarginMinutes = REMINDER_SAFETY_MARGIN_MINUTES,
+) {
+  const startsAt = Date.parse(startsAtUtc);
+  if (!Number.isFinite(startsAt)) return false;
+  const reminderDueAt = startsAt - REMINDER_LEAD_MINUTES * 60_000;
+  return reminderDueAt >= now.getTime() + safetyMarginMinutes * 60_000;
+}
+
+/**
+ * The earliest slot of `slots` whose reminder is still safely pending, or
+ * `null` when none qualifies — deliberately fail-closed, never a fallback to a
+ * slot that would enqueue a `skipped` reminder.
+ *
+ * Time-of-day is the only thing that decides: no weekday, no calendar date and
+ * no runner timezone is consulted anywhere.
+ */
+export function selectReminderPendingSlot(
+  slots,
+  { now, safetyMarginMinutes = REMINDER_SAFETY_MARGIN_MINUTES } = {},
+) {
+  if (!Array.isArray(slots)) return null;
+  return (
+    slots
+      .filter((slot) => typeof slot?.startsAtUtc === "string")
+      .sort((a, b) => a.startsAtUtc.localeCompare(b.startsAtUtc))
+      .find((slot) => reminderStaysPending(slot.startsAtUtc, now, safetyMarginMinutes)) ?? null
+  );
+}
+
 export function stopProcessQuietly(processHandle) {
   if (!processHandle || processHandle.exitCode !== null || processHandle.signalCode !== null) return;
   processHandle.kill("SIGTERM");

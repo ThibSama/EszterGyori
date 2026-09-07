@@ -62,6 +62,9 @@ import {
   parisToday,
   addParisDays,
   parisDayCellPrefix,
+  selectReminderPendingSlot,
+  REMINDER_LEAD_MINUTES,
+  REMINDER_SAFETY_MARGIN_MINUTES,
   stopProcessQuietly,
   signIn,
   sessionCookie,
@@ -125,37 +128,56 @@ async function main() {
     ?? servicesResponse.body.services[0].key;
   assert(typeof serviceKey === "string", "no bookable service key could be resolved");
 
-  // Earliest *future* day (tomorrow..+6, then today only as a fallback) that
-  // really has slots. A future day keeps the whole browser run far from the
-  // slot-boundary races that a same-day slot could hit while the two tabs
-  // interact, and the weekly rules guarantee several bookable weekdays in any
-  // seven-day window.
+  // ESZ-116 — the earliest real slot whose *reminder* is still safely pending.
+  //
+  // Picking the earliest future slot outright is time-of-day dependent: a run
+  // starting after `start − 24 h` books a slot whose reminder is already past
+  // due, `NotificationCatchUpPolicy` correctly enqueues it `skipped`, and the
+  // pending-reminder assertion below fails for a fixture reason rather than a
+  // product one. `selectReminderPendingSlot` states the invariant instead —
+  // `startsAtUtc − 24 h ≥ now + REMINDER_SAFETY_MARGIN_MINUTES` — so the
+  // reminder is still pending at selection *and* stays pending for the whole
+  // run, on any clock and in any runner timezone.
+  //
+  // The search covers the days the public date grid renders without paging
+  // (`RESERVATION_RANGE_DAYS`, today plus six), which is provably enough under
+  // the six Mon–Sat 09:00–17:00 weekly rules: the latest a run can start is
+  // just before the last window closes, so day+2 09:00 already clears
+  // now + 25 h, and at most one of day+1..day+3 is the single non-bookable
+  // weekday. No weekday name, calendar date or CI timezone is consulted.
+  const now = new Date();
+  const searchDays = [1, 2, 3, 4, 5, 6];
   let targetDate = null;
-  let slotsByDate = null;
-  for (const offset of [1, 2, 3, 4, 5, 6, 0]) {
-    const candidate = offset === 0 ? today : addParisDays(today, offset);
+  let chosenSlot = null;
+  let examinedSlots = 0;
+  for (const offset of searchDays) {
+    const candidate = addParisDays(today, offset);
     const availability = await json("/api/booking/availability", {
       method: "POST",
       headers: { accept: "application/json", "content-type": "application/json" },
       body: JSON.stringify({ serviceKey, fromDate: candidate, untilDate: candidate }),
     });
     assert(availability.status === 200, `availability query failed for ${candidate}`);
-    if (availability.body.slots?.length > 0) {
+    const daySlots = (availability.body.slots ?? []).filter((slot) => slot.localDate === candidate);
+    examinedSlots += daySlots.length;
+    const qualifying = selectReminderPendingSlot(daySlots, { now });
+    if (qualifying !== null) {
       targetDate = candidate;
-      slotsByDate = availability.body.slots;
+      chosenSlot = qualifying;
       break;
     }
   }
-  assert(targetDate !== null && Array.isArray(slotsByDate), "no real slot was available in the next seven days");
-  const targetSlots = slotsByDate.filter((slot) => slot.localDate === targetDate).sort((a, b) => a.startsAtUtc.localeCompare(b.startsAtUtc));
-  assert(targetSlots.length >= 1, "the chosen day has no slot");
-  const chosenSlot = targetSlots[0];
+  assert(
+    chosenSlot !== null,
+    `no real slot satisfied the reminder-pending precondition: of ${examinedSlots} slot(s) offered on ${addParisDays(today, searchDays[0])}..${addParisDays(today, searchDays[searchDays.length - 1])}, none had startsAtUtc - ${REMINDER_LEAD_MINUTES} min >= ${now.toISOString()} + ${REMINDER_SAFETY_MARGIN_MINUTES} min, so every one of them would enqueue a terminally skipped booking_reminder instead of the pending job this gate proves`,
+  );
   const targetOffset = (() => {
     let days = 0;
     for (let date = today; date < targetDate; date = addParisDays(date, 1)) days++;
     return days;
   })();
-  process.stdout.write(`availability: ${rules.length} active weekly rules (Mon-Sat 09:00-17:00), first real slot ${targetDate} ${chosenSlot.localStart} (${chosenSlot.startsAtUtc})\n`);
+  const reminderDueAt = new Date(Date.parse(chosenSlot.startsAtUtc) - REMINDER_LEAD_MINUTES * 60_000);
+  process.stdout.write(`availability: ${rules.length} active weekly rules (Mon-Sat 09:00-17:00), earliest reminder-pending slot ${targetDate} ${chosenSlot.localStart} (${chosenSlot.startsAtUtc}), reminder due ${reminderDueAt.toISOString()} = start-24h, ${Math.round((reminderDueAt.getTime() - now.getTime()) / 60_000)} min ahead of selection (margin ${REMINDER_SAFETY_MARGIN_MINUTES} min)\n`);
 
   // ── Reservation page, keyboard skip-link ────────────────────────────────
   await navigateAndWait(cdp, `${origin}/reservation`, "reservation page", `Boolean(document.getElementById("reservation-main"))`);
