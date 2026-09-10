@@ -95,18 +95,33 @@ function dayCellLabel(date: string, bookingCount: number): string {
  * nothing. So the day's availability is part of its name, in the same words the
  * visible line uses.
  */
-function weekDayHeadLabel(plan: WeekDayPlan): string {
+function weekDayHeadLabel(plan: WeekDayPlan, ready: boolean): string {
   const appointments =
     plan.appointments.length === 0
       ? "aucun rendez-vous"
       : `${plan.appointments.length} rendez-vous`;
 
-  return `${formatParisDate(plan.date)}, ${appointments}, ${dayAvailabilityLabel(plan)}`;
+  return `${formatParisDate(plan.date)}, ${appointments}, ${availabilityPhrase(plan, ready)}`;
+}
+
+/**
+ * The day's availability in words — or the honest absence of it.
+ *
+ * `ready` is false while the loaded availability does not cover this date, and
+ * the sentence has to say so rather than read out the weekly fallback: a screen
+ * reader hearing "Fermé" for a date whose stored closure was never read is told
+ * the same falsehood the shading would tell (ESZ-159).
+ */
+function availabilityPhrase(plan: WeekDayPlan, ready: boolean): string {
+  return ready ? dayAvailabilityLabel(plan) : "disponibilité non chargée pour cette date";
 }
 
 /** The accessible name of the button that edits one date's exception. */
-function availabilityButtonLabel(plan: WeekDayPlan): string {
-  return `Disponibilité du ${formatParisDate(plan.date)} : ${dayAvailabilityLabel(plan)}. Modifier l’exception de cette date.`;
+function availabilityButtonLabel(plan: WeekDayPlan, ready: boolean): string {
+  const action = ready
+    ? "Modifier l’exception de cette date."
+    : "Disponible une fois les disponibilités chargées.";
+  return `Disponibilité du ${formatParisDate(plan.date)} : ${availabilityPhrase(plan, ready)}. ${action}`;
 }
 
 /** The accessible name of one appointment chip on the week grid. */
@@ -119,10 +134,6 @@ export function AdminBookingCalendar({
   initialPanel = "appointments",
 }: Readonly<{ initialPanel?: CalendarPanel }> = {}) {
   const { api, csrfToken, markExpired, refreshSession } = useAdminSession();
-  // ESZ-159: one availability state for the whole destination. The grid shades
-  // itself from these rules and the editor below saves them; there is no second
-  // fetch and no second opinion about what a date is open for.
-  const availability = useAvailabilityWorkspace();
   const [showAvailability, setShowAvailability] = useState(initialPanel === "availability");
   const today = useMemo(() => parisLocalDate(), []);
   const [month, setMonth] = useState(monthKey(today));
@@ -156,6 +167,16 @@ export function AdminBookingCalendar({
     return monthGrid(month);
   }, [month, selectedDate, view]);
   const rangeKey = `${dates[0]}..${dates[dates.length - 1]}`;
+  const visibleSpan = useMemo(
+    () => ({ fromDate: dates[0], untilDate: dates[dates.length - 1] }),
+    [dates],
+  );
+  // ESZ-159: one availability state for the whole destination. The grid shades
+  // itself from these rules and the editor below saves them; there is no second
+  // fetch and no second opinion about what a date is open for. The span on
+  // screen is what it reads for, so navigating out of the loaded window re-reads
+  // instead of projecting dates the last read never covered.
+  const availability = useAvailabilityWorkspace(visibleSpan);
   /**
    * Busy is *derived*, not announced.
    *
@@ -421,7 +442,11 @@ export function AdminBookingCalendar({
     goToDate(view === "week" ? shiftWeek(selectedDate, delta) : addCivilDays(selectedDate, delta));
   };
 
-  const availabilityReady = !availability.loading;
+  // Ready means *covered*, not merely "not loading". A week the last read did
+  // not include has no exceptions in hand, and `dateWindows` would answer for it
+  // from the weekly rules alone — a stored closure would render as ordinary
+  // opening hours, which is a false planning constraint rather than a slow one.
+  // So the grid waits, exactly as it already waits for its appointments.
 
   // The week the grid draws, and the hours tall enough to hold it. Both are
   // projections of state the server already returned — `weekPlan` asks
@@ -429,6 +454,10 @@ export function AdminBookingCalendar({
   // appointments, which is the whole of the "readable together" requirement and
   // none of a slot rule.
   const weekDates = useMemo(() => weekDays(selectedDate), [selectedDate]);
+  const availabilityReady =
+    !availability.loading &&
+    availability.covers(weekDates[0]) &&
+    availability.covers(weekDates[weekDates.length - 1]);
   const week = useMemo(
     () => weekPlan(weekDates, availability.rules, availability.exceptions, bookings, today),
     [availability.exceptions, availability.rules, bookings, today, weekDates],
@@ -520,7 +549,7 @@ export function AdminBookingCalendar({
                       <div key={plan.date} className="space-y-1">
                         <button
                           type="button"
-                          aria-label={weekDayHeadLabel(plan)}
+                          aria-label={weekDayHeadLabel(plan, availabilityReady)}
                           aria-current={selectedDate === plan.date ? "date" : undefined}
                           onClick={() => { setView("day"); goToDate(plan.date); }}
                           className={`w-full rounded-xl border px-2 py-2 text-center focus:outline-none focus:ring-2 focus:ring-sage-300 ${plan.isToday ? "border-sage-500 bg-sage-50" : "border-warm-200 bg-white"}`}>
@@ -529,10 +558,11 @@ export function AdminBookingCalendar({
                         </button>
                         <button
                           type="button"
-                          aria-label={availabilityButtonLabel(plan)}
+                          aria-label={availabilityButtonLabel(plan, availabilityReady)}
+                          disabled={!availabilityReady}
                           onClick={() => editAvailability(plan.date)}
-                          className={`w-full rounded-lg border px-2 py-1 text-[11px] leading-tight focus:outline-none focus:ring-2 focus:ring-sage-300 ${plan.windows.length === 0 ? "border-warm-200 bg-warm-100 text-warm-600" : plan.kind === "exception" ? "border-amber-300 bg-amber-50 text-amber-900" : "border-sage-200 bg-sage-50 text-sage-900"}`}>
-                          <span aria-hidden="true">{availabilityReady ? dayAvailabilityLabel(plan) : "Chargement…"}</span>
+                          className={`w-full rounded-lg border px-2 py-1 text-[11px] leading-tight focus:outline-none focus:ring-2 focus:ring-sage-300 disabled:cursor-progress ${!availabilityReady ? "border-warm-200 bg-warm-50 text-warm-500" : plan.windows.length === 0 ? "border-warm-200 bg-warm-100 text-warm-600" : plan.kind === "exception" ? "border-amber-300 bg-amber-50 text-amber-900" : "border-sage-200 bg-sage-50 text-sage-900"}`}>
+                          <span aria-hidden="true">{availabilityReady ? dayAvailabilityLabel(plan) : availability.loading ? "Chargement…" : "Indisponible"}</span>
                         </button>
                       </div>
                     ))}

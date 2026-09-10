@@ -26,10 +26,13 @@ import {
   toRequest,
   weeklyRuleIssues,
 } from "../../lib/admin-availability";
-import { addCivilDays, formatParisDate, parisLocalDate } from "../../lib/admin-booking-calendar";
-
-/** How far ahead the editor reads exceptions. Well inside the contract's 400-day cap. */
-const HORIZON_DAYS = 180;
+import {
+  type AvailabilityRange,
+  needsAvailabilityRead,
+  planAvailabilityRange,
+  rangeCoversDate,
+} from "../../lib/admin-availability-range";
+import { formatParisDate, parisLocalDate } from "../../lib/admin-booking-calendar";
 
 type ExceptionDraft = {
   localDate: string;
@@ -72,6 +75,14 @@ const inputClass =
  * Nothing about the *writes* moved. Every mutation still goes to the existing
  * server API with its `expectedRevision`, and the server's response is still the
  * only thing adopted afterwards.
+ *
+ * What the read had to gain is a range that follows the calendar. A fixed
+ * `today … today + 180` window answered for dates it had never been asked about
+ * — a visible past week, or a week past the horizon — and `dateWindows` cannot
+ * tell "no exception" from "no exception *read*". So the window is planned from
+ * the visible span (`admin-availability-range`), re-read when navigation leaves
+ * it, and published as `coverage` so nothing projects a date the server has not
+ * spoken for.
  */
 export interface AvailabilityWorkspace {
   readonly loading: boolean;
@@ -84,6 +95,10 @@ export interface AvailabilityWorkspace {
   readonly draft: ExceptionDraft | null;
   readonly confirmation: Confirmation | null;
   readonly previewDate: string;
+  /** The civil range the loaded rules and exceptions actually speak for. */
+  readonly coverage: AvailabilityRange | null;
+  /** Whether the loaded availability covers this date — false means "unknown", never "closed". */
+  readonly covers: (localDate: string) => boolean;
   readonly issues: RuleIssue[];
   readonly draftIssues: RuleIssue[];
   readonly dirty: boolean;
@@ -103,12 +118,11 @@ export interface AvailabilityWorkspace {
   readonly confirmed: () => void;
 }
 
-export function useAvailabilityWorkspace(): AvailabilityWorkspace {
+export function useAvailabilityWorkspace(visible: AvailabilityRange): AvailabilityWorkspace {
   const { api, csrfToken, markExpired, refreshSession } = useAdminSession();
   const today = useMemo(() => parisLocalDate(), []);
-  const untilDate = useMemo(() => addCivilDays(today, HORIZON_DAYS), [today]);
+  const { fromDate: visibleFrom, untilDate: visibleUntil } = visible;
 
-  const [loading, setLoading] = useState(true);
   const [rules, setRules] = useState<WeeklyRuleDraft[]>([]);
   const [savedRules, setSavedRules] = useState<WeeklyRuleDraft[]>([]);
   const [exceptions, setExceptions] = useState<AdminAvailabilityException[]>([]);
@@ -119,10 +133,27 @@ export function useAvailabilityWorkspace(): AvailabilityWorkspace {
   const [draft, setDraft] = useState<ExceptionDraft | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [previewDate, setPreviewDate] = useState(today);
+  const [coverage, setCoverage] = useState<AvailabilityRange | null>(null);
+  const [fetchedSpan, setFetchedSpan] = useState<AvailabilityRange | null>(null);
 
   const noticeRef = useRef<HTMLDivElement>(null);
   const draftHeadingRef = useRef<HTMLHeadingElement>(null);
   const confirmHeadingRef = useRef<HTMLHeadingElement>(null);
+
+  /**
+   * Busy is *derived*, exactly as it is for the appointments half.
+   *
+   * A hand-raised flag inside the effect is a cascading render, and one raised
+   * by the navigation handlers strands a spinner the moment a handler forgets.
+   * Comparing the span on screen with the span that was actually fetched cannot
+   * do either: it is true exactly while the two disagree, and it clears on a
+   * refused read too — which is why the span is recorded whether or not the read
+   * succeeded, while `coverage` is set only when there is data to cover it.
+   */
+  const loading = needsAvailabilityRead(fetchedSpan, {
+    fromDate: visibleFrom,
+    untilDate: visibleUntil,
+  });
 
   const issues = useMemo(() => weeklyRuleIssues(rules), [rules]);
   const draftIssues = useMemo(
@@ -162,23 +193,38 @@ export function useAvailabilityWorkspace(): AvailabilityWorkspace {
     setSavedRules(sorted);
   }, []);
 
+  // One read per coverage gap, not one per navigation: paging inside the loaded
+  // window asks the server nothing, because nothing it would answer has changed
+  // for those dates. Leaving the window is the only thing that must re-read, and
+  // until that read lands `coverage` says so rather than the stale set standing
+  // in for dates it never included.
   useEffect(() => {
+    const span: AvailabilityRange = { fromDate: visibleFrom, untilDate: visibleUntil };
+    if (!needsAvailabilityRead(fetchedSpan, span)) return;
+    const requested = planAvailabilityRange(span, today);
     let active = true;
-    void api.readAvailability({ fromDate: today, untilDate }).then((result) => {
+    void api.readAvailability(requested).then((result) => {
       if (!active) return;
-      setLoading(false);
+      // Recorded either way: a span left unrecorded after a refusal re-enters
+      // this effect on the next render and retries a refused read forever.
+      setFetchedSpan(requested);
       if (!result.ok) return void handleFailure(result.failure);
       adopt(toDrafts(result.value.weeklyRules));
       setExceptions(result.value.exceptions);
       setRevision(result.value.revision);
+      setCoverage(requested);
     });
     return () => {
       active = false;
     };
-  }, [adopt, api, handleFailure, today, untilDate]);
+  }, [adopt, api, fetchedSpan, handleFailure, today, visibleFrom, visibleUntil]);
 
   const recoverAvailabilityConflict = useCallback(async () => {
-    const fresh = await api.readAvailability({ fromDate: today, untilDate });
+    // The same window that is on screen, so recovery restores exactly the dates
+    // the operator is looking at rather than a window they navigated away from.
+    const range =
+      coverage ?? planAvailabilityRange({ fromDate: visibleFrom, untilDate: visibleUntil }, today);
+    const fresh = await api.readAvailability(range);
     if (!fresh.ok) return void handleFailure(fresh.failure);
 
     // Discard every stale editing baseline. The next write is possible only
@@ -186,13 +232,15 @@ export function useAvailabilityWorkspace(): AvailabilityWorkspace {
     adopt(toDrafts(fresh.value.weeklyRules));
     setExceptions(fresh.value.exceptions);
     setRevision(fresh.value.revision);
+    setCoverage(range);
+    setFetchedSpan(range);
     setDraft(null);
     setConfirmation(null);
     notify(
       "Les disponibilités ont été modifiées ailleurs. Vos changements n’ont pas été enregistrés ; les horaires à jour ont été rechargés.",
       true,
     );
-  }, [adopt, api, handleFailure, notify, today, untilDate]);
+  }, [adopt, api, coverage, handleFailure, notify, today, visibleFrom, visibleUntil]);
 
   const updateRule = (key: string, patch: Partial<WeeklyRuleDraft>) => {
     setRules((current) =>
@@ -241,7 +289,22 @@ export function useAvailabilityWorkspace(): AvailabilityWorkspace {
     void saveWeekly();
   };
 
+  const covers = useCallback(
+    (localDate: string) => rangeCoversDate(coverage, localDate),
+    [coverage],
+  );
+
   const openDraft = (localDate: string) => {
+    // An uncovered date has no *known* exception, which is not the same as
+    // having none: opening a blank "open" draft there and saving it would
+    // silently replace a stored closure the tab had never read.
+    if (!rangeCoversDate(coverage, localDate)) {
+      notify(
+        "Les disponibilités de cette date ne sont pas encore chargées. Réessayez dans un instant.",
+        true,
+      );
+      return;
+    }
     const existing = exceptionForDate(exceptions, localDate);
     setDraft({
       localDate,
@@ -350,6 +413,8 @@ export function useAvailabilityWorkspace(): AvailabilityWorkspace {
     draft,
     confirmation,
     previewDate,
+    coverage,
+    covers,
     issues,
     draftIssues,
     dirty,
@@ -383,6 +448,8 @@ export function AdminAvailabilityEditor({
     draft,
     confirmation,
     previewDate,
+    coverage,
+    covers,
     issues,
     draftIssues,
     dirty,
@@ -401,6 +468,10 @@ export function AdminAvailabilityEditor({
     confirmed,
   } = workspace;
 
+  // Only inside the loaded window is this an answer. Outside it, "no exception"
+  // is the read's silence rather than the schedule's, and saying "Fermé" there
+  // would be the very false constraint the coverage model exists to prevent.
+  const previewCovered = covers(previewDate);
   const preview = describeDate(previewDate, rules, exceptions);
 
   return (
@@ -649,6 +720,8 @@ export function AdminAvailabilityEditor({
                   id="preview-date"
                   type="date"
                   value={previewDate}
+                  min={coverage?.fromDate}
+                  max={coverage?.untilDate}
                   onChange={(event) => setPreviewDate(event.target.value)}
                   className={`mt-1 w-full ${inputClass}`}
                 />
@@ -656,16 +729,19 @@ export function AdminAvailabilityEditor({
                   {formatParisDate(previewDate)}
                 </p>
                 <p className="mt-1 text-sm text-warm-600">
-                  {preview.kind === "closed" && preview.windows.length === 0
-                    ? "Fermé."
-                    : preview.kind === "exception"
-                      ? `Ouverture exceptionnelle : ${preview.windows.join(", ")}.`
-                      : `Horaires hebdomadaires : ${preview.windows.join(", ")}.`}
+                  {!previewCovered
+                    ? "Cette date est hors de la période chargée. Naviguez jusqu’à elle dans le calendrier pour en connaître les horaires."
+                    : preview.kind === "closed" && preview.windows.length === 0
+                      ? "Fermé."
+                      : preview.kind === "exception"
+                        ? `Ouverture exceptionnelle : ${preview.windows.join(", ")}.`
+                        : `Horaires hebdomadaires : ${preview.windows.join(", ")}.`}
                 </p>
                 <button
                   type="button"
+                  disabled={!previewCovered}
                   onClick={() => openDraft(previewDate)}
-                  className="mt-4 rounded-full border border-warm-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300">
+                  className="mt-4 rounded-full border border-warm-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300 disabled:cursor-not-allowed disabled:opacity-50">
                   Gérer l’exception de cette date
                 </button>
               </section>
@@ -678,8 +754,10 @@ export function AdminAvailabilityEditor({
                 </h2>
                 {exceptions.length === 0 ? (
                   <p className="mt-3 text-sm text-warm-600">
-                    Aucune fermeture ni ouverture exceptionnelle sur les {HORIZON_DAYS} prochains
-                    jours.
+                    Aucune fermeture ni ouverture exceptionnelle sur la période chargée
+                    {coverage === null
+                      ? "."
+                      : ` (${formatParisDate(coverage.fromDate)} – ${formatParisDate(coverage.untilDate)}).`}
                   </p>
                 ) : (
                   <ul className="mt-4 space-y-2">

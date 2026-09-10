@@ -513,7 +513,10 @@ test("the editor adopts server state, confirms destructive changes and stays acc
     source.indexOf("const recoverAvailabilityConflict"),
     source.indexOf("const updateRule"),
   );
-  assert.match(recovery, /api\.readAvailability\(\{ fromDate: today, untilDate \}\)/);
+  // ESZ-159 correction: recovery re-reads the window that is on screen, which
+  // is no longer a fixed horizon from today.
+  assert.match(recovery, /planAvailabilityRange\(\{ fromDate: visibleFrom, untilDate: visibleUntil \}, today\)/);
+  assert.match(recovery, /api\.readAvailability\(range\)/);
   assert.match(recovery, /adopt\(toDrafts\(fresh\.value\.weeklyRules\)\)/);
   assert.match(recovery, /setExceptions\(fresh\.value\.exceptions\)/);
   assert.match(recovery, /setRevision\(fresh\.value\.revision\)/);

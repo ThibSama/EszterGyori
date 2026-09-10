@@ -463,8 +463,11 @@ test("the calendar opens on the week and owns availability without duplicating i
   // Availability is read through the shared workspace and rendered through the
   // shared projection. No weekday, validity or window rule may be re-decided
   // here: these helpers are the only way the grid learns what a day is open for.
-  assert.match(source, /useAvailabilityWorkspace\(\)/);
-  assert.equal(source.match(/useAvailabilityWorkspace\(\)/g)?.length, 1, "one availability state, not two");
+  // ESZ-159 correction: the workspace is read *for the span on screen*, so a
+  // week the last read did not cover is never projected from it.
+  assert.match(source, /useAvailabilityWorkspace\(visibleSpan\)/);
+  assert.equal(source.match(/useAvailabilityWorkspace\(/g)?.length, 1, "one availability state, not two");
+  assert.match(source, /fromDate: dates\[0\], untilDate: dates\[dates\.length - 1\]/);
   assert.match(source, /weekPlan\(weekDates, availability\.rules, availability\.exceptions, bookings, today\)/);
   assert.match(source, /isHourOpen\(hour, plan\.windows\)/);
   assert.doesNotMatch(source, /weekdayIso|validFrom|validUntil|isActive/, "no availability rule may be re-derived in the grid");
