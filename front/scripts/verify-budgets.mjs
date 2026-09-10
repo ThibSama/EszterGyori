@@ -72,7 +72,32 @@ const routeBudgets = [
  * routes at once, and against a per-route total it looks like six small
  * regressions rather than one large one.
  */
-const sharedBudgets = { css: 15_000, totalJavaScript: 345_000 };
+/*
+ * The CSS budget moved from 15 000 to 16 000 gzipped bytes in ESZ-158, which
+ * added the admin visual system to `globals.css`: a token scope, the component
+ * classes the shell, the overview and the CMS are built from, and the scoped
+ * remap that keeps the transitional Package 10.2 pages in the same palette
+ * without redesigning them.
+ *
+ * Measured over the built export, gzip -9, summing every stylesheet under
+ * `out/_next` — which is one file:
+ *
+ *   14 367 B  the parent commit, caf4ed19, built clean;
+ *   14 386 B  this branch with the admin block removed from `globals.css`
+ *             (+19 B: the Tailwind utilities the new admin components pull in);
+ *   15 627 B  this branch as it ships.
+ *
+ * So the admin block itself costs +1 241 B and ESZ-158 costs +1 260 B in total.
+ * That leaves 373 B under the new ceiling, which keeps the ratchet tight: the
+ * budget still sits just above what the build produces and speaks on the next
+ * unexplained growth.
+ *
+ * It is a real cost on the public routes, which download the admin rules they
+ * never match — one stylesheet serves the whole export. It is accepted here
+ * rather than absorbed silently, and the honest way to give it back is to split
+ * the admin stylesheet off the public one, which is its own piece of work.
+ */
+const sharedBudgets = { css: 16_000, totalJavaScript: 345_000 };
 
 const failures = [];
 const reported = [];

@@ -1,15 +1,6 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-} from "react";
-import { AdminPreviewViewport } from "./admin-preview-viewport";
-import { AppearanceEditor } from "./appearance-editor";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { MediaLibraryProvider } from "./media-library-provider";
 import { useContentEditorBackup } from "./content-editor-backup";
 import {
@@ -17,16 +8,9 @@ import {
   useContentEditorController,
 } from "./content-editor-controller";
 import {
-  AboutEditor,
-  ContactEditor,
-  FooterEditor,
-  GalleryEditor,
-  HeroEditor,
-  NavigationEditor,
-  ProcessEditor,
-  ReassuranceEditor,
-  ServicesEditor,
-} from "./content-editor-sections";
+  ContentWorkspace,
+  type WorkspaceView,
+} from "./content-workspace";
 import { cloneSiteContent } from "../../lib/site-content-clone";
 import { SITE_CONTENT_DRAFT_STORAGE_KEY } from "../../lib/admin-draft-storage";
 import {
@@ -38,10 +22,6 @@ import {
   describeDraftFreshness,
 } from "../../lib/admin-server-draft";
 import { describeMergeConflict } from "../../lib/site-content-merge";
-import {
-  ADMIN_PREVIEW_SECTIONS,
-  type AdminPreviewSectionKey,
-} from "../../lib/admin-preview-sections";
 import type { SiteContent } from "../../types/site-content";
 
 interface ContentEditorProps {
@@ -61,13 +41,29 @@ interface ContentEditorProps {
  * - `useContentEditorBackup` — the explicit device backup and the JSON
  *   import/export flows, which reach the working document through
  *   `editor.localDocument` when a restore or import actually runs;
- * - the section editors, pure presentation fed one section of the working
- *   document at a time.
+ * - `ContentWorkspace` — the focused editing surface (ESZ-156): the page/section
+ *   navigation, the one selected section editor and the live preview. It is
+ *   given the working document and the controller's `updateContent`, so the
+ *   focused rendering is a view over the same single draft rather than a state
+ *   of its own.
  *
- * What stays here is the view: the loading screen, the header state lines, the
- * conflict banner, the action buttons, the scroll-spy section navigation, the
- * preview aside — and the single `MediaLibraryProvider` above every media
- * field, so every `MediaEditor` shares one fetch and one list (ESZ-037).
+ * What stays here is the view around that surface: the loading screen, the
+ * header state lines, the conflict banner, the action buttons — and the single
+ * `MediaLibraryProvider` above every media field, so every `MediaEditor` shares
+ * one fetch and one list (ESZ-037).
+ *
+ * ESZ-157 ranked those actions without changing any of them. The header is now
+ * two regions: a primary card carrying the draft state, Save, Preview, Publish
+ * and — always expanded — the conflict banner; and a collapsed, visually quieter
+ * `<details>` holding the recovery controls (revert to published, device backup,
+ * JSON import/export, the storage-key note). The handlers, the `canWrite` gate,
+ * the reducer and the revision contract are untouched: only where a control sits
+ * and how loud it looks changed.
+ *
+ * ESZ-156 changed where the section editors are mounted and nothing about what
+ * they save: `updateContent` still commits to one whole `SiteContent`, and a save
+ * still sends that whole document. A section nobody has opened this session is in
+ * the payload exactly as the server draft delivered it.
  */
 
 
@@ -141,10 +137,32 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
     [defaultContent],
   );
 
-  const [activeSection, setActiveSection] =
-    useState<AdminPreviewSectionKey>("hero");
-  const explicitNavigationUntilRef = useRef(0);
+  /**
+   * Which panel the focused workspace shows where both do not fit (ESZ-156).
+   *
+   * It lives here rather than inside the workspace for one reason: the header's
+   * “Voir l’aperçu” has to reach the preview on a narrow screen too, and below
+   * `xl` the preview is a mode rather than a column. Owning the mode here keeps
+   * that one control honest at every width without giving the workspace a second
+   * way to be told what to show.
+   */
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("editor");
 
+  /**
+   * Whether the subordinate backup/recovery region is open (ESZ-157).
+   *
+   * Closed by default, because none of what it holds belongs to an ordinary
+   * editing pass. One state overrides that choice rather than being hidden
+   * behind it: a stored backup that cannot be read, whose only remedy — deleting
+   * it — is a button inside this region. The override is derived, not written
+   * into state by an effect, so the region reverts to the operator's own choice
+   * the moment the unreadable backup is gone.
+   *
+   * It stays a `<details>` either way: the summary is a native tab stop and the
+   * disclosure is the browser's, not a scripted one.
+   */
+  const [hasOpenedRecovery, setHasOpenedRecovery] = useState(false);
+  const isRecoveryOpen = hasOpenedRecovery || hasInvalidStoredBackup;
 
   useEffect(() => {
     if (!isDirty) return;
@@ -160,96 +178,44 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
     };
   }, [isDirty]);
 
-  // Re-run once the editor fields exist. The sections are not in the document
-  // while the server draft is loading, so an observer created on mount would
-  // observe nothing and the section navigation would never highlight.
-  useEffect(() => {
-    if (draft.phase === "loading" || draft.phase === "unavailable") return;
-
-    const observedSections = ADMIN_PREVIEW_SECTIONS.flatMap((section) => {
-      const element = document.getElementById(section.editorTarget);
-      return element ? [{ section, element }] : [];
-    });
-
-    if (observedSections.length === 0) return;
-
-    const observer = new IntersectionObserver(
-      () => {
-        if (Date.now() < explicitNavigationUntilRef.current) return;
-
-        const anchorY = 160;
-        let nextSection = observedSections[0]?.section.key ?? null;
-        let smallestPositiveDistance = Number.POSITIVE_INFINITY;
-
-        for (const { section, element } of observedSections) {
-          const rect = element.getBoundingClientRect();
-          const distance = rect.top - anchorY;
-          if (distance <= 0) {
-            nextSection = section.key;
-            continue;
-          }
-
-          if (nextSection === null && distance < smallestPositiveDistance) {
-            smallestPositiveDistance = distance;
-            nextSection = section.key;
-          }
-        }
-
-        if (!nextSection) return;
-        setActiveSection((current) =>
-          current === nextSection ? current : nextSection,
-        );
-      },
-      {
-        root: null,
-        rootMargin: "-128px 0px -45% 0px",
-        threshold: [0, 0.25, 0.5, 0.75, 1],
-      },
-    );
-
-    for (const { element } of observedSections) {
-      observer.observe(element);
-    }
-
-    return () => {
-      observer.disconnect();
-    };
-  }, [draft.phase]);
-
-  const handleSectionNavigation = useCallback(
-    (section: (typeof ADMIN_PREVIEW_SECTIONS)[number]) => {
-      explicitNavigationUntilRef.current = Date.now() + 2_000;
-      setActiveSection(section.key);
-      document.getElementById(section.editorTarget)?.scrollIntoView({
+  /**
+   * The header's jump to the preview.
+   *
+   * It shows the preview panel first — on a narrow screen it is not in the
+   * document until it is the selected mode — and scrolls to it once React has
+   * rendered it. On a wide screen the panel is already there and only the scroll
+   * runs.
+   */
+  const handleShowPreview = useCallback(() => {
+    setWorkspaceView("preview");
+    requestAnimationFrame(() => {
+      document.getElementById("preview")?.scrollIntoView({
         block: "start",
         behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
           ? "auto"
           : "smooth",
       });
-      window.history.replaceState(null, "", `#${section.editorTarget}`);
-    },
-    [],
-  );
-
+    });
+  }, []);
 
   if (draft.phase === "loading" || draft.phase === "unavailable") {
     return (
-      <main className="min-h-screen bg-warm-50 px-4 py-10 text-warm-800 sm:px-6">
+      <main className="admin-canvas min-h-screen px-4 py-10 sm:px-6">
         <div className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center">
           <div
             role="status"
             aria-live="polite"
-            className="rounded-3xl border border-warm-200 bg-white/85 p-6 shadow-[0_18px_60px_rgba(44,43,40,0.10)] backdrop-blur sm:p-8">
-            <h1 className="font-display text-2xl font-light text-warm-900">
+            className="admin-panel rounded-3xl p-6 sm:p-8">
+            <h1 className="admin-text font-display text-2xl font-light">
               Éditeur de contenu Eszter
             </h1>
-            <p className="mt-3 text-sm leading-relaxed text-warm-700">
+            <p className="admin-text-muted mt-3 text-sm leading-relaxed">
               {draft.statusMessage}
             </p>
             {draft.errorMessage && (
               <p
                 role="alert"
-                className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                className="admin-note-danger mt-3 rounded-xl px-3 py-2 text-sm">
                 {draft.errorMessage}
               </p>
             )}
@@ -259,7 +225,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
                 onClick={() => {
                   void editor.loadServerDraft();
                 }}
-                className="mt-6 inline-flex w-full items-center justify-center rounded-full bg-warm-900 px-5 py-3 text-sm font-medium text-porcelain transition hover:bg-warm-700 focus:outline-none focus:ring-2 focus:ring-sage-300">
+                className="admin-btn-primary mt-6 inline-flex w-full items-center justify-center rounded-full px-5 py-3 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300">
                 Réessayer
               </button>
             )}
@@ -278,93 +244,135 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
     // (ESZ-037). It is given the working document so the delete control can warn
     // that an asset is still in use; it never writes one.
     <MediaLibraryProvider content={content}>
-    <main className="min-h-screen bg-warm-50 text-warm-800">
+    <main className="admin-canvas min-h-screen">
       <div className="mx-auto max-w-[1800px] px-4 py-6 sm:px-6 lg:px-8 2xl:px-10">
         <header className="mb-8 space-y-4">
           <div>
-            <p className="text-sm font-medium uppercase tracking-wide text-sage-600">
+            <p className="admin-text-accent text-sm font-medium uppercase tracking-wide">
               Back-office
             </p>
-            <h1 className="font-display text-4xl font-light text-warm-800">
+            <h1 className="admin-text font-display text-4xl font-light">
               Éditeur de contenu Eszter
             </h1>
           </div>
-          <div className="rounded-2xl border border-sage-300/70 bg-sage-100/75 p-4 shadow-[0_8px_28px_rgba(44,43,40,0.05)]">
-            <h2 className="font-display text-2xl font-normal text-warm-800">
-              Brouillon enregistré sur le serveur
-            </h2>
-            <div className="mt-2 space-y-2 text-sm leading-relaxed text-warm-700">
-              <p>
-                Enregistrer envoie le brouillon au serveur : il est conservé pour
-                tous les appareils et le site public n&apos;est pas modifié.
-              </p>
-              <p>
-                Publier est une action distincte : c&apos;est elle, et elle seule,
-                qui met le brouillon enregistré en ligne.
-              </p>
-              <p>
-                La sauvegarde locale et le fichier JSON restent disponibles comme
-                secours. Ils ne remplacent jamais le brouillon du serveur sans une
-                action explicite.
-              </p>
+
+          {/*
+            The primary action area (ESZ-157).
+
+            One card carries, in this order, the four things an editing session is
+            actually about: what state the draft is in, saving it, looking at it,
+            and publishing it. Everything that exists for recovery rather than for
+            editing — the device backup, the JSON file, the revert to the published
+            content — is in the subordinate region below, and nothing here changed
+            about what those controls do or when they are allowed to run: the
+            handlers, the `canWrite` gate and the reducer are the accepted ones.
+          */}
+          <section
+            aria-labelledby="cms-primary-actions-title"
+            data-testid="admin-primary-actions"
+            className="admin-panel admin-border-strong rounded-2xl p-4 sm:p-5">
+            <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+              <div className="min-w-0">
+                <h2
+                  id="cms-primary-actions-title"
+                  className="admin-text-subtle text-xs font-medium uppercase tracking-[0.18em]">
+                  Brouillon enregistré sur le serveur
+                </h2>
+                <p
+                  className="admin-freshness-badge mt-2 inline-flex rounded-full px-4 py-1.5 font-display text-lg font-normal leading-tight"
+                  data-testid="admin-freshness">
+                  {ADMIN_DRAFT_FRESHNESS_LABELS[freshness]}
+                </p>
+                <div className="admin-text-muted mt-3 grid gap-3 text-sm sm:grid-cols-3">
+                  <div className="admin-sunken rounded-xl p-3">
+                    <span className="admin-text block font-medium">
+                      Modifications
+                    </span>
+                    {getModificationState(isDirty)}
+                  </div>
+                  <div className="admin-sunken rounded-xl p-3">
+                    <span className="admin-text block font-medium">
+                      Brouillon serveur
+                    </span>
+                    {getServerDraftState(draft.revision, draft.updatedAt)}
+                  </div>
+                  <div className="admin-sunken rounded-xl p-3">
+                    <span className="admin-text block font-medium">
+                      Site public
+                    </span>
+                    {getPublishedState(draft.publishedRevision, draft.publishedAt)}
+                  </div>
+                </div>
+              </div>
+
+              {/*
+                Save, preview, publish — and nothing else. Each keeps the handler
+                and the `writesAllowed` gate it already had; a disabled button
+                here means the same thing it meant before (a write in flight, no
+                known revision, or an ended session).
+              */}
+              <div
+                data-testid="admin-primary-action-buttons"
+                className="flex shrink-0 flex-col gap-2 sm:flex-row sm:flex-wrap xl:w-[22rem] xl:flex-col">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void editor.handleSaveDraft();
+                  }}
+                  disabled={!writesAllowed}
+                  className="admin-btn-primary inline-flex min-h-11 items-center justify-center rounded-full px-5 py-2.5 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300 disabled:cursor-not-allowed">
+                  Enregistrer le brouillon
+                </button>
+                <button
+                  type="button"
+                  onClick={handleShowPreview}
+                  className="admin-btn-secondary inline-flex min-h-11 items-center justify-center rounded-full px-5 py-2.5 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300">
+                  Voir l&apos;aperçu
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void editor.handlePublish();
+                  }}
+                  disabled={!writesAllowed}
+                  className="admin-btn-strong inline-flex min-h-11 items-center justify-center rounded-full px-5 py-2.5 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300 disabled:cursor-not-allowed">
+                  Publier
+                </button>
+              </div>
             </div>
-          </div>
-          <div className="rounded-2xl border border-warm-300/70 bg-white/75 p-4 shadow-[0_8px_28px_rgba(44,43,40,0.06)]">
+
             <p
-              className="mb-3 inline-flex rounded-full bg-warm-800 px-3 py-1 text-xs font-medium uppercase tracking-wide text-porcelain"
-              data-testid="admin-freshness">
-              {ADMIN_DRAFT_FRESHNESS_LABELS[freshness]}
-            </p>
-            <div className="grid gap-3 text-sm text-warm-600 md:grid-cols-4">
-              <div className="rounded-xl bg-warm-50/80 p-3">
-                <span className="block font-medium text-warm-800">
-                  Modifications
-                </span>
-                {getModificationState(isDirty)}
-              </div>
-              <div className="rounded-xl bg-warm-50/80 p-3">
-                <span className="block font-medium text-warm-800">
-                  Brouillon serveur
-                </span>
-                {getServerDraftState(draft.revision, draft.updatedAt)}
-              </div>
-              <div className="rounded-xl bg-warm-50/80 p-3">
-                <span className="block font-medium text-warm-800">
-                  Site public
-                </span>
-                {getPublishedState(draft.publishedRevision, draft.publishedAt)}
-              </div>
-              <div className="rounded-xl bg-warm-50/80 p-3">
-                <span className="block font-medium text-warm-800">
-                  Sauvegarde locale
-                </span>
-                {getLocalBackupState(backupSavedAt)}
-              </div>
-            </div>
-            <p
-              className="mt-3 text-sm text-warm-600"
+              className="admin-text-muted mt-4 text-sm"
               role="status"
               aria-live="polite">
               {draft.statusMessage}
             </p>
+
             {draft.errorMessage && (
               <div
                 role="alert"
-                className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                className="admin-note-danger mt-3 rounded-xl px-3 py-2 text-sm">
                 {draft.errorMessage}
                 {hasInvalidStoredBackup && (
                   <span className="block pt-1">
-                    Vous pouvez supprimer cette sauvegarde locale ci-dessous.
+                    Vous pouvez supprimer cette sauvegarde locale dans
+                    «&nbsp;Sauvegardes et récupération&nbsp;» ci-dessous.
                   </span>
                 )}
               </div>
             )}
 
+            {/*
+              The conflict stays here, in the primary area, expanded and next to
+              the buttons it blocks. It is never inside the collapsible region
+              below: a refused save is the one thing an operator must not have to
+              go looking for.
+            */}
             {draft.phase === "conflict" && (
               <div
                 role="alert"
                 data-testid="admin-revision-conflict"
-                className="mt-3 space-y-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+                className="admin-note-warn mt-3 space-y-3 rounded-xl px-3 py-3 text-sm">
                 <p className="font-medium">
                   {draft.conflicts.length > 0
                     ? ADMIN_DRAFT_MESSAGES.conflictUnresolved
@@ -392,8 +400,9 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
                     </ul>
                     <p className="mt-2">
                       Reprenez ces éléments dans l&apos;éditeur — en vous appuyant
-                      au besoin sur l&apos;export JSON ci-dessous — puis relancez
-                      la fusion. Rien ne sera écrit tant qu&apos;un chevauchement
+                      au besoin sur l&apos;export JSON, à ouvrir depuis
+                      «&nbsp;Sauvegardes et récupération&nbsp;» — puis relancez la
+                      fusion. Rien ne sera écrit tant qu&apos;un chevauchement
                       subsiste.
                     </p>
                   </div>
@@ -408,7 +417,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
                       void editor.reconcileAfterSaveConflict(draft.reportedServerRevision);
                     }}
                     disabled={draft.busy !== null}
-                    className="inline-flex items-center justify-center rounded-full bg-warm-800 px-4 py-2 text-sm font-medium text-porcelain transition hover:bg-warm-700 disabled:cursor-not-allowed disabled:opacity-60">
+                    className="admin-btn-strong inline-flex min-h-11 items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed">
                     Fusionner avec la version du serveur
                   </button>
                   <button
@@ -417,219 +426,143 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
                       void editor.handleReloadServerDraft();
                     }}
                     disabled={draft.busy !== null}
-                    className="inline-flex items-center justify-center rounded-full border border-amber-400 bg-white/80 px-4 py-2 text-sm font-medium text-amber-900 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60">
+                    className="admin-btn-secondary inline-flex min-h-11 items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed">
                     Recharger la version du serveur
                   </button>
                 </div>
               </div>
             )}
 
-            <details className="mt-4 rounded-xl border border-warm-200 bg-warm-50/70 p-3 text-sm text-warm-600">
-              <summary className="cursor-pointer font-medium text-warm-800">
-                Informations techniques
-              </summary>
-              <div className="mt-2 space-y-2 leading-relaxed">
-                <p>
-                  Le brouillon fait autorité côté serveur. La sauvegarde de secours
-                  de cet appareil utilise la clé suivante :
-                </p>
-                <code className="block break-all rounded-lg bg-white/80 px-3 py-2 text-xs text-warm-700">
-                  {SITE_CONTENT_DRAFT_STORAGE_KEY}
-                </code>
-                <p>
-                  Aucun identifiant de session ni jeton de sécurité n&apos;est
-                  conservé dans le navigateur : la session est un cookie que la
-                  page ne peut pas lire.
-                </p>
+            <p className="admin-border admin-text-subtle mt-4 border-t pt-3 text-xs leading-relaxed">
+              Enregistrer envoie le brouillon au serveur : il est conservé pour
+              tous les appareils et le site public n&apos;est pas modifié.{" "}
+              Publier est une action distincte : c&apos;est elle, et elle seule,
+              qui met le brouillon enregistré en ligne.
+            </p>
+          </section>
+
+          {/*
+            The subordinate region (ESZ-157).
+
+            Visually quieter and collapsed by default, but a real disclosure: the
+            `summary` is a native tab stop, so every control inside is two keys
+            away, and nothing that blocks a save lives in here. It opens itself
+            when the stored backup is unreadable, because that is the one state in
+            here an operator has to act on and the fix is one of these buttons.
+          */}
+          <details
+            open={isRecoveryOpen}
+            onToggle={(event) => setHasOpenedRecovery(event.currentTarget.open)}
+            data-testid="admin-recovery-tools"
+            className="admin-panel-quiet rounded-2xl px-4 py-3">
+            <summary className="admin-text-muted cursor-pointer rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-sage-300">
+              Sauvegardes et récupération
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="admin-text-muted text-sm leading-relaxed">
+                Le brouillon du serveur fait autorité. La sauvegarde locale et le
+                fichier JSON sont des secours : ils ne remplacent jamais le
+                brouillon du serveur sans une action explicite de votre part.
+              </p>
+              <div className="admin-sunken rounded-xl p-3 text-sm">
+                <span className="admin-text block font-medium">
+                  Sauvegarde locale
+                </span>
+                {getLocalBackupState(backupSavedAt)}
               </div>
-            </details>
-          </div>
-          <div className="flex flex-col gap-3 rounded-2xl border border-warm-300/70 bg-white/65 p-4 sm:flex-row sm:flex-wrap sm:items-center">
-            <a
-              href="#preview"
-              className="inline-flex items-center justify-center rounded-full bg-warm-800 px-5 py-2.5 text-sm font-medium text-porcelain transition hover:bg-warm-700">
-              Voir l&apos;aperçu
-            </a>
-            <button
-              type="button"
-              onClick={() => {
-                void editor.handleSaveDraft();
-              }}
-              disabled={!writesAllowed}
-              className="inline-flex items-center justify-center rounded-full bg-sage-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-sage-700 disabled:cursor-not-allowed disabled:opacity-60">
-              Enregistrer le brouillon
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                void editor.handlePublish();
-              }}
-              disabled={!writesAllowed}
-              className="inline-flex items-center justify-center rounded-full bg-warm-900 px-5 py-2.5 text-sm font-medium text-porcelain transition hover:bg-warm-700 disabled:cursor-not-allowed disabled:opacity-60">
-              Publier
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                void editor.handleResetToPublished();
-              }}
-              disabled={!writesAllowed}
-              className="inline-flex items-center justify-center rounded-full border border-warm-300 bg-white/70 px-5 py-2.5 text-sm font-medium text-warm-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60">
-              Restaurer le contenu publié
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSaveLocalBackup(editor.localDocument)}
-              className="inline-flex items-center justify-center rounded-full border border-sage-300 bg-white/80 px-5 py-2.5 text-sm font-medium text-sage-700 transition hover:bg-white">
-              Sauvegarder sur cet appareil
-            </button>
-            <button
-              type="button"
-              onClick={() => handleRestoreLocalBackup(editor.localDocument)}
-              className="inline-flex items-center justify-center rounded-full border border-sage-300 bg-white/80 px-5 py-2.5 text-sm font-medium text-sage-700 transition hover:bg-white">
-              Restaurer la sauvegarde locale
-            </button>
-            <button
-              type="button"
-              onClick={() => handleExportDraft(editor.localDocument)}
-              className="inline-flex items-center justify-center rounded-full border border-sage-300 bg-white/80 px-5 py-2.5 text-sm font-medium text-sage-700 transition hover:bg-white">
-              Exporter une sauvegarde JSON
-            </button>
-            <label
-              htmlFor="admin-draft-import"
-              className="inline-flex cursor-pointer items-center justify-center rounded-full border border-sage-300 bg-white/80 px-5 py-2.5 text-sm font-medium text-sage-700 transition hover:bg-white">
-              Importer un fichier JSON
-            </label>
-            <input
-              ref={fileInputRef}
-              id="admin-draft-import"
-              type="file"
-              accept="application/json,.json"
-              onChange={(event) => {
-                void handleImportDraft(event.target.files?.[0], editor.localDocument);
-              }}
-              className="sr-only"
-            />
-            <button
-              type="button"
-              onClick={() => handleDeleteLocalBackup()}
-              className="inline-flex items-center justify-center rounded-full border border-red-200 bg-red-50 px-5 py-2.5 text-sm font-medium text-red-700 transition hover:bg-red-100">
-              Supprimer la sauvegarde locale
-            </button>
-            <div className="basis-full rounded-xl border border-warm-200 bg-warm-50/75 px-3 py-2 text-sm leading-relaxed text-warm-600">
-              <span className="font-medium text-warm-800">
-                Sauvegarde portable : fichier JSON.
-              </span>{" "}
-              Le fichier exporté peut être gardé comme sauvegarde, envoyé à une
-              autre personne ou importé dans un autre navigateur. Il ne modifie le
-              brouillon du serveur qu&apos;après un enregistrement explicite.
+              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void editor.handleResetToPublished();
+                  }}
+                  disabled={!writesAllowed}
+                  className="admin-btn-quiet inline-flex min-h-11 items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300 disabled:cursor-not-allowed">
+                  Restaurer le contenu publié
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSaveLocalBackup(editor.localDocument)}
+                  className="admin-btn-secondary inline-flex min-h-11 items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300">
+                  Sauvegarder sur cet appareil
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRestoreLocalBackup(editor.localDocument)}
+                  className="admin-btn-secondary inline-flex min-h-11 items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300">
+                  Restaurer la sauvegarde locale
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExportDraft(editor.localDocument)}
+                  className="admin-btn-secondary inline-flex min-h-11 items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300">
+                  Exporter une sauvegarde JSON
+                </button>
+                <label
+                  htmlFor="admin-draft-import"
+                  className="admin-btn-secondary inline-flex min-h-11 cursor-pointer items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition focus-within:ring-2 focus-within:ring-sage-300">
+                  Importer un fichier JSON
+                </label>
+                <input
+                  ref={fileInputRef}
+                  id="admin-draft-import"
+                  type="file"
+                  accept="application/json,.json"
+                  onChange={(event) => {
+                    void handleImportDraft(event.target.files?.[0], editor.localDocument);
+                  }}
+                  className="sr-only"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleDeleteLocalBackup()}
+                  className="admin-btn-danger inline-flex min-h-11 items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300">
+                  Supprimer la sauvegarde locale
+                </button>
+              </div>
+              <div className="admin-sunken rounded-xl px-3 py-2 text-sm leading-relaxed">
+                <span className="admin-text font-medium">
+                  Sauvegarde portable : fichier JSON.
+                </span>{" "}
+                Le fichier exporté peut être gardé comme sauvegarde, envoyé à une
+                autre personne ou importé dans un autre navigateur. Il ne modifie
+                le brouillon du serveur qu&apos;après un enregistrement explicite.
+              </div>
+
+              <details className="admin-sunken rounded-xl p-3 text-sm">
+                <summary className="admin-text cursor-pointer rounded-lg font-medium focus:outline-none focus:ring-2 focus:ring-sage-300">
+                  Informations techniques
+                </summary>
+                <div className="mt-2 space-y-2 leading-relaxed">
+                  <p>
+                    Le brouillon fait autorité côté serveur. La sauvegarde de
+                    secours de cet appareil utilise la clé suivante :
+                  </p>
+                  <code className="admin-panel admin-text-muted block break-all rounded-lg px-3 py-2 text-xs">
+                    {SITE_CONTENT_DRAFT_STORAGE_KEY}
+                  </code>
+                  <p>
+                    Aucun identifiant de session ni jeton de sécurité n&apos;est
+                    conservé dans le navigateur : la session est un cookie que la
+                    page ne peut pas lire.
+                  </p>
+                </div>
+              </details>
             </div>
-          </div>
+          </details>
         </header>
 
-        <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,3fr)_minmax(480px,2fr)] xl:items-start 2xl:gap-8">
-          <div className="min-w-0 space-y-6">
-            <nav
-              aria-label="Sections de l’éditeur"
-              className="sticky top-[4.75rem] z-20 rounded-2xl border border-warm-200/80 bg-white/85 p-3 shadow-[0_8px_24px_rgba(44,43,40,0.06)] backdrop-blur">
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {ADMIN_PREVIEW_SECTIONS.map((section) => (
-                  <a
-                    key={section.key}
-                    href={`#${section.editorTarget}`}
-                    aria-current={
-                      activeSection === section.key ? "true" : undefined
-                    }
-                    onClick={(event) => {
-                      event.preventDefault();
-                      handleSectionNavigation(section);
-                    }}
-                    className={`shrink-0 rounded-full border px-3 py-1.5 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300 ${
-                      activeSection === section.key
-                        ? "border-warm-800 bg-warm-800 text-porcelain"
-                        : "border-warm-200 bg-warm-50/80 text-warm-600 hover:border-sage-300 hover:bg-white hover:text-warm-900"
-                    }`}>
-                    {section.label}
-                  </a>
-                ))}
-              </div>
-            </nav>
-            <AppearanceEditor
-              appearance={content.appearance}
-              onChange={(appearance) =>
-                editor.updateContent((current) => ({ ...current, appearance }))
-              }
-              onError={(errorMessage) =>
-                dispatch({ type: "local-error", errorMessage })
-              }
-            />
-            <NavigationEditor
-              content={content.navigation}
-              onChange={(navigation) =>
-                editor.updateContent((current) => ({ ...current, navigation }))
-              }
-            />
-            <HeroEditor
-              content={content.hero}
-              onChange={(hero) =>
-                editor.updateContent((current) => ({ ...current, hero }))
-              }
-            />
-            <ReassuranceEditor
-              content={content.reassurance}
-              onChange={(reassurance) =>
-                editor.updateContent((current) => ({ ...current, reassurance }))
-              }
-            />
-            <ServicesEditor
-              content={content.services}
-              onChange={(services) =>
-                editor.updateContent((current) => ({ ...current, services }))
-              }
-            />
-            <ProcessEditor
-              content={content.process}
-              onChange={(process) =>
-                editor.updateContent((current) => ({ ...current, process }))
-              }
-            />
-            <GalleryEditor
-              content={content.gallery}
-              onChange={(gallery) =>
-                editor.updateContent((current) => ({ ...current, gallery }))
-              }
-            />
-            <AboutEditor
-              content={content.about}
-              onChange={(about) =>
-                editor.updateContent((current) => ({ ...current, about }))
-              }
-            />
-            <ContactEditor
-              content={content.contact}
-              onChange={(contact) =>
-                editor.updateContent((current) => ({ ...current, contact }))
-              }
-            />
-            <FooterEditor
-              content={content.footer}
-              onChange={(footer) =>
-                editor.updateContent((current) => ({ ...current, footer }))
-              }
-            />
-          </div>
+        <ContentWorkspace
+          content={content}
+          onUpdate={editor.updateContent}
+          onError={(errorMessage) =>
+            dispatch({ type: "local-error", errorMessage })
+          }
+          view={workspaceView}
+          onViewChange={setWorkspaceView}
+        />
 
-          <aside
-            id="preview"
-            className="min-w-0 xl:sticky xl:top-[5.25rem] xl:h-[calc(100vh-6.5rem)]">
-            <AdminPreviewViewport
-              content={content}
-              activeSection={activeSection}
-            />
-          </aside>
-        </div>
-
-        <p className="mt-8 text-xs text-warm-400">
+        <p className="admin-text-subtle mt-8 text-xs">
           Référence initiale chargée : {initialContent.navigation.brandLabel}.
           Les IDs techniques restent disponibles au rendu mais ne sont pas
           éditables.

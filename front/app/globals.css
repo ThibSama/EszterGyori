@@ -378,3 +378,490 @@ body {
     backdrop-filter: none !important;
   }
 }
+
+/* =====================================================================
+ * The admin visual system (ESZ-158)
+ *
+ * Everything below is scoped under `.admin-theme`, a class the protected
+ * admin shell puts on its own root, and which nothing outside the protected
+ * admin ever carries. That scoping is the whole contract, and it is worth being precise
+ * about why it is a *class* and not a variable override:
+ *
+ * The public palette is declared in `@theme inline`, and `inline` means Tailwind
+ * substitutes the literal colour into every utility it generates —
+ * `.bg-warm-50` compiles to `background-color:#f5f4f1`, not to a `var()`. So
+ * redefining `--color-warm-50` on a scope would change nothing. The admin system
+ * therefore does what `.site-preview` above already does for the public theme:
+ * it declares its own custom properties, and re-points the utility classes it
+ * needs onto them inside its own scope.
+ *
+ * These rules are deliberately *unlayered*. Tailwind's own output lives in the
+ * `theme/base/components/utilities` cascade layers, and unlayered CSS wins over
+ * every layer regardless of specificity — which is the only way a scoped remap
+ * can beat a `hover:` variant of the same utility.
+ *
+ * Public isolation, stated as a property rather than a hope:
+ *   - no rule below matches anything outside `.admin-theme`;
+ *   - `.admin-theme` is applied by `AdminShell` alone, which the protected admin
+ *     layout is the only mount point for. The public pages, `/admin/login` and
+ *     `/admin/preview` are all outside it;
+ *   - the live preview is an `<iframe>` with its own document, so it cannot
+ *     inherit this scope even though its frame sits inside it. The preview shows
+ *     the public theme, driven by the injected `--site-*` properties, exactly as
+ *     before;
+ *   - no `--site-*` property, no `.site-preview` rule and no `warm-*`/`sage-*`
+ *     theme entry is modified. The public build is byte-identical apart from the
+ *     admin-scoped rules appended here.
+ * ===================================================================== */
+
+.admin-theme {
+  /* Canvas: the greige the work sits on. Never white. */
+  --admin-canvas: #ece9e1;
+  --admin-canvas-soft: #f2efe8;
+
+  /* Cream is the working surface — the tone that carries content. */
+  --admin-surface: #fbf8f1;
+  --admin-surface-quiet: #f5f1e8;
+
+  /* Taupe is the secondary surface: sunken tiles, inert areas, rails. */
+  --admin-surface-muted: #e2dcd0;
+  --admin-surface-sunken: #e8e2d6;
+
+  /* `--admin-border` separates; `--admin-border-strong` *bounds* — it is the
+     outline of an input or a secondary button, so it clears 3:1 against cream
+     as WCAG 1.4.11 asks of a control boundary. */
+  --admin-border: #d8d1c3;
+  --admin-border-strong: #978b76;
+
+  /* Brown-black, not neutral grey. */
+  --admin-text: #2b2521;
+  --admin-text-muted: #554c43;
+  --admin-text-subtle: #6b6154;
+
+  /* Sage is the single accent. It marks the primary write action and focus,
+     and it is never the only carrier of a state. It also carries small text —
+     the overview and CMS eyebrows — directly on `--admin-canvas`, so it is
+     held to 4.5:1 against the canvas and not only against the surfaces. */
+  --admin-accent: #5a6d62;
+  --admin-accent-strong: #47574e;
+  --admin-accent-soft: #dfe6e0;
+  --admin-accent-contrast: #fbf8f1;
+  --admin-focus: #3f4f46;
+
+  /* Semantic states, warm-tinted so they belong to the same system. Each pair
+     is verified at 4.5:1 or better against its own surface. */
+  --admin-ok-surface: #e3eadf;
+  --admin-ok-border: #b9c9b4;
+  --admin-ok-text: #2f4a33;
+
+  --admin-warn-surface: #f5e7ce;
+  --admin-warn-border: #ddbe85;
+  --admin-warn-text: #6b4a12;
+
+  --admin-danger-surface: #f6e3de;
+  --admin-danger-border: #ddae9f;
+  --admin-danger-text: #7a2c1c;
+
+  --admin-inert-surface: #e7e1d6;
+
+  background-color: var(--admin-canvas);
+  color: var(--admin-text);
+}
+
+/* ----- Semantic surfaces ----- */
+
+.admin-theme .admin-canvas {
+  background-color: var(--admin-canvas);
+  color: var(--admin-text);
+}
+
+/* The one card style. Hierarchy is carried by tone and border, not by a stack
+   of shadows: a panel inside a panel differs by surface, never by elevation. */
+.admin-theme .admin-panel {
+  background-color: var(--admin-surface);
+  border: 1px solid var(--admin-border);
+  color: var(--admin-text);
+}
+
+.admin-theme .admin-panel-quiet {
+  background-color: var(--admin-surface-quiet);
+  border: 1px solid var(--admin-border);
+  color: var(--admin-text);
+}
+
+/* A tile *inside* a panel: taupe, borderless, reading as a recess. */
+.admin-theme .admin-sunken {
+  background-color: var(--admin-surface-sunken);
+  color: var(--admin-text-muted);
+}
+
+.admin-theme .admin-muted-surface {
+  background-color: var(--admin-surface-muted);
+  color: var(--admin-text-muted);
+}
+
+/* The shell's own chrome band. */
+.admin-theme .admin-chrome {
+  background-color: var(--admin-surface-quiet);
+  color: var(--admin-text);
+}
+
+.admin-theme .admin-border {
+  border-color: var(--admin-border);
+}
+
+.admin-theme .admin-border-strong {
+  border-color: var(--admin-border-strong);
+}
+
+/* ----- Type ----- */
+
+.admin-theme .admin-text { color: var(--admin-text); }
+.admin-theme .admin-text-muted { color: var(--admin-text-muted); }
+.admin-theme .admin-text-subtle { color: var(--admin-text-subtle); }
+.admin-theme .admin-text-accent { color: var(--admin-accent); }
+
+/* ----- Controls ----- */
+
+/* Primary write action: the only sage-filled control on a screen. */
+.admin-theme .admin-btn-primary {
+  background-color: var(--admin-accent);
+  color: var(--admin-accent-contrast);
+  border: 1px solid transparent;
+}
+.admin-theme .admin-btn-primary:hover:not(:disabled) {
+  background-color: var(--admin-accent-strong);
+}
+
+/* Publish: the irreversible one. Brown-black, so it reads as heavier than the
+   accent without needing a second hue. */
+.admin-theme .admin-btn-strong {
+  background-color: var(--admin-text);
+  color: var(--admin-surface);
+  border: 1px solid transparent;
+}
+.admin-theme .admin-btn-strong:hover:not(:disabled) {
+  background-color: #3d352f;
+}
+
+.admin-theme .admin-btn-secondary {
+  background-color: var(--admin-surface);
+  color: var(--admin-text);
+  border: 1px solid var(--admin-border-strong);
+}
+.admin-theme .admin-btn-secondary:hover:not(:disabled) {
+  background-color: var(--admin-surface-sunken);
+}
+
+.admin-theme .admin-btn-quiet {
+  background-color: transparent;
+  color: var(--admin-text-muted);
+  border: 1px solid var(--admin-border);
+}
+.admin-theme .admin-btn-quiet:hover:not(:disabled) {
+  background-color: var(--admin-surface-sunken);
+  color: var(--admin-text);
+}
+
+.admin-theme .admin-btn-danger {
+  background-color: var(--admin-danger-surface);
+  color: var(--admin-danger-text);
+  border: 1px solid var(--admin-danger-border);
+}
+.admin-theme .admin-btn-danger:hover:not(:disabled) {
+  background-color: #f0d5cd;
+}
+
+.admin-theme .admin-btn-primary:disabled,
+.admin-theme .admin-btn-strong:disabled,
+.admin-theme .admin-btn-secondary:disabled,
+.admin-theme .admin-btn-quiet:disabled,
+.admin-theme .admin-btn-danger:disabled {
+  /* Disabled is a *stated* surface, not a faded one: the label keeps full
+     opacity and stays readable, and the flat taupe fill plus the removed hover
+     is what says the control cannot run. The `disabled` attribute carries the
+     same fact to assistive technology, so the cue is never colour alone. */
+  background-color: var(--admin-surface-muted);
+  border-color: var(--admin-border);
+  color: var(--admin-text-muted);
+  opacity: 1;
+}
+
+/* Segmented control (editor/preview, preview viewport sizes). The selected
+   option is filled *and* carries `aria-pressed`/`aria-selected`, so the state
+   is never colour alone. */
+.admin-theme .admin-segmented {
+  background-color: var(--admin-surface-sunken);
+  border: 1px solid var(--admin-border);
+}
+.admin-theme .admin-segmented-option {
+  color: var(--admin-text-muted);
+  background-color: transparent;
+  font-weight: 500;
+}
+.admin-theme .admin-segmented-option:hover {
+  background-color: var(--admin-surface);
+  color: var(--admin-text);
+}
+.admin-theme .admin-segmented-option[aria-pressed="true"],
+.admin-theme .admin-segmented-option[aria-selected="true"] {
+  background-color: var(--admin-accent);
+  color: var(--admin-accent-contrast);
+  font-weight: 600;
+}
+
+/* Navigation entries, in the shell rail and in the CMS section rail. */
+.admin-theme .admin-nav-entry {
+  color: var(--admin-text-muted);
+  background-color: transparent;
+}
+.admin-theme .admin-nav-entry:hover {
+  background-color: var(--admin-surface);
+  color: var(--admin-text);
+}
+.admin-theme .admin-nav-entry[aria-current] {
+  background-color: var(--admin-accent-soft);
+  color: var(--admin-text);
+}
+.admin-theme .admin-nav-entry-inert {
+  color: var(--admin-text-subtle);
+  background-color: transparent;
+}
+
+/* The bar that marks the current entry without using colour. */
+.admin-theme .admin-active-marker {
+  background-color: var(--admin-accent-strong);
+}
+
+/* A quick-action card: a panel that is also a link. It answers hover with tone
+   and border rather than with lift, so the overview never stacks shadows. */
+.admin-theme .admin-quick-action:hover {
+  background-color: var(--admin-surface-quiet);
+  border-color: var(--admin-border-strong);
+}
+
+/* The draft-state pill. It used to be a solid brown-black slab, which read as
+   the loudest thing on the editor even though it is a status and not an action.
+   Sage-tinted with brown-black text, it keeps the same prominence order it had
+   relative to the buttons beside it without competing with them for the eye. */
+.admin-theme .admin-freshness-badge {
+  background-color: var(--admin-accent-soft);
+  border: 1px solid var(--admin-ok-border);
+  color: var(--admin-text);
+}
+
+.admin-theme .admin-chip {
+  border: 1px solid var(--admin-border-strong);
+  color: var(--admin-text-subtle);
+  background-color: transparent;
+}
+
+.admin-theme .admin-input {
+  background-color: var(--admin-surface);
+  border: 1px solid var(--admin-border-strong);
+  color: var(--admin-text);
+}
+.admin-theme .admin-input::placeholder {
+  color: var(--admin-text-subtle);
+}
+.admin-theme .admin-input:focus {
+  border-color: var(--admin-accent);
+}
+
+/* ----- Semantic notices ----- */
+
+.admin-theme .admin-note-ok {
+  background-color: var(--admin-ok-surface);
+  border: 1px solid var(--admin-ok-border);
+  color: var(--admin-ok-text);
+}
+.admin-theme .admin-note-warn {
+  background-color: var(--admin-warn-surface);
+  border: 1px solid var(--admin-warn-border);
+  color: var(--admin-warn-text);
+}
+.admin-theme .admin-note-danger {
+  background-color: var(--admin-danger-surface);
+  border: 1px solid var(--admin-danger-border);
+  color: var(--admin-danger-text);
+}
+.admin-theme .admin-note-inert {
+  background-color: var(--admin-inert-surface);
+  border: 1px solid var(--admin-border);
+  color: var(--admin-text-muted);
+}
+
+/* The publication-state dot. Decoration beside a sentence that already says it;
+   it is kept because shape+position aid scanning, never because it is the cue. */
+.admin-theme .admin-dot-live { background-color: var(--admin-accent); }
+.admin-theme .admin-dot-idle { background-color: var(--admin-border-strong); }
+
+/* ----- Focus -----
+ *
+ * The global rule near the top of this file resolves its outline against
+ * `--site-primary`, which is a *public* token and is not declared inside the
+ * admin. It also carries `!important`, so the admin's own focus colour has to
+ * match that weight to take effect. Nothing about focus *visibility* changes:
+ * the outline keeps its width and offset, only its hue becomes admin sage. */
+.admin-theme :where(a, button, input, textarea, select, summary):focus-visible,
+.admin-theme [tabindex]:focus-visible {
+  outline: 3px solid var(--admin-focus) !important;
+  outline-offset: 3px !important;
+}
+
+/* ----- Utility remap for admin surfaces not individually restyled -----
+ *
+ * The shell, the overview and the CMS below use the semantic classes above.
+ * The transitional pages Package 10.2 owns — the calendar, availability — and
+ * the smaller editors reached from the CMS keep their existing utility classes,
+ * and this block re-points those utilities onto the admin palette so they sit in
+ * the same system without being redesigned. Layout, structure and information
+ * architecture are untouched; only the colours these classes resolve to change,
+ * and only inside `.admin-theme`. */
+.admin-theme .bg-white,
+.admin-theme .bg-white\/60,
+.admin-theme .bg-white\/70,
+.admin-theme .bg-white\/80,
+.admin-theme .bg-white\/85 {
+  background-color: var(--admin-surface);
+}
+
+.admin-theme .hover\:bg-white:hover {
+  background-color: var(--admin-surface-sunken);
+}
+
+.admin-theme .bg-warm-50 {
+  background-color: var(--admin-canvas);
+}
+
+.admin-theme .bg-warm-100,
+.admin-theme .bg-sage-50,
+.admin-theme .bg-sage-50\/50,
+.admin-theme .bg-sage-50\/70,
+.admin-theme .bg-sage-100 {
+  background-color: var(--admin-surface-sunken);
+}
+
+.admin-theme .hover\:bg-sage-50:hover {
+  background-color: var(--admin-surface-sunken);
+}
+
+.admin-theme .bg-warm-200,
+.admin-theme .bg-warm-300,
+.admin-theme .bg-sage-200 {
+  background-color: var(--admin-surface-muted);
+}
+
+.admin-theme .bg-warm-700,
+.admin-theme .bg-warm-900,
+.admin-theme .bg-rose-800 {
+  background-color: var(--admin-text);
+}
+
+.admin-theme .hover\:bg-warm-700:hover {
+  background-color: #3d352f;
+}
+
+.admin-theme .text-white,
+.admin-theme .text-porcelain {
+  color: var(--admin-surface);
+}
+
+.admin-theme .text-warm-800,
+.admin-theme .text-warm-900,
+.admin-theme .text-warm-950 {
+  color: var(--admin-text);
+}
+
+.admin-theme .text-warm-600,
+.admin-theme .text-warm-700 {
+  color: var(--admin-text-muted);
+}
+
+.admin-theme .text-warm-400,
+.admin-theme .text-warm-500 {
+  color: var(--admin-text-subtle);
+}
+
+.admin-theme .text-sage-600,
+.admin-theme .text-sage-700,
+.admin-theme .text-sage-800,
+.admin-theme .text-sage-900 {
+  color: var(--admin-accent);
+}
+
+.admin-theme .border-warm-200,
+.admin-theme .border-sage-200,
+.admin-theme .border-sage-200\/80 {
+  border-color: var(--admin-border);
+}
+
+.admin-theme .border-warm-300,
+.admin-theme .border-sage-300,
+.admin-theme .border-sage-400 {
+  border-color: var(--admin-border-strong);
+}
+
+.admin-theme .border-sage-500 {
+  border-color: var(--admin-accent);
+}
+
+.admin-theme .border-warm-900 {
+  border-color: var(--admin-text);
+}
+
+/* Semantic families keep their meaning and gain the warm cast. */
+.admin-theme .bg-red-50,
+.admin-theme .bg-rose-50,
+.admin-theme .bg-rose-50\/60 {
+  background-color: var(--admin-danger-surface);
+}
+
+.admin-theme .border-red-200,
+.admin-theme .border-red-300,
+.admin-theme .border-rose-200,
+.admin-theme .border-rose-300 {
+  border-color: var(--admin-danger-border);
+}
+
+.admin-theme .text-red-700,
+.admin-theme .text-rose-800,
+.admin-theme .text-rose-900,
+.admin-theme .text-rose-950 {
+  color: var(--admin-danger-text);
+}
+
+/* Focus rings declared as Tailwind utilities follow the admin focus colour. */
+.admin-theme .ring-sage-300,
+.admin-theme .ring-sage-300\/50,
+.admin-theme .focus\:ring-sage-300:focus,
+.admin-theme .focus-within\:ring-sage-300:focus-within,
+.admin-theme .focus\:ring-sage-300\/50:focus {
+  --tw-ring-color: var(--admin-focus);
+}
+
+.admin-theme .ring-rose-300,
+.admin-theme .ring-rose-400,
+.admin-theme .focus\:ring-rose-300:focus,
+.admin-theme .focus\:ring-rose-400:focus {
+  --tw-ring-color: var(--admin-danger-text);
+}
+
+/* ----- Motion -----
+ *
+ * The admin adds no animation of its own; the only movement is the short
+ * colour/background transition on hover and focus, and the preview's scroll,
+ * which already asks the media query before choosing `smooth`. This block makes
+ * the guarantee structural rather than a convention: with reduced motion
+ * requested, nothing inside the admin transitions or animates at all. */
+@media (prefers-reduced-motion: reduce) {
+  .admin-theme,
+  .admin-theme *,
+  .admin-theme *::before,
+  .admin-theme *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}

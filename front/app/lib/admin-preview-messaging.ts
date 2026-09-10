@@ -8,6 +8,27 @@ import {
 
 export const ADMIN_PREVIEW_CONTENT_MESSAGE = "ESZTER_ADMIN_PREVIEW_CONTENT";
 
+/**
+ * The preview's "I am listening" ping (ESZ-156).
+ *
+ * The parent posts the working document into an iframe that only starts
+ * listening once its client has mounted, and a message posted before that is
+ * dropped silently — this contract has no acknowledgement and nothing retries.
+ * That was survivable while the iframe mounted with the editor and the next
+ * keystroke resent the document; the focused CMS mounts it on demand, entering
+ * the preview mode on a phone, where there is no next keystroke.
+ *
+ * So the preview says when it is ready and the parent answers with the document.
+ * It carries no data, moves in the other direction from every other message
+ * here, and changes nothing about what the preview may render: the iframe still
+ * only ever displays a document the parent sent and validated.
+ */
+export const ADMIN_PREVIEW_READY_MESSAGE = "ESZTER_ADMIN_PREVIEW_READY";
+
+export interface AdminPreviewReadyMessage {
+  type: typeof ADMIN_PREVIEW_READY_MESSAGE;
+}
+
 export interface AdminPreviewContentMessage {
   type: typeof ADMIN_PREVIEW_CONTENT_MESSAGE;
   content: SiteContent;
@@ -65,6 +86,37 @@ export function createAdminPreviewNavigationMessage(
     section,
     behavior,
   };
+}
+
+export function createAdminPreviewReadyMessage(): AdminPreviewReadyMessage {
+  return { type: ADMIN_PREVIEW_READY_MESSAGE };
+}
+
+/**
+ * A readiness ping from the preview this parent owns.
+ *
+ * Held to the same two checks as every other message on this channel: the same
+ * origin, and the exact window we expect it from — here the iframe's own
+ * `contentWindow`, so another frame cannot make the editor answer with content.
+ */
+export function parseAdminPreviewReadyMessage(
+  event: PreviewMessageLike,
+  expectedOrigin: string,
+  expectedSource: unknown,
+): { status: PreviewMessageStatus } {
+  if (event.origin !== expectedOrigin || event.source !== expectedSource) {
+    return { status: "rejected" };
+  }
+
+  if (!isRecord(event.data)) {
+    return { status: "ignored" };
+  }
+
+  if (event.data.type !== ADMIN_PREVIEW_READY_MESSAGE) {
+    return { status: "ignored" };
+  }
+
+  return { status: "accepted" };
 }
 
 export function parseAdminPreviewContentMessage(

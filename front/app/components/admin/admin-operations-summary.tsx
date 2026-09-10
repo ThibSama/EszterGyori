@@ -60,9 +60,9 @@ export function AdminOperationsSummary() {
 
   if (loading) {
     return (
-      <section className="bg-warm-50 px-4 pt-8 sm:px-6 lg:px-8" aria-label="Résumé opérationnel">
+      <section className="admin-canvas px-4 pt-8 sm:px-6 lg:px-8" aria-label="Résumé opérationnel">
         <div className="mx-auto max-w-[1500px]">
-          <p role="status" className="rounded-3xl border border-warm-200 bg-white p-5 text-sm text-warm-600">
+          <p role="status" className="admin-panel admin-text-muted rounded-3xl p-5 text-sm">
             Chargement du résumé…
           </p>
         </div>
@@ -72,13 +72,13 @@ export function AdminOperationsSummary() {
 
   if (summary === null) {
     return (
-      <section className="bg-warm-50 px-4 pt-8 sm:px-6 lg:px-8" aria-label="Résumé opérationnel">
+      <section className="admin-canvas px-4 pt-8 sm:px-6 lg:px-8" aria-label="Résumé opérationnel">
         <div className="mx-auto max-w-[1500px]">
           <p
             ref={noticeRef}
             tabIndex={-1}
             role="alert"
-            className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-900 focus:outline-none focus:ring-2 focus:ring-rose-400">
+            className="admin-note-danger rounded-3xl p-5 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400">
             {message ?? "Le résumé n’a pas pu être chargé."}
           </p>
         </div>
@@ -101,28 +101,28 @@ export function AdminOperationsSummary() {
   ];
 
   return (
-    <section className="bg-warm-50 px-4 pt-8 sm:px-6 lg:px-8" aria-labelledby="summary-heading">
-      <div className="mx-auto max-w-[1500px] rounded-3xl border border-warm-200 bg-white p-5 shadow-sm sm:p-6">
+    <section className="admin-canvas px-4 pt-8 sm:px-6 lg:px-8" aria-labelledby="summary-heading">
+      <div className="admin-panel mx-auto max-w-[1500px] rounded-3xl p-5 sm:p-6">
         <div className="flex flex-wrap items-baseline justify-between gap-3">
-          <h2 id="summary-heading" className="font-display text-2xl text-warm-900">
+          <h2 id="summary-heading" className="admin-text font-display text-2xl">
             Résumé
           </h2>
-          <p className="text-sm capitalize text-warm-600">{formatParisDate(summary.todayDate)}</p>
+          <p className="admin-text-muted text-sm capitalize">{formatParisDate(summary.todayDate)}</p>
         </div>
 
         <dl className="mt-4 grid gap-3 sm:grid-cols-3">
           {tiles.map((tile) => (
-            <div key={tile.label} className="rounded-2xl border border-warm-200 bg-warm-50/60 p-4">
-              <dt className="text-xs font-semibold uppercase tracking-wide text-warm-500">
+            <div key={tile.label} className="admin-sunken rounded-2xl p-4">
+              <dt className="admin-text-subtle text-xs font-semibold uppercase tracking-wide">
                 {tile.label}
               </dt>
-              <dd className="mt-1 text-2xl font-medium text-warm-950">{tile.value}</dd>
-              <p className="mt-1 text-xs text-warm-500">{tile.hint}</p>
+              <dd className="admin-text mt-1 text-2xl font-medium">{tile.value}</dd>
+              <p className="admin-text-subtle mt-1 text-xs">{tile.hint}</p>
             </div>
           ))}
         </dl>
 
-        <p className="mt-4 text-sm text-warm-700">
+        <p className="admin-text-muted mt-4 text-sm">
           {summary.nextConfirmedStartsAtUtc === null
             ? "Aucun rendez-vous à venir sur la période."
             : `Prochain rendez-vous à ${formatParisTime(summary.nextConfirmedStartsAtUtc)}.`}
@@ -130,21 +130,21 @@ export function AdminOperationsSummary() {
 
         <div className="mt-4 grid gap-5 lg:grid-cols-2">
           <div>
-            <h3 className="text-sm font-medium text-warm-900">Aujourd’hui</h3>
+            <h3 className="admin-text text-sm font-medium">Aujourd’hui</h3>
             {summary.today.length === 0 ? (
-              <p className="mt-2 text-sm text-warm-600">Aucun rendez-vous aujourd’hui.</p>
+              <p className="admin-text-muted mt-2 text-sm">Aucun rendez-vous aujourd’hui.</p>
             ) : (
               <>
                 <ul className="mt-2 space-y-1">
                   {summary.today.map((entry) => (
-                    <li key={entry.reference} className="text-sm text-warm-700">
+                    <li key={entry.reference} className="admin-text-muted text-sm">
                       <span className="font-medium">{entry.localStart}</span> · {entry.customerName} ·{" "}
                       {SERVICE_LABELS[entry.serviceKey] ?? entry.serviceKey}
                     </li>
                   ))}
                 </ul>
                 {!summary.listings.todayComplete && (
-                  <p role="note" className="mt-2 text-xs text-warm-500">
+                  <p role="note" className="admin-text-subtle mt-2 text-xs">
                     Liste partielle : {summary.counts.todayConfirmed} rendez-vous confirmés
                     aujourd’hui ; les {summary.today.length} premiers sont affichés.
                   </p>
@@ -153,16 +153,16 @@ export function AdminOperationsSummary() {
             )}
           </div>
           <div>
-            <h3 className="text-sm font-medium text-warm-900">À venir</h3>
+            <h3 className="admin-text text-sm font-medium">À venir</h3>
             {summary.upcoming.length === 0 ? (
-              <p className="mt-2 text-sm text-warm-600">
+              <p className="admin-text-muted mt-2 text-sm">
                 Aucun rendez-vous sur les {UPCOMING_DAYS} prochains jours.
               </p>
             ) : (
               <>
                 <ul className="mt-2 space-y-1">
                   {summary.upcoming.slice(0, 6).map((entry) => (
-                    <li key={entry.reference} className="text-sm text-warm-700">
+                    <li key={entry.reference} className="admin-text-muted text-sm">
                       <span className="font-medium">
                         {entry.localDate.slice(8)}/{entry.localDate.slice(5, 7)} {entry.localStart}
                       </span>{" "}
@@ -170,14 +170,14 @@ export function AdminOperationsSummary() {
                     </li>
                   ))}
                   {summary.counts.upcomingConfirmed > 6 && (
-                    <li className="text-sm text-warm-500">
+                    <li className="admin-text-subtle text-sm">
                       + {summary.counts.upcomingConfirmed - 6} autre
                       {summary.counts.upcomingConfirmed - 6 > 1 ? "s" : ""}
                     </li>
                   )}
                 </ul>
                 {!summary.listings.upcomingComplete && (
-                  <p role="note" className="mt-2 text-xs text-warm-500">
+                  <p role="note" className="admin-text-subtle mt-2 text-xs">
                     Liste partielle : {summary.counts.upcomingConfirmed} rendez-vous confirmés à
                     venir ; les {summary.upcoming.length} plus proches sont affichés.
                   </p>

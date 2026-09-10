@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
-import Link from "next/link";
-import {
-  AdminSessionBadge,
-  AdminSessionProvider,
-} from "../../components/admin/admin-session-provider";
+import { AdminShell } from "../../components/admin/admin-shell";
+import { AdminSessionProvider } from "../../components/admin/admin-session-provider";
 import { PRIVATE_ROBOTS } from "../../lib/metadata/site-metadata";
 
 export const metadata: Metadata = {
@@ -31,6 +28,10 @@ export const metadata: Metadata = {
  * The consequence worth stating: the editor below this point can assume a session
  * existed *when it rendered*, and must still handle a 401 on every call, because
  * the session can end between two of them.
+ *
+ * The chrome itself moved into {@link AdminShell} (ESZ-154). This layout is the
+ * only place that mounts it, which is what keeps every protected view on one
+ * navigation instead of a per-page copy.
  */
 export default function ProtectedAdminLayout({
   children,
@@ -39,27 +40,7 @@ export default function ProtectedAdminLayout({
 }>) {
   return (
     <AdminSessionProvider>
-      <div className="sticky top-0 z-50 border-b border-warm-200 bg-white/85 px-4 py-3 text-warm-800 shadow-sm backdrop-blur">
-        <div className="mx-auto flex max-w-[1800px] flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:px-2 2xl:px-4">
-          <div className="flex flex-wrap items-center gap-4">
-            <p className="text-sm font-medium">Administration Eszter</p>
-            <nav aria-label="Navigation de l’administration" className="flex gap-1">
-              <Link href="/admin" className="rounded-full px-3 py-2 text-sm text-warm-700 hover:bg-warm-100 focus:outline-none focus:ring-2 focus:ring-sage-300">Contenu</Link>
-              <Link href="/admin/bookings" className="rounded-full px-3 py-2 text-sm text-warm-700 hover:bg-warm-100 focus:outline-none focus:ring-2 focus:ring-sage-300">Rendez-vous</Link>
-              <Link href="/admin/availability" className="rounded-full px-3 py-2 text-sm text-warm-700 hover:bg-warm-100 focus:outline-none focus:ring-2 focus:ring-sage-300">Disponibilités</Link>
-            </nav>
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <Link
-              href="/"
-              className="inline-flex items-center justify-center rounded-full border border-warm-300 bg-white/75 px-4 py-2 text-sm font-medium text-warm-700 transition hover:-translate-y-px hover:bg-white hover:text-warm-900 focus:outline-none focus:ring-2 focus:ring-sage-300">
-              ← Retour au site
-            </Link>
-            <AdminSessionBadge />
-          </div>
-        </div>
-      </div>
-      {children}
+      <AdminShell>{children}</AdminShell>
     </AdminSessionProvider>
   );
 }

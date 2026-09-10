@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { SitePreview } from "../../components/site-preview";
 import {
+  createAdminPreviewReadyMessage,
   parseAdminPreviewContentMessage,
   parseAdminPreviewNavigationMessage,
 } from "../../lib/admin-preview-messaging";
@@ -102,6 +103,17 @@ export function AdminPreviewClient({
     }
 
     window.addEventListener("message", handleMessage);
+    // Announced only once the listener above is attached, so the document the
+    // editor sends back cannot arrive before there is anything to receive it
+    // (ESZ-156). Nothing is sent when this page is opened directly: `parent` is
+    // then this window itself, and the editor is the only listener that acts on
+    // it anyway.
+    if (window.parent !== window) {
+      window.parent.postMessage(
+        createAdminPreviewReadyMessage(),
+        window.location.origin,
+      );
+    }
     return () => {
       window.removeEventListener("message", handleMessage);
     };

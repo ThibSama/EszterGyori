@@ -14,13 +14,13 @@ export function SectionCard({
   return (
     <section
       id={id}
-      className="scroll-mt-28 rounded-2xl border border-white/70 bg-white/55 p-4 shadow-[0_8px_28px_rgba(44,43,40,0.06)] backdrop-blur-xl sm:p-5">
+      className="admin-panel scroll-mt-28 rounded-2xl p-4 sm:p-5">
       <div className="mb-4 space-y-1">
-        <h2 className="font-display text-2xl font-normal text-warm-800">
+        <h2 className="admin-text font-display text-2xl font-normal">
           {title}
         </h2>
         {description && (
-          <p className="text-sm leading-relaxed text-warm-500">
+          <p className="admin-text-muted text-sm leading-relaxed">
             {description}
           </p>
         )}
@@ -40,9 +40,9 @@ export function ItemCard({
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-4 rounded-xl border border-warm-200/80 bg-white/60 p-4">
+    <div className="admin-sunken space-y-4 rounded-xl p-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <h3 className="text-base font-medium text-warm-800">{title}</h3>
+        <h3 className="admin-text text-base font-medium">{title}</h3>
         <ReadOnlyId label="ID technique" value={id} />
       </div>
       {children}

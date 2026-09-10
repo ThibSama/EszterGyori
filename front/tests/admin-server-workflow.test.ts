@@ -38,6 +38,8 @@ function readAppFile(...segments: string[]): string {
 const controllerSource = () => readAppFile("components", "admin", "content-editor-controller.ts");
 const backupSource = () => readAppFile("components", "admin", "content-editor-backup.ts");
 const editorSource = () => readAppFile("components", "admin", "content-editor.tsx");
+/** ESZ-156: the focused editing surface, where the section editors now mount. */
+const workspaceSource = () => readAppFile("components", "admin", "content-workspace.tsx");
 
 test("no admin route spells an API path instead of naming it from the contract", () => {
   const sources = [
@@ -232,14 +234,19 @@ test("/admin/login wires the real CSRF-bound form into the protected workflow", 
 
 test("ESZ-035: the preview still mirrors the working draft, unpublished", () => {
   const editor = readAppFile("components", "admin", "content-editor.tsx");
+  const workspace = workspaceSource();
   const viewport = readAppFile("components", "admin", "admin-preview-viewport.tsx");
 
   // The preview is fed the in-memory content, so it shows unsaved edits — which
   // is the point of a preview and is unrelated to publication.
+  // ESZ-156: the preview moved into the focused workspace with the section
+  // editors. It is still fed the working document itself — one object, not a
+  // copy and not a saved revision — which is what makes an unsaved edit visible.
   assert.match(
-    editor,
-    /<AdminPreviewViewport\s*\n\s*content=\{content\}\s*\n\s*activeSection=\{activeSection\}/,
+    workspace,
+    /<AdminPreviewViewport\s*\n\s*content=\{content\}\s*\n\s*activeSection=\{selection\.section\}/,
   );
+  assert.match(editor, /<ContentWorkspace\s*\n\s*content=\{content\}/);
   assert.match(viewport, /postMessage/);
   assert.doesNotMatch(viewport, /publish/i);
 });
@@ -250,10 +257,15 @@ test("ESZ-035: navigation, sections, appearance and validation survive the rewir
   // page still renders them, but the behaviour is asserted where it lives.
   const backup = backupSource();
 
+  // ESZ-156: the section editors are mounted one at a time by the focused
+  // workspace, so the inventory below reads the file that mounts them. The
+  // scroll-spy the long page needed is gone with the long page: the selection
+  // model (`admin-content-navigation.ts`) decides the current section now, and
+  // `admin-focused-cms.test.ts` asserts it resolves.
+  const workspace = workspaceSource();
   for (const marker of [
-    /ADMIN_PREVIEW_SECTIONS\.map/,
-    /handleSectionNavigation/,
-    /IntersectionObserver/,
+    /ADMIN_CONTENT_AREAS\.map/,
+    /handleSelectSection/,
     /<AppearanceEditor/,
     /<NavigationEditor/,
     /<HeroEditor/,
@@ -264,10 +276,14 @@ test("ESZ-035: navigation, sections, appearance and validation survive the rewir
     /<AboutEditor/,
     /<ContactEditor/,
     /<FooterEditor/,
-    /beforeunload/,
   ]) {
-    assert.match(editor, marker);
+    assert.match(
+      `${workspace}\n${readAppFile("components", "admin", "content-section-navigation.tsx")}`,
+      marker,
+    );
   }
+  // The unsaved-changes guard stays with the page that owns the draft.
+  assert.match(editor, /beforeunload/);
   assert.match(backup, /function handleExportDraft\(/);
   assert.match(backup, /function handleImportDraft\(/);
 });
@@ -284,6 +300,17 @@ test("ESZ-035: nothing server-only was reintroduced into the export", () => {
     // client bundle the export builds, so they carry the same constraint.
     readAppFile("components", "admin", "content-editor-controller.ts"),
     readAppFile("components", "admin", "content-editor-backup.ts"),
+    // ESZ-154: the shell is mounted by the protected layout on every admin view,
+    // so it lives under the same export constraint.
+    readAppFile("components", "admin", "admin-shell.tsx"),
+    // ESZ-155: `/admin` is now the overview and the CMS moved to `/admin/content`.
+    // Both routes are exported statically like every other admin view.
+    readAppFile("components", "admin", "admin-overview.tsx"),
+    readAppFile("admin", "(protected)", "content", "page.tsx"),
+    // ESZ-156: the focused workspace and its navigation are client modules of the
+    // exported admin bundle, under the same constraint.
+    readAppFile("components", "admin", "content-workspace.tsx"),
+    readAppFile("components", "admin", "content-section-navigation.tsx"),
   ];
 
   for (const source of sources) {
@@ -303,4 +330,7 @@ test("ESZ-035: nothing server-only was reintroduced into the export", () => {
   // The pages that carry `robots: none` stay server components so they can.
   assert.match(sources[0] ?? "", /export const metadata/);
   assert.match(sources[1] ?? "", /export const metadata/);
+  // ESZ-154: the shell reads `usePathname()` to mark the current destination,
+  // which only a client component may do.
+  assert.match(sources[8] ?? "", /^"use client";/);
 });

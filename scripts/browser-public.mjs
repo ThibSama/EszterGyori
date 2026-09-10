@@ -798,10 +798,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc make libpng
     `img-src is not exactly 'self' https: — got ${JSON.stringify(imgSources)}`,
   );
 
+  // ESZ-155: signing in lands on the operational overview. The CMS this proof
+  // drives now has its own route, so it is opened explicitly.
+  await cdp.send("Page.navigate", { url: `${origin}/admin/content` });
   // The media fields render once the server draft has loaded; wait for the
   // Hero source field before asserting its copy.
   await waitFor(
-    () => evaluate(cdp, `Boolean(document.getElementById("hero-visual-src"))`),
+    () => evaluate(cdp, `location.pathname === "/admin/content" && Boolean(document.getElementById("hero-visual-src"))`),
     "content editor media fields",
   );
   // Editor copy: the media field describes HTTPS-only external URLs.
@@ -919,7 +922,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc make libpng
   const managedPreview = await decodeEditorPreview(cdp, "hero-visual-src", "same-origin managed editor preview");
   assert(managedPreview.src === uploadedPath, `the managed editor preview decoded a different source: ${managedPreview.src}`);
 
-  // A gallery item carries the cross-origin HTTPS fixture.
+  // A gallery item carries the cross-origin HTTPS fixture. ESZ-156: the CMS
+  // edits one section at a time, so the gallery is selected before its fields are
+  // reached. It is the same working document — the save below still carries the
+  // Hero media edited above.
+  const galleryOpened = await evaluate(cdp, `(() => {
+    const button = document.querySelector('[data-cms-nav="section"][data-cms-key="gallery"]');
+    button?.click();
+    return Boolean(button);
+  })()`);
+  assert(galleryOpened, "the CMS navigation exposes no “Réalisations” section");
+  await waitFor(
+    () => evaluate(cdp, `Boolean(document.getElementById("gallery-natural-brows-visual-src"))`),
+    "the gallery section editor",
+  );
   await setReactInput(cdp, "gallery-natural-brows-visual-src", tlsUrl);
   const galleryPreview = await decodeEditorPreview(cdp, "gallery-natural-brows-visual-src", "cross-origin HTTPS gallery editor preview");
   assert(galleryPreview.src === tlsUrl, `the gallery editor preview decoded a different source: ${galleryPreview.src}`);

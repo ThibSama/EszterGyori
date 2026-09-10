@@ -565,11 +565,20 @@ test("the summary is read-only, server-counted and never lists a cancellation", 
   assert.match(source, /sm:grid-cols-3/);
 });
 
-test("the admin shell links the availability editor", async () => {
-  const source = await readFile(
-    new URL("../app/admin/(protected)/layout.tsx", import.meta.url),
-    "utf8",
+test("the admin shell represents the availability editor under Calendrier", async () => {
+  // ESZ-154: the destinations moved out of the layout's markup and into the
+  // navigation model the shell renders. The updated architecture drops
+  // "Disponibilités" as a first-level entry — it converges under "Calendrier",
+  // which Package 10.2 will consolidate for real. The route stays reachable, so
+  // the shell still has to mark it rather than going blank on it.
+  const { ADMIN_NAV_ITEMS, activeAdminNavKey } = await import(
+    "../app/lib/admin-navigation"
   );
-  assert.match(source, /href="\/admin\/availability"/);
-  assert.match(source, /Disponibilités/);
+
+  assert.ok(
+    !ADMIN_NAV_ITEMS.some((item) => item.label === "Disponibilités"),
+    "availability must no longer be a first-level destination",
+  );
+  assert.equal(activeAdminNavKey("/admin/availability"), "calendar");
+  assert.equal(activeAdminNavKey("/admin/availability/weekly"), "calendar");
 });

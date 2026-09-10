@@ -115,16 +115,40 @@ test("public anchor targets keep space below the fixed navbar", () => {
   assert.match(globalsSource, /#contact/);
 });
 
-test("admin workspace uses a wide 60/40 editor and preview layout", () => {
+test("admin workspace uses a navigation, editor and preview layout", () => {
+  // ESZ-156: the workspace gained a third column. The editor/preview split it
+  // had is still there and still sticky; what changed is that the CMS's own
+  // navigation now has a column of its own from `lg` up, and that the editor
+  // column holds one section rather than all ten.
   const editorSource = readAppFile("components", "admin", "content-editor.tsx");
-  const layoutSource = readAppFile("admin", "(protected)", "layout.tsx");
+  const workspaceSource = readAppFile("components", "admin", "content-workspace.tsx");
+  const navigationSource = readAppFile(
+    "components",
+    "admin",
+    "content-section-navigation.tsx",
+  );
+  const shellSource = readAppFile("components", "admin", "admin-shell.tsx");
 
   assert.match(editorSource, /max-w-\[1800px\]/);
-  assert.match(editorSource, /grid min-w-0 gap-6/);
-  assert.match(editorSource, /<div className="min-w-0 space-y-6">/);
-  assert.match(editorSource, /xl:grid-cols-\[minmax\(0,3fr\)_minmax\(480px,2fr\)\]/);
-  assert.match(editorSource, /xl:h-\[calc\(100vh-6\.5rem\)\]/);
-  assert.match(editorSource, /Sections de l’éditeur/);
-  assert.match(layoutSource, /sticky top-0/);
-  assert.match(layoutSource, /max-w-\[1800px\]/);
+  assert.match(workspaceSource, /grid min-w-0 gap-6/);
+  // Navigation beside the editor at `lg`, the preview joining them at `xl`.
+  assert.match(
+    workspaceSource,
+    /lg:grid-cols-\[minmax\(0,15rem\)_minmax\(0,1fr\)\]/,
+  );
+  assert.match(
+    workspaceSource,
+    /xl:grid-cols-\[minmax\(0,15rem\)_minmax\(0,3fr\)_minmax\(420px,2fr\)\]/,
+  );
+  // The chrome is a sidebar from `lg` up (ESZ-154), so it no longer eats any
+  // vertical space here: the sticky preview column only has to clear the
+  // workspace's own `py-6`.
+  assert.match(workspaceSource, /xl:sticky xl:top-6 xl:h-\[calc\(100vh-3rem\)\]/);
+  // The CMS navigation is a landmark with a name of its own, distinct from the
+  // shell's — an operator tabbing through the page can tell the two apart.
+  assert.match(navigationSource, /aria-label="Sections du contenu"/);
+  assert.match(navigationSource, /lg:sticky lg:top-6/);
+  // The chrome moved out of the layout and into the shell, where it sticks as a
+  // sidebar rather than as a bar across the top of the workspace.
+  assert.match(shellSource, /lg:sticky lg:top-0/);
 });

@@ -4,11 +4,14 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   createAdminPreviewNavigationMessage,
+  createAdminPreviewReadyMessage,
   parseAdminPreviewNavigationMessage,
+  parseAdminPreviewReadyMessage,
 } from "../app/lib/admin-preview-messaging";
 import {
   ADMIN_PREVIEW_SECTIONS,
 } from "../app/lib/admin-preview-sections";
+import { DEFAULT_ADMIN_CONTENT_SELECTION } from "../app/lib/admin-content-navigation";
 
 const appRoot = join(process.cwd(), "app");
 
@@ -89,17 +92,31 @@ test("admin preview navigation messages accept known sections only", () => {
 });
 
 test("admin editor sends the active section to the noninteractive preview", () => {
-  const editorSource = readAppFile("components", "admin", "content-editor.tsx");
+  // ESZ-156: the active section used to be inferred from the scroll position of a
+  // page that rendered every editor, which is why this asserted an
+  // `IntersectionObserver`. The editor now renders one section at a time, so the
+  // active section *is* the selection — the same fact, established by choice
+  // rather than by scrolling — and it is still what the preview is told.
+  const workspaceSource = readAppFile("components", "admin", "content-workspace.tsx");
+  const navigationSource = readAppFile(
+    "components",
+    "admin",
+    "content-section-navigation.tsx",
+  );
   const previewSource = readAppFile(
     "components",
     "admin",
     "admin-preview-viewport.tsx",
   );
 
-  assert.match(editorSource, /useState<AdminPreviewSectionKey>\("hero"\)/);
-  assert.match(editorSource, /IntersectionObserver/);
-  assert.match(editorSource, /aria-current=/);
-  assert.match(editorSource, /activeSection=\{activeSection\}/);
+  assert.deepEqual(DEFAULT_ADMIN_CONTENT_SELECTION, {
+    area: "home",
+    section: "hero",
+  });
+  assert.match(workspaceSource, /DEFAULT_ADMIN_CONTENT_SELECTION/);
+  assert.doesNotMatch(workspaceSource, /IntersectionObserver/);
+  assert.match(navigationSource, /aria-current=/);
+  assert.match(workspaceSource, /activeSection=\{selection\.section\}/);
   assert.match(previewSource, /createAdminPreviewNavigationMessage/);
   assert.match(previewSource, /sendNavigation\("auto"\)/);
   assert.match(previewSource, /sendNavigation\("smooth"\)/);
@@ -135,4 +152,67 @@ test("preview client scrolls by section key and respects reduced motion", () => 
   assert.match(source, /prefers-reduced-motion: reduce/);
   assert.match(source, /window\.scrollTo/);
   assert.doesNotMatch(source, /eval\(/);
+});
+
+test("the preview announces it is listening, and only from its own frame", () => {
+  // ESZ-156: the first content message used to be posted into an iframe that may
+  // not have mounted its listener yet, and a dropped one was never retried. The
+  // preview now says when it is ready and the editor answers with the document —
+  // which is what makes the on-demand preview mode on a phone work at all.
+  const previewWindow = {};
+  const event = {
+    data: createAdminPreviewReadyMessage(),
+    origin: "https://eszter.local",
+    source: previewWindow,
+  };
+
+  assert.deepEqual(
+    parseAdminPreviewReadyMessage(event, "https://eszter.local", previewWindow),
+    { status: "accepted" },
+  );
+
+  // Another frame cannot make the editor answer with content…
+  assert.deepEqual(
+    parseAdminPreviewReadyMessage(event, "https://eszter.local", {}),
+    { status: "rejected" },
+  );
+  // …nor can another origin.
+  assert.deepEqual(
+    parseAdminPreviewReadyMessage(
+      { ...event, origin: "https://evil.example" },
+      "https://eszter.local",
+      previewWindow,
+    ),
+    { status: "rejected" },
+  );
+  // Anything else on the channel is simply not this message.
+  for (const data of [null, "ready", { type: "SOMETHING_ELSE" }]) {
+    assert.deepEqual(
+      parseAdminPreviewReadyMessage(
+        { data, origin: "https://eszter.local", source: previewWindow },
+        "https://eszter.local",
+        previewWindow,
+      ),
+      { status: "ignored" },
+    );
+  }
+
+  // The ping carries no content: it cannot be a way into the preview.
+  assert.deepEqual(Object.keys(createAdminPreviewReadyMessage()), ["type"]);
+
+  const clientSource = readAppFile("admin", "preview", "admin-preview-client.tsx");
+  const viewportSource = readAppFile(
+    "components",
+    "admin",
+    "admin-preview-viewport.tsx",
+  );
+  // Announced after the listener is attached, never when opened standalone.
+  assert.match(
+    clientSource,
+    /window\.addEventListener\("message", handleMessage\);[\s\S]{0,400}window\.parent\.postMessage\(\s*\n?\s*createAdminPreviewReadyMessage\(\)/,
+  );
+  assert.match(clientSource, /if \(window\.parent !== window\)/);
+  // Answered with the document, from the frame this viewport owns.
+  assert.match(viewportSource, /parseAdminPreviewReadyMessage\(/);
+  assert.match(viewportSource, /iframeRef\.current\?\.contentWindow,/);
 });

@@ -19,7 +19,7 @@ export function Field({
 }) {
   return (
     <div className="space-y-1.5">
-      <label htmlFor={id} className="block text-sm font-medium text-warm-800">
+      <label htmlFor={id} className="admin-text block text-sm font-medium">
         {label}
       </label>
       <input
@@ -28,9 +28,11 @@ export function Field({
         value={value}
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-xl border border-warm-300/70 bg-white/80 px-3 py-2 text-sm text-warm-800 shadow-sm outline-none transition placeholder:text-warm-400 focus:border-sage-500 focus:ring-2 focus:ring-sage-300/50"
+        className="admin-input w-full rounded-xl px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-sage-300/50"
       />
-      {help && <p className="text-xs leading-relaxed text-warm-500">{help}</p>}
+      {help && (
+        <p className="admin-text-muted text-xs leading-relaxed">{help}</p>
+      )}
     </div>
   );
 }
@@ -52,7 +54,7 @@ export function TextArea({
 }) {
   return (
     <div className="space-y-1.5">
-      <label htmlFor={id} className="block text-sm font-medium text-warm-800">
+      <label htmlFor={id} className="admin-text block text-sm font-medium">
         {label}
       </label>
       <textarea
@@ -61,7 +63,7 @@ export function TextArea({
         rows={rows}
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full resize-y rounded-xl border border-warm-300/70 bg-white/80 px-3 py-2 text-sm leading-relaxed text-warm-800 shadow-sm outline-none transition placeholder:text-warm-400 focus:border-sage-500 focus:ring-2 focus:ring-sage-300/50"
+        className="admin-input w-full resize-y rounded-xl px-3 py-2 text-sm leading-relaxed outline-none transition focus:ring-2 focus:ring-sage-300/50"
       />
     </div>
   );
@@ -69,8 +71,8 @@ export function TextArea({
 
 export function ReadOnlyId({ label, value }: { label: string; value: string }) {
   return (
-    <div className="break-all rounded-lg bg-warm-100/70 px-3 py-2 text-xs text-warm-500">
-      <span className="font-medium text-warm-600">{label} :</span> {value}
+    <div className="admin-sunken admin-text-subtle break-all rounded-lg px-3 py-2 text-xs">
+      <span className="admin-text-muted font-medium">{label} :</span> {value}
     </div>
   );
 }
@@ -87,8 +89,8 @@ export function ColorField({
   onChange: (value: string) => void;
 }) {
   return (
-    <div className="rounded-xl border border-warm-200/80 bg-white/65 p-3">
-      <label htmlFor={id} className="block text-sm font-medium text-warm-800">
+    <div className="admin-panel rounded-xl p-3">
+      <label htmlFor={id} className="admin-text block text-sm font-medium">
         {label}
       </label>
       <div className="mt-2 flex items-center gap-3">
@@ -97,14 +99,14 @@ export function ColorField({
           type="color"
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          className="h-11 w-14 cursor-pointer rounded-lg border border-warm-300 bg-white p-1 focus:outline-none focus:ring-2 focus:ring-sage-300"
+          className="admin-input h-11 w-14 cursor-pointer rounded-lg p-1 focus:outline-none focus:ring-2 focus:ring-sage-300"
         />
         <span
-          className="h-8 w-8 rounded-full border border-warm-300 shadow-sm"
+          className="admin-border-strong h-8 w-8 rounded-full border"
           style={{ backgroundColor: value }}
           aria-hidden="true"
         />
-        <code className="break-all rounded-md bg-warm-100 px-2 py-1 text-xs text-warm-600">
+        <code className="admin-sunken break-all rounded-md px-2 py-1 text-xs">
           {value}
         </code>
       </div>

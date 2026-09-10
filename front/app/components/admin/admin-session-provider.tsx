@@ -87,6 +87,14 @@ export function useAdminSession(): AdminSessionContextValue {
   return value;
 }
 
+/**
+ * A gate screen: shown *instead of* the admin shell, never inside it.
+ *
+ * That is why it declares `admin-theme` itself (ESZ-158). The scope is applied
+ * by `AdminShell`, and this notice replaces the shell rather than sitting under
+ * it, so inheriting is not available — the alternative would be a screen in the
+ * public palette in the middle of the back-office.
+ */
 function AdminNotice({
   title,
   children,
@@ -97,16 +105,16 @@ function AdminNotice({
   action?: React.ReactNode;
 }) {
   return (
-    <main className="min-h-screen bg-warm-50 px-4 py-10 text-warm-800 sm:px-6">
+    <main className="admin-theme admin-canvas min-h-screen px-4 py-10 sm:px-6">
       <div className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center">
         <div
           role="status"
           aria-live="polite"
-          className="rounded-3xl border border-warm-200 bg-white/85 p-6 shadow-[0_18px_60px_rgba(44,43,40,0.10)] backdrop-blur sm:p-8">
-          <h1 className="font-display text-2xl font-light text-warm-900">
+          className="admin-panel rounded-3xl p-6 sm:p-8">
+          <h1 className="admin-text font-display text-2xl font-light">
             {title}
           </h1>
-          <p className="mt-3 text-sm leading-relaxed text-warm-700">{children}</p>
+          <p className="admin-text-muted mt-3 text-sm leading-relaxed">{children}</p>
           {action && <div className="mt-6">{action}</div>}
         </div>
       </div>
@@ -203,7 +211,7 @@ export function AdminSessionProvider({
               setState({ status: "loading" });
               void read();
             }}
-            className="inline-flex w-full items-center justify-center rounded-full bg-warm-900 px-5 py-3 text-sm font-medium text-porcelain transition hover:bg-warm-700 focus:outline-none focus:ring-2 focus:ring-sage-300">
+            className="admin-btn-primary inline-flex w-full items-center justify-center rounded-full px-5 py-3 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300">
             Réessayer
           </button>
         }>
@@ -219,7 +227,7 @@ export function AdminSessionProvider({
         action={
           <Link
             href={loginPathFor("/admin")}
-            className="inline-flex w-full items-center justify-center rounded-full bg-warm-900 px-5 py-3 text-sm font-medium text-porcelain transition hover:bg-warm-700 focus:outline-none focus:ring-2 focus:ring-sage-300">
+            className="admin-btn-primary inline-flex w-full items-center justify-center rounded-full px-5 py-3 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300">
             Se connecter
           </Link>
         }>
@@ -233,13 +241,13 @@ export function AdminSessionProvider({
       {logoutUi.status === "failed" && (
         <div
           role="alert"
-          className="fixed inset-0 z-[60] overflow-y-auto bg-warm-50/95 px-4 py-10 text-warm-800 sm:px-6">
+          className="admin-theme admin-canvas fixed inset-0 z-[60] overflow-y-auto px-4 py-10 sm:px-6">
           <div className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center">
-            <div className="rounded-3xl border border-warm-200 bg-white/85 p-6 shadow-[0_18px_60px_rgba(44,43,40,0.10)] backdrop-blur sm:p-8">
-              <h1 className="font-display text-2xl font-light text-warm-900">
+            <div className="admin-panel rounded-3xl p-6 sm:p-8">
+              <h1 className="admin-text font-display text-2xl font-light">
                 {ADMIN_SESSION_MESSAGES.logoutFailedTitle}
               </h1>
-              <p className="mt-3 text-sm leading-relaxed text-warm-700">
+              <p className="admin-text-muted mt-3 text-sm leading-relaxed">
                 {ADMIN_SESSION_MESSAGES.logoutFailed}
               </p>
               <div className="mt-6 flex flex-col gap-2">
@@ -248,7 +256,7 @@ export function AdminSessionProvider({
                   onClick={() => {
                     void signOut();
                   }}
-                  className="inline-flex w-full items-center justify-center rounded-full bg-warm-900 px-5 py-3 text-sm font-medium text-porcelain transition hover:bg-warm-700 focus:outline-none focus:ring-2 focus:ring-sage-300">
+                  className="admin-btn-primary inline-flex w-full items-center justify-center rounded-full px-5 py-3 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300">
                   {ADMIN_SESSION_MESSAGES.logoutRetry}
                 </button>
                 <button
@@ -256,7 +264,7 @@ export function AdminSessionProvider({
                   onClick={() => {
                     dispatchLogout({ type: "logout-dismissed" });
                   }}
-                  className="inline-flex w-full items-center justify-center rounded-full border border-warm-300 bg-white/75 px-5 py-3 text-sm font-medium text-warm-700 transition hover:bg-white hover:text-warm-900 focus:outline-none focus:ring-2 focus:ring-sage-300">
+                  className="admin-btn-secondary inline-flex w-full items-center justify-center rounded-full px-5 py-3 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300">
                   {ADMIN_SESSION_MESSAGES.logoutDismiss}
                 </button>
               </div>
@@ -280,13 +288,31 @@ export function AdminSessionProvider({
   );
 }
 
-/** The signed-in identity and the sign-out control, rendered in the admin chrome. */
+/**
+ * The signed-in identity and the sign-out control, rendered in the lower band of
+ * the admin chrome, between “Besoin d’aide” and “Paramètres” (ESZ-154).
+ *
+ * One row while the chrome is a banner — the band it sits in scrolls
+ * horizontally, so the pair costs one line rather than two — and a stacked block
+ * at `lg`, where the chrome is a 16rem sidebar and an email beside a button would
+ * overflow the column.
+ */
 export function AdminSessionBadge() {
   const { email, signOut, signOutPending } = useAdminSession();
 
   return (
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-      <span className="text-sm text-warm-600" data-testid="admin-account-email">
+    <div className="flex min-w-0 flex-row items-center gap-2 lg:flex-col lg:items-stretch">
+      {/* Visible at every width, including the narrowest chrome: an operator who
+          can sign out has to be able to see *which* account they are signing out
+          of, and `sr-only` would answer that for assistive technology only.
+          Below `sm` it is a bounded, truncated line beside the control — the
+          widest it can be while staying inside a 375 px viewport rather than
+          scrolled off the end of the band — and the full address stays in the
+          DOM, so the accessibility tree and a hover both still carry it whole. */}
+      <span
+        className="admin-text-muted block min-w-0 max-w-[8rem] truncate text-xs leading-tight sm:max-w-none sm:text-sm sm:leading-normal"
+        title={email}
+        data-testid="admin-account-email">
         {email}
       </span>
       <button
@@ -297,7 +323,7 @@ export function AdminSessionBadge() {
         disabled={signOutPending}
         aria-disabled={signOutPending}
         aria-busy={signOutPending}
-        className="inline-flex items-center justify-center rounded-full border border-warm-300 bg-white/75 px-4 py-2 text-sm font-medium text-warm-700 transition hover:bg-white hover:text-warm-900 focus:outline-none focus:ring-2 focus:ring-sage-300 disabled:cursor-not-allowed disabled:opacity-60">
+        className="admin-btn-secondary inline-flex shrink-0 items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-sage-300 disabled:cursor-not-allowed">
         {signOutPending ? ADMIN_SESSION_MESSAGES.logoutPending : "Se déconnecter"}
       </button>
     </div>

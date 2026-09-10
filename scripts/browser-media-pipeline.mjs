@@ -289,6 +289,12 @@ async function main() {
     chromeBinary,
     [
       "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+      // ESZ-156: the CMS shows the editor and the live preview side by side from
+      // 1280 px and offers an explicit preview mode below it. This proof needs
+      // both at once — it edits a media field and reads the result in the
+      // preview — so it runs in the desktop window a real editing session uses,
+      // rather than in the 800×600 headless default.
+      "--window-size=1440,1000",
       "--remote-debugging-port=0", `--user-data-dir=${chromeProfile}`, "about:blank",
     ],
     { stdio: "ignore" },
@@ -314,7 +320,9 @@ async function main() {
   await cdp.send("Page.enable");
   await cdp.send("Runtime.enable");
   await cdp.send("DOM.enable");
-  await cdp.send("Page.navigate", { url: `${origin}/admin/login` });
+  // ESZ-155: `/admin` is the operational overview now, so this proof asks the
+  // login gate to return it to the CMS's own route instead.
+  await cdp.send("Page.navigate", { url: `${origin}/admin/login?next=${encodeURIComponent("/admin/content")}` });
 
   await waitFor(
     () => evaluate(cdp, `document.readyState === "complete" && Boolean(document.getElementById("admin-login-email"))`),
@@ -324,7 +332,7 @@ async function main() {
   await setReactInput(cdp, "admin-login-password", credentials.password);
   assert(await evaluate(cdp, `(() => { const button = document.querySelector('button[type="submit"]'); button?.click(); return Boolean(button); })()`), "could not submit login");
   await waitFor(
-    () => evaluate(cdp, `location.pathname === "/admin" && Boolean(document.getElementById("hero-visual-src"))`),
+    () => evaluate(cdp, `location.pathname === "/admin/content" && Boolean(document.getElementById("hero-visual-src"))`),
     "authenticated content editor",
     45_000,
   );
@@ -383,21 +391,73 @@ async function main() {
     "Hero media selection",
   );
 
-  const remainingFields = [
-    "service-brows-visual-src",
-    "service-eyeliner-visual-src",
-    "service-lips-visual-src",
-    "service-freckles-visual-src",
-    "gallery-natural-brows-visual-src",
-    "gallery-healed-brows-visual-src",
-    "gallery-delicate-eyeliner-visual-src",
-    "gallery-powder-lips-visual-src",
-    "gallery-freckles-visual-src",
-    "about-portrait-src",
-  ];
-  for (const field of remainingFields) await setReactInput(cdp, field, uploadedPath);
+  // ESZ-156: the CMS edits one section at a time, so the remaining media fields
+  // are reached by selecting the section that owns them. It is the same working
+  // document throughout — the preview below still holds all eleven images at
+  // once, which is exactly what makes that a meaningful check.
+  const selectCmsSection = async (key, label) => {
+    const clicked = await evaluate(cdp, `(() => {
+      const button = document.querySelector('[data-cms-nav="section"][data-cms-key=${JSON.stringify(key)}]');
+      button?.click();
+      return Boolean(button);
+    })()`);
+    assert(clicked, `the CMS navigation exposes no "${label}" section`);
+    await waitFor(
+      () => evaluate(cdp, `(document.querySelector('[data-testid="cms-selected-section"]')?.textContent ?? "").trim() === ${JSON.stringify(label)}`),
+      `the CMS switching to ${label}`,
+      15_000,
+    );
+  };
 
-  const previewResult = await waitFor(
+  // The alternative texts are read section by section as we go, because only the
+  // selected section's fields are in the document. They are compared against the
+  // preview once every section has been visited.
+  const readVisibleAltFields = () => evaluate(cdp, `(() => Object.fromEntries(
+    [...document.querySelectorAll('[data-testid="cms-editor-panel"] input')]
+      .filter((input) => input.id.endsWith("-alt"))
+      .map((input) => [input.id, input.value]),
+  ))()`);
+
+  const altFieldValues = await readVisibleAltFields();
+  const remainingSections = [
+    ["services", "Prestations", [
+      "service-brows-visual-src",
+      "service-eyeliner-visual-src",
+      "service-lips-visual-src",
+      "service-freckles-visual-src",
+    ]],
+    ["gallery", "Réalisations", [
+      "gallery-natural-brows-visual-src",
+      "gallery-healed-brows-visual-src",
+      "gallery-delicate-eyeliner-visual-src",
+      "gallery-powder-lips-visual-src",
+      "gallery-freckles-visual-src",
+    ]],
+    ["about", "À propos", ["about-portrait-src"]],
+  ];
+  for (const [key, label, fields] of remainingSections) {
+    await selectCmsSection(key, label);
+    for (const field of fields) await setReactInput(cdp, field, uploadedPath);
+    Object.assign(altFieldValues, await readVisibleAltFields());
+  }
+  assert(
+    Object.keys(altFieldValues).length === 11,
+    `expected eleven alternative-text fields across the sections, collected ${Object.keys(altFieldValues).length}`,
+  );
+
+  const readPreviewDiagnostic = () => evaluate(cdp, `(() => {
+    const frame = document.querySelector('iframe[title="Aperçu en direct du site"]');
+    const doc = frame && frame.contentDocument;
+    if (!doc) return { frame: false };
+    return {
+      frame: true,
+      images: [...doc.querySelectorAll("img[data-editorial-media]")].map((image) => [image.getAttribute("data-editorial-media"), image.getAttribute("alt"), image.getAttribute("src"), image.naturalWidth]),
+      fallbacks: [...doc.querySelectorAll("[data-editorial-media-fallback]")].map((node) => node.getAttribute("data-editorial-media-fallback")),
+    };
+  })()`);
+  let previewResult;
+  try {
+    previewResult = await waitFor(
     () => evaluate(cdp, `(async () => {
       const frame = document.querySelector('iframe[title="Aperçu en direct du site"]');
       const frameDocument = frame?.contentDocument;
@@ -429,15 +489,36 @@ async function main() {
         ["gallery-freckles", "gallery-freckles-visual-alt"],
         ["about", "about-portrait-alt"],
       ];
-      const altMatches = mappings.every(([surface, inputId]) =>
-        frameDocument.querySelector('[data-editorial-media="' + surface + '"]')?.getAttribute("alt") === document.getElementById(inputId)?.value
-      );
-      return { count: images.length, altMatches, loaded: images.every((image) => image.complete && image.naturalWidth > 0) };
+      // ESZ-156: the editor fields were read as each section was visited; only
+      // the selected section's inputs are in this document now.
+      const altFieldValues = ${JSON.stringify(altFieldValues)};
+      const altMismatches = mappings.filter(([surface, inputId]) =>
+        frameDocument.querySelector('[data-editorial-media="' + surface + '"]')?.getAttribute("alt") !== altFieldValues[inputId]
+      ).map(([surface, inputId]) => ({
+        surface,
+        inputId,
+        preview: frameDocument.querySelector('[data-editorial-media="' + surface + '"]')?.getAttribute("alt") ?? null,
+        field: altFieldValues[inputId] ?? null,
+      }));
+      const altMatches = altMismatches.length === 0;
+      // ESZ-156: the alternative texts were read section by section, so this is
+      // now a comparison against a snapshot rather than against the live DOM.
+      // The preview is fed asynchronously, so a mismatch means "not yet" until
+      // the wait gives up — returning null here retries instead of failing on
+      // the first tick.
+      if (!altMatches) return null;
+      const surfaces = images.map((image) => [image.getAttribute("data-editorial-media"), image.getAttribute("alt")]);
+      return { count: images.length, altMatches, altMismatches, surfaces, loaded: images.every((image) => image.complete && image.naturalWidth > 0) };
     })()`, true),
-    "all preview media images",
-    45_000,
-  );
-  assert(previewResult.altMatches, "preview image alt text does not match the editorial fields");
+      "all preview media images",
+      45_000,
+    );
+  } catch {
+    fail(`the preview never matched the editor's eleven media fields: ${JSON.stringify(await readPreviewDiagnostic()).slice(0, 2000)}`);
+  }
+  if (!previewResult.altMatches) {
+    fail(`preview image alt text does not match the editorial fields: ${JSON.stringify(await readPreviewDiagnostic()).slice(0, 2000)}`);
+  }
   assert(previewResult.loaded, "one or more preview images did not decode successfully");
 
   assert(await evaluate(cdp, `(() => { const button = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === "Enregistrer le brouillon"); button?.click(); return Boolean(button); })()`), "could not save the draft");

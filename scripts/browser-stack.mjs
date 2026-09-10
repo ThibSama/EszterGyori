@@ -294,6 +294,23 @@ export class CdpClient {
   }
 }
 
+/**
+ * Writes a PNG of the current viewport to `directory/name.png` (ESZ-154).
+ *
+ * Opt-in and inert unless a directory is passed, so a gate run stays a gate run
+ * and never drops files into the worktree. What makes the shots repeatable is
+ * that they are taken from inside the scenario, at points the scenario already
+ * proved: the same command produces the same screens.
+ */
+export async function screenshot(cdp, directory, name) {
+  if (!directory) return null;
+  mkdirSync(directory, { recursive: true });
+  const { data } = await cdp.send("Page.captureScreenshot", { format: "png" });
+  const path = resolve(directory, `${name}.png`);
+  writeFileSync(path, Buffer.from(data, "base64"));
+  return path;
+}
+
 export async function evaluate(cdp, expression, awaitPromise = false) {
   const result = await cdp.send("Runtime.evaluate", {
     expression,

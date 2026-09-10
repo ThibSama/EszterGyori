@@ -383,7 +383,19 @@ async function main() {
   await setReactField(cdp, "admin-login-email", credentials.email);
   await setReactField(cdp, "admin-login-password", credentials.password);
   await clickButton(cdp, "Se connecter");
-  await waitFor(() => evaluate(cdp, `location.pathname === "/admin"`), "real admin login", 45_000);
+  // ESZ-155: signing in lands on `/admin`, which is the operational overview.
+  // The page state is dumped on failure the way the other admin proofs do it,
+  // so a timeout here names what the browser was actually showing.
+  try {
+    await waitFor(() => evaluate(cdp, `location.pathname === "/admin"`), "real admin login", 45_000);
+  } catch (loginError) {
+    const state = await evaluate(cdp, `JSON.stringify({
+      path: location.pathname,
+      readyState: document.readyState,
+      bodyHead: (document.body?.innerText ?? "").slice(0, 300),
+    })`);
+    throw new Error(`${loginError.message}; page state: ${state}`);
+  }
 
   await cdp.send("Page.navigate", { url: `${origin}/admin/bookings` });
   await waitFor(() => evaluate(cdp, `location.pathname === "/admin/bookings" && document.querySelector("h1")?.textContent?.trim() === "Calendrier"`), "admin booking calendar", 45_000);
