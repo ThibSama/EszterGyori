@@ -42,6 +42,9 @@
  */
 
 import {
+  addParisDays,
+  parisDayCellPrefix,
+  parisToday,
   makeProof,
   startApacheStack,
   launchChrome,
@@ -542,15 +545,328 @@ async function main() {
   assert(row && String(row.account_id).length > 0, "no authenticated admin_sessions row exists after login");
   assert(row.id === liveCookie.split("=")[1], "the session cookie does not name the authenticated session row");
   assert(typeof row.csrf_token === "string" && row.csrf_token.length === 64, "the authenticated row carries no CSRF token");
-  // The availability editor lost its first-level entry to Calendrier, and the
-  // route still works. Reached by URL on purpose — that is exactly the case the
-  // shell has to survive: a page nobody can click to must still leave the chrome
-  // coherent, and must not bring the removed label back.
+  // ── The unified Calendar (ESZ-159) ──────────────────────────────────────
+  // Appointments and availability used to be two screens. They are one
+  // destination now, and the two facts worth proving in a real browser are the
+  // ones no unit test can reach: that the week actually paints appointments and
+  // planning constraints on the same grid, and that arriving on it — or paging
+  // through it — never writes to a booking.
+  //
+  // One real appointment is created through the *public* API first, because a
+  // calendar with nothing in it cannot prove the appointment half at all.
+  const servicesList = await json("/api/booking/services", { headers: { accept: "application/json" } });
+  assert(
+    servicesList.status === 200 && Array.isArray(servicesList.body.services) && servicesList.body.services.length > 0,
+    "the public service catalog is empty, so no appointment can be seeded",
+  );
+  const calendarServiceKey = servicesList.body.services[0].key;
+  let seededDate = null;
+  let seededStartsAtUtc = null;
+  for (let offset = 0; offset < 21 && seededStartsAtUtc === null; ++offset) {
+    const candidate = addParisDays(parisToday(), offset);
+    const slots = await json("/api/booking/availability", {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({ serviceKey: calendarServiceKey, fromDate: candidate, untilDate: candidate }),
+    });
+    assert(slots.status === 200, `availability query failed for ${candidate}`);
+    if (slots.body.slots?.length) {
+      seededDate = candidate;
+      seededStartsAtUtc = slots.body.slots[0].startsAtUtc;
+    }
+  }
+  assert(seededStartsAtUtc !== null, "the dev fixtures offered no bookable slot in the next three weeks");
+  const seededName = "Cliente Preuve Calendrier";
+  const seeded = await json("/api/bookings", {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({
+      serviceKey: calendarServiceKey,
+      startsAtUtc: seededStartsAtUtc,
+      customerName: seededName,
+      customerEmail: "cliente.calendrier@example.test",
+      customerPhone: "+33102030406",
+      customerNote: "Rendez-vous de la preuve calendrier.",
+      // ESZ-142: the catalog's current consent notice id.
+      consentNoticeId: "booking-consent-v1",
+      consentAccepted: true,
+    }),
+  });
+  assert(
+    seeded.status === 201 && /^bk_[0-9a-f]{32}$/.test(seeded.body.reference),
+    `seeding a real appointment failed: ${JSON.stringify(seeded.body).slice(0, 200)}`,
+  );
+
+  // The row exactly as the server holds it now. Requirement: opening or
+  // navigating the Calendar must not change a single field of it.
+  const bookingRowsBefore = mysqlJson(
+    `SELECT JSON_ARRAYAGG(JSON_OBJECT('reference', reference, 'starts_at_utc', starts_at_utc, 'state', state, 'updated_at', updated_at)) FROM bookings`,
+  );
+  assert(Array.isArray(bookingRowsBefore) && bookingRowsBefore.length >= 1, "no booking row to guard");
+
+  await navigateAndWait(
+    cdp,
+    `${origin}/admin/bookings`,
+    "the unified calendar",
+    `document.querySelector("h1")?.textContent?.trim() === "Calendrier"`,
+  );
+
+  // Week is the scale it opens on, and all three scales are offered.
+  const scales = await waitFor(
+    () => evaluate(cdp, `(() => {
+      const buttons = [...document.querySelectorAll('div[aria-label="Vue du calendrier"] button')];
+      if (buttons.length !== 3) return null;
+      return JSON.stringify({
+        labels: buttons.map((button) => button.textContent?.trim()),
+        pressed: buttons.filter((button) => button.getAttribute("aria-pressed") === "true").map((button) => button.textContent?.trim()),
+      });
+    })()`),
+    "the calendar view switch",
+    45_000,
+  );
+  const parsedScales = JSON.parse(scales);
+  assert(
+    JSON.stringify(parsedScales.labels) === JSON.stringify(["Semaine", "Mois", "Jour"]),
+    `unexpected calendar scales: ${JSON.stringify(parsedScales.labels)}`,
+  );
+  assert(
+    JSON.stringify(parsedScales.pressed) === JSON.stringify(["Semaine"]),
+    `week must be the default view, got ${JSON.stringify(parsedScales.pressed)}`,
+  );
+
+  // The week grid: seven day heads, each of which *says* what the shading shows.
+  // A head whose name carried only the date would leave the availability half
+  // sighted-only, which is the whole point of the consolidation.
+  const weekHeads = await waitFor(
+    () => evaluate(cdp, `(() => {
+      // A week day head names its date, its appointment count *and* its
+      // availability, so the count is followed by a comma. Matched on that
+      // rather than with a regex, because a backslash class does not survive
+      // the template literal that ships this expression to the page.
+      const heads = [...document.querySelectorAll("button")]
+        .map((button) => button.getAttribute("aria-label"))
+        .filter((label) => label && (label.includes(", aucun rendez-vous, ") || label.includes(" rendez-vous, ")));
+      return heads.length === 7 ? JSON.stringify(heads) : null;
+    })()`),
+    "seven week day heads naming their availability",
+    45_000,
+  );
+  const parsedHeads = JSON.parse(weekHeads);
+  assert(
+    parsedHeads.every((label) => /(Fermé|Exceptionnel : |\d{2}:\d{2} – \d{2}:\d{2})/.test(label)),
+    `a day head does not announce its availability: ${weekHeads}`,
+  );
+  assert(
+    parsedHeads.some((label) => /\d{2}:\d{2} – \d{2}:\d{2}/.test(label)),
+    "no day in the week reports open hours, so availability is not reaching the grid",
+  );
+
+  // Today / previous / next, at the scale on screen. The heading is the proof
+  // the grid actually moved, and returning to today is the proof it can come back.
+  const weekHeading = () => evaluate(cdp, `document.querySelector("section[aria-busy] h2")?.textContent?.trim() ?? ""`);
+  const firstWeek = await weekHeading();
+  await clickButton(cdp, "Semaine suivante");
+  await waitFor(async () => (await weekHeading()) !== firstWeek, "the week advanced", 20_000);
+  const nextWeek = await weekHeading();
+  await clickButton(cdp, "Semaine précédente");
+  await waitFor(async () => (await weekHeading()) === firstWeek, "the week stepped back", 20_000);
+  await clickButton(cdp, "Aujourd’hui");
+  await waitFor(async () => (await weekHeading()) === firstWeek, "Aujourd’hui returned to the current week", 20_000);
+  assert(nextWeek !== firstWeek, "paging forward did not change the week heading");
+
+  // The seeded appointment, opened from the grid. It may sit in a later week
+  // than the one on screen, which is itself the navigation being exercised.
+  const dayHeadPresent = `[...document.querySelectorAll("button")].some((candidate) => candidate.getAttribute("aria-label")?.startsWith(${JSON.stringify(parisDayCellPrefix(seededDate))}))`;
+  for (let step = 0; step < 4 && !(await evaluate(cdp, dayHeadPresent)); ++step) {
+    await clickButton(cdp, "Semaine suivante");
+    await waitFor(
+      () => evaluate(cdp, `!document.body.innerText.includes("Chargement des rendez-vous")`),
+      "the advanced week finished loading",
+      45_000,
+    );
+  }
+  assert(await evaluate(cdp, dayHeadPresent), `the week grid never reached ${seededDate}`);
+  const appointmentChip = await evaluate(cdp, `(() => {
+    const chip = [...document.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-label")?.includes(${JSON.stringify(seededName)}));
+    if (!chip) return null;
+    const label = chip.getAttribute("aria-label");
+    chip.click();
+    return label;
+  })()`);
+  assert(
+    appointmentChip && /^\d{2}:\d{2} – \d{2}:\d{2}, /.test(appointmentChip) && appointmentChip.includes("confirmé"),
+    `the appointment is not readable on the week grid: ${JSON.stringify(appointmentChip)}`,
+  );
+
+  // Its detail panel and its actions — the flows that existed before and must
+  // still be here. They are opened and abandoned, never confirmed: this gate
+  // proves they are reachable, and the mutation gates prove they work.
+  await waitFor(
+    () => evaluate(cdp, `document.querySelector("aside h2")?.textContent?.trim() === ${JSON.stringify(seededName)}`),
+    "the appointment detail panel",
+    20_000,
+  );
+  const actions = await evaluate(cdp, `JSON.stringify([...document.querySelectorAll("aside button")].map((button) => button.textContent?.trim()))`);
+  for (const action of ["Modifier les coordonnées", "Déplacer", "Annuler"]) {
+    assert(JSON.parse(actions).includes(action), `the appointment lost its “${action}” action: ${actions}`);
+  }
+  await clickButton(cdp, "Déplacer");
+  await waitFor(() => evaluate(cdp, `Boolean(document.getElementById("move-date"))`), "the move flow", 20_000);
+  await clickButton(cdp, "Conserver");
+  await clickButton(cdp, "Annuler");
+  await waitFor(() => evaluate(cdp, `Boolean(document.getElementById("cancel-reason"))`), "the cancellation flow", 20_000);
+  await clickButton(cdp, "Conserver le rendez-vous");
+
+  // Availability, edited from inside the Calendar rather than on a page of its own.
+  await clickButton(cdp, "Gérer les disponibilités");
+  await waitFor(
+    () => evaluate(cdp, `(() => {
+      const toggle = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Masquer les disponibilités");
+      const panel = document.getElementById("calendar-availability");
+      return Boolean(toggle && toggle.getAttribute("aria-expanded") === "true")
+        && Boolean(panel?.innerText.includes("Horaires hebdomadaires"))
+        && Boolean(panel?.innerText.includes("Exceptions à venir"));
+    })()`),
+    "the availability settings inside the calendar",
+    45_000,
+  );
+  // A day's own availability button opens that date's exception, which is what
+  // makes the constraint editable where it is read.
+  const openedException = await evaluate(cdp, `(() => {
+    const button = [...document.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-label")?.startsWith("Disponibilité du "));
+    if (!button) return null;
+    button.click();
+    return button.getAttribute("aria-label");
+  })()`);
+  assert(openedException, "no day exposes its availability for editing");
+  await waitFor(
+    () => evaluate(cdp, `document.getElementById("draft-heading")?.textContent?.startsWith("Exception du ") === true`),
+    "the date exception editor opened from the grid",
+    20_000,
+  );
+  await clickButton(cdp, "Fermer sans enregistrer");
+
+  // Desktop, tablet and 375 px. Three separate claims, and the interesting one
+  // is the desktop: a week that arrives already scrolled — three days of seven
+  // — is not a week view, so at 1280 px the grid must *fit*. Below that it may
+  // scroll inside its own container, but the document never may.
+  const layoutAt = async (width, height) => {
+    await setViewport(cdp, width, height);
+    await waitFor(
+      () => evaluate(cdp, `document.documentElement.clientWidth <= ${width} + 1`),
+      `the calendar reflowed to ${width} px`,
+      10_000,
+    );
+    return JSON.parse(await evaluate(cdp, `(() => {
+      const html = document.documentElement;
+      const grid = [...document.querySelectorAll("div")].find((node) => node.className.includes("min-w-[860px]"));
+      const scroller = grid?.parentElement ?? null;
+      const asideRect = document.querySelector("aside")?.getBoundingClientRect() ?? null;
+      const main = document.querySelector("section[aria-busy]")?.getBoundingClientRect() ?? null;
+      const monthGrid = document.querySelector('[aria-label="Calendrier mensuel"]');
+      const toggle = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim()?.endsWith("les disponibilités"));
+      const toggleRect = toggle?.getBoundingClientRect() ?? null;
+      return JSON.stringify({
+        documentOverflow: html.scrollWidth - html.clientWidth,
+        weekGridPresent: Boolean(grid),
+        monthGridPresent: Boolean(monthGrid),
+        gridScrolls: scroller ? scroller.scrollWidth > scroller.clientWidth + 1 : false,
+        gridVisible: grid ? grid.getBoundingClientRect().height > 0 : false,
+        sideBySide: Boolean(asideRect && main && asideRect.left >= main.right - 1),
+        detailReachable: Boolean(asideRect && asideRect.width > 0 && asideRect.left >= -1 && asideRect.right <= html.clientWidth + 1),
+        toggleUsable: Boolean(toggleRect && toggleRect.width > 0 && toggleRect.left >= -1 && toggleRect.right <= html.clientWidth + 1),
+      });
+    })()`));
+  };
+
+  const weekDesktop = await layoutAt(1280, 800);
+  assert(weekDesktop.documentOverflow <= 1, `the week overflows the document by ${weekDesktop.documentOverflow} px at 1280 px`);
+  assert(weekDesktop.weekGridPresent && weekDesktop.gridVisible, "the week grid is not rendered at 1280 px");
+  assert(!weekDesktop.gridScrolls, "the whole week must fit on a 1280 px desktop instead of arriving scrolled");
+  assert(weekDesktop.detailReachable, "the appointment detail panel is not reachable at 1280 px");
+  assert(weekDesktop.toggleUsable, "the availability control is not usable at 1280 px");
+
+  for (const [width, height] of [[1024, 768], [375, 720]]) {
+    const layout = await layoutAt(width, height);
+    assert(
+      layout.documentOverflow <= 1,
+      `the calendar overflows the document by ${layout.documentOverflow} px at ${width} px`,
+    );
+    assert(layout.weekGridPresent && layout.gridVisible, `the week grid is not rendered at ${width} px`);
+    assert(
+      layout.gridScrolls,
+      `the week grid must scroll inside its own container rather than be crushed at ${width} px`,
+    );
+    assert(layout.detailReachable, `the appointment detail panel is not reachable at ${width} px`);
+    assert(layout.toggleUsable, `the availability control is not usable at ${width} px`);
+  }
+
+  // The side column is the month/day layout, and it is still there: switching
+  // scales is what proves the week is full-width by choice rather than because
+  // the two-column layout stopped working.
+  const monthSelected = await evaluate(cdp, `(() => {
+    const button = [...document.querySelectorAll('div[aria-label="Vue du calendrier"] button')].find((candidate) => candidate.textContent?.trim() === "Mois");
+    button?.click();
+    return Boolean(button);
+  })()`);
+  assert(monthSelected, "the calendar offers no Mois scale");
+  await waitFor(
+    () => evaluate(cdp, `Boolean(document.querySelector('[aria-label="Calendrier mensuel"]'))`),
+    "the month grid",
+    45_000,
+  );
+  const monthDesktop = await layoutAt(1280, 800);
+  assert(monthDesktop.monthGridPresent, "the month scale did not render the month grid");
+  assert(monthDesktop.sideBySide, "the month scale must keep the appointment detail beside the grid at 1280 px");
+  assert(monthDesktop.documentOverflow <= 1, `the month scale overflows the document by ${monthDesktop.documentOverflow} px`);
+  const weekRestored = await evaluate(cdp, `(() => {
+    const button = [...document.querySelectorAll('div[aria-label="Vue du calendrier"] button')].find((candidate) => candidate.textContent?.trim() === "Semaine");
+    button?.click();
+    return Boolean(button);
+  })()`);
+  assert(weekRestored, "the calendar lost its Semaine scale");
+  await waitFor(
+    () => evaluate(cdp, `!document.body.innerText.includes("Chargement des rendez-vous")`),
+    "the week restored",
+    45_000,
+  );
+
+  await setViewport(cdp, 1280, 800);
+  await waitFor(
+    () => evaluate(cdp, `document.documentElement.clientWidth > 375`),
+    "the calendar reflowed back to the desktop layout",
+    10_000,
+  );
+  await captureBothLayouts(cdp, "admin-calendar-week");
+
+  // Nothing above this line was allowed to write to a booking.
+  const bookingRowsAfter = mysqlJson(
+    `SELECT JSON_ARRAYAGG(JSON_OBJECT('reference', reference, 'starts_at_utc', starts_at_utc, 'state', state, 'updated_at', updated_at)) FROM bookings`,
+  );
+  assert(
+    JSON.stringify(bookingRowsBefore) === JSON.stringify(bookingRowsAfter),
+    `opening and navigating the Calendar mutated a booking:\n  before ${JSON.stringify(bookingRowsBefore)}\n  after  ${JSON.stringify(bookingRowsAfter)}`,
+  );
+
+  // The old availability address converges on that same Calendar. It is reached
+  // by URL on purpose — that is exactly the case the shell has to survive: a
+  // page nobody can click to must still leave the chrome coherent, must not
+  // bring the removed label back, and must now land on the unified product
+  // rather than on a second copy of the editor.
   await navigateAndWait(
     cdp,
     `${origin}/admin/availability`,
-    "availability editor by direct route",
-    `document.querySelector("h1")?.textContent?.trim() === "Horaires et fermetures"`,
+    "the availability route converging on the calendar",
+    `document.querySelector("h1")?.textContent?.trim() === "Calendrier"`,
+  );
+  await waitFor(
+    () => evaluate(cdp, `(() => {
+      const panel = document.getElementById("calendar-availability");
+      return Boolean(panel?.innerText.includes("Horaires et fermetures"))
+        && Boolean(panel?.innerText.includes("Horaires hebdomadaires"));
+    })()`),
+    "the availability panel open on arrival",
+    45_000,
   );
   await captureBothLayouts(cdp, "admin-availability");
   const onAvailability = await evaluate(cdp, `(() => {
@@ -1200,6 +1516,7 @@ async function main() {
   process.stdout.write(`overview: /admin renders Vue d’ensemble (no editor), ${overview.panels.length} labelled panels (${overview.panels.join(" › ")}) over the reused operations summary, quick actions ${overview.actions.map((action) => `${action.key}:${action.status}`).join(", ")}, no invented metric, no horizontal overflow at 1280/768/375 px; CMS reached at /admin/content and functional\n`);
   process.stdout.write(`focused CMS: /admin/content opens on “Page d’accueil › Hero” (#editor-hero) with exactly one section editor in the document; an unsaved edit reached the live preview, survived a move to Contact and back, and wrote nothing to the server (draft revision ${draftAfterNavigation.body.revision} unchanged); desktop 1280 px keeps the preview sticky beside the editor, 834 px and 375 px switch between Éditeur and Aperçu without losing the section or the edit\n`);
     process.stdout.write(`content workflow: hero suffix -> "${marker}" saved (revision ${draftBefore.body.revision} -> ${draftSaved.body.revision}; published head before: ${publishedHeadBefore}), published, public page shows ${MARKER}\n`);
+  process.stdout.write(`unified calendar (ESZ-159): /admin/bookings opens on Semaine (${JSON.parse(scales).labels.join(" › ")}), 7 day heads naming their availability (${JSON.parse(weekHeads)[0]}), ${firstWeek} -> ${nextWeek} -> back via Aujourd’hui; the seeded appointment reads as "${appointmentChip}" on the grid and keeps Modifier les coordonnées › Déplacer › Annuler; availability settings (Horaires hebdomadaires + Exceptions à venir) open inside the calendar and a day head opens its own exception; no document overflow at 1280/1024/375 px — the whole week fits unscrolled at 1280 px, scrolls inside its own container at 1024/375 px, and the Mois scale keeps its detail column beside the grid; ${bookingRowsAfter.length} booking row(s) byte-identical before and after all navigation; /admin/availability converges on the same calendar with the panel already open\n`);
   process.stdout.write("logout: 0 authenticated session rows, pre-logout cookie authenticated=false, protected reload -> login gate; keyboard-only login reached the overview\n");
   process.stdout.write("accessibility: CTA keyboard-reachable, live regions updated on save, labels bound, no contradictory ARIA, 320 px login+editor without overflow\n");
 }

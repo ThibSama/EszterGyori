@@ -15,6 +15,16 @@ import {
   type AdminBooking,
 } from "../app/lib/admin-api";
 import {
+  dayAvailabilityLabel,
+  isHourOpen,
+  shiftWeek,
+  startOfWeek,
+  weekDays,
+  weekHourSpan,
+  weekPlan,
+} from "../app/lib/admin-calendar-week";
+import { toDrafts } from "../app/lib/admin-availability";
+import {
   bookingsForDate,
   formatParisTime,
   monthGrid,
@@ -287,4 +297,203 @@ test("a range page whose body breaks the frozen schema is never handed to the ca
   const result = await loadBookingsRange(api, "2026-10-01", "2026-10-31");
   assert.ok(!result.ok);
   assert.equal(result.failure.kind, "malformed-response");
+});
+
+// --- The unified week (ESZ-159) --------------------------------------------
+
+test("a week is Monday through Sunday, whichever day anchors it", () => {
+  // Wednesday 2026-06-17 sits in the week of Monday the 15th.
+  assert.equal(startOfWeek("2026-06-17"), "2026-06-15");
+  assert.equal(startOfWeek("2026-06-15"), "2026-06-15", "a Monday anchors its own week");
+  assert.equal(startOfWeek("2026-06-21"), "2026-06-15", "Sunday belongs to the week that opened");
+
+  assert.deepEqual(weekDays("2026-06-17"), [
+    "2026-06-15",
+    "2026-06-16",
+    "2026-06-17",
+    "2026-06-18",
+    "2026-06-19",
+    "2026-06-20",
+    "2026-06-21",
+  ]);
+
+  // Stepping is week-aligned, so paging never drifts onto a mid-week anchor.
+  assert.equal(shiftWeek("2026-06-17", 1), "2026-06-22");
+  assert.equal(shiftWeek("2026-06-17", -1), "2026-06-08");
+
+  // A week that crosses a month, and one that crosses a year, stay contiguous
+  // civil days — the DST boundary included, which is the case a UTC-arithmetic
+  // week gets wrong by an hour and therefore by a day.
+  assert.deepEqual(weekDays("2026-04-02").slice(0, 2), ["2026-03-30", "2026-03-31"]);
+  assert.equal(weekDays("2027-01-01")[0], "2026-12-28");
+  assert.deepEqual(weekDays("2026-10-25")[0], "2026-10-19");
+});
+
+test("the week's hour span covers every window and every appointment in it", () => {
+  const days = weekDays("2026-06-15");
+  const rules = toDrafts([
+    {
+      id: 1,
+      weekdayIso: 1,
+      startLocal: "09:00",
+      endLocal: "12:00",
+      foldUtcOffset: null,
+      validFrom: null,
+      validUntil: null,
+      isActive: true,
+    },
+  ]);
+
+  // Windows alone set the span, rounded out to whole hours.
+  assert.deepEqual(weekHourSpan(days, rules, [], []), { firstHour: 9, lastHour: 12 });
+
+  // An appointment outside the weekly hours widens it rather than being cropped:
+  // a booking the operator moved to 07:30 is precisely the row they need to see.
+  const early = booking({ startsAtUtc: "2026-06-15T05:30:00.000Z", endsAtUtc: "2026-06-15T06:30:00.000Z" });
+  const span = weekHourSpan(days, rules, [], [early]);
+  assert.equal(span.firstHour, 7, "07:30 Paris must pull the span open to 07:00");
+  assert.equal(span.lastHour, 12);
+
+  // An empty week still has a grid to draw.
+  assert.deepEqual(weekHourSpan(days, [], [], []), { firstHour: 8, lastHour: 19 });
+});
+
+test("an hour is open only while a window actually covers it", () => {
+  const windows = [{ startLocal: "09:00", endLocal: "12:00" }];
+  assert.equal(isHourOpen(8, windows), false, "the hour before opening is closed");
+  assert.equal(isHourOpen(9, windows), true);
+  assert.equal(isHourOpen(11, windows), true);
+  assert.equal(isHourOpen(12, windows), false, "an exclusive end must not light its own hour");
+  assert.equal(isHourOpen(10, []), false, "a closed day has no open hour");
+
+  // A window that starts mid-hour still lights the hour it starts in.
+  assert.equal(isHourOpen(9, [{ startLocal: "09:30", endLocal: "10:00" }]), true);
+});
+
+test("the week projects appointments and availability from one shared truth", () => {
+  const rules = toDrafts([
+    {
+      id: 1,
+      weekdayIso: 1,
+      startLocal: "09:00",
+      endLocal: "12:00",
+      foldUtcOffset: null,
+      validFrom: null,
+      validUntil: null,
+      isActive: true,
+    },
+  ]);
+  const monday = booking({ startsAtUtc: "2026-06-15T07:30:00.000Z", endsAtUtc: "2026-06-15T09:00:00.000Z" });
+  const cancelled = booking({
+    reference: "bk_cccccccccccccccccccccccccccccccc",
+    startsAtUtc: "2026-06-15T08:00:00.000Z",
+    endsAtUtc: "2026-06-15T08:30:00.000Z",
+    state: "cancelled",
+  });
+
+  const plan = weekPlan(weekDays("2026-06-15"), rules, [], [monday, cancelled], "2026-06-16");
+
+  assert.equal(plan.length, 7);
+  assert.equal(plan[0].date, "2026-06-15");
+  assert.equal(plan[0].kind, "weekly");
+  assert.deepEqual(plan[0].windows, [{ startLocal: "09:00", endLocal: "12:00" }]);
+  assert.equal(plan[0].isToday, false);
+  assert.equal(plan[1].isToday, true, "today is marked from the Paris civil date, not from the host clock");
+
+  // Both appointments are projected: a cancellation stays visible in the
+  // calendar, which is the guarantee the day view already made.
+  assert.equal(plan[0].appointments.length, 2);
+  assert.equal(plan[0].appointments[0].startLocal, "09:30");
+  assert.equal(plan[0].appointments[0].endLocal, "11:00");
+  assert.equal(plan[0].appointments[0].hour, 9, "09:30 belongs to the 09:00 row");
+  assert.equal(plan[0].appointments[0].span, 2, "an appointment crossing an hour spans both");
+  assert.equal(plan[0].appointments[1].booking.state, "cancelled");
+
+  // Tuesday has no rule, so it is closed — and a closed day carries no windows
+  // rather than an empty-but-open contradiction.
+  assert.equal(plan[1].kind, "closed");
+  assert.deepEqual(plan[1].windows, []);
+  assert.deepEqual(plan[1].appointments, []);
+
+  // A date exception replaces the weekly hours instead of adding to them, and
+  // the week reports it as exceptional so the grid can say so.
+  const excepted = weekPlan(
+    weekDays("2026-06-15"),
+    rules,
+    [{ id: 1, localDate: "2026-06-15", kind: "open", windows: [{ startLocal: "14:00", endLocal: "16:00", foldUtcOffset: null }], note: null }],
+    [],
+    "2026-06-15",
+  );
+  assert.equal(excepted[0].kind, "exception");
+  assert.deepEqual(excepted[0].windows, [{ startLocal: "14:00", endLocal: "16:00" }]);
+});
+
+test("a day column announces its availability in the words the editor uses", () => {
+  const [closed, weekly, exceptional] = [
+    { kind: "closed" as const, windows: [] },
+    { kind: "weekly" as const, windows: [{ startLocal: "09:00", endLocal: "12:00" }] },
+    { kind: "exception" as const, windows: [{ startLocal: "14:00", endLocal: "16:00" }] },
+  ].map((availability) => ({ date: "2026-06-15", isToday: false, appointments: [], ...availability }));
+
+  assert.equal(dayAvailabilityLabel(closed), "Fermé");
+  assert.equal(dayAvailabilityLabel(weekly), "09:00 – 12:00");
+  assert.match(dayAvailabilityLabel(exceptional), /^Exceptionnel : 14:00 – 16:00$/);
+});
+
+test("the calendar opens on the week and owns availability without duplicating it", async () => {
+  const source = await readFile(new URL("../app/components/admin/admin-booking-calendar.tsx", import.meta.url), "utf8");
+
+  // Week is the default scale, and all three scales stay reachable.
+  assert.match(source, /useState<View>\("week"\)/);
+  assert.match(source, /\(\["week", "month", "day"\] as const\)/);
+  assert.match(source, /aria-pressed=\{view === candidate\}/);
+
+  // Today / previous / next operate at the scale on screen.
+  assert.match(source, /stepView\(-1\)/);
+  assert.match(source, /stepView\(1\)/);
+  assert.match(source, /goToDate\(today\)/);
+  assert.match(source, /Semaine précédente/);
+  assert.match(source, /Semaine suivante/);
+
+  // The visible span is the fetched span, at every scale — one walk, never a
+  // range the grid is not showing.
+  assert.match(source, /loadBookingsRange\(api, dates\[0\], dates\[dates\.length - 1\]\)/);
+  assert.match(source, /if \(view === "week"\) return weekDays\(selectedDate\)/);
+
+  // Availability is read through the shared workspace and rendered through the
+  // shared projection. No weekday, validity or window rule may be re-decided
+  // here: these helpers are the only way the grid learns what a day is open for.
+  assert.match(source, /useAvailabilityWorkspace\(\)/);
+  assert.equal(source.match(/useAvailabilityWorkspace\(\)/g)?.length, 1, "one availability state, not two");
+  assert.match(source, /weekPlan\(weekDates, availability\.rules, availability\.exceptions, bookings, today\)/);
+  assert.match(source, /isHourOpen\(hour, plan\.windows\)/);
+  assert.doesNotMatch(source, /weekdayIso|validFrom|validUntil|isActive/, "no availability rule may be re-derived in the grid");
+  assert.doesNotMatch(source, /readAvailability|replaceWeeklyAvailability|mutateAvailabilityException/, "availability I/O belongs to the workspace");
+
+  // Availability is editable from the grid itself, and the editor is the one
+  // that already exists rather than a second copy.
+  assert.match(source, /editAvailability\(plan\.date\)/);
+  assert.match(source, /setShowAvailability\(true\)/);
+  assert.match(source, /<AdminAvailabilityEditor workspace=\{availability\} \/>/);
+  assert.match(source, /aria-expanded=\{showAvailability\}/);
+  assert.match(source, /aria-controls="calendar-availability"/);
+
+  // Opening the calendar reads; it must not write a booking.
+  assert.doesNotMatch(source, /mutateBooking\([\s\S]{0,40}action: "move"[\s\S]{0,40}\)\s*;?\s*\}\s*,\s*\[\]/);
+  assert.equal(source.match(/api\.mutateBooking/g)?.length, 3, "no fourth booking mutation may appear");
+
+  // Responsive: the week grid scrolls rather than being crushed, and the
+  // appointment column keeps its declared desktop width.
+  assert.match(source, /overflow-x-auto/);
+  assert.match(source, /min-w-\[860px\] grid-cols-\[4\.5rem_repeat\(7,minmax\(0,1fr\)\)\]/);
+  assert.match(source, /xl:grid-cols-\[minmax\(0,1fr\)_420px\]/);
+  assert.match(source, /aria-busy=\{loading\}/);
+});
+
+test("busy is derived from the span that was fetched, not announced by its callers", async () => {
+  const source = await readFile(new URL("../app/components/admin/admin-booking-calendar.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /const loading = loadedRange !== rangeKey/);
+  assert.match(source, /setLoadedRange\(rangeKey\)/);
+  assert.doesNotMatch(source, /setLoading\(/, "a hand-raised busy flag is what strands a spinner");
 });

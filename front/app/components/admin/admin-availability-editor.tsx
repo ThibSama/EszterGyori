@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Dispatch, RefObject, SetStateAction } from "react";
 import { useAdminSession } from "./admin-session-provider";
 import type {
   AdminApiFailure,
@@ -12,6 +13,7 @@ import {
   ISO_WEEKDAYS,
   WEEKDAY_LABELS,
   type FoldOffset,
+  type RuleIssue,
   type WeeklyRuleDraft,
   describeDate,
   emptyDraft,
@@ -55,7 +57,53 @@ function failureMessage(failure: AdminApiFailure): string {
 const inputClass =
   "rounded-xl border border-warm-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300";
 
-export function AdminAvailabilityEditor() {
+/**
+ * The availability half of the admin, as one shared piece of state (ESZ-159).
+ *
+ * The editor used to own this state privately, which was fine while it was its
+ * own page and impossible once the calendar had to *read* the same rules to
+ * shade its week. The two candidate fixes were both wrong: a second fetch in the
+ * calendar would let the grid and the editor disagree about the current
+ * schedule, and re-deriving windows in the grid would put a business rule in a
+ * second place. So the state moved up into a hook, the panels below render from
+ * it, and the week grid reads the very same `rules` and `exceptions` the editor
+ * is saving. One fetch, one revision, one truth.
+ *
+ * Nothing about the *writes* moved. Every mutation still goes to the existing
+ * server API with its `expectedRevision`, and the server's response is still the
+ * only thing adopted afterwards.
+ */
+export interface AvailabilityWorkspace {
+  readonly loading: boolean;
+  readonly rules: WeeklyRuleDraft[];
+  readonly savedRules: WeeklyRuleDraft[];
+  readonly exceptions: AdminAvailabilityException[];
+  readonly saving: boolean;
+  readonly message: string | null;
+  readonly alert: boolean;
+  readonly draft: ExceptionDraft | null;
+  readonly confirmation: Confirmation | null;
+  readonly previewDate: string;
+  readonly issues: RuleIssue[];
+  readonly draftIssues: RuleIssue[];
+  readonly dirty: boolean;
+  readonly noticeRef: RefObject<HTMLDivElement | null>;
+  readonly draftHeadingRef: RefObject<HTMLHeadingElement | null>;
+  readonly confirmHeadingRef: RefObject<HTMLHeadingElement | null>;
+  readonly setRules: Dispatch<SetStateAction<WeeklyRuleDraft[]>>;
+  readonly setMessage: Dispatch<SetStateAction<string | null>>;
+  readonly setDraft: Dispatch<SetStateAction<ExceptionDraft | null>>;
+  readonly setConfirmation: Dispatch<SetStateAction<Confirmation | null>>;
+  readonly setPreviewDate: Dispatch<SetStateAction<string>>;
+  readonly updateRule: (key: string, patch: Partial<WeeklyRuleDraft>) => void;
+  readonly submitWeekly: () => void;
+  /** Opens the exception editor for one date — the week grid's own entry point. */
+  readonly openDraft: (localDate: string) => void;
+  readonly submitDraft: () => void;
+  readonly confirmed: () => void;
+}
+
+export function useAvailabilityWorkspace(): AvailabilityWorkspace {
   const { api, csrfToken, markExpired, refreshSession } = useAdminSession();
   const today = useMemo(() => parisLocalDate(), []);
   const untilDate = useMemo(() => addCivilDays(today, HORIZON_DAYS), [today]);
@@ -291,15 +339,80 @@ export function AdminAvailabilityEditor() {
     );
   };
 
+  return {
+    loading,
+    rules,
+    savedRules,
+    exceptions,
+    saving,
+    message,
+    alert,
+    draft,
+    confirmation,
+    previewDate,
+    issues,
+    draftIssues,
+    dirty,
+    noticeRef,
+    draftHeadingRef,
+    confirmHeadingRef,
+    setRules,
+    setMessage,
+    setDraft,
+    setConfirmation,
+    setPreviewDate,
+    updateRule,
+    submitWeekly,
+    openDraft,
+    submitDraft,
+    confirmed,
+  };
+}
+
+export function AdminAvailabilityEditor({
+  workspace,
+}: Readonly<{ workspace: AvailabilityWorkspace }>) {
+  const {
+    loading,
+    rules,
+    savedRules,
+    exceptions,
+    saving,
+    message,
+    alert,
+    draft,
+    confirmation,
+    previewDate,
+    issues,
+    draftIssues,
+    dirty,
+    noticeRef,
+    draftHeadingRef,
+    confirmHeadingRef,
+    setRules,
+    setMessage,
+    setDraft,
+    setConfirmation,
+    setPreviewDate,
+    updateRule,
+    submitWeekly,
+    openDraft,
+    submitDraft,
+    confirmed,
+  } = workspace;
+
   const preview = describeDate(previewDate, rules, exceptions);
 
   return (
-    <main className="min-h-screen bg-warm-50 px-4 py-8 text-warm-800 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-[1200px]">
-        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sage-700">Disponibilités</p>
-        <h1 className="mt-2 font-display text-3xl font-light text-warm-950 sm:text-4xl">
+    <section
+      className="rounded-3xl border border-warm-200 bg-white/70 p-4 shadow-sm sm:p-6"
+      aria-labelledby="availability-heading">
+      <div>
+        <h2
+          id="availability-heading"
+          className="font-display text-2xl font-light text-warm-950 sm:text-3xl">
           Horaires et fermetures
-        </h1>
+        </h2>
         <p className="mt-2 max-w-2xl text-sm text-warm-600">
           Les horaires hebdomadaires définissent les créneaux récurrents. Une exception remplace
           entièrement les horaires d’une date : elle ne s’y ajoute pas. Toutes les heures sont en
@@ -827,6 +940,6 @@ export function AdminAvailabilityEditor() {
           </section>
         )}
       </div>
-    </main>
+    </section>
   );
 }

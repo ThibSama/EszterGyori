@@ -11,6 +11,22 @@ import {
   type AdminMoveAvailability,
 } from "../../lib/admin-api";
 import {
+  AdminAvailabilityEditor,
+  useAvailabilityWorkspace,
+} from "./admin-availability-editor";
+import {
+  WEEK_DAY_HEADS,
+  dayAvailabilityLabel,
+  isHourOpen,
+  shiftWeek,
+  weekDays,
+  weekHourSpan,
+  weekPlan,
+  weekRangeLabel,
+  type WeekAppointment,
+  type WeekDayPlan,
+} from "../../lib/admin-calendar-week";
+import {
   addCivilDays,
   bookingsForDate,
   formatParisDate,
@@ -22,7 +38,11 @@ import {
   shiftMonth,
 } from "../../lib/admin-booking-calendar";
 
-type View = "month" | "day";
+/** The three temporal scales the calendar offers. Week is the one it opens on. */
+type View = "week" | "month" | "day";
+
+/** Which side of the unified calendar a route wants open on arrival (ESZ-159). */
+export type CalendarPanel = "appointments" | "availability";
 type DetailAction = "none" | "move" | "cancel" | "edit";
 type ContactField = "customerName" | "customerEmail" | "customerPhone" | "customerNote";
 type ContactErrors = Partial<Record<ContactField, string>>;
@@ -66,15 +86,51 @@ function dayCellLabel(date: string, bookingCount: number): string {
   return `${formatParisDate(date)}, ${appointments}`;
 }
 
-export function AdminBookingCalendar() {
+/**
+ * The accessible name of one week-view day head.
+ *
+ * The week grid's whole point is that appointments and planning constraints are
+ * legible together, and a head that read only "lundi 1 juin" would keep the
+ * constraint half sighted-only: the shading says "closed" and the text said
+ * nothing. So the day's availability is part of its name, in the same words the
+ * visible line uses.
+ */
+function weekDayHeadLabel(plan: WeekDayPlan): string {
+  const appointments =
+    plan.appointments.length === 0
+      ? "aucun rendez-vous"
+      : `${plan.appointments.length} rendez-vous`;
+
+  return `${formatParisDate(plan.date)}, ${appointments}, ${dayAvailabilityLabel(plan)}`;
+}
+
+/** The accessible name of the button that edits one date's exception. */
+function availabilityButtonLabel(plan: WeekDayPlan): string {
+  return `Disponibilité du ${formatParisDate(plan.date)} : ${dayAvailabilityLabel(plan)}. Modifier l’exception de cette date.`;
+}
+
+/** The accessible name of one appointment chip on the week grid. */
+function weekAppointmentLabel(item: WeekAppointment): string {
+  const state = item.booking.state === "cancelled" ? "annulé" : "confirmé";
+  return `${item.startLocal} – ${item.endLocal}, ${item.booking.customerName}, ${SERVICE_LABELS[item.booking.serviceKey] ?? item.booking.serviceKey}, ${state}`;
+}
+
+export function AdminBookingCalendar({
+  initialPanel = "appointments",
+}: Readonly<{ initialPanel?: CalendarPanel }> = {}) {
   const { api, csrfToken, markExpired, refreshSession } = useAdminSession();
+  // ESZ-159: one availability state for the whole destination. The grid shades
+  // itself from these rules and the editor below saves them; there is no second
+  // fetch and no second opinion about what a date is open for.
+  const availability = useAvailabilityWorkspace();
+  const [showAvailability, setShowAvailability] = useState(initialPanel === "availability");
   const today = useMemo(() => parisLocalDate(), []);
   const [month, setMonth] = useState(monthKey(today));
   const [selectedDate, setSelectedDate] = useState(today);
-  const [view, setView] = useState<View>("month");
+  const [view, setView] = useState<View>("week");
   const [bookings, setBookings] = useState<AdminBooking[]>([]);
   const [selectedReference, setSelectedReference] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loadedRange, setLoadedRange] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [action, setAction] = useState<DetailAction>("none");
   const [moveDate, setMoveDate] = useState(today);
@@ -91,7 +147,27 @@ export function AdminBookingCalendar() {
   const noticeRef = useRef<HTMLDivElement>(null);
   const detailHeadingRef = useRef<HTMLHeadingElement>(null);
   const actionHeadingRef = useRef<HTMLHeadingElement>(null);
-  const dates = useMemo(() => monthGrid(month), [month]);
+  // The visible span *is* the fetch range, whichever scale is on screen. One
+  // memo answers both questions, so the walk below can never load a range the
+  // grid is not showing.
+  const dates = useMemo(() => {
+    if (view === "week") return weekDays(selectedDate);
+    if (view === "day") return [selectedDate];
+    return monthGrid(month);
+  }, [month, selectedDate, view]);
+  const rangeKey = `${dates[0]}..${dates[dates.length - 1]}`;
+  /**
+   * Busy is *derived*, not announced.
+   *
+   * Every navigation changes the visible span, and the two obvious spellings of
+   * this both have a failure mode: raising a flag inside the effect is a
+   * cascading render, and asking each navigation handler to raise it means the
+   * one handler that forgets shows stale rows as if they were loaded, while one
+   * that raises it for a span that turns out identical hangs on a spinner that
+   * nothing will ever clear. Comparing the span on screen with the span that was
+   * actually fetched cannot do either: it is true exactly when the two disagree.
+   */
+  const loading = loadedRange !== rangeKey;
   const selected = bookings.find((booking) => booking.reference === selectedReference) ?? null;
 
   const handleFailure = useCallback(async (failure: AdminApiFailure) => {
@@ -113,12 +189,15 @@ export function AdminBookingCalendar() {
     // progress, malformed pages, and the declared page budget.
     void loadBookingsRange(api, dates[0], dates[dates.length - 1]).then((result) => {
       if (!active) return;
-      setLoading(false);
+      // The span is recorded as fetched either way: a failure that left it
+      // unrecorded would re-enter this effect on the next render, retrying a
+      // refused read forever behind a spinner.
+      setLoadedRange(rangeKey);
       if (!result.ok) return void handleFailure(result.failure);
       setBookings(result.value);
     });
     return () => { active = false; };
-  }, [api, dates, handleFailure]);
+  }, [api, dates, handleFailure, rangeKey]);
 
   const chooseBooking = (booking: AdminBooking) => {
     setSelectedReference(booking.reference);
@@ -175,13 +254,27 @@ export function AdminBookingCalendar() {
     requestAnimationFrame(() => actionHeadingRef.current?.focus());
   };
 
-  const navigateDay = (date: string) => {
+  /**
+   * Move the calendar to a date, keeping the month in step.
+   *
+   * Week and day navigation both change the anchor, and the month view reads
+   * `month` rather than the anchor — so without this the operator could page
+   * three weeks forward, switch to Mois, and land back where they started.
+   */
+  const goToDate = (date: string) => {
     setSelectedDate(date);
-    if (monthKey(date) !== month) {
-      setLoading(true);
-      setMessage(null);
-      setMonth(monthKey(date));
-    }
+    setMonth(monthKey(date));
+    setMessage(null);
+  };
+
+  /** Opens the availability editor on one date, revealing it if it was folded away. */
+  const editAvailability = (date: string) => {
+    setShowAvailability(true);
+    availability.openDraft(date);
+  };
+
+  const navigateDay = (date: string) => {
+    goToDate(date);
   };
 
   const submitMove = async () => {
@@ -317,6 +410,55 @@ export function AdminBookingCalendar() {
     requestAnimationFrame(() => noticeRef.current?.focus());
   };
 
+  /** One step at the scale currently on screen. */
+  const stepView = (delta: number) => {
+    setSelectedReference(null);
+    setMessage(null);
+    if (view === "month") {
+      setMonth(shiftMonth(month, delta));
+      return;
+    }
+    goToDate(view === "week" ? shiftWeek(selectedDate, delta) : addCivilDays(selectedDate, delta));
+  };
+
+  const availabilityReady = !availability.loading;
+
+  // The week the grid draws, and the hours tall enough to hold it. Both are
+  // projections of state the server already returned — `weekPlan` asks
+  // `dateWindows` what each day is open for and lays the answer beside the
+  // appointments, which is the whole of the "readable together" requirement and
+  // none of a slot rule.
+  const weekDates = useMemo(() => weekDays(selectedDate), [selectedDate]);
+  const week = useMemo(
+    () => weekPlan(weekDates, availability.rules, availability.exceptions, bookings, today),
+    [availability.exceptions, availability.rules, bookings, today, weekDates],
+  );
+  const hourSpan = useMemo(
+    () => weekHourSpan(weekDates, availability.rules, availability.exceptions, bookings),
+    [availability.exceptions, availability.rules, bookings, weekDates],
+  );
+  const hours = useMemo(
+    () =>
+      Array.from(
+        { length: hourSpan.lastHour - hourSpan.firstHour },
+        (_, index) => hourSpan.firstHour + index,
+      ),
+    [hourSpan],
+  );
+
+  const scaleLabel = { week: "Semaine", month: "Mois", day: "Jour" } as const;
+  const stepLabels = {
+    week: ["Semaine précédente", "Semaine suivante"],
+    month: ["Mois précédent", "Mois suivant"],
+    day: ["Jour précédent", "Jour suivant"],
+  } as const;
+  const periodHeading =
+    view === "week"
+      ? weekRangeLabel(weekDates)
+      : view === "day"
+        ? formatParisDate(selectedDate)
+        : new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-15T12:00:00Z`));
+
   const dayBookings = bookingsForDate(bookings, selectedDate);
   const lastMoveDate = addCivilDays(today, 89);
 
@@ -325,28 +467,109 @@ export function AdminBookingCalendar() {
       <div className="mx-auto max-w-[1500px]">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sage-700">Rendez-vous</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sage-700">Rendez-vous et disponibilités</p>
             <h1 className="mt-2 font-display text-3xl font-light text-warm-950 sm:text-4xl">Calendrier</h1>
             <p className="mt-2 text-sm text-warm-600">Toutes les heures sont affichées en Europe/Paris.</p>
           </div>
           <div className="flex flex-wrap gap-2" aria-label="Navigation du calendrier">
-            <button type="button" onClick={() => { setLoading(true); setMessage(null); setMonth(shiftMonth(month, -1)); setSelectedReference(null); }} className="rounded-full border border-warm-300 bg-white px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300">Mois précédent</button>
-            <button type="button" onClick={() => { setLoading(true); setMessage(null); setMonth(monthKey(today)); setSelectedDate(today); }} className="rounded-full border border-warm-300 bg-white px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300">Aujourd’hui</button>
-            <button type="button" onClick={() => { setLoading(true); setMessage(null); setMonth(shiftMonth(month, 1)); setSelectedReference(null); }} className="rounded-full border border-warm-300 bg-white px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300">Mois suivant</button>
+            <button type="button" onClick={() => stepView(-1)} className="rounded-full border border-warm-300 bg-white px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300">{stepLabels[view][0]}</button>
+            <button type="button" onClick={() => { setSelectedReference(null); setMessage(null); goToDate(today); }} className="rounded-full border border-warm-300 bg-white px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300">Aujourd’hui</button>
+            <button type="button" onClick={() => stepView(1)} className="rounded-full border border-warm-300 bg-white px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300">{stepLabels[view][1]}</button>
+            <button type="button" aria-expanded={showAvailability} aria-controls="calendar-availability" onClick={() => setShowAvailability((current) => !current)} className="rounded-full bg-warm-900 px-4 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-sage-300">{showAvailability ? "Masquer les disponibilités" : "Gérer les disponibilités"}</button>
           </div>
         </div>
 
         <div ref={noticeRef} tabIndex={-1} role={message?.includes("n’est plus") ? "alert" : "status"} aria-live="polite" className={message ? "mt-5 rounded-2xl border border-sage-200 bg-sage-50 px-4 py-3 text-sm focus:outline-none" : "sr-only"}>{message}</div>
 
-        <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
-          <section className="rounded-3xl border border-warm-200 bg-white p-4 shadow-sm sm:p-6" aria-busy={loading}>
+        {/*
+          The side column is right for a list and wrong for a week.
+          Month and Jour render a narrow column of appointments, so a 420 px
+          detail panel beside them costs nothing. The week grid is 860 px at its
+          narrowest, and on a 1280 px laptop behind a 256 px sidebar the side
+          column leaves it about 500 px — so the week would arrive on desktop
+          already scrolled, showing three days of seven. The grid takes the full
+          width at that scale instead and the detail panel sits below it, which
+          is where selecting an appointment already moves focus.
+        */}
+        <div className={`mt-6 grid gap-6 ${view === "week" ? "" : "xl:grid-cols-[minmax(0,1fr)_420px]"}`}>
+          {/*
+            `min-w-0` is load-bearing, not tidying. Below `xl` this two-column
+            grid collapses to one implicit column whose width is `auto`, so a
+            grid item is free to be as wide as its widest content — and the week
+            grid declares an 860 px minimum. Without it the section pushes the
+            *document* sideways at tablet widths instead of letting the week
+            scroll inside its own container, which is exactly the "crushed grid"
+            failure the responsive requirement forbids.
+          */}
+          <section className="min-w-0 rounded-3xl border border-warm-200 bg-white p-4 shadow-sm sm:p-6" aria-busy={loading}>
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="font-display text-2xl capitalize text-warm-900">{new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-15T12:00:00Z`))}</h2>
+              <h2 className="font-display text-2xl capitalize text-warm-900">{periodHeading}</h2>
               <div className="flex rounded-full border border-warm-300 p-1" aria-label="Vue du calendrier">
-                {(["month", "day"] as const).map((candidate) => <button key={candidate} type="button" aria-pressed={view === candidate} onClick={() => setView(candidate)} className={`rounded-full px-4 py-2 text-sm ${view === candidate ? "bg-warm-900 text-white" : "text-warm-700"}`}>{candidate === "month" ? "Mois" : "Jour"}</button>)}
+                {(["week", "month", "day"] as const).map((candidate) => <button key={candidate} type="button" aria-pressed={view === candidate} onClick={() => setView(candidate)} className={`rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300 ${view === candidate ? "bg-warm-900 text-white" : "text-warm-700"}`}>{scaleLabel[candidate]}</button>)}
               </div>
             </div>
-            {loading ? <p role="status" className="py-16 text-center text-warm-600">Chargement des rendez-vous…</p> : view === "month" ? (
+            {loading ? <p role="status" className="py-16 text-center text-warm-600">Chargement des rendez-vous…</p> : view === "week" ? (
+              <div className="mt-5">
+                <p className="text-xs text-warm-500 lg:hidden">
+                  Faites défiler la grille horizontalement pour parcourir toute la semaine.
+                </p>
+                <div className="mt-2 overflow-x-auto">
+                  <div className="grid min-w-[860px] grid-cols-[4.5rem_repeat(7,minmax(0,1fr))] gap-1">
+                    <div aria-hidden="true" />
+                    {week.map((plan, index) => (
+                      <div key={plan.date} className="space-y-1">
+                        <button
+                          type="button"
+                          aria-label={weekDayHeadLabel(plan)}
+                          aria-current={selectedDate === plan.date ? "date" : undefined}
+                          onClick={() => { setView("day"); goToDate(plan.date); }}
+                          className={`w-full rounded-xl border px-2 py-2 text-center focus:outline-none focus:ring-2 focus:ring-sage-300 ${plan.isToday ? "border-sage-500 bg-sage-50" : "border-warm-200 bg-white"}`}>
+                          <span aria-hidden="true" className="block text-xs font-semibold uppercase tracking-wide text-warm-500">{WEEK_DAY_HEADS[index]}</span>
+                          <span aria-hidden="true" className="block text-lg font-medium text-warm-900">{Number(plan.date.slice(-2))}</span>
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={availabilityButtonLabel(plan)}
+                          onClick={() => editAvailability(plan.date)}
+                          className={`w-full rounded-lg border px-2 py-1 text-[11px] leading-tight focus:outline-none focus:ring-2 focus:ring-sage-300 ${plan.windows.length === 0 ? "border-warm-200 bg-warm-100 text-warm-600" : plan.kind === "exception" ? "border-amber-300 bg-amber-50 text-amber-900" : "border-sage-200 bg-sage-50 text-sage-900"}`}>
+                          <span aria-hidden="true">{availabilityReady ? dayAvailabilityLabel(plan) : "Chargement…"}</span>
+                        </button>
+                      </div>
+                    ))}
+                    {hours.map((hour) => (
+                      <div key={hour} className="contents">
+                        <div aria-hidden="true" className="pr-2 pt-1 text-right text-xs text-warm-500">{`${String(hour).padStart(2, "0")}:00`}</div>
+                        {week.map((plan) => {
+                          const openHour = availabilityReady && isHourOpen(hour, plan.windows);
+                          const items = plan.appointments.filter((item) => item.hour === hour);
+                          return (
+                            <div
+                              key={`${plan.date}-${hour}`}
+                              className={`min-h-12 rounded-lg border p-1 ${openHour ? "border-sage-100 bg-white" : "border-warm-100 bg-warm-50"} ${plan.isToday ? "ring-1 ring-sage-200" : ""}`}>
+                              {items.map((item) => (
+                                <button
+                                  key={item.booking.reference}
+                                  type="button"
+                                  aria-label={weekAppointmentLabel(item)}
+                                  aria-current={selectedReference === item.booking.reference ? "true" : undefined}
+                                  onClick={() => chooseBooking(item.booking)}
+                                  className={`mb-1 block w-full rounded-md px-2 py-1 text-left text-xs focus:outline-none focus:ring-2 focus:ring-sage-300 ${item.booking.state === "cancelled" ? "bg-warm-100 text-warm-500 line-through" : "bg-sage-100 text-sage-900"} ${selectedReference === item.booking.reference ? "ring-2 ring-sage-400" : ""}`}>
+                                  <span aria-hidden="true" className="block font-medium">{item.startLocal}</span>
+                                  <span aria-hidden="true" className="block truncate">{item.booking.customerName}</span>
+                                  {item.span > 1 && (
+                                    <span aria-hidden="true" className="block text-[10px] text-warm-600">→ {item.endLocal}</span>
+                                  )}
+                                </button>
+                              ))}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : view === "month" ? (
               <div className="mt-5 overflow-x-auto">
                 {/*
                   ESZ-085: a list of day buttons, not an ARIA grid.
@@ -395,6 +618,20 @@ export function AdminBookingCalendar() {
               {selected.state === "cancelled" && <p className="mt-6 rounded-2xl bg-warm-100 p-4 text-sm text-warm-600">Ce rendez-vous est annulé et ne peut plus être déplacé ni annulé de nouveau.{selected.cancellationReason ? ` Motif : ${selected.cancellationReason}` : ""}</p>}
             </div>}
           </aside>
+        </div>
+
+        {/*
+          ESZ-159: availability is part of this destination, not a page next to
+          it. It sits below the grid at full width rather than inside the 420 px
+          detail column, because the weekly-hours rows are a four-field form per
+          row: squeezed into the side column they would be unusable at exactly
+          the widths (tablet, split screens) where the operator is most likely to
+          be standing. Folded away by default, it keeps the appointment view the
+          thing the page opens on, and a day's availability button above opens it
+          straight onto that date.
+        */}
+        <div id="calendar-availability" className="mt-6">
+          {showAvailability && <AdminAvailabilityEditor workspace={availability} />}
         </div>
       </div>
     </main>

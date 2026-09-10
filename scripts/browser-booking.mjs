@@ -476,6 +476,19 @@ async function main() {
   await signIn(adminCdp, origin, credentials.email, credentials.password);
   await navigateAndWait(adminCdp, `${origin}/admin/bookings`, "admin booking calendar", `document.querySelector("h1")?.textContent?.trim() === "Calendrier"`);
 
+  // ESZ-159: the calendar now opens on the week. This proof navigates by month
+  // — the slot it is looking for can be weeks out — so it selects the Mois scale
+  // first and keeps its existing month navigation, rather than paging a week at
+  // a time to reach the same cell. The scale switch is client state, so it needs
+  // no range query of its own.
+  const monthSelected = await clickButtonWhere(adminCdp, `candidate.closest('[aria-label="Vue du calendrier"]') !== null && candidate.textContent?.trim() === "Mois"`);
+  assert(monthSelected, "the calendar offers no Mois scale");
+  await waitFor(
+    () => evaluate(adminCdp, `[...document.querySelectorAll('[aria-label="Vue du calendrier"] button')].some((button) => button.textContent?.trim() === "Mois" && button.getAttribute("aria-pressed") === "true")`),
+    "month view activation",
+    20_000,
+  );
+
   // Open the booking's day (navigating months if the slot crossed a border).
   // The month grid only exists once the real range query has finished, so the
   // first step is to wait for the grid to render — clicking "Mois suivant"

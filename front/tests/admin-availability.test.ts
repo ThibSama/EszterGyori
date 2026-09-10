@@ -582,3 +582,57 @@ test("the admin shell represents the availability editor under Calendrier", asyn
   assert.equal(activeAdminNavKey("/admin/availability"), "calendar");
   assert.equal(activeAdminNavKey("/admin/availability/weekly"), "calendar");
 });
+
+test("the structured windows and the sentence about them are one derivation", async () => {
+  // ESZ-159 split `describeDate` so the week grid could shade a cell from the
+  // actual times instead of parsing a French sentence back apart. The split is
+  // only safe while the two stay one derivation: every outcome the operator
+  // reads must be the outcome the grid draws.
+  const { dateWindows } = await import("../app/lib/admin-availability");
+
+  const rules = [
+    draft({ weekdayIso: 1, startLocal: "09:00", endLocal: "12:00" }),
+    draft({ weekdayIso: 1, startLocal: "14:00", endLocal: "17:00" }),
+  ];
+  const cases: Array<[string, AdminAvailabilityException[]]> = [
+    ["2026-06-15", []],
+    ["2026-06-16", []],
+    ["2026-06-15", [{ id: 1, localDate: "2026-06-15", kind: "closed", windows: [], note: null }]],
+    [
+      "2026-06-15",
+      [
+        {
+          id: 2,
+          localDate: "2026-06-15",
+          kind: "open",
+          windows: [{ startLocal: "18:00", endLocal: "20:00", foldUtcOffset: null }],
+          note: null,
+        },
+      ],
+    ],
+  ];
+
+  for (const [date, exceptions] of cases) {
+    const structured = dateWindows(date, rules, exceptions);
+    const described = describeDate(date, rules, exceptions);
+
+    assert.equal(structured.kind, described.kind, `${date} disagrees about its kind`);
+    assert.deepEqual(
+      structured.windows.map((window) => `${window.startLocal} – ${window.endLocal}`),
+      described.windows,
+      `${date} disagrees about its windows`,
+    );
+  }
+
+  // An open exception replaces the weekly hours; it never merges with them.
+  const replaced = dateWindows("2026-06-15", rules, [
+    {
+      id: 3,
+      localDate: "2026-06-15",
+      kind: "open",
+      windows: [{ startLocal: "18:00", endLocal: "20:00", foldUtcOffset: null }],
+      note: null,
+    },
+  ]);
+  assert.deepEqual(replaced.windows, [{ startLocal: "18:00", endLocal: "20:00" }]);
+});

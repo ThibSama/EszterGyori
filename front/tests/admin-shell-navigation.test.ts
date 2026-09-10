@@ -114,16 +114,36 @@ test("Calendrier is a real entry point, not a claim that Package 10.2 shipped", 
     "the borrowed route must actually present itself as the calendar",
   );
 
-  // Package 10.2 owns the consolidation. Until it lands, the availability editor
-  // stays its own page rather than being folded in here.
+  // ESZ-159 consolidated the two halves. The guard that used to stand here
+  // asserted the opposite — that the bookings page must *not* mention the
+  // availability editor — which was the right invariant for the shell pass and
+  // became a lie the moment the Calendar absorbed availability. What matters now
+  // is the same thing it always cared about: that there is one Calendar, not two
+  // divergent screens. So the page must mount the unified calendar, and must not
+  // grow a second availability implementation of its own.
   const bookingsPage = readFileSync(
     join(appRoot, "admin", "(protected)", "bookings", "page.tsx"),
     "utf8",
   );
+  assert.match(bookingsPage, /<AdminBookingCalendar \/>/);
   assert.doesNotMatch(
     bookingsPage,
+    /useAvailabilityWorkspace|weeklyRules/,
+    "the page composes the calendar; it must not re-implement availability",
+  );
+
+  // The old availability address converges on that same component rather than
+  // dying or keeping a parallel product alive.
+  const availabilityPage = readFileSync(
+    join(appRoot, "admin", "(protected)", "availability", "page.tsx"),
+    "utf8",
+  );
+  assert.match(availabilityPage, /AdminBookingCalendar/);
+  assert.match(availabilityPage, /initialPanel="availability"/);
+  assert.doesNotMatch(
+    availabilityPage,
     /AdminAvailabilityEditor/,
-    "the unified calendar belongs to Package 10.2, not to this shell pass",
+    "the compatibility route must reach availability through the calendar, not around it",
   );
 });
 

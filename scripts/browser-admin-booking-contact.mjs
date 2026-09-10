@@ -190,14 +190,22 @@ async function clickButton(cdp, label) {
 }
 
 async function openBooking(cdp, name, localDate) {
-  // The month grid always includes the next several days, so the booking's day
-  // cell (aria-label "mardi 1 septembre 2026, N rendez-vous") is reachable even
-  // when the slot fell on a later day than today (e.g. a Sunday booking). The
-  // grid only renders once the month query has finished loading, so wait for
-  // the cell before clicking it.
+  // ESZ-159: the calendar opens on the *week* now, not the month. The day head
+  // carries the same accessible-name prefix the month cell did, so the lookup is
+  // unchanged — but a slot up to six days out can fall in the following week, so
+  // the week is advanced until the date is on screen instead of assuming a grid
+  // wide enough to contain it. The grid renders only once the range query has
+  // finished, so the load is awaited before the date is looked for.
   const prefix = parisDayCellPrefix(localDate);
+  const dayHeadPresent = `[...document.querySelectorAll("button")].some((candidate) => candidate.getAttribute("aria-label")?.startsWith(${JSON.stringify(prefix)}))`;
+  const gridSettled = () => evaluate(cdp, `!document.body.innerText.includes("Chargement des rendez-vous")`);
+  await waitFor(gridSettled, "calendar range query", 45_000);
+  for (let step = 0; step < 3 && !(await evaluate(cdp, dayHeadPresent)); ++step) {
+    await clickButton(cdp, "Semaine suivante");
+    await waitFor(gridSettled, "the advanced week finished loading", 45_000);
+  }
   await waitFor(
-    () => evaluate(cdp, `[...document.querySelectorAll("button")].some((candidate) => candidate.getAttribute("aria-label")?.startsWith(${JSON.stringify(prefix)}))`),
+    () => evaluate(cdp, dayHeadPresent),
     `calendar day cell ${localDate}`,
     45_000,
   );

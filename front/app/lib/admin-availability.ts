@@ -304,22 +304,44 @@ export function replaceException(
 }
 
 /**
- * What a date's availability actually is, for the summary line above the editor.
+ * One window of a date's availability, as times rather than as prose.
  *
- * The three outcomes are the three the domain has, and "exceptionnellement
- * ouvert" is deliberately not phrased as an addition to the weekly hours: an
- * open exception replaces them outright.
+ * `describeDate` used to derive both the outcome and its formatting in one pass,
+ * which meant a caller that needed the *times* — the week grid, which shades a
+ * cell open or closed — had no way to get them without re-deriving the rules or
+ * parsing the sentence back apart. Splitting the derivation from its wording is
+ * what keeps exactly one place deciding what a date is open for (ESZ-159).
  */
-export function describeDate(
+export interface DateWindow {
+  startLocal: string;
+  endLocal: string;
+}
+
+export interface DateAvailability {
+  kind: "closed" | "exception" | "weekly";
+  windows: DateWindow[];
+}
+
+/**
+ * What a date's availability actually is, in structured form.
+ *
+ * The three outcomes are the three the domain has, and an open exception
+ * *replaces* the weekly hours rather than adding to them — which is why the
+ * exception branch returns early instead of merging the two sets.
+ */
+export function dateWindows(
   localDate: string,
   rules: WeeklyRuleDraft[],
   exceptions: AdminAvailabilityException[],
-): { kind: "closed" | "exception" | "weekly"; windows: string[] } {
+): DateAvailability {
   const exception = exceptionForDate(exceptions, localDate);
   if (exception !== null) {
     return {
       kind: exception.kind === "closed" ? "closed" : "exception",
-      windows: exception.windows.map((window) => `${window.startLocal} – ${window.endLocal}`),
+      windows: exception.windows.map((window) => ({
+        startLocal: window.startLocal,
+        endLocal: window.endLocal,
+      })),
     };
   }
 
@@ -332,9 +354,27 @@ export function describeDate(
         (rule.validFrom === null || localDate >= rule.validFrom) &&
         (rule.validUntil === null || localDate <= rule.validUntil),
     ),
-  ).map((rule) => `${rule.startLocal} – ${rule.endLocal}`);
+  ).map((rule) => ({ startLocal: rule.startLocal, endLocal: rule.endLocal }));
 
   return { kind: windows.length === 0 ? "closed" : "weekly", windows };
+}
+
+/**
+ * The same answer, worded for the summary line above the editor.
+ *
+ * "Exceptionnellement ouvert" is deliberately not phrased as an addition to the
+ * weekly hours: an open exception replaces them outright.
+ */
+export function describeDate(
+  localDate: string,
+  rules: WeeklyRuleDraft[],
+  exceptions: AdminAvailabilityException[],
+): { kind: "closed" | "exception" | "weekly"; windows: string[] } {
+  const resolved = dateWindows(localDate, rules, exceptions);
+  return {
+    kind: resolved.kind,
+    windows: resolved.windows.map((window) => `${window.startLocal} – ${window.endLocal}`),
+  };
 }
 
 /** ISO weekday (Monday = 1) of a local calendar date, read as a civil date. */
