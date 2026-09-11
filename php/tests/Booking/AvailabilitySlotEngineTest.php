@@ -284,7 +284,17 @@ final class AvailabilitySlotEngineTest extends TestCase
         $weekly = [$this->rule(1, '09:00', '18:00')];
         $service = $this->service(30);
         $starts = fn (array $constraints, array $occupied = []): array => array_column(
-            $this->engine->generate($service, '2026-07-06', '2026-07-06', $weekly, [], $occupied, null, null, $constraints),
+            $this->engine->generate(
+                $service,
+                '2026-07-06',
+                '2026-07-06',
+                $weekly,
+                [],
+                $occupied,
+                null,
+                null,
+                $constraints,
+            ),
             'localStart',
         );
 

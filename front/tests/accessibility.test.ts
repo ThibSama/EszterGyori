@@ -140,7 +140,7 @@ test("every reservation field is labelled, typed and described by its own error"
   // A field whose error lives in a paragraph somewhere below it is an error only
   // a sighted user has. `aria-describedby` is what attaches the message to the
   // input, and `aria-invalid` is what says the input is the one that is wrong.
-  for (const field of ["name", "email", "phone", "note", "consentAccepted"]) {
+  for (const field of ["firstName", "lastName", "email", "phone", "note", "consentAccepted"]) {
     assert.match(
       reservationDetails,
       new RegExp(`aria-invalid=\\{Boolean\\(errorFor\\("${field}"\\)\\)\\}`),
@@ -155,13 +155,14 @@ test("every reservation field is labelled, typed and described by its own error"
 
   // Every visible control has a programmatic label. Placeholder text is not a
   // label: it disappears on focus, which is the moment it is needed.
-  assert.equal((reservationDetails.match(/htmlFor=/g) ?? []).length, 5);
+  assert.equal((reservationDetails.match(/htmlFor=/g) ?? []).length, 6);
 
   // `type` and `autoComplete` are accessibility features, not conveniences. They
   // are what gives a phone the right keyboard and what lets someone with a motor
   // impairment fill the form from stored values instead of typing it.
   assert.match(reservationDetails, /type="email"[\s\S]*?autoComplete="email"|autoComplete="email"[\s\S]*?type="email"/);
-  assert.match(reservationDetails, /autoComplete="name"/);
+  assert.match(reservationDetails, /autoComplete="given-name"/);
+  assert.match(reservationDetails, /autoComplete="family-name"/);
   assert.match(reservationDetails, /autoComplete="tel"/);
   assert.match(reservationDetails, /inputMode="tel"/);
 });
@@ -237,7 +238,7 @@ test("every calendar day says what day it is and how busy it is", () => {
   // names. As an accessible name that is neither a date nor a summary, so the
   // cell carries its own label and the decorative contents are hidden from the
   // accessibility tree rather than read out twice.
-  assert.match(bookingCalendar, /aria-label=\{dayCellLabel\(date, items\.length\)\}/);
+  assert.match(bookingCalendar, /aria-label=\{dayCellLabel\(date, items\.length, dayConstraints\)\}/);
   assert.match(bookingCalendar, /function dayCellLabel/);
   assert.match(bookingCalendar, /aria-current=\{selectedDate === date \? "date" : undefined\}/);
   assert.match(bookingCalendar, /aria-hidden="true" className="text-sm font-medium"/);
