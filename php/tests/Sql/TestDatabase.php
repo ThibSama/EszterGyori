@@ -232,6 +232,7 @@ final class TestDatabase
                 'notification_jobs',
                 'bookings',
                 'booking_history',
+                'booking_service_combinations',
                 'availability_exception_windows',
                 'availability_exceptions',
                 'availability_rules',

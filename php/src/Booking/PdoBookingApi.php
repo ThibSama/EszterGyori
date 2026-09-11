@@ -67,6 +67,9 @@ final class PdoBookingApi implements BookingApi
             $serialization,
             $serviceImages ?? new NullServiceImageReferencePolicy(),
         );
+        // ESZ-150: validated combinations and the services-per-appointment
+        // setting share the catalog's serialization boundary.
+        $combinations = new ServiceCombinationRepository($database, $clock, $contract, $serialization, $services);
         $bookings = new BookingRepository(
             $database,
             $clock,
@@ -74,6 +77,7 @@ final class PdoBookingApi implements BookingApi
             $time,
             $services,
             new BookingStateMachine($contract),
+            $combinations,
         );
 
         $jobs = new NotificationJobRepository($database, $clock, $notificationPolicy);
@@ -89,7 +93,7 @@ final class PdoBookingApi implements BookingApi
         $availabilityRepository = new AvailabilityRepository($database, $clock, $contract, $time, $serialization);
         $history = new BookingHistoryRepository($database, $clock);
 
-        $catalog = new BookingServiceCatalog($services);
+        $catalog = new BookingServiceCatalog($services, $combinations);
         $availability = new SlotAvailability(
             $contract,
             $time,
@@ -116,7 +120,7 @@ final class PdoBookingApi implements BookingApi
             ),
             new BookingAdminReader($contract, $time, $clock, $availability, $bookings, $history),
             new AvailabilityAdministration($contract, $availabilityRepository),
-            new BookingServiceAdministration($services),
+            new BookingServiceAdministration($services, $combinations, $contract),
         );
     }
 

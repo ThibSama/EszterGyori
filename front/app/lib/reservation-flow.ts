@@ -4,10 +4,12 @@ import type {
   BookingAvailability,
   BookingCreationFailure,
   BookingSlot,
+  PublicBookableCombination,
   PublicBookableService,
   PublicBookingConfirmation,
   PublicBookingRequest,
 } from "./booking-api";
+import { sameServiceSet } from "./booking-api";
 
 export const RESERVATION_RANGE_DAYS = 7;
 export const RESERVATION_HORIZON_DAYS = 90;
@@ -60,16 +62,71 @@ export function bookableServicesToOffer(
   });
 }
 
-/** The catalog name of the selected service, for the summary and the confirmation. */
+/**
+ * The catalog names of the selected services, in the order they were chosen,
+ * joined with " + " — for the summary and the confirmation. "Prestation"
+ * while nothing is selected.
+ */
 export function selectedServiceLabel(
   services: PublicBookableService[],
-  serviceKey: BookableServiceKey | null,
+  serviceKeys: readonly BookableServiceKey[],
 ): string {
-  return services.find((service) => service.key === serviceKey)?.label ?? "Prestation";
+  const labels = serviceKeys.map(
+    (serviceKey) => services.find((service) => service.key === serviceKey)?.label ?? serviceKey,
+  );
+  return labels.length === 0 ? "Prestation" : labels.join(" + ");
+}
+
+/**
+ * ESZ-150 — the validated combination a selection of two or more services
+ * names, from the list the server said it will book. `null` for a single
+ * service (the service itself is the offer) and for any selection the
+ * server has not validated: the page then shows that the combination is
+ * not offered and never asks for slots. The server re-decides regardless.
+ */
+export function resolveCombination(
+  combinations: readonly PublicBookableCombination[],
+  serviceKeys: readonly BookableServiceKey[],
+): PublicBookableCombination | null {
+  if (serviceKeys.length < 2) return null;
+  return combinations.find((combination) => sameServiceSet(combination.serviceKeys, serviceKeys)) ?? null;
+}
+
+/**
+ * Whether a selection can be sent for availability: one active service, or
+ * a validated combination within the configured maximum. Everything else
+ * is a selection in progress, not a request.
+ */
+export function selectionIsBookable(
+  combinations: readonly PublicBookableCombination[],
+  serviceKeys: readonly BookableServiceKey[],
+  maxServices: number,
+): boolean {
+  if (serviceKeys.length === 0 || serviceKeys.length > maxServices) return false;
+  return serviceKeys.length === 1 || resolveCombination(combinations, serviceKeys) !== null;
+}
+
+/**
+ * The duration the visitor will be told: the validated combination's, or
+ * the single service's; `null` while the selection names no offer.
+ */
+export function selectionDurationMinutes(
+  services: readonly PublicBookableService[],
+  combinations: readonly PublicBookableCombination[],
+  serviceKeys: readonly BookableServiceKey[],
+): number | null {
+  if (serviceKeys.length === 1) {
+    return services.find((service) => service.key === serviceKeys[0])?.durationMinutes ?? null;
+  }
+  return resolveCombination(combinations, serviceKeys)?.durationMinutes ?? null;
 }
 
 export interface ReservationFlowState {
-  serviceKey: BookableServiceKey | null;
+  /**
+   * ESZ-150 — the selected services in the order they were chosen; empty
+   * while none is. The single-service flow is a one-element list.
+   */
+  serviceKeys: BookableServiceKey[];
   fromDate: string;
   untilDate: string;
   selectedDate: string | null;
@@ -112,7 +169,13 @@ export type CustomerField = keyof CustomerDraft;
 export type CustomerErrors = Partial<Record<CustomerField, string>>;
 
 export type ReservationFlowAction =
+  /** Replaces the selection with this one service (a deep link, or a single-service catalog). */
   | { type: "select-service"; serviceKey: BookableServiceKey }
+  /**
+   * ESZ-150 — adds or removes one service. Adding beyond `maxServices` is
+   * ignored: the control is disabled, and this closes the same-tick gap.
+   */
+  | { type: "toggle-service"; serviceKey: BookableServiceKey; maxServices: number }
   | { type: "navigate"; fromDate: string; untilDate: string }
   | { type: "select-date"; date: string }
   | { type: "select-slot"; slot: BookingSlot }
@@ -145,7 +208,7 @@ export type ReservationFlowAction =
 
 export function initialReservationState(today: string): ReservationFlowState {
   return {
-    serviceKey: null,
+    serviceKeys: [],
     ...rangeFrom(today),
     selectedDate: null,
     selectedSlot: null,
@@ -185,12 +248,12 @@ export function validateCustomerDraft(customer: CustomerDraft): CustomerErrors {
 }
 
 export function createBookingRequest(
-  serviceKey: BookableServiceKey,
+  serviceKeys: readonly BookableServiceKey[],
   slot: BookingSlot,
   customer: CustomerDraft,
 ): PublicBookingRequest {
   return {
-    serviceKey,
+    serviceKeys: [...serviceKeys],
     startsAtUtc: slot.startsAtUtc,
     customerName: customer.name.trim(),
     customerEmail: customer.email.trim(),
@@ -212,7 +275,7 @@ export function reservationFlowReducer(
     case "select-service":
       return {
         ...state,
-        serviceKey: action.serviceKey,
+        serviceKeys: [action.serviceKey],
         selectedDate: null,
         selectedSlot: null,
         slots: [],
@@ -225,6 +288,27 @@ export function reservationFlowReducer(
         availabilityRetryAtEpochMs: null,
         submissionRetryAtEpochMs: null,
       };
+    case "toggle-service": {
+      const selected = state.serviceKeys.includes(action.serviceKey);
+      if (!selected && state.serviceKeys.length >= action.maxServices) return state;
+      return {
+        ...state,
+        serviceKeys: selected
+          ? state.serviceKeys.filter((key) => key !== action.serviceKey)
+          : [...state.serviceKeys, action.serviceKey],
+        selectedDate: null,
+        selectedSlot: null,
+        slots: [],
+        availabilityStatus: "idle",
+        error: null,
+        notice: null,
+        phase: "selecting",
+        submissionError: null,
+        confirmation: null,
+        availabilityRetryAtEpochMs: null,
+        submissionRetryAtEpochMs: null,
+      };
+    }
     case "navigate":
       return {
         ...state,

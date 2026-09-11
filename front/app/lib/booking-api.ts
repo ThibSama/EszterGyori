@@ -15,9 +15,10 @@ import {
 import { z } from "zod";
 import { parseRetryAfterSeconds } from "./retry-after";
 
-export type PublicBookableService = z.infer<
-  typeof publicBookableServicesResponseSchema
->["services"][number];
+export type PublicBookingCatalog = z.infer<typeof publicBookableServicesResponseSchema>;
+export type PublicBookableService = PublicBookingCatalog["services"][number];
+/** ESZ-150 — one combination that can be booked right now, with its validated duration. */
+export type PublicBookableCombination = PublicBookingCatalog["combinations"][number];
 export type BookingAvailability = z.infer<typeof bookingAvailabilityResponseSchema>;
 export type BookingSlot = BookingAvailability["slots"][number];
 export type PublicBookingRequest = z.infer<typeof publicBookingCreateRequestSchema>;
@@ -98,6 +99,17 @@ export async function withSubmissionLock<T>(
   }
 }
 
+/** The services a creation request names, whichever field carries them. */
+function requestedServiceKeys(request: PublicBookingRequest): readonly string[] {
+  return request.serviceKeys ?? (request.serviceKey === undefined ? [] : [request.serviceKey]);
+}
+
+export function sameServiceSet(left: readonly string[], right: readonly string[]): boolean {
+  const a = [...new Set(left)].sort();
+  const b = [...new Set(right)].sort();
+  return a.length === b.length && a.every((key, index) => key === b[index]);
+}
+
 async function readJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -129,10 +141,15 @@ function nonOkReadFailure(response: Response, body: unknown): BookingReadFailure
   return { kind: "rejected", message: BOOKING_API_MESSAGES.rejected };
 }
 
+/**
+ * The public catalog: the active services, and (ESZ-150) the configured
+ * maximum number of services per appointment beside the combinations the
+ * server will actually book. The page offers nothing the catalog did not.
+ */
 export async function loadBookableServices(
   fetcher: typeof fetch = fetch,
   signal?: AbortSignal,
-): Promise<BookingApiResult<PublicBookableService[]>> {
+): Promise<BookingApiResult<PublicBookingCatalog>> {
   let response: Response;
   try {
     response = await fetcher(PUBLIC_BOOKING_SERVICES_PATH, {
@@ -148,7 +165,7 @@ export async function loadBookableServices(
   if (!response.ok) return { ok: false, failure: nonOkReadFailure(response, body) };
   const parsed = publicBookableServicesResponseSchema.safeParse(body);
   return parsed.success
-    ? { ok: true, value: parsed.data.services }
+    ? { ok: true, value: parsed.data }
     : { ok: false, failure: { kind: "malformed", message: BOOKING_API_MESSAGES.malformed } };
 }
 
@@ -172,8 +189,13 @@ export async function loadPublishedContent(
   }
 }
 
+/**
+ * ESZ-150 — the selection travels as `serviceKeys` in the visitor's order;
+ * one key is the single service. The server canonicalises, resolves the
+ * combination and refuses anything it has not validated.
+ */
 export async function loadAvailability(
-  serviceKey: BookableServiceKey,
+  serviceKeys: readonly BookableServiceKey[],
   fromDate: string,
   untilDate: string,
   fetcher: typeof fetch = fetch,
@@ -184,7 +206,7 @@ export async function loadAvailability(
     response = await fetcher(PUBLIC_BOOKING_AVAILABILITY_PATH, {
       method: "POST",
       headers: { accept: "application/json", "content-type": "application/json" },
-      body: JSON.stringify({ serviceKey, fromDate, untilDate }),
+      body: JSON.stringify({ serviceKeys: [...serviceKeys], fromDate, untilDate }),
       signal,
     });
   } catch {
@@ -229,9 +251,11 @@ export async function createBooking(
 
   const body = await readJson(response);
   if (response.ok) {
+    // ESZ-150: the stored services must be exactly the selection sent
+    // (canonical order on the server, any order from the client).
     const parsed = publicBookingResponseSchema.safeParse(body);
     return parsed.success
-      && parsed.data.serviceKey === validated.data.serviceKey
+      && sameServiceSet(parsed.data.serviceKeys, requestedServiceKeys(validated.data))
       && parsed.data.startsAtUtc === validated.data.startsAtUtc
       ? { ok: true, value: parsed.data }
       : {

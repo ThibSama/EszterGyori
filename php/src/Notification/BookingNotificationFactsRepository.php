@@ -17,7 +17,7 @@ final class BookingNotificationFactsRepository implements BookingNotificationFac
     {
         $row = $this->database->fetchOne(
             'SELECT b.customer_email, b.starts_at_utc, b.reference, b.customer_data_erased_at,'
-            . ' s.booking_label'
+            . ' b.combination_key, s.booking_label'
             . ' FROM bookings b JOIN booking_services s ON s.service_key = b.service_key'
             . ' WHERE b.id = :booking',
             ['booking' => $job->bookingId],
@@ -40,6 +40,12 @@ final class BookingNotificationFactsRepository implements BookingNotificationFac
         $start = $row['starts_at_utc'] ?? null;
         $reference = $row['reference'] ?? null;
         $label = $row['booking_label'] ?? null;
+        // ESZ-150: a combination booking is named by all its members, in
+        // canonical order, from the same catalog rows (archived or not).
+        $combinationKey = $row['combination_key'] ?? null;
+        if (\is_string($combinationKey) && $combinationKey !== '') {
+            $label = $this->combinationLabel($combinationKey);
+        }
         if (
             !\is_string($email) || filter_var($email, FILTER_VALIDATE_EMAIL) === false
             || !\is_string($start) || !\is_string($reference) || !\is_string($label)
@@ -58,5 +64,37 @@ final class BookingNotificationFactsRepository implements BookingNotificationFac
         }
 
         return new BookingNotificationFacts($email, $label, $startsAt, $reference, $job->jobType);
+    }
+
+    /** The members' catalog names joined with " + ", or null if any is unresolvable. */
+    private function combinationLabel(string $combinationKey): ?string
+    {
+        $members = explode('+', $combinationKey);
+        $placeholders = [];
+        $parameters = [];
+        foreach ($members as $index => $member) {
+            $placeholders[] = ':key' . $index;
+            $parameters['key' . $index] = $member;
+        }
+        $rows = $this->database->fetchAll(
+            'SELECT service_key, booking_label FROM booking_services'
+            . ' WHERE service_key IN (' . implode(', ', $placeholders) . ')',
+            $parameters,
+        );
+        $labels = [];
+        foreach ($rows as $row) {
+            if (\is_string($row['service_key'] ?? null) && \is_string($row['booking_label'] ?? null)) {
+                $labels[$row['service_key']] = $row['booking_label'];
+            }
+        }
+        $ordered = [];
+        foreach ($members as $member) {
+            if (!isset($labels[$member])) {
+                return null;
+            }
+            $ordered[] = $labels[$member];
+        }
+
+        return implode(' + ', $ordered);
     }
 }

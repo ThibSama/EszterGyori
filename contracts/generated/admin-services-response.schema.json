@@ -68,10 +68,90 @@
         ],
         "additionalProperties": false
       }
+    },
+    "maxServicesPerAppointment": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4
+    },
+    "combinations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,63}([+][a-z][a-z0-9-]{1,63}){1,3}$"
+          },
+          "serviceKeys": {
+            "minItems": 2,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{1,63}$"
+            }
+          },
+          "proposedDurationMinutes": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 1920
+          },
+          "durationMinutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 480
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "proposed",
+              "validated",
+              "disabled"
+            ]
+          },
+          "bookable": {
+            "type": "boolean"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "serviceKeys",
+          "proposedDurationMinutes",
+          "durationMinutes",
+          "status",
+          "bookable",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "combinationsComplete": {
+      "type": "boolean"
     }
   },
   "required": [
-    "services"
+    "services",
+    "maxServicesPerAppointment",
+    "combinations",
+    "combinationsComplete"
   ],
   "additionalProperties": false
 }

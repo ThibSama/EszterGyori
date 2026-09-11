@@ -47,6 +47,17 @@ Le calendrier admin est la source de vérité. Rechercher par période ou par r�
 Ne jamais modifier directement les tables MySQL. Les actions admin maintiennent en
 une transaction le rendez-vous, son historique et les notifications.
 
+### Plusieurs prestations dans un rendez-vous (ESZ-150)
+
+La page `Prestations` fixe le **nombre maximal de prestations par rendez-vous**
+(1 par défaut : une seule prestation, comme avant) et liste les **combinaisons**
+possibles entre prestations actives. Pour chacune, la *durée proposée* est la simple
+somme des durées ; elle n’est qu’indicative. Seule la **durée validée** que vous
+enregistrez sert aux réservations : modifier ensuite la durée d’une prestation change
+la proposition affichée, jamais la durée validée ni les rendez-vous déjà pris.
+Désactiver une combinaison ou archiver une de ses prestations la retire de la
+réservation ; ses rendez-vous existants restent visibles avec toutes leurs prestations.
+
 ## Horaires et exceptions
 
 Les horaires hebdomadaires sont remplacés comme un ensemble : relire **tous** les

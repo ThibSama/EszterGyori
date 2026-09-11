@@ -672,6 +672,7 @@
       "publicAvailability": "Only active canonical services and dates from the Paris-local today through day 90 inclusive; response order is SlotEngine order and slots are never persisted.",
       "publicServices": "Lists only active catalog services — key, name, description, duration and one managed image path or null — in catalog order. ESZ-149: the catalog is the authority; the reservation flow never matches a service against SiteContent.services.",
       "serviceCatalog": "ESZ-149 — booking_services is the single operational service catalog. Authenticated admin reads list every row, archived included, so historical bookings stay nameable; mutations are create (key derived server-side from the name), update (name, description, duration, image), archive and restore, each a PATCH carrying its action behind session and CSRF. update, archive and restore require expectedUpdatedAt and answer 409 REVISION_CONFLICT when the row moved. Archive and restore flip is_active only; no route deletes a service. A managed imageSrc must name a catalogued media asset, and the media delete route refuses an asset any service row references. Mutations that change bookability (create, archive, restore, a duration change) take the booking serialization boundary first, inside their transaction.",
+      "serviceCombinations": "ESZ-150 — a public read or creation names its services with serviceKeys (or the pre-ESZ-150 single serviceKey; exactly one of the two). One key is the service itself. Two or more keys are resolved, in canonical sorted form, against booking_service_combinations: the row must exist, be active, carry a validated duration, every member must be an active service and the count must be within the configured maximum (system_settings booking.max_services_per_appointment, default 1), otherwise 400 VALIDATION_FAILED. The validated duration alone shapes the slots and the stored interval; the proposal (sum of component durations) is advisory. Public discovery lists the maximum and the currently bookable combinations. The admin catalog read lists the maximum, every stored combination and the candidate subsets of active services (bounded, with a completeness flag); setMaxServices, validateCombination, disableCombination and enableCombination are PATCH actions on the same path behind session and CSRF, disable/enable and re-validation under the row's updatedAt token (409 REVISION_CONFLICT when stale), and every one of them takes the booking serialization boundary first. Existing bookings keep their stored service_key, start and end; a combination booking additionally stores its combination_key, and none is ever migrated or recomputed.",
       "creation": "The client submits a returned UTC start. Inside one transaction the singleton primary resource row is locked, all inputs are re-read, SlotEngine recomputes, and insert plus created history commit together.",
       "consent": "ESZ-142 — the request must pair consentAccepted: true with consentNoticeId naming the entry of the immutable notice catalog (booking-domain consentNotices) whose text the client displayed. The server accepts only an id the catalog contains and stores it beside consent_at_utc; it never accepts notice text. Bookings created before the catalog keep a null consent_notice_id and are never retro-attributed one.",
       "adminMutableFields": {
@@ -3192,6 +3193,59 @@
       }
     },
     {
+      "id": "booking.availability.post.serviceKeysOk",
+      "endpoint": "/api/booking/availability",
+      "description": "ESZ-150 — serviceKeys with one member is the single service; the response names the services it computed for.",
+      "request": {
+        "method": "POST",
+        "path": "/api/booking/availability",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"serviceKeys\":[\"brows\"],\"fromDate\":\"2026-06-15\",\"untilDate\":\"2026-06-15\"}"
+      },
+      "expect": {
+        "status": 200,
+        "body": "bookingAvailabilityResponse"
+      }
+    },
+    {
+      "id": "booking.availability.post.unvalidatedCombination",
+      "endpoint": "/api/booking/availability",
+      "description": "ESZ-150 — a selection of several services with no validated, active combination fails closed; there is no implicit combination.",
+      "request": {
+        "method": "POST",
+        "path": "/api/booking/availability",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"serviceKeys\":[\"brows\",\"lashes\"],\"fromDate\":\"2026-06-15\",\"untilDate\":\"2026-06-15\"}"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "booking.availability.post.tooManyServices",
+      "endpoint": "/api/booking/availability",
+      "description": "ESZ-150 — more keys than the absolute limit is refused by the closed request schema.",
+      "request": {
+        "method": "POST",
+        "path": "/api/booking/availability",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"serviceKeys\":[\"a1\",\"a2\",\"a3\",\"a4\",\"a5\"],\"fromDate\":\"2026-06-15\",\"untilDate\":\"2026-06-15\"}"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
       "id": "booking.availability.post.invalidDateShape",
       "endpoint": "/api/booking/availability",
       "description": "Malformed local dates are rejected by the closed request schema.",
@@ -4237,6 +4291,73 @@
       "expect": {
         "status": 200,
         "body": "adminServiceResponse"
+      }
+    },
+    {
+      "id": "admin.services.patch.setMaxServicesOk",
+      "endpoint": "/api/admin/services",
+      "description": "ESZ-150 — the maximum number of services per appointment is a catalog setting the administrator owns; the response echoes what was stored.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"setMaxServices\",\"maxServicesPerAppointment\":2}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminServiceResponse"
+      }
+    },
+    {
+      "id": "admin.services.patch.validateCombinationOk",
+      "endpoint": "/api/admin/services",
+      "description": "ESZ-150 — validating a combination persists the administrator's duration for the canonical membership; a null token creates the row.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"validateCombination\",\"serviceKeys\":[\"lashes\",\"brows\"],\"durationMinutes\":70,\"expectedUpdatedAt\":null}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminServiceResponse"
+      }
+    },
+    {
+      "id": "admin.services.patch.maxServicesAboveLimit",
+      "endpoint": "/api/admin/services",
+      "description": "ESZ-150 — the configured maximum cannot exceed the domain's absolute limit.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"setMaxServices\",\"maxServicesPerAppointment\":5}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
       }
     },
     {

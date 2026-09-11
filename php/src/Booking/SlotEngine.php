@@ -4,7 +4,13 @@ declare(strict_types=1);
 
 namespace Eszter\Booking;
 
-/** Deterministic, bounded, in-memory slot computation (ESZ-045). */
+/**
+ * Deterministic, bounded, in-memory slot computation (ESZ-045).
+ *
+ * ESZ-150: the engine reads only the shaping facts — duration, buffers,
+ * activity — so a single service and a validated combination
+ * ({@see BookableOffer}) are the same input to it.
+ */
 final class SlotEngine
 {
     public function __construct(
@@ -20,7 +26,7 @@ final class SlotEngine
      * @return list<Slot>
      */
     public function generate(
-        BookableService $service,
+        BookableService|BookableOffer $service,
         string $fromDate,
         string $untilDate,
         array $weeklyRules,
@@ -109,7 +115,7 @@ final class SlotEngine
      * @return list<Slot>
      */
     private function slotsInWindow(
-        BookableService $service,
+        BookableService|BookableOffer $service,
         string $date,
         AvailabilityWindow $window,
         array $occupied,

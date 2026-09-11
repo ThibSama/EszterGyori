@@ -12,6 +12,15 @@
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]{1,63}$"
     },
+    "serviceKeys": {
+      "minItems": 1,
+      "maxItems": 4,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{1,63}$"
+      }
+    },
     "startsAtUtc": {
       "type": "string"
     },
@@ -60,7 +69,6 @@
     }
   },
   "required": [
-    "serviceKey",
     "startsAtUtc",
     "customerName",
     "customerEmail",

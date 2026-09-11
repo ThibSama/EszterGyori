@@ -36,8 +36,21 @@
  * name, description and one managed image reference — and archival is a
  * non-destructive `is_active = 0` that removes a service from new reservation
  * choices while every historical booking keeps its stored key and times.
+ *
+ * Version 9 (ESZ-150) lets one appointment carry several services. The
+ * administrator configures the maximum number of services per appointment
+ * (`services.combinations.maxPerAppointment`, a `system_settings` row,
+ * default 1); a *combination* is the canonical set of two or more active
+ * service keys — sorted, joined with `+` — and exists for booking only once
+ * the administrator has persisted a *validated* duration for it. The server
+ * proposes a duration (the plain sum of the component durations, advisory
+ * only); the persisted validated duration is the sole authority for slot
+ * generation and creation and is never recomputed when a component's
+ * duration changes. A booking stores its combination key beside its first
+ * service key; single-service bookings, past and future, keep exactly the
+ * facts they had.
  */
-export const BOOKING_DOMAIN_VERSION = 8;
+export const BOOKING_DOMAIN_VERSION = 9;
 
 /**
  * The business operates in metropolitan France. Rules are authored as local
@@ -67,6 +80,35 @@ export const BOOKING_SERVICE_DESCRIPTION_MAX_LENGTH = 2000;
 export const BOOKING_SERVICE_DURATION_MIN_MINUTES = 5;
 export const BOOKING_SERVICE_DURATION_MAX_MINUTES = 480;
 export const BOOKING_SERVICE_BUFFER_MAX_MINUTES = 240;
+
+/**
+ * ESZ-150 — the ceiling of the administrator's "services per appointment"
+ * setting, and the floor/default that keeps every existing deployment a
+ * single-service booking flow until Esther raises it. The ceiling bounds the
+ * combination key (`BOOKING_SERVICE_COMBINATION_KEY_PATTERN`), the request
+ * arrays and the number of candidate combinations the back-office lists.
+ */
+export const BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT = 4;
+export const BOOKING_MAX_SERVICES_PER_APPOINTMENT_DEFAULT = 1;
+/** The `system_settings` row that holds the configured maximum (`{"max": n}`). */
+export const BOOKING_MAX_SERVICES_SETTING_KEY = "booking.max_services_per_appointment";
+
+/**
+ * ESZ-150 — a combination's identity: its member service keys, sorted
+ * bytewise and joined with `+`, so A+B and B+A are one row. Labels and
+ * images never take part. Two to `BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT`
+ * members.
+ */
+export const BOOKING_SERVICE_COMBINATION_KEY_PATTERN =
+  `^[a-z][a-z0-9-]{1,63}([+][a-z][a-z0-9-]{1,63}){1,${BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT - 1}}$`;
+
+/**
+ * ESZ-150 — the bound on candidate (not yet validated) combinations one
+ * admin catalog read lists. Every persisted combination is always listed;
+ * candidates are enumerated in catalog order up to this many, and the
+ * response states whether the enumeration was complete.
+ */
+export const BOOKING_SERVICE_COMBINATION_CANDIDATES_MAX = 300;
 export const BOOKING_SLOT_GRID_MINUTES = 15;
 export const BOOKING_SLOT_MAX_HORIZON_DAYS = 90;
 export const BOOKING_SLOT_MAX_RESULTS = 1000;
@@ -656,6 +698,38 @@ export const bookingDomainContract = {
       "Explicit, repeat-safe operator action or an authenticated admin mutation. Migrations and application boot seed no service rows; the operator CLI seeds a new row's editorial facts from the published SiteContent item of the same key when one exists and never overwrites an existing row's admin-owned name, description or image.",
     futureBookabilityOnly:
       "Activation, archival and duration changes affect future bookability only: an existing booking keeps its stored service key, start and end instants.",
+    /**
+     * ESZ-150 — several services in one appointment. The rules are stated
+     * once here; PHP reads the numbers from the artifact and restates none
+     * of them.
+     */
+    combinations: {
+      keyAuthority: "booking_service_combinations.combination_key",
+      keyPattern: BOOKING_SERVICE_COMBINATION_KEY_PATTERN,
+      keyDerivation:
+        "The member service keys sorted bytewise and joined with '+'. Membership is canonical: the same set of keys in any order names the same combination. Labels, descriptions and images take no part in the identity.",
+      maxPerAppointment: {
+        min: 1,
+        max: BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT,
+        default: BOOKING_MAX_SERVICES_PER_APPOINTMENT_DEFAULT,
+        settingKey: BOOKING_MAX_SERVICES_SETTING_KEY,
+        rule:
+          "The administrator's configured maximum number of services per appointment. Absent setting row means the default. Public discovery advertises it; availability and creation refuse a selection larger than it, and a persisted combination larger than it stays stored but is not bookable while the maximum is lower.",
+      },
+      proposedDuration:
+        "Advisory only: the plain sum of the current component durations, computed at read time with no weighting or percentage heuristic. It is shown to the administrator beside the validated duration and is never used to compute a slot.",
+      validatedDuration:
+        "The duration the administrator explicitly persisted for the combination, within services.durationMinutes. It alone shapes availability and creation for that combination. A later change to a component's duration updates the proposal and never rewrites the validated duration; only a new explicit validation does.",
+      buffers:
+        "A combination's buffers are snapshotted at validation time as the largest before-buffer and largest after-buffer among its members.",
+      bookability:
+        "A selection of two or more services is bookable only when a combination row with exactly that canonical membership exists, is active (not disabled), has a validated duration, every member service is active, and the member count is within the configured maximum. Anything else fails closed with 400 VALIDATION_FAILED; there is no implicit combination.",
+      archive:
+        "Disabling a combination or archiving one of its members removes it from public discovery and from bookability for new reservations only. The row, its key and every booking that references it survive; restoring the member or enabling the combination brings it back. No combination row is ever hard-deleted.",
+      existingBookings:
+        "A booking stores its combination key beside its first (canonical) service key, its own start and end. Bookings created before this version carry a null combination key and are never migrated, recomputed or re-attributed.",
+      candidatesListedMax: BOOKING_SERVICE_COMBINATION_CANDIDATES_MAX,
+    },
   },
   timezone: {
     iana: BOOKING_TIME_ZONE,

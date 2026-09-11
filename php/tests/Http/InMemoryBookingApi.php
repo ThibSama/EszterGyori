@@ -10,6 +10,7 @@ use Eszter\Booking\BookableServiceNotFoundException;
 use Eszter\Booking\BookableServiceRevisionConflictException;
 use Eszter\Booking\BookingApi;
 use Eszter\Booking\BookingDomainContract;
+use Eszter\Booking\BookingRequestFields;
 use Eszter\Booking\BookingTimePolicy;
 use Eszter\Booking\BookingValidationException;
 use Eszter\Booking\SlotUnavailableException;
@@ -54,13 +55,19 @@ final class InMemoryBookingApi implements BookingApi
     /** @return array<string, mixed> */
     public function services(): array
     {
-        return ['services' => [[
-            'key' => 'brows',
-            'label' => 'Sourcils',
-            'description' => 'Poudré ou poil à poil.',
-            'durationMinutes' => 30,
-            'imageSrc' => null,
-        ]]];
+        return [
+            'services' => [[
+                'key' => 'brows',
+                'label' => 'Sourcils',
+                'description' => 'Poudré ou poil à poil.',
+                'durationMinutes' => 30,
+                'imageSrc' => null,
+            ]],
+            // ESZ-150: the fixture deployment is single-service; no
+            // combination is validated, so none is offered.
+            'maxServicesPerAppointment' => 1,
+            'combinations' => [],
+        ];
     }
 
     /** @return array<string, mixed> */
@@ -68,8 +75,11 @@ final class InMemoryBookingApi implements BookingApi
     {
         // ESZ-149: the key shape is structural, membership is the catalog's.
         // The fixture catalog holds exactly one active service, so any other
-        // well-formed key is the domain's refusal, not the schema's.
-        if (($request['serviceKey'] ?? null) !== 'brows') {
+        // well-formed key is the domain's refusal, not the schema's. ESZ-150:
+        // the same parser the domain uses, so `serviceKeys: ["brows"]` is the
+        // single service and any multi-key selection has no validated
+        // combination here.
+        if (BookingRequestFields::serviceKeys($request) !== ['brows']) {
             throw new BookingValidationException('serviceKey', 'Service is not actively bookable.');
         }
 
@@ -81,6 +91,8 @@ final class InMemoryBookingApi implements BookingApi
     {
         return [
             'serviceKey' => 'brows',
+            'serviceKeys' => ['brows'],
+            'combinationKey' => null,
             'timezone' => 'Europe/Paris',
             'fromDate' => '2026-06-15',
             'untilDate' => '2026-06-15',
@@ -104,6 +116,8 @@ final class InMemoryBookingApi implements BookingApi
         return [
             'reference' => self::REFERENCE,
             'serviceKey' => 'brows',
+            'serviceKeys' => ['brows'],
+            'combinationKey' => null,
             'state' => 'confirmed',
             'startsAtUtc' => '2026-06-15T07:00:00.000Z',
             'endsAtUtc' => '2026-06-15T07:30:00.000Z',
@@ -166,16 +180,49 @@ final class InMemoryBookingApi implements BookingApi
     /** @return array<string, mixed> */
     public function adminServices(): array
     {
-        return ['services' => [
-            $this->adminService('brows', 'Sourcils', 30, 'active'),
-            $this->adminService('lashes', 'Cils (ancienne offre)', 45, 'archived'),
-        ]];
+        return [
+            'services' => [
+                $this->adminService('brows', 'Sourcils', 30, 'active'),
+                $this->adminService('lashes', 'Cils (ancienne offre)', 45, 'archived'),
+            ],
+            'maxServicesPerAppointment' => 1,
+            // ESZ-150: one stored combination whose member is archived — listed
+            // (history must stay nameable) but not bookable.
+            'combinations' => [$this->adminCombination('validated', false)],
+            'combinationsComplete' => true,
+        ];
     }
 
     /** @return array<string, mixed> */
     public function adminMutateService(array $request): array
     {
         $action = $request['action'] ?? null;
+
+        // ESZ-150: the combination side of the same PATCH.
+        if ($action === 'setMaxServices') {
+            $max = $request['maxServicesPerAppointment'] ?? null;
+            if (!\is_int($max) || $max < 1 || $max > $this->contract->maxServicesPerAppointmentLimit) {
+                throw new BookingValidationException('maxServicesPerAppointment', 'Outside the V1 bounds.');
+            }
+
+            return ['maxServicesPerAppointment' => $max];
+        }
+        if ($action === 'validateCombination') {
+            $duration = \is_int($request['durationMinutes'] ?? null) ? $request['durationMinutes'] : 75;
+
+            return ['combination' => $this->adminCombination('validated', false, $duration)];
+        }
+        if ($action === 'disableCombination' || $action === 'enableCombination') {
+            $key = \is_string($request['key'] ?? null) ? $request['key'] : '';
+            if ($key !== 'brows+lashes') {
+                throw new BookableServiceNotFoundException($key);
+            }
+
+            return ['combination' => $this->adminCombination(
+                $action === 'disableCombination' ? 'disabled' : 'validated',
+                false,
+            )];
+        }
 
         if ($action === 'create') {
             $label = \is_string($request['label'] ?? null) ? $request['label'] : 'Prestation';
@@ -228,6 +275,20 @@ final class InMemoryBookingApi implements BookingApi
     }
 
     /** @return array<string, mixed> */
+    private function adminCombination(string $status, bool $bookable, int $duration = 70): array
+    {
+        return [
+            'key' => 'brows+lashes',
+            'serviceKeys' => ['brows', 'lashes'],
+            'proposedDurationMinutes' => 75,
+            'durationMinutes' => $duration,
+            'status' => $status,
+            'bookable' => $bookable,
+            'updatedAt' => self::SERVICE_UPDATED_AT,
+        ];
+    }
+
+    /** @return array<string, mixed> */
     public function adminSummary(array $request): array
     {
         return [
@@ -249,6 +310,7 @@ final class InMemoryBookingApi implements BookingApi
             'today' => [[
                 'reference' => self::REFERENCE,
                 'serviceKey' => 'brows',
+                'serviceKeys' => ['brows'],
                 'startsAtUtc' => '2026-06-15T07:00:00.000Z',
                 'endsAtUtc' => '2026-06-15T07:30:00.000Z',
                 'localDate' => '2026-06-15',
@@ -258,6 +320,7 @@ final class InMemoryBookingApi implements BookingApi
             'upcoming' => [[
                 'reference' => 'bk_11111111111111111111111111111111',
                 'serviceKey' => 'brows',
+                'serviceKeys' => ['brows'],
                 'startsAtUtc' => '2026-06-17T08:00:00.000Z',
                 'endsAtUtc' => '2026-06-17T08:30:00.000Z',
                 'localDate' => '2026-06-17',
@@ -487,6 +550,8 @@ final class InMemoryBookingApi implements BookingApi
         return [
             'reference' => self::REFERENCE,
             'serviceKey' => 'brows',
+            'serviceKeys' => ['brows'],
+            'combinationKey' => null,
             'state' => $state,
             'startsAtUtc' => $start,
             'endsAtUtc' => $start === '2026-06-15T08:00:00.000Z'

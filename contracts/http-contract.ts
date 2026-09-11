@@ -7,6 +7,8 @@ import {
   BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES,
   BOOKING_CONSENT_CURRENT_NOTICE_ID,
   BOOKING_DST_FOLD_OFFSETS,
+  BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT,
+  BOOKING_SERVICE_COMBINATION_KEY_PATTERN,
   BOOKING_SERVICE_DESCRIPTION_MAX_LENGTH,
   BOOKING_SERVICE_DURATION_MAX_MINUTES,
   BOOKING_SERVICE_DURATION_MIN_MINUTES,
@@ -673,9 +675,36 @@ const bookableServiceDurationSchema = z
 const bookingStateSchema = z.enum(bookingStates);
 const bookingFoldOffsetSchema = z.enum(BOOKING_DST_FOLD_OFFSETS).nullable();
 
+/**
+ * ESZ-150 — a selection of services, in the visitor's order. One to the
+ * absolute limit; the configured maximum, duplicates and whether the set
+ * names a validated combination are the domain's refusals (400
+ * VALIDATION_FAILED), not the schema's.
+ */
+const bookableServiceKeysSchema = z
+  .array(bookableServiceKeySchema)
+  .min(1)
+  .max(BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT);
+/** ESZ-150 — a combination's canonical identity (sorted member keys joined with `+`). */
+const bookableServiceCombinationKeySchema = z
+  .string()
+  .regex(new RegExp(BOOKING_SERVICE_COMBINATION_KEY_PATTERN), "Doit etre une cle de combinaison valide.");
+const maxServicesPerAppointmentSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT);
+
+/**
+ * ESZ-150 — a public read or creation names its services either as the
+ * pre-ESZ-150 single `serviceKey` or as `serviceKeys`. Exactly one of the two
+ * must be present; the server refuses both or neither with 400
+ * VALIDATION_FAILED. A one-element `serviceKeys` is the single service.
+ */
 export const bookingAvailabilityRequestSchema = z
   .object({
-    serviceKey: bookableServiceKeySchema,
+    serviceKey: bookableServiceKeySchema.optional(),
+    serviceKeys: bookableServiceKeysSchema.optional(),
     fromDate: bookingLocalDateSchema,
     untilDate: bookingLocalDateSchema,
   })
@@ -697,8 +726,26 @@ export const publicBookableServiceSchema = z
   })
   .strict();
 
+/**
+ * ESZ-150 — one bookable combination as public discovery lists it: its
+ * canonical key, its members in canonical order and the validated duration.
+ * Only combinations that can be booked right now are listed.
+ */
+export const publicBookableServiceCombinationSchema = z
+  .object({
+    key: bookableServiceCombinationKeySchema,
+    serviceKeys: z.array(bookableServiceKeySchema).min(2).max(BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT),
+    durationMinutes: bookableServiceDurationSchema,
+  })
+  .strict();
+
 export const publicBookableServicesResponseSchema = z
-  .object({ services: z.array(publicBookableServiceSchema) })
+  .object({
+    services: z.array(publicBookableServiceSchema),
+    /** ESZ-150 — the configured maximum; 1 means single-service selection only. */
+    maxServicesPerAppointment: maxServicesPerAppointmentSchema,
+    combinations: z.array(publicBookableServiceCombinationSchema),
+  })
   .strict();
 
 export const bookingSlotSchema = z
@@ -713,7 +760,11 @@ export const bookingSlotSchema = z
 
 export const bookingAvailabilityResponseSchema = z
   .object({
+    /** The single service, or the first canonical member of the combination. */
     serviceKey: bookableServiceKeySchema,
+    /** ESZ-150 — every service the slots were computed for, canonical order. */
+    serviceKeys: bookableServiceKeysSchema,
+    combinationKey: bookableServiceCombinationKeySchema.nullable(),
     timezone: z.literal(BOOKING_TIME_ZONE),
     fromDate: bookingLocalDateSchema,
     untilDate: bookingLocalDateSchema,
@@ -735,7 +786,8 @@ const bookingConsentNoticeIdSchema = z.enum(bookingConsentNoticeIds);
 
 export const publicBookingCreateRequestSchema = z
   .object({
-    serviceKey: bookableServiceKeySchema,
+    serviceKey: bookableServiceKeySchema.optional(),
+    serviceKeys: bookableServiceKeysSchema.optional(),
     startsAtUtc: isoTimestampSchema,
     customerName: z.string().trim().min(1).max(160),
     customerEmail: z.string().trim().email().max(254),
@@ -750,6 +802,9 @@ export const publicBookingResponseSchema = z
   .object({
     reference: bookingReferenceSchema,
     serviceKey: bookableServiceKeySchema,
+    /** ESZ-150 — the stored services (one, or the combination's members). */
+    serviceKeys: bookableServiceKeysSchema,
+    combinationKey: bookableServiceCombinationKeySchema.nullable(),
     state: z.literal("confirmed"),
     startsAtUtc: isoTimestampSchema,
     endsAtUtc: isoTimestampSchema,
@@ -876,6 +931,9 @@ export const adminBookingSchema = z
   .object({
     reference: bookingReferenceSchema,
     serviceKey: bookableServiceKeySchema,
+    /** ESZ-150 — the stored services (one, or the combination's members). */
+    serviceKeys: bookableServiceKeysSchema,
+    combinationKey: bookableServiceCombinationKeySchema.nullable(),
     state: bookingStateSchema,
     startsAtUtc: isoTimestampSchema,
     endsAtUtc: isoTimestampSchema,
@@ -1127,8 +1185,47 @@ export const adminBookableServiceSchema = z
   })
   .strict();
 
+/**
+ * ESZ-150 — one combination as the back-office sees it. `proposedDurationMinutes`
+ * is the advisory sum of the current component durations; `durationMinutes` is
+ * the validated duration the administrator persisted (null while the row is
+ * only a candidate). `status` is `proposed` for a candidate with no row,
+ * `validated` for a stored active row and `disabled` for a stored row taken
+ * out of bookability. `bookable` is the whole rule in one flag: validated,
+ * every member active, member count within the configured maximum.
+ * `updatedAt` is the row's optimistic-concurrency token, null for a candidate.
+ */
+export const adminServiceCombinationSchema = z
+  .object({
+    key: bookableServiceCombinationKeySchema,
+    serviceKeys: z.array(bookableServiceKeySchema).min(2).max(BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT),
+    proposedDurationMinutes: z
+      .number()
+      .int()
+      .min(BOOKING_SERVICE_DURATION_MIN_MINUTES)
+      .max(BOOKING_SERVICE_DURATION_MAX_MINUTES * BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT),
+    durationMinutes: bookableServiceDurationSchema.nullable(),
+    status: z.enum(["proposed", "validated", "disabled"]),
+    bookable: z.boolean(),
+    updatedAt: isoTimestampSchema.nullable(),
+  })
+  .strict();
+
 export const adminServicesResponseSchema = z
-  .object({ services: z.array(adminBookableServiceSchema) })
+  .object({
+    services: z.array(adminBookableServiceSchema),
+    /** ESZ-150 — the configured maximum number of services per appointment. */
+    maxServicesPerAppointment: maxServicesPerAppointmentSchema,
+    /**
+     * ESZ-150 — every stored combination (validated or disabled, members
+     * archived or not) followed by the candidates: the not-yet-stored subsets
+     * of two to `maxServicesPerAppointment` active services, in catalog order,
+     * bounded at the domain's `candidatesListedMax`.
+     */
+    combinations: z.array(adminServiceCombinationSchema),
+    /** False when the candidate enumeration hit its bound. */
+    combinationsComplete: z.boolean(),
+  })
   .strict();
 
 const adminServiceCreateSchema = z
@@ -1169,26 +1266,84 @@ const adminServiceRestoreSchema = z
   })
   .strict();
 
+/** ESZ-150 — the configured maximum number of services per appointment. */
+const adminServiceSetMaxServicesSchema = z
+  .object({
+    action: z.literal("setMaxServices"),
+    maxServicesPerAppointment: maxServicesPerAppointmentSchema,
+  })
+  .strict();
+
+/**
+ * ESZ-150 — persists the validated duration of one combination. `serviceKeys`
+ * is the membership in any order (the server canonicalises it);
+ * `expectedUpdatedAt` is null when the combination has no row yet and the
+ * row's token when it has one, so a stale form cannot overwrite a duration
+ * validated elsewhere.
+ */
+const adminServiceValidateCombinationSchema = z
+  .object({
+    action: z.literal("validateCombination"),
+    serviceKeys: z.array(bookableServiceKeySchema).min(2).max(BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT),
+    durationMinutes: bookableServiceDurationSchema,
+    expectedUpdatedAt: isoTimestampSchema.nullable(),
+  })
+  .strict();
+
+const adminServiceDisableCombinationSchema = z
+  .object({
+    action: z.literal("disableCombination"),
+    key: bookableServiceCombinationKeySchema,
+    expectedUpdatedAt: isoTimestampSchema,
+  })
+  .strict();
+
+const adminServiceEnableCombinationSchema = z
+  .object({
+    action: z.literal("enableCombination"),
+    key: bookableServiceCombinationKeySchema,
+    expectedUpdatedAt: isoTimestampSchema,
+  })
+  .strict();
+
 /**
  * ESZ-149 — the closed set of catalog mutations. `archive` and `restore` are
  * explicit actions rather than a boolean on `update`, so a stale form cannot
  * silently re-activate a service it did not know had been archived.
+ *
+ * ESZ-150 adds the combination side of the same catalog: the configured
+ * maximum, the explicit validation of a combination's duration, and
+ * disable/enable — again explicit actions, never a boolean.
  */
 export const adminServiceMutationRequestSchema = z.discriminatedUnion("action", [
   adminServiceCreateSchema,
   adminServiceUpdateSchema,
   adminServiceArchiveSchema,
   adminServiceRestoreSchema,
+  adminServiceSetMaxServicesSchema,
+  adminServiceValidateCombinationSchema,
+  adminServiceDisableCombinationSchema,
+  adminServiceEnableCombinationSchema,
 ]);
 
-export const adminServiceResponseSchema = z
-  .object({ service: adminBookableServiceSchema })
-  .strict();
+/**
+ * The stored outcome of one catalog mutation: the service row (create,
+ * update, archive, restore), the combination row (validate, disable, enable)
+ * or the stored maximum (setMaxServices). Each branch is strict and keyed by
+ * its single member, so a client can tell them apart without a discriminator.
+ */
+export const adminServiceResponseSchema = z.union([
+  z.object({ service: adminBookableServiceSchema }).strict(),
+  z.object({ combination: adminServiceCombinationSchema }).strict(),
+  z.object({ maxServicesPerAppointment: maxServicesPerAppointmentSchema }).strict(),
+]);
 
 export const adminBookingSummaryEntrySchema = z
   .object({
     reference: bookingReferenceSchema,
     serviceKey: bookableServiceKeySchema,
+    /** ESZ-150 — the stored services (one, or the combination's members). */
+    serviceKeys: bookableServiceKeysSchema,
     startsAtUtc: isoTimestampSchema,
     endsAtUtc: isoTimestampSchema,
     localDate: bookingLocalDateSchema,
@@ -1295,6 +1450,8 @@ export const bookingApiPolicy = {
     "Lists only active catalog services — key, name, description, duration and one managed image path or null — in catalog order. ESZ-149: the catalog is the authority; the reservation flow never matches a service against SiteContent.services.",
   serviceCatalog:
     "ESZ-149 — booking_services is the single operational service catalog. Authenticated admin reads list every row, archived included, so historical bookings stay nameable; mutations are create (key derived server-side from the name), update (name, description, duration, image), archive and restore, each a PATCH carrying its action behind session and CSRF. update, archive and restore require expectedUpdatedAt and answer 409 REVISION_CONFLICT when the row moved. Archive and restore flip is_active only; no route deletes a service. A managed imageSrc must name a catalogued media asset, and the media delete route refuses an asset any service row references. Mutations that change bookability (create, archive, restore, a duration change) take the booking serialization boundary first, inside their transaction.",
+  serviceCombinations:
+    "ESZ-150 — a public read or creation names its services with serviceKeys (or the pre-ESZ-150 single serviceKey; exactly one of the two). One key is the service itself. Two or more keys are resolved, in canonical sorted form, against booking_service_combinations: the row must exist, be active, carry a validated duration, every member must be an active service and the count must be within the configured maximum (system_settings booking.max_services_per_appointment, default 1), otherwise 400 VALIDATION_FAILED. The validated duration alone shapes the slots and the stored interval; the proposal (sum of component durations) is advisory. Public discovery lists the maximum and the currently bookable combinations. The admin catalog read lists the maximum, every stored combination and the candidate subsets of active services (bounded, with a completeness flag); setMaxServices, validateCombination, disableCombination and enableCombination are PATCH actions on the same path behind session and CSRF, disable/enable and re-validation under the row's updatedAt token (409 REVISION_CONFLICT when stale), and every one of them takes the booking serialization boundary first. Existing bookings keep their stored service_key, start and end; a combination booking additionally stores its combination_key, and none is ever migrated or recomputed.",
   creation:
     "The client submits a returned UTC start. Inside one transaction the singleton primary resource row is locked, all inputs are re-read, SlotEngine recomputes, and insert plus created history commit together.",
   consent:
@@ -4155,6 +4312,44 @@ export const httpContractCases: HttpContractCase[] = [
     expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
   },
   {
+    id: "booking.availability.post.serviceKeysOk",
+    endpoint: PUBLIC_BOOKING_AVAILABILITY_PATH,
+    description:
+      "ESZ-150 — serviceKeys with one member is the single service; the response names the services it computed for.",
+    request: {
+      method: "POST",
+      path: PUBLIC_BOOKING_AVAILABILITY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"serviceKeys":["brows"],"fromDate":"2026-06-15","untilDate":"2026-06-15"}',
+    },
+    expect: { status: 200, body: "bookingAvailabilityResponse" },
+  },
+  {
+    id: "booking.availability.post.unvalidatedCombination",
+    endpoint: PUBLIC_BOOKING_AVAILABILITY_PATH,
+    description:
+      "ESZ-150 — a selection of several services with no validated, active combination fails closed; there is no implicit combination.",
+    request: {
+      method: "POST",
+      path: PUBLIC_BOOKING_AVAILABILITY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"serviceKeys":["brows","lashes"],"fromDate":"2026-06-15","untilDate":"2026-06-15"}',
+    },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "booking.availability.post.tooManyServices",
+    endpoint: PUBLIC_BOOKING_AVAILABILITY_PATH,
+    description: "ESZ-150 — more keys than the absolute limit is refused by the closed request schema.",
+    request: {
+      method: "POST",
+      path: PUBLIC_BOOKING_AVAILABILITY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"serviceKeys":["a1","a2","a3","a4","a5"],"fromDate":"2026-06-15","untilDate":"2026-06-15"}',
+    },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
     id: "booking.availability.post.invalidDateShape",
     endpoint: PUBLIC_BOOKING_AVAILABILITY_PATH,
     description: "Malformed local dates are rejected by the closed request schema.",
@@ -4783,6 +4978,47 @@ export const httpContractCases: HttpContractCase[] = [
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 200, body: "adminServiceResponse" },
+  },
+  {
+    id: "admin.services.patch.setMaxServicesOk",
+    endpoint: ADMIN_SERVICES_PATH,
+    description:
+      "ESZ-150 — the maximum number of services per appointment is a catalog setting the administrator owns; the response echoes what was stored.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_SERVICES_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"setMaxServices","maxServicesPerAppointment":2}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminServiceResponse" },
+  },
+  {
+    id: "admin.services.patch.validateCombinationOk",
+    endpoint: ADMIN_SERVICES_PATH,
+    description:
+      "ESZ-150 — validating a combination persists the administrator's duration for the canonical membership; a null token creates the row.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_SERVICES_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"validateCombination","serviceKeys":["lashes","brows"],"durationMinutes":70,"expectedUpdatedAt":null}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminServiceResponse" },
+  },
+  {
+    id: "admin.services.patch.maxServicesAboveLimit",
+    endpoint: ADMIN_SERVICES_PATH,
+    description: "ESZ-150 — the configured maximum cannot exceed the domain's absolute limit.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_SERVICES_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"setMaxServices","maxServicesPerAppointment":5}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
   },
   {
     id: "admin.services.patch.staleRevision",

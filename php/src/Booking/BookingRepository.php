@@ -11,7 +11,7 @@ use Eszter\Support\IsoTimestamp;
 /** MySQL persistence for appointment creation and explicit state transitions. */
 final class BookingRepository
 {
-    private const SELECT_COLUMNS = 'id, reference, service_key, state, starts_at_utc, ends_at_utc,'
+    private const SELECT_COLUMNS = 'id, reference, service_key, combination_key, state, starts_at_utc, ends_at_utc,'
         . ' timezone_name, customer_name, customer_email, customer_phone, customer_note,'
         . ' consent_at_utc, consent_notice_id, cancelled_at_utc, cancellation_reason, customer_data_erased_at,'
         . ' created_at, updated_at, state_changed_at';
@@ -23,6 +23,11 @@ final class BookingRepository
         private readonly BookingTimePolicy $time,
         private readonly BookableServiceRepository $services,
         private readonly BookingStateMachine $states,
+        /**
+         * ESZ-150 — needed only to store a combination booking; a caller
+         * that never passes a combination key may leave it out.
+         */
+        private readonly ?ServiceCombinationRepository $combinations = null,
     ) {
     }
 
@@ -219,6 +224,7 @@ final class BookingRepository
      *     rows: list<array{
      *         reference: string,
      *         service_key: string,
+     *         combination_key: ?string,
      *         starts_at_utc: string,
      *         ends_at_utc: string,
      *         customer_name: string
@@ -236,7 +242,7 @@ final class BookingRepository
         }
 
         $rows = $this->database->fetchAll(
-            'SELECT reference, service_key, starts_at_utc, ends_at_utc, customer_name'
+            'SELECT reference, service_key, combination_key, starts_at_utc, ends_at_utc, customer_name'
             . ' FROM bookings'
             . ' WHERE starts_at_utc >= :from_utc AND starts_at_utc < :until_utc'
             . " AND state = 'confirmed'"
@@ -248,7 +254,7 @@ final class BookingRepository
             ],
         );
 
-        /** @var list<array{reference: string, service_key: string, starts_at_utc: string, ends_at_utc: string, customer_name: string}> $listed */
+        /** @var list<array{reference: string, service_key: string, combination_key: ?string, starts_at_utc: string, ends_at_utc: string, customer_name: string}> $listed */
         $listed = \array_slice($rows, 0, $max);
 
         return ['rows' => $listed, 'complete' => \count($rows) <= $max];
@@ -291,6 +297,10 @@ final class BookingRepository
      *     the visitor accepted; the caller (PdoBookingApi) has already checked
      *     membership against the booking-domain artifact, and every new
      *     booking stores a non-null id beside consent_at_utc.
+     * @param ?string $combinationKey ESZ-150 — the validated combination the
+     *     booking is for, whose first canonical member `$serviceKey` must be;
+     *     null for a single-service booking. The interval must then equal the
+     *     combination's *validated* duration, never a sum of its members.
      */
     public function createConfirmed(
         string $serviceKey,
@@ -302,6 +312,7 @@ final class BookingRepository
         ?string $customerNote,
         \DateTimeImmutable $consentAt,
         string $consentNoticeId,
+        ?string $combinationKey = null,
     ): Booking {
         $service = $this->services->find($serviceKey);
         if ($service === null) {
@@ -310,6 +321,10 @@ final class BookingRepository
         if (!$service->isActive) {
             throw new BookingValidationException('serviceKey', 'The bookable service is inactive.');
         }
+        $expectedDurationMinutes = $service->durationMinutes;
+        if ($combinationKey !== null) {
+            $expectedDurationMinutes = $this->combinationDuration($combinationKey, $serviceKey);
+        }
 
         $start = $startsAt->setTimezone(new \DateTimeZone('UTC'));
         $end = $endsAt->setTimezone(new \DateTimeZone('UTC'));
@@ -317,7 +332,7 @@ final class BookingRepository
             throw new BookingValidationException('endsAt', 'Booking end must be after its start.');
         }
         $durationSeconds = $end->getTimestamp() - $start->getTimestamp();
-        if ($durationSeconds !== $service->durationMinutes * 60) {
+        if ($durationSeconds !== $expectedDurationMinutes * 60) {
             throw new BookingValidationException(
                 'endsAt',
                 'Booking interval must equal the provisioned service duration.',
@@ -341,14 +356,15 @@ final class BookingRepository
         $initial = $this->states->initial();
 
         $this->database->run(
-            'INSERT INTO bookings (reference, service_key, state, starts_at_utc, ends_at_utc,'
+            'INSERT INTO bookings (reference, service_key, combination_key, state, starts_at_utc, ends_at_utc,'
             . ' timezone_name, customer_name, customer_email, customer_phone, customer_note,'
             . ' consent_at_utc, consent_notice_id, created_at, updated_at, state_changed_at)'
-            . ' VALUES (:reference, :service, :state, :starts, :ends, :timezone, :name, :email,'
+            . ' VALUES (:reference, :service, :combination, :state, :starts, :ends, :timezone, :name, :email,'
             . ' :phone, :note, :consent, :consent_notice, :created, :updated, :state_changed)',
             [
                 'reference' => $reference,
                 'service' => $serviceKey,
+                'combination' => $combinationKey,
                 'state' => $initial->value,
                 'starts' => $this->time->databaseUtc($start),
                 'ends' => $this->time->databaseUtc($end),
@@ -371,6 +387,34 @@ final class BookingRepository
         }
 
         return $booking;
+    }
+
+    /**
+     * ESZ-150 — the validated duration of the combination a new booking
+     * names, after the same checks the catalog makes: the row exists, is
+     * active, `$serviceKey` is its first canonical member and every member
+     * is an active service. Defence in depth beside the offer the lifecycle
+     * already revalidated under the boundary.
+     */
+    private function combinationDuration(string $combinationKey, string $serviceKey): int
+    {
+        if ($this->combinations === null) {
+            throw new \LogicException('A combination booking needs the combination repository.');
+        }
+        $combination = $this->combinations->find($combinationKey);
+        if ($combination === null) {
+            throw new BookableServiceNotFoundException($combinationKey);
+        }
+        if (!$combination->isActive || $combination->serviceKeys[0] !== $serviceKey) {
+            throw new BookingValidationException('combinationKey', 'The combination is not bookable.');
+        }
+        foreach ($this->combinations->memberServices($combination->serviceKeys) as $member) {
+            if (!$member->isActive) {
+                throw new BookingValidationException('combinationKey', 'A combination member is inactive.');
+            }
+        }
+
+        return $combination->durationMinutes;
     }
 
     public function transition(string $reference, string $targetState, ?string $reason = null): Booking
@@ -462,13 +506,21 @@ final class BookingRepository
         }
 
         $rows = $this->database->fetchAll(
-            'SELECT DATE_SUB(b.starts_at_utc, INTERVAL s.buffer_before_minutes MINUTE) AS occupied_start,'
-            . ' DATE_ADD(b.ends_at_utc, INTERVAL s.buffer_after_minutes MINUTE) AS occupied_end'
+            // ESZ-150: a combination booking occupies with the buffers
+            // snapshotted on its combination row; a single-service booking
+            // with its service's, exactly as before.
+            'SELECT DATE_SUB(b.starts_at_utc,'
+            . ' INTERVAL COALESCE(c.buffer_before_minutes, s.buffer_before_minutes) MINUTE) AS occupied_start,'
+            . ' DATE_ADD(b.ends_at_utc,'
+            . ' INTERVAL COALESCE(c.buffer_after_minutes, s.buffer_after_minutes) MINUTE) AS occupied_end'
             . ' FROM bookings b INNER JOIN booking_services s ON s.service_key = b.service_key'
+            . ' LEFT JOIN booking_service_combinations c ON c.combination_key = b.combination_key'
             . " WHERE b.state <> 'cancelled'"
             . $exclude
-            . ' AND DATE_SUB(b.starts_at_utc, INTERVAL s.buffer_before_minutes MINUTE) < :until_utc'
-            . ' AND DATE_ADD(b.ends_at_utc, INTERVAL s.buffer_after_minutes MINUTE) > :from_utc'
+            . ' AND DATE_SUB(b.starts_at_utc,'
+            . ' INTERVAL COALESCE(c.buffer_before_minutes, s.buffer_before_minutes) MINUTE) < :until_utc'
+            . ' AND DATE_ADD(b.ends_at_utc,'
+            . ' INTERVAL COALESCE(c.buffer_after_minutes, s.buffer_after_minutes) MINUTE) > :from_utc'
             . ' ORDER BY occupied_start, occupied_end, b.id',
             $parameters,
         );

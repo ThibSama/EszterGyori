@@ -136,7 +136,7 @@ export function AdminOperationsSummary() {
                   {summary.today.map((entry) => (
                     <li key={entry.reference} className="admin-text-muted text-sm">
                       <span className="font-medium">{entry.localStart}</span> · {entry.customerName} ·{" "}
-                      {serviceLabel(entry.serviceKey)}
+                      {serviceLabel(entry.serviceKeys)}
                     </li>
                   ))}
                 </ul>
@@ -163,7 +163,7 @@ export function AdminOperationsSummary() {
                       <span className="font-medium">
                         {entry.localDate.slice(8)}/{entry.localDate.slice(5, 7)} {entry.localStart}
                       </span>{" "}
-                      · {entry.customerName} · {serviceLabel(entry.serviceKey)}
+                      · {entry.customerName} · {serviceLabel(entry.serviceKeys)}
                     </li>
                   ))}
                   {summary.counts.upcomingConfirmed > 6 && (

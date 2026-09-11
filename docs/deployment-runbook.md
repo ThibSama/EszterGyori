@@ -208,6 +208,13 @@ document (whose description seeds the new row); a new key with neither is refuse
 and nothing is invented. Malformed keys exit 2 and change no row; a missing or
 unreadable published document refuses only a new CMS-named row (exit 1).
 
+Since ESZ-150 migration 0017 adds `booking_service_combinations` and a nullable
+`bookings.combination_key`; both are additive, no existing booking row is rewritten,
+and the "services per appointment" maximum is a `system_settings` row
+(`booking.max_services_per_appointment`) that the back-office writes — absent, the
+default is 1 and the reservation flow stays single-service. Combinations are
+validated only from `/admin/services`; there is no CLI for them.
+
 ## 4. Configure SMTP and the cron entries
 
 Do not send a probe message until the deployment owner has supplied an approved SMTP

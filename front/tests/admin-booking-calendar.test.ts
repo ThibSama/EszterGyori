@@ -39,6 +39,8 @@ function booking(overrides: Partial<AdminBooking> = {}): AdminBooking {
   return {
     reference: REFERENCE,
     serviceKey: "brows",
+    serviceKeys: ["brows"],
+    combinationKey: null,
     state: "confirmed",
     startsAtUtc: "2026-10-25T01:30:00.000Z",
     endsAtUtc: "2026-10-25T02:00:00.000Z",

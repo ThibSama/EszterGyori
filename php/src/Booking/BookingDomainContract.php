@@ -33,6 +33,17 @@ final class BookingDomainContract
         public readonly int $durationMinMinutes,
         public readonly int $durationMaxMinutes,
         public readonly int $bufferMaxMinutes,
+        /**
+         * ESZ-150 — the combination rules: the canonical key shape, the
+         * bounds and default of the administrator's "services per
+         * appointment" setting, its `system_settings` key and the bound on
+         * listed candidate combinations.
+         */
+        public readonly string $combinationKeyPattern,
+        public readonly int $maxServicesPerAppointmentLimit,
+        public readonly int $maxServicesPerAppointmentDefault,
+        public readonly string $maxServicesSettingKey,
+        public readonly int $combinationCandidatesMax,
         public readonly array $foldOffsets,
         public readonly int $slotGridMinutes,
         public readonly int $slotMaxHorizonDays,
@@ -66,6 +77,8 @@ final class BookingDomainContract
         $dst = self::block($timezone, 'dst');
         $duration = self::block($services, 'durationMinutes');
         $buffer = self::block($services, 'bufferMinutes');
+        $combinations = self::block($services, 'combinations');
+        $maxPerAppointment = self::block($combinations, 'maxPerAppointment');
         $adminViews = self::block($document, 'adminViews');
         $rangeRead = self::block($adminViews, 'rangeRead');
         $historyPage = self::block($adminViews, 'historyPage');
@@ -88,6 +101,11 @@ final class BookingDomainContract
             self::positiveInt($duration, 'min'),
             self::positiveInt($duration, 'max'),
             self::nonNegativeInt($buffer, 'max'),
+            self::string($combinations, 'keyPattern'),
+            self::positiveInt($maxPerAppointment, 'max'),
+            self::positiveInt($maxPerAppointment, 'default'),
+            self::string($maxPerAppointment, 'settingKey'),
+            self::positiveInt($combinations, 'candidatesListedMax'),
             self::stringList($dst, 'foldOffsets'),
             self::positiveInt($grid, 'minutes'),
             self::positiveInt($limits, 'maxHorizonDays'),
@@ -114,6 +132,16 @@ final class BookingDomainContract
     public function acceptsServiceKey(string $key): bool
     {
         return preg_match('#' . $this->serviceKeyPattern . '#D', $key) === 1;
+    }
+
+    /**
+     * ESZ-150 — whether `$key` has the frozen combination-key shape (sorted
+     * member keys joined with `+`). Shape only; whether it names a validated,
+     * bookable combination is the catalog's decision.
+     */
+    public function acceptsCombinationKey(string $key): bool
+    {
+        return preg_match('#' . $this->combinationKeyPattern . '#D', $key) === 1;
     }
 
     public function acceptsState(string $state): bool

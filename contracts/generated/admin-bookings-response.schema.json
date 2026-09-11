@@ -21,6 +21,26 @@
             "type": "string",
             "pattern": "^[a-z][a-z0-9-]{1,63}$"
           },
+          "serviceKeys": {
+            "minItems": 1,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{1,63}$"
+            }
+          },
+          "combinationKey": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{1,63}([+][a-z][a-z0-9-]{1,63}){1,3}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "state": {
             "type": "string",
             "enum": [
@@ -105,6 +125,8 @@
         "required": [
           "reference",
           "serviceKey",
+          "serviceKeys",
+          "combinationKey",
           "state",
           "startsAtUtc",
           "endsAtUtc",

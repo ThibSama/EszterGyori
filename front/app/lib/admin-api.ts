@@ -144,7 +144,16 @@ export type AdminWeeklyRuleInput = Omit<AdminWeeklyRule, "id">;
  * row's optimistic-concurrency token, sent back byte-for-byte as
  * `expectedUpdatedAt` on every mutation of that row.
  */
-export type AdminBookableService = z.infer<typeof adminServicesResponseSchema>["services"][number];
+export type AdminServiceCatalog = z.infer<typeof adminServicesResponseSchema>;
+export type AdminBookableService = AdminServiceCatalog["services"][number];
+/**
+ * ESZ-150 — one combination as the back-office sees it: a stored row
+ * (`validated` or `disabled`, with its token) or a `proposed` candidate the
+ * server enumerated (no token, no validated duration yet).
+ */
+export type AdminServiceCombination = AdminServiceCatalog["combinations"][number];
+/** What one catalog mutation stored: a service row, a combination row or the maximum. */
+export type AdminServiceMutationResult = z.infer<typeof adminServiceResponseSchema>;
 export type AdminServiceMutation =
   | {
       action: "create";
@@ -163,7 +172,18 @@ export type AdminServiceMutation =
       imageSrc: string | null;
     }
   | { action: "archive"; key: string; expectedUpdatedAt: string }
-  | { action: "restore"; key: string; expectedUpdatedAt: string };
+  | { action: "restore"; key: string; expectedUpdatedAt: string }
+  // ESZ-150 — the combination side of the same catalog.
+  | { action: "setMaxServices"; maxServicesPerAppointment: number }
+  | {
+      action: "validateCombination";
+      serviceKeys: string[];
+      durationMinutes: number;
+      /** `null` to store a candidate; the row's token to re-validate it. */
+      expectedUpdatedAt: string | null;
+    }
+  | { action: "disableCombination"; key: string; expectedUpdatedAt: string }
+  | { action: "enableCombination"; key: string; expectedUpdatedAt: string };
 
 export type AdminAvailabilityExceptionMutation =
   | { action: "close"; expectedRevision: number; localDate: string; note: string | null }
@@ -324,17 +344,19 @@ export interface AdminApiClient {
   ): Promise<AdminApiResult<AdminAvailabilityExceptionResult>>;
   /**
    * ESZ-149 — the whole service catalog, archived rows included, in catalog
-   * order. An authenticated read, no CSRF.
+   * order, with (ESZ-150) the configured maximum and every combination —
+   * stored or candidate. An authenticated read, no CSRF.
    */
-  listServices(): Promise<AdminApiResult<AdminBookableService[]>>;
+  listServices(): Promise<AdminApiResult<AdminServiceCatalog>>;
   /**
-   * ESZ-149 — create, update, archive or restore one service, and resolve
-   * with what the server stored — never with what was sent.
+   * ESZ-149/150 — one catalog mutation, resolved with what the server
+   * stored — never with what was sent: the service row, the combination row
+   * or the maximum, keyed by which one it is.
    */
   mutateService(
     input: AdminServiceMutation,
     csrfToken: string,
-  ): Promise<AdminApiResult<AdminBookableService>>;
+  ): Promise<AdminApiResult<AdminServiceMutationResult>>;
 }
 
 /** The only reset source the contract defines. Stated once, sent from here. */
@@ -792,8 +814,7 @@ export function createAdminApiClient(
     async listServices() {
       const response = await send(ADMIN_SERVICES_PATH, { method: "GET" });
       if (!response.ok) return response;
-      const catalog = parsed(adminServicesResponseSchema, response.body);
-      return catalog.ok ? { ok: true as const, value: catalog.value.services } : catalog;
+      return parsed(adminServicesResponseSchema, response.body);
     },
 
     async mutateService(input, csrfToken) {
@@ -803,8 +824,7 @@ export function createAdminApiClient(
         body: JSON.stringify(input),
       });
       if (!response.ok) return response;
-      const stored = parsed(adminServiceResponseSchema, response.body);
-      return stored.ok ? { ok: true as const, value: stored.value.service } : stored;
+      return parsed(adminServiceResponseSchema, response.body);
     },
   };
 }

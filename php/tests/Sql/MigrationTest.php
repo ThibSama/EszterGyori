@@ -69,7 +69,7 @@ final class MigrationTest extends TestCase
 
         self::assertSame(
             ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
-             '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016'],
+             '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016', '0017'],
             $applied,
         );
     }
@@ -422,6 +422,7 @@ final class MigrationTest extends TestCase
         foreach (
             [
                 'booking_services' => ['PRIMARY', 'ix_booking_services_active_key'],
+                'booking_service_combinations' => ['PRIMARY', 'ix_booking_service_combinations_active'],
                 'availability_rules' => [
                     'PRIMARY', 'uq_availability_rules_window', 'ix_availability_rules_lookup',
                 ],
@@ -433,6 +434,8 @@ final class MigrationTest extends TestCase
                 'bookings' => [
                     'PRIMARY', 'uq_bookings_reference', 'ix_bookings_service_start',
                     'ix_bookings_starts_reference', 'ix_bookings_state_start',
+                    // ESZ-150: the index InnoDB keeps for the combination foreign key.
+                    'fk_bookings_combination',
                 ],
                 'booking_resource_locks' => ['PRIMARY'],
                 'booking_history' => ['PRIMARY', 'ix_booking_history_booking_order'],
@@ -1004,6 +1007,82 @@ final class MigrationTest extends TestCase
         self::assertSame($managed, $this->database->fetchOne(
             "SELECT image_src FROM booking_services WHERE service_key = 'brows'",
         )['image_src'] ?? null);
+    }
+
+    // --- ESZ-150: validated combinations, additive on bookings ------------
+
+    /**
+     * Migration 0017 adds the combination table and a nullable
+     * `bookings.combination_key` with a RESTRICT foreign key. An existing
+     * booking row is untouched (null combination, same service key, start and
+     * end), the key CHECK admits only the canonical sorted-and-joined shape,
+     * and every guard is repeat-safe.
+     */
+    public function testMigration0017AddsCombinationsWithoutTouchingExistingBookings(): void
+    {
+        $this->migrator()->migrate();
+
+        $column = $this->column('bookings', 'combination_key');
+        self::assertSame('YES', $column['IS_NULLABLE']);
+        self::assertSame('ascii_bin', $column['COLLATION_NAME']);
+        self::assertSame('fk_bookings_combination', $this->database->fetchOne(
+            'SELECT constraint_name AS n FROM information_schema.table_constraints'
+            . " WHERE table_schema = DATABASE() AND table_name = 'bookings'"
+            . " AND constraint_type = 'FOREIGN KEY' AND constraint_name = 'fk_bookings_combination'",
+        )['n'] ?? null);
+
+        // A pre-0017-style booking lands with a null combination and keeps
+        // its stored facts: nothing recalculates it.
+        $this->database->run(
+            'INSERT INTO booking_services'
+            . ' (service_key, booking_label, duration_minutes, is_active, created_at, updated_at)'
+            . " VALUES ('brows', 'Sourcils', 60, 1, :created, :updated),"
+            . " ('lips', 'Lèvres', 90, 1, :created2, :updated2)",
+            ['created' => self::NOW, 'updated' => self::NOW, 'created2' => self::NOW, 'updated2' => self::NOW],
+        );
+        $this->database->run(
+            'INSERT INTO bookings (reference, service_key, state, starts_at_utc, ends_at_utc, timezone_name,'
+            . ' customer_name, customer_email, consent_at_utc, created_at, updated_at, state_changed_at)'
+            . " VALUES ('bk_" . str_repeat('a', 32) . "', 'brows', 'confirmed', '2026-06-15 07:00:00.000',"
+            . " '2026-06-15 08:00:00.000', 'Europe/Paris', 'Cliente', 'c@example.test', '2026-06-13 12:00:00.000',"
+            . ' :created, :updated, :changed)',
+            ['created' => self::NOW, 'updated' => self::NOW, 'changed' => self::NOW],
+        );
+        $legacy = $this->database->fetchOne(
+            'SELECT service_key, combination_key, starts_at_utc, ends_at_utc FROM bookings',
+        );
+        self::assertIsArray($legacy);
+        self::assertSame('brows', $legacy['service_key']);
+        self::assertNull($legacy['combination_key']);
+        self::assertSame('2026-06-15 07:00:00.000', $legacy['starts_at_utc']);
+        self::assertSame('2026-06-15 08:00:00.000', $legacy['ends_at_utc']);
+
+        // The combination key must be the canonical shape, and a booking
+        // may only name a stored combination.
+        $this->database->run(
+            'INSERT INTO booking_service_combinations (combination_key, proposed_duration_minutes,'
+            . " duration_minutes, created_at, updated_at) VALUES ('brows+lips', 150, 120, :created, :updated)",
+            ['created' => self::NOW, 'updated' => self::NOW],
+        );
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            'INSERT INTO booking_service_combinations (combination_key, proposed_duration_minutes,'
+            . " duration_minutes, created_at, updated_at) VALUES ('brows', 60, 60, :created, :updated)",
+            ['created' => self::NOW, 'updated' => self::NOW],
+        ));
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            "UPDATE bookings SET combination_key = 'lips+brows'",
+        ));
+        $this->database->run("UPDATE bookings SET combination_key = 'brows+lips'");
+        $this->expectConstraintFailure(fn () => $this->database->run(
+            "DELETE FROM booking_service_combinations WHERE combination_key = 'brows+lips'",
+        ));
+
+        // Repeat-safe: re-running the migrator applies nothing and changes
+        // nothing.
+        self::assertSame([], $this->migrator()->migrate());
+        self::assertSame('brows+lips', $this->database->fetchOne(
+            'SELECT combination_key FROM bookings',
+        )['combination_key'] ?? null);
     }
 
     /**

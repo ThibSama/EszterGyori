@@ -89,6 +89,7 @@ final class BackupSet
         'schema_migrations',
         'admin_accounts',
         'booking_services',
+        'booking_service_combinations',
         'system_settings',
         'availability_rules',
         'availability_exceptions',

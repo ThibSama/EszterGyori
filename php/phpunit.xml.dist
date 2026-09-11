@@ -54,6 +54,7 @@
     <testsuite name="sql-integration">
       <file>tests/Sql/SqlIntegrationTest.php</file>
       <file>tests/Sql/ServiceCatalogSqlTest.php</file>
+      <file>tests/Sql/ServiceCombinationSqlTest.php</file>
     </testsuite>
 
     <!--

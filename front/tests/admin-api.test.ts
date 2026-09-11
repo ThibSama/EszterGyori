@@ -188,6 +188,8 @@ test("booking contact update patches the admin route with the exact nullable bod
   const serverBooking = {
     reference: requestBody.reference,
     serviceKey: "brows",
+    serviceKeys: ["brows"],
+    combinationKey: null,
     state: "cancelled",
     startsAtUtc: "2026-08-24T08:00:00.000Z",
     endsAtUtc: "2026-08-24T08:30:00.000Z",

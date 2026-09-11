@@ -6,10 +6,19 @@ import { useAdminServiceCatalog } from "./admin-service-catalog-provider";
 import { MediaLibraryPanel } from "./media-editor";
 import { MediaLibraryProvider } from "./media-library-provider";
 import { Field, TextArea } from "./editor-fields";
-import type { AdminApiFailure, AdminBookableService } from "../../lib/admin-api";
+import type {
+  AdminApiFailure,
+  AdminBookableService,
+  AdminServiceCombination,
+} from "../../lib/admin-api";
 import {
   ADMIN_SERVICES_MESSAGES,
+  COMBINATION_STATUS_LABELS,
+  MAX_SERVICES_OPTIONS,
+  SERVICE_DRAFT_ERRORS,
   SERVICE_STATUS_LABELS,
+  combinationDurationDraft,
+  combinationUnavailableReason,
   draftFromService,
   emptyServiceDraft,
   formatServiceDuration,
@@ -17,6 +26,7 @@ import {
   mutationFromDraft,
   serviceFailureMessage,
   serviceImageUsages,
+  validateCombinationMutation,
   validateServiceDraft,
   type ServiceDraft,
   type ServiceDraftErrors,
@@ -51,6 +61,17 @@ import {
  * The only destructive-looking action is "Archiver", it asks for confirmation
  * in place, and what it does is stated in the confirmation: the service leaves
  * the reservation page, its bookings stay. "Restaurer" is the way back.
+ *
+ * ## Combinations (ESZ-150)
+ *
+ * The same page owns the maximum number of services per appointment and
+ * the combinations: every one the server stored and every candidate it
+ * enumerated, each with the proposed duration (the plain sum of the
+ * components, advisory) and the validated one. Esther corrects the number
+ * and saves it explicitly; only that saved value ever shapes a booking, and
+ * a later component edit moves the proposal without touching it. Every
+ * combination mutation re-reads the catalog, because the candidate list is
+ * derived from what is stored.
  */
 export function AdminServices() {
   const { csrfToken, api, markExpired, refreshSession } = useAdminSession();
@@ -136,7 +157,8 @@ export function AdminServices() {
     const result = await api.mutateService(mutation, csrfToken);
     setSaving(false);
     if (!result.ok) return void handleFailure(result.failure);
-    catalog.adopt(result.value);
+    if (!("service" in result.value)) return void catalog.reload();
+    catalog.adopt(result.value.service);
     setDraft(null);
     notify(
       mutation.action === "create" ? ADMIN_SERVICES_MESSAGES.created : ADMIN_SERVICES_MESSAGES.updated,
@@ -158,9 +180,36 @@ export function AdminServices() {
     setSaving(false);
     setConfirming(null);
     if (!result.ok) return void handleFailure(result.failure);
-    catalog.adopt(result.value);
-    if (draft?.key === service.key) setDraft(draftFromService(result.value));
+    if (!("service" in result.value)) return void catalog.reload();
+    catalog.adopt(result.value.service);
+    if (draft?.key === service.key) setDraft(draftFromService(result.value.service));
     notify(archived ? ADMIN_SERVICES_MESSAGES.archived : ADMIN_SERVICES_MESSAGES.restored, false);
+    // ESZ-150: a member's activity decides which combinations are bookable
+    // and which candidates exist, so the combination list is re-read.
+    await catalog.reload();
+  }
+
+  /** ESZ-150 — every combination mutation re-reads the catalog it derives from. */
+  async function mutateCombinations(
+    mutation: Parameters<typeof api.mutateService>[0],
+    success: string,
+  ): Promise<boolean> {
+    if (saving) return false;
+    setSaving(true);
+    const result = await api.mutateService(mutation, csrfToken);
+    setSaving(false);
+    if (!result.ok) {
+      if (result.failure.kind === "conflict") {
+        await catalog.reload();
+        notify(ADMIN_SERVICES_MESSAGES.combinationConflict, true);
+        return false;
+      }
+      await handleFailure(result.failure);
+      return false;
+    }
+    await catalog.reload();
+    notify(success, false);
+    return true;
   }
 
   return (
@@ -254,6 +303,35 @@ export function AdminServices() {
                 />
               )}
             </section>
+
+            {catalog.status === "ready" && (
+              <CombinationsPanel
+                services={catalog.services}
+                combinations={catalog.combinations}
+                complete={catalog.combinationsComplete}
+                maxServices={catalog.maxServicesPerAppointment}
+                busy={saving}
+                labelOf={catalog.labelOf}
+                onSetMax={(max) => void mutateCombinations(
+                  { action: "setMaxServices", maxServicesPerAppointment: max },
+                  ADMIN_SERVICES_MESSAGES.maxSaved,
+                )}
+                onValidate={(mutation) => mutateCombinations(
+                  mutation,
+                  ADMIN_SERVICES_MESSAGES.combinationValidated,
+                )}
+                onSetActive={(combination, active) => void mutateCombinations(
+                  {
+                    action: active ? "enableCombination" : "disableCombination",
+                    key: combination.key,
+                    expectedUpdatedAt: combination.updatedAt ?? "",
+                  },
+                  active
+                    ? ADMIN_SERVICES_MESSAGES.combinationEnabled
+                    : ADMIN_SERVICES_MESSAGES.combinationDisabled,
+                )}
+              />
+            )}
           </div>
         </div>
       </main>
@@ -533,5 +611,187 @@ function ServiceForm({
         </button>
       </div>
     </form>
+  );
+}
+
+/**
+ * ESZ-150 — the maximum and the combinations, inside `Prestations`.
+ *
+ * Five columns: Prestations, Durée proposée, Durée validée, Statut,
+ * Actions. The proposal is read-only and advisory; the validated duration is
+ * an input Esther corrects and saves explicitly — a candidate starts from
+ * the proposal, a stored row from its validated value. The list is exactly
+ * what the server listed: stored rows first, then candidates, and a truncated
+ * enumeration says so.
+ */
+function CombinationsPanel({
+  services,
+  combinations,
+  complete,
+  maxServices,
+  busy,
+  labelOf,
+  onSetMax,
+  onValidate,
+  onSetActive,
+}: {
+  services: AdminBookableService[];
+  combinations: AdminServiceCombination[];
+  complete: boolean;
+  maxServices: number;
+  busy: boolean;
+  labelOf: (key: string | readonly string[]) => string;
+  onSetMax: (max: number) => void;
+  onValidate: (mutation: NonNullable<ReturnType<typeof validateCombinationMutation>>) => Promise<boolean>;
+  onSetActive: (combination: AdminServiceCombination, active: boolean) => void;
+}) {
+  const idPrefix = useId();
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  function draftOf(combination: AdminServiceCombination): string {
+    return drafts[combination.key] ?? combinationDurationDraft(combination);
+  }
+
+  async function validate(combination: AdminServiceCombination) {
+    const mutation = validateCombinationMutation(combination, draftOf(combination));
+    if (mutation === null) {
+      setErrors((current) => ({ ...current, [combination.key]: SERVICE_DRAFT_ERRORS.durationMinutes }));
+      return;
+    }
+    setErrors((current) => ({ ...current, [combination.key]: "" }));
+    if (await onValidate(mutation)) {
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[combination.key];
+        return next;
+      });
+    }
+  }
+
+  const columns = "sm:grid-cols-[minmax(0,1fr)_8rem_11rem_8rem_minmax(11rem,auto)]";
+  return (
+    <section aria-labelledby={`${idPrefix}-heading`} className="admin-panel rounded-3xl p-5 sm:p-6" data-combinations-panel>
+      <h2 id={`${idPrefix}-heading`} className="admin-text font-display text-2xl">
+        Combinaisons
+      </h2>
+      <p className="admin-text-muted mt-2 max-w-2xl text-sm leading-relaxed">
+        Une cliente peut réserver plusieurs prestations dans un même rendez-vous. La durée proposée
+        est la somme des durées ; la durée validée est celle que vous enregistrez, et elle seule
+        fait foi pour les nouvelles réservations.
+      </p>
+
+      <div className="mt-5 flex flex-wrap items-center gap-3">
+        <label htmlFor={`${idPrefix}-max`} className="admin-text text-sm font-medium">
+          Prestations maximum par rendez-vous
+        </label>
+        <select
+          id={`${idPrefix}-max`}
+          value={maxServices}
+          disabled={busy}
+          onChange={(event) => onSetMax(Number(event.target.value))}
+          className="admin-input rounded-full px-4 py-2 text-sm">
+          {MAX_SERVICES_OPTIONS.map((option) => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </select>
+      </div>
+
+      {combinations.length === 0 && (
+        <p className="admin-text-muted mt-4 text-sm">{ADMIN_SERVICES_MESSAGES.combinationsNone}</p>
+      )}
+      {!complete && (
+        <p role="status" className="admin-note-warn mt-4 rounded-2xl px-4 py-3 text-sm">
+          {ADMIN_SERVICES_MESSAGES.combinationsIncomplete}
+        </p>
+      )}
+      {combinations.length > 0 && (
+        <div role="table" aria-label="Combinaisons" className="mt-4">
+          <div
+            role="row"
+            className={`admin-text-subtle hidden gap-4 px-3 pb-2 text-xs font-semibold uppercase tracking-wide sm:grid ${columns}`}>
+            <span role="columnheader">Prestations</span>
+            <span role="columnheader">Durée proposée</span>
+            <span role="columnheader">Durée validée</span>
+            <span role="columnheader">Statut</span>
+            <span role="columnheader">Actions</span>
+          </div>
+          <ul className="admin-border divide-y divide-[color:var(--admin-border)] border-t">
+            {combinations.map((combination) => {
+              const reason = combinationUnavailableReason(combination, services, maxServices);
+              const stored = combination.status !== "proposed";
+              const inputId = `${idPrefix}-${combination.key}`;
+              return (
+                <li
+                  key={combination.key}
+                  role="row"
+                  data-combination-key={combination.key}
+                  data-combination-status={combination.status}
+                  data-combination-bookable={combination.bookable ? "true" : "false"}
+                  className={`grid gap-3 px-3 py-4 sm:items-center sm:gap-4 ${columns} ${combination.status === "disabled" ? "opacity-75" : ""}`}>
+                  <div role="cell" className="min-w-0">
+                    <span className="admin-text block font-medium">{labelOf(combination.serviceKeys)}</span>
+                    {reason && <span className="admin-text-muted block text-xs">{reason}</span>}
+                  </div>
+                  <p role="cell" className="admin-text text-sm">
+                    <span className="admin-text-subtle mr-2 text-xs uppercase tracking-wide sm:hidden">Proposée</span>
+                    {formatServiceDuration(combination.proposedDurationMinutes)}
+                  </p>
+                  <div role="cell">
+                    <label htmlFor={inputId} className="admin-text-subtle mr-2 text-xs uppercase tracking-wide sm:sr-only">
+                      Validée (minutes)
+                    </label>
+                    <input
+                      id={inputId}
+                      type="number"
+                      inputMode="numeric"
+                      value={draftOf(combination)}
+                      disabled={busy}
+                      aria-invalid={errors[combination.key] ? true : undefined}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setDrafts((current) => ({ ...current, [combination.key]: value }));
+                        setErrors((current) => ({ ...current, [combination.key]: "" }));
+                      }}
+                      className="admin-input w-28 rounded-full px-3 py-1.5 text-sm"
+                    />
+                    {errors[combination.key] && (
+                      <p role="alert" className="admin-note-danger mt-1.5 rounded-lg px-3 py-1.5 text-xs">
+                        {errors[combination.key]}
+                      </p>
+                    )}
+                  </div>
+                  <p role="cell" className="text-sm">
+                    <span className="admin-text-subtle mr-2 text-xs uppercase tracking-wide sm:hidden">Statut</span>
+                    <span
+                      className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${combination.bookable ? "admin-note-ok" : "admin-note-inert"}`}>
+                      {COMBINATION_STATUS_LABELS[combination.status]}
+                    </span>
+                  </p>
+                  <div role="cell" className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void validate(combination)}
+                      className="admin-btn-secondary rounded-full px-3 py-1.5 text-xs font-medium">
+                      {stored ? "Enregistrer la durée" : "Valider"}
+                    </button>
+                    {stored && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => onSetActive(combination, combination.status === "disabled")}
+                        className="admin-btn-quiet rounded-full px-3 py-1.5 text-xs">
+                        {combination.status === "disabled" ? "Réactiver" : "Désactiver"}
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </section>
   );
 }

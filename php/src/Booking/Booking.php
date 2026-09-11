@@ -11,6 +11,13 @@ final class Booking
         public readonly int $id,
         public readonly string $reference,
         public readonly string $serviceKey,
+        /**
+         * ESZ-150 — the canonical key of the validated combination this
+         * booking was made for, or null for a single-service booking (every
+         * booking that predates ESZ-150 included; none is ever attributed
+         * one). When set, `serviceKey` is the combination's first member.
+         */
+        public readonly ?string $combinationKey,
         public readonly BookingState $state,
         public readonly string $startsAtUtc,
         public readonly string $endsAtUtc,
@@ -53,6 +60,7 @@ final class Booking
             $id,
             self::requiredString($row, 'reference'),
             self::requiredString($row, 'service_key'),
+            self::nullableString($row, 'combination_key'),
             BookingState::fromString(self::requiredString($row, 'state'), $contract),
             self::requiredString($row, 'starts_at_utc'),
             self::requiredString($row, 'ends_at_utc'),
@@ -70,6 +78,19 @@ final class Booking
             self::requiredString($row, 'updated_at'),
             self::requiredString($row, 'state_changed_at'),
         );
+    }
+
+    /**
+     * ESZ-150 — every service this booking is for, canonical order: the
+     * combination's members, or the single stored key.
+     *
+     * @return list<string>
+     */
+    public function serviceKeys(): array
+    {
+        return $this->combinationKey === null
+            ? [$this->serviceKey]
+            : ServiceCombination::membersOf($this->combinationKey);
     }
 
     /** @param array<string, mixed> $row */

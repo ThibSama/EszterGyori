@@ -3,11 +3,17 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { ADMIN_SERVICES_PATH, CSRF_HEADER } from "@eszter/contracts";
-import { createAdminApiClient, type AdminBookableService } from "../app/lib/admin-api";
+import {
+  createAdminApiClient,
+  type AdminBookableService,
+  type AdminServiceCombination,
+} from "../app/lib/admin-api";
 import {
   ADMIN_SERVICES_MESSAGES,
   SERVICE_STATUS_LABELS,
   adoptStoredService,
+  combinationDurationDraft,
+  combinationUnavailableReason,
   draftFromService,
   emptyServiceDraft,
   formatServiceDuration,
@@ -16,6 +22,7 @@ import {
   parseDuration,
   serviceFailureMessage,
   serviceImageUsages,
+  validateCombinationMutation,
   validateServiceDraft,
 } from "../app/lib/admin-services";
 import { ADMIN_NAV_ITEMS, activeAdminNavKey, adminNavItem } from "../app/lib/admin-navigation";
@@ -57,6 +64,20 @@ function service(overrides: Partial<AdminBookableService> = {}): AdminBookableSe
     imageSrc: null,
     status: "active",
     createdAt: "2026-05-01T09:00:00.000Z",
+    updatedAt: "2026-06-01T10:00:00.000Z",
+    ...overrides,
+  };
+}
+
+/** ESZ-150 — a stored, bookable combination of the two fixture services. */
+function combination(overrides: Partial<AdminServiceCombination> = {}): AdminServiceCombination {
+  return {
+    key: "brows+lips",
+    serviceKeys: ["brows", "lips"],
+    proposedDurationMinutes: 90,
+    durationMinutes: 70,
+    status: "validated",
+    bookable: true,
     updatedAt: "2026-06-01T10:00:00.000Z",
     ...overrides,
   };
@@ -195,14 +216,25 @@ function stubFetch(responses: Array<{ status: number; body?: unknown }>) {
 
 test("the catalog read is a GET on the frozen path and keeps archived rows", async () => {
   const { calls, fetchImpl } = stubFetch([
-    { status: 200, body: { services: [service(), service({ key: "lips", status: "archived" })] } },
+    {
+      status: 200,
+      body: {
+        services: [service(), service({ key: "lips", status: "archived" })],
+        // ESZ-150: the same read carries the maximum and the combinations.
+        maxServicesPerAppointment: 2,
+        combinations: [combination()],
+        combinationsComplete: true,
+      },
+    },
   ]);
   const result = await createAdminApiClient(fetchImpl).listServices();
   assert.equal(calls[0].path, ADMIN_SERVICES_PATH);
   assert.equal(calls[0].method, "GET");
   assert.equal(calls[0].headers.get(CSRF_HEADER), null, "a read carries no CSRF token");
   assert.ok(result.ok);
-  assert.deepEqual(result.value.map((entry) => entry.status), ["active", "archived"]);
+  assert.deepEqual(result.value.services.map((entry) => entry.status), ["active", "archived"]);
+  assert.equal(result.value.maxServicesPerAppointment, 2);
+  assert.equal(result.value.combinations[0].key, "brows+lips");
 });
 
 test("a mutation is a PATCH carrying its action and the CSRF token, adopting the stored row", async () => {
@@ -223,7 +255,37 @@ test("a mutation is a PATCH carrying its action and the CSRF token, adopting the
     imageSrc: null,
   });
   assert.ok(result.ok);
-  assert.deepEqual(result.value, stored);
+  assert.deepEqual(result.value, { service: stored });
+});
+
+test("a combination is validated from the listed row and only with a bounded duration", () => {
+  // A candidate has no token: the mutation creates the row with Esther's
+  // corrected number, never the proposal by itself.
+  const candidate = combination({ status: "proposed", durationMinutes: null, updatedAt: null, bookable: false });
+  assert.equal(combinationDurationDraft(candidate), "90");
+  assert.deepEqual(validateCombinationMutation(candidate, " 75 "), {
+    action: "validateCombination",
+    serviceKeys: ["brows", "lips"],
+    durationMinutes: 75,
+    expectedUpdatedAt: null,
+  });
+  // A stored row re-validates under its token and starts from its own value.
+  const stored = combination();
+  assert.equal(combinationDurationDraft(stored), "70");
+  const revalidation = validateCombinationMutation(stored, "80");
+  assert.ok(revalidation?.action === "validateCombination");
+  assert.equal(revalidation.expectedUpdatedAt, stored.updatedAt);
+  // Out of bounds or not a whole number is never sent.
+  assert.equal(validateCombinationMutation(stored, "481"), null);
+  assert.equal(validateCombinationMutation(stored, "7.5"), null);
+
+  // Why a stored row is not bookable, stated from the catalog it lists.
+  const services = [service(), service({ key: "lips", status: "archived" })];
+  assert.equal(combinationUnavailableReason(candidate, services, 2), null);
+  assert.equal(combinationUnavailableReason(stored, services, 2), null);
+  assert.match(combinationUnavailableReason(combination({ bookable: false }), services, 2) ?? "", /archivée/);
+  assert.match(combinationUnavailableReason(combination({ bookable: false, status: "disabled" }), services, 2) ?? "", /Désactivée/);
+  assert.match(combinationUnavailableReason(combination({ bookable: false }), [service(), service({ key: "lips" })], 1) ?? "", /maximum de 1/);
 });
 
 test("409, 404, 403 and a malformed 200 are typed failures, never adopted", async () => {
@@ -248,9 +310,14 @@ test("409, 404, 403 and a malformed 200 are typed failures, never adopted", asyn
 
 // --- What the page may show ---------------------------------------------------
 
-test("the list is Prestation, Durée, Statut, Actions and nothing financial", () => {
+test("the lists are Prestation, Durée, Statut, Actions — and the combinations' five columns — and nothing financial", () => {
   const headers = [...servicesSource.matchAll(/role="columnheader">([^<]+)</g)].map((match) => match[1]);
-  assert.deepEqual(headers, ["Prestation", "Durée", "Statut", "Actions"]);
+  assert.deepEqual(headers, [
+    "Prestation", "Durée", "Statut", "Actions",
+    // ESZ-150: the proposal and the validated duration are two columns, so
+    // the advisory number is never mistaken for the one that books.
+    "Prestations", "Durée proposée", "Durée validée", "Statut", "Actions",
+  ]);
   for (const banned of [/prix/i, /tarif/i, /catégorie/i, /categorie/i, /revenu/i, /chiffre d.affaires/i, /statistique/i, /€/]) {
     assert.doesNotMatch(servicesSource, banned);
     assert.doesNotMatch(servicesLibSource, banned);

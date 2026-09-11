@@ -29,6 +29,42 @@ final class BookingRequestFields
         return $value;
     }
 
+    /**
+     * ESZ-150 — the services a public read or creation names: exactly one
+     * of `serviceKey` (the pre-ESZ-150 single key) or `serviceKeys` (one to
+     * the absolute limit, in the visitor's order). Both, neither, an empty
+     * list or a non-string entry is a refusal; the catalog decides the rest.
+     *
+     * @param array<string, mixed> $request
+     * @return list<string>
+     */
+    public static function serviceKeys(array $request): array
+    {
+        $single = $request['serviceKey'] ?? null;
+        $many = $request['serviceKeys'] ?? null;
+        if ($single !== null && $many !== null) {
+            throw new BookingValidationException('serviceKeys', 'Name the services once: serviceKey or serviceKeys.');
+        }
+        if ($many === null) {
+            if (!\is_string($single)) {
+                throw new BookingValidationException('serviceKey', 'Required string is missing.');
+            }
+
+            return [$single];
+        }
+        if (!\is_array($many) || $many === [] || !array_is_list($many)) {
+            throw new BookingValidationException('serviceKeys', 'Required non-empty list is missing.');
+        }
+        foreach ($many as $entry) {
+            if (!\is_string($entry)) {
+                throw new BookingValidationException('serviceKeys', 'Service keys must be strings.');
+            }
+        }
+
+        /** @var list<string> $many */
+        return $many;
+    }
+
     /** @param array<string, mixed> $request */
     public static function requiredInt(array $request, string $field): int
     {

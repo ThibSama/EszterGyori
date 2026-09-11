@@ -10,7 +10,11 @@ import {
   useState,
 } from "react";
 import { useAdminSession } from "./admin-session-provider";
-import type { AdminApiFailure, AdminBookableService } from "../../lib/admin-api";
+import type {
+  AdminApiFailure,
+  AdminBookableService,
+  AdminServiceCombination,
+} from "../../lib/admin-api";
 import { adoptStoredService } from "../../lib/admin-services";
 
 /**
@@ -36,13 +40,23 @@ export type AdminServiceCatalogStatus = "loading" | "ready" | "error";
 interface AdminServiceCatalogValue {
   readonly status: AdminServiceCatalogStatus;
   readonly services: AdminBookableService[];
+  /** ESZ-150 — the configured maximum number of services per appointment. */
+  readonly maxServicesPerAppointment: number;
+  /** ESZ-150 — stored combinations first, then the enumerated candidates. */
+  readonly combinations: AdminServiceCombination[];
+  /** False when the server's candidate enumeration hit its bound. */
+  readonly combinationsComplete: boolean;
   readonly failure: AdminApiFailure | null;
   /** Re-reads the whole catalog from the server. */
   readonly reload: () => Promise<void>;
   /** Replaces or appends one row the server just stored. */
   readonly adopt: (stored: AdminBookableService) => void;
-  /** The catalog name of a key, or the key itself when the catalog has no row for it. */
-  readonly labelOf: (key: string) => string;
+  /**
+   * The catalog name of a key, or the key itself when the catalog has no
+   * row for it. A list of keys (ESZ-150: a combination booking) is the
+   * names joined with " + ".
+   */
+  readonly labelOf: (key: string | readonly string[]) => string;
 }
 
 const AdminServiceCatalogContext = createContext<AdminServiceCatalogValue | null>(null);
@@ -59,9 +73,9 @@ export function useAdminServiceCatalog(): AdminServiceCatalogValue {
  * The label lookup alone, tolerant of a missing provider: a component
  * rendered outside the protected layout (a preview, a story) shows keys.
  */
-export function useServiceLabel(): (key: string) => string {
+export function useServiceLabel(): (key: string | readonly string[]) => string {
   const value = useContext(AdminServiceCatalogContext);
-  return value?.labelOf ?? ((key: string) => key);
+  return value?.labelOf ?? ((key: string | readonly string[]) => (typeof key === "string" ? key : key.join(" + ")));
 }
 
 export function AdminServiceCatalogProvider({
@@ -70,6 +84,9 @@ export function AdminServiceCatalogProvider({
   const { api, markExpired } = useAdminSession();
   const [status, setStatus] = useState<AdminServiceCatalogStatus>("loading");
   const [services, setServices] = useState<AdminBookableService[]>([]);
+  const [maxServicesPerAppointment, setMaxServicesPerAppointment] = useState(1);
+  const [combinations, setCombinations] = useState<AdminServiceCombination[]>([]);
+  const [combinationsComplete, setCombinationsComplete] = useState(true);
   const [failure, setFailure] = useState<AdminApiFailure | null>(null);
   const mountedRef = useRef(true);
 
@@ -93,7 +110,10 @@ export function AdminServiceCatalogProvider({
         setStatus("error");
         return;
       }
-      setServices(result.value);
+      setServices(result.value.services);
+      setMaxServicesPerAppointment(result.value.maxServicesPerAppointment);
+      setCombinations(result.value.combinations);
+      setCombinationsComplete(result.value.combinationsComplete);
       setFailure(null);
       setStatus("ready");
     },
@@ -123,15 +143,19 @@ export function AdminServiceCatalogProvider({
 
   const value = useMemo<AdminServiceCatalogValue>(() => {
     const labels = new Map(services.map((service) => [service.key, service.label]));
+    const one = (key: string) => labels.get(key) ?? key;
     return {
       status,
       services,
+      maxServicesPerAppointment,
+      combinations,
+      combinationsComplete,
       failure,
       reload,
       adopt,
-      labelOf: (key: string) => labels.get(key) ?? key,
+      labelOf: (key: string | readonly string[]) => (typeof key === "string" ? one(key) : key.map(one).join(" + ")),
     };
-  }, [status, services, failure, reload, adopt]);
+  }, [status, services, maxServicesPerAppointment, combinations, combinationsComplete, failure, reload, adopt]);
 
   return (
     <AdminServiceCatalogContext.Provider value={value}>

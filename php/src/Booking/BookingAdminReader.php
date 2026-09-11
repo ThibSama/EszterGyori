@@ -241,6 +241,7 @@ final class BookingAdminReader
      * @param array{
      *     reference: string,
      *     service_key: string,
+     *     combination_key: ?string,
      *     starts_at_utc: string,
      *     ends_at_utc: string,
      *     customer_name: string
@@ -251,10 +252,15 @@ final class BookingAdminReader
     {
         $start = BookingRequestFields::databaseInstant($row['starts_at_utc']);
         $local = $start->setTimezone($zone);
+        $combinationKey = $row['combination_key'];
 
         return [
             'reference' => $row['reference'],
             'serviceKey' => $row['service_key'],
+            // ESZ-150: the stored services, so the summary names a combination.
+            'serviceKeys' => $combinationKey === null
+                ? [$row['service_key']]
+                : ServiceCombination::membersOf($combinationKey),
             'startsAtUtc' => IsoTimestamp::format($start),
             'endsAtUtc' => IsoTimestamp::format(BookingRequestFields::databaseInstant($row['ends_at_utc'])),
             'localDate' => $local->format('Y-m-d'),

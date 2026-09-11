@@ -6,69 +6,162 @@
   "x-eszter-contentSchemaVersion": 1,
   "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object",
-  "properties": {
-    "service": {
+  "anyOf": [
+    {
       "type": "object",
       "properties": {
-        "key": {
-          "type": "string",
-          "pattern": "^[a-z][a-z0-9-]{1,63}$"
-        },
-        "label": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 160
-        },
-        "description": {
-          "type": "string",
-          "maxLength": 2000
-        },
-        "durationMinutes": {
-          "type": "integer",
-          "minimum": 5,
-          "maximum": 480
-        },
-        "imageSrc": {
-          "anyOf": [
-            {
+        "service": {
+          "type": "object",
+          "properties": {
+            "key": {
               "type": "string",
-              "pattern": "^\\/media\\/med_[0-9a-f]{32}\\.(jpg|png|webp)$"
+              "pattern": "^[a-z][a-z0-9-]{1,63}$"
             },
-            {
-              "type": "null"
+            "label": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "durationMinutes": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 480
+            },
+            "imageSrc": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\/media\\/med_[0-9a-f]{32}\\.(jpg|png|webp)$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "active",
+                "archived"
+              ]
+            },
+            "createdAt": {
+              "type": "string"
+            },
+            "updatedAt": {
+              "type": "string"
             }
-          ]
-        },
-        "status": {
-          "type": "string",
-          "enum": [
-            "active",
-            "archived"
-          ]
-        },
-        "createdAt": {
-          "type": "string"
-        },
-        "updatedAt": {
-          "type": "string"
+          },
+          "required": [
+            "key",
+            "label",
+            "description",
+            "durationMinutes",
+            "imageSrc",
+            "status",
+            "createdAt",
+            "updatedAt"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
-        "key",
-        "label",
-        "description",
-        "durationMinutes",
-        "imageSrc",
-        "status",
-        "createdAt",
-        "updatedAt"
+        "service"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "combination": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{1,63}([+][a-z][a-z0-9-]{1,63}){1,3}$"
+            },
+            "serviceKeys": {
+              "minItems": 2,
+              "maxItems": 4,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{1,63}$"
+              }
+            },
+            "proposedDurationMinutes": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 1920
+            },
+            "durationMinutes": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 5,
+                  "maximum": 480
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "proposed",
+                "validated",
+                "disabled"
+              ]
+            },
+            "bookable": {
+              "type": "boolean"
+            },
+            "updatedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "key",
+            "serviceKeys",
+            "proposedDurationMinutes",
+            "durationMinutes",
+            "status",
+            "bookable",
+            "updatedAt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "combination"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "maxServicesPerAppointment": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        }
+      },
+      "required": [
+        "maxServicesPerAppointment"
       ],
       "additionalProperties": false
     }
-  },
-  "required": [
-    "service"
-  ],
-  "additionalProperties": false
+  ]
 }

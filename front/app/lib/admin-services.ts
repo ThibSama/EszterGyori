@@ -1,4 +1,5 @@
 import {
+  BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT,
   BOOKING_SERVICE_DESCRIPTION_MAX_LENGTH,
   BOOKING_SERVICE_DURATION_MAX_MINUTES,
   BOOKING_SERVICE_DURATION_MIN_MINUTES,
@@ -7,6 +8,7 @@ import {
 import type {
   AdminApiFailure,
   AdminBookableService,
+  AdminServiceCombination,
   AdminServiceMutation,
 } from "./admin-api";
 
@@ -63,7 +65,31 @@ export const ADMIN_SERVICES_MESSAGES = {
     "Le serveur a refusé cette prestation. Rien n’a été enregistré : vérifiez le nom, la description, la durée et l’image.",
   archiveConfirm:
     "Elle ne sera plus proposée à la réservation. Les rendez-vous déjà pris sont conservés et restent visibles dans le calendrier.",
+  // ESZ-150 — combinations and the maximum.
+  maxSaved: "Le nombre maximal de prestations par rendez-vous a été enregistré.",
+  combinationValidated:
+    "La durée de la combinaison a été enregistrée. Elle fait foi pour les nouvelles réservations ; les rendez-vous déjà pris ne changent pas.",
+  combinationDisabled:
+    "La combinaison n’est plus proposée à la réservation. Les rendez-vous déjà pris sont conservés.",
+  combinationEnabled: "La combinaison est de nouveau proposée à la réservation.",
+  combinationConflict:
+    "Cette combinaison a été modifiée ailleurs depuis son chargement. La liste a été actualisée : vérifiez puis recommencez.",
+  combinationsIncomplete:
+    "La liste des combinaisons possibles est tronquée : réduisez le maximum ou archivez des prestations pour la voir en entier.",
+  combinationsNone:
+    "Aucune combinaison à proposer : il faut au moins deux prestations actives et un maximum supérieur à 1.",
 } as const;
+
+export const COMBINATION_STATUS_LABELS: Record<AdminServiceCombination["status"], string> = {
+  proposed: "Proposée",
+  validated: "Validée",
+  disabled: "Désactivée",
+};
+
+export const MAX_SERVICES_OPTIONS: readonly number[] = Array.from(
+  { length: BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT },
+  (_, index) => index + 1,
+);
 
 export const SERVICE_DRAFT_ERRORS = {
   label: `Indiquez un nom (${BOOKING_SERVICE_LABEL_MAX_LENGTH} caractères maximum).`,
@@ -171,6 +197,59 @@ export function adoptStoredService(
   const index = services.findIndex((service) => service.key === stored.key);
   if (index === -1) return [...services, stored];
   return services.map((service, position) => (position === index ? stored : service));
+}
+
+/**
+ * ESZ-150 — the mutation that validates one combination's duration, from
+ * the row as listed: a candidate (no token) is created, a stored row is
+ * re-validated under its token. `null` for a duration outside the bounds,
+ * so an invalid value can never be sent.
+ */
+export function validateCombinationMutation(
+  combination: AdminServiceCombination,
+  durationMinutes: string,
+): AdminServiceMutation | null {
+  const duration = parseDuration(durationMinutes);
+  if (duration === null) return null;
+  return {
+    action: "validateCombination",
+    serviceKeys: [...combination.serviceKeys],
+    durationMinutes: duration,
+    expectedUpdatedAt: combination.updatedAt,
+  };
+}
+
+/**
+ * ESZ-150 — the value the duration field starts with: the validated
+ * duration when there is one, otherwise the proposal (the plain sum of the
+ * components), clamped to nothing — a proposal above the bound is shown as
+ * is, and `parseDuration` refuses it until Esther corrects it.
+ */
+export function combinationDurationDraft(combination: AdminServiceCombination): string {
+  return String(combination.durationMinutes ?? combination.proposedDurationMinutes);
+}
+
+/**
+ * ESZ-150 — why a stored combination is not bookable, for the list. `null`
+ * when it is, or when it is only a candidate.
+ */
+export function combinationUnavailableReason(
+  combination: AdminServiceCombination,
+  services: readonly AdminBookableService[],
+  maxServicesPerAppointment: number,
+): string | null {
+  if (combination.status === "proposed" || combination.bookable) return null;
+  if (combination.status === "disabled") return "Désactivée par vous.";
+  const archived = combination.serviceKeys.filter(
+    (key) => services.find((service) => service.key === key)?.status !== "active",
+  );
+  if (archived.length > 0) {
+    return `Prestation archivée : ${archived.map((key) => services.find((service) => service.key === key)?.label ?? key).join(", ")}.`;
+  }
+  if (combination.serviceKeys.length > maxServicesPerAppointment) {
+    return `Au-delà du maximum de ${maxServicesPerAppointment} prestations par rendez-vous.`;
+  }
+  return "Non réservable.";
 }
 
 /** How many catalog rows — archived included — point at this managed path. */

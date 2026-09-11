@@ -31,6 +31,9 @@ test("active services come only from the frozen discovery endpoint", async () =>
   const result = await loadBookableServices(async (input, init) => {
     calls.push({ input: String(input), init });
     return Response.json({
+      // ESZ-150: the catalog also states the maximum and the bookable combinations.
+      maxServicesPerAppointment: 2,
+      combinations: [{ key: "brows+microblading-sourcils", serviceKeys: ["brows", "microblading-sourcils"], durationMinutes: 100 }],
       services: [
         // ESZ-149: the catalog carries description and image, and a key the
         // fixed CMS list never contained is a first-class service.
@@ -49,27 +52,35 @@ test("active services come only from the frozen discovery endpoint", async () =>
   assert.equal(result.ok, true);
   assert.equal(calls[0].input, "/api/booking/services");
   assert.equal(calls[0].init?.method, "GET");
-  assert.ok(result.ok && result.value[1].key === "microblading-sourcils");
+  assert.ok(result.ok && result.value.services[1].key === "microblading-sourcils");
+  assert.ok(result.ok && result.value.maxServicesPerAppointment === 2);
+  assert.ok(result.ok && result.value.combinations[0].durationMinutes === 100);
 });
 
 test("a discovery payload that lost the catalog fields or names a raw image path is malformed", async () => {
   const legacy = await loadBookableServices(async () =>
-    Response.json({ services: [{ key: "brows", label: "Sourcils", durationMinutes: 30 }] }),
+    Response.json({
+      services: [{ key: "brows", label: "Sourcils", durationMinutes: 30 }],
+      maxServicesPerAppointment: 1,
+      combinations: [],
+    }),
   );
   assert.ok(!legacy.ok && legacy.failure.kind === "malformed");
 
   const rawPath = await loadBookableServices(async () =>
     Response.json({
       services: [{ key: "brows", label: "Sourcils", description: "", durationMinutes: 30, imageSrc: "/etc/passwd" }],
+      maxServicesPerAppointment: 1,
+      combinations: [],
     }),
   );
   assert.ok(!rawPath.ok && rawPath.failure.kind === "malformed");
 });
 
-test("availability posts the selected key and exact visible range", async () => {
+test("availability posts the selected keys and exact visible range", async () => {
   let body = "";
   const result = await loadAvailability(
-    "brows",
+    ["brows"],
     "2026-08-21",
     "2026-08-27",
     async (input, init) => {
@@ -78,6 +89,8 @@ test("availability posts the selected key and exact visible range", async () => 
       body = String(init?.body);
       return Response.json({
         serviceKey: "brows",
+        serviceKeys: ["brows"],
+        combinationKey: null,
         timezone: "Europe/Paris",
         fromDate: "2026-08-21",
         untilDate: "2026-08-27",
@@ -94,7 +107,7 @@ test("availability posts the selected key and exact visible range", async () => 
 
   assert.equal(result.ok, true);
   assert.deepEqual(JSON.parse(body), {
-    serviceKey: "brows",
+    serviceKeys: ["brows"],
     fromDate: "2026-08-21",
     untilDate: "2026-08-27",
   });
@@ -102,10 +115,10 @@ test("availability posts the selected key and exact visible range", async () => 
 });
 
 test("malformed, rejected, network and rate-limited availability failures stay distinct", async () => {
-  const malformed = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () => Response.json({ slots: [] }));
-  const rejected = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () => Response.json({}, { status: 500 }));
-  const network = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () => { throw new Error("offline"); });
-  const rateLimited = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () =>
+  const malformed = await loadAvailability(["brows"], "2026-08-21", "2026-08-27", async () => Response.json({ slots: [] }));
+  const rejected = await loadAvailability(["brows"], "2026-08-21", "2026-08-27", async () => Response.json({}, { status: 500 }));
+  const network = await loadAvailability(["brows"], "2026-08-21", "2026-08-27", async () => { throw new Error("offline"); });
+  const rateLimited = await loadAvailability(["brows"], "2026-08-21", "2026-08-27", async () =>
     Response.json(
       { error: { code: "RATE_LIMITED", message: "refusé", requestId: "req_test" } },
       { status: 429, headers: { [RATE_LIMIT_RETRY_AFTER_HEADER]: "30" } },
@@ -129,17 +142,17 @@ test("malformed, rejected, network and rate-limited availability failures stay d
 
 test("an availability 429 stays explicitly rate-limited without a usable Retry-After", async () => {
   // Missing and unusable header values: still rate-limited, no trusted timer.
-  const missing = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () =>
+  const missing = await loadAvailability(["brows"], "2026-08-21", "2026-08-27", async () =>
     Response.json(
       { error: { code: "RATE_LIMITED", message: "refusé", requestId: "req_test" } },
       { status: 429 },
     ));
-  const absurd = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () =>
+  const absurd = await loadAvailability(["brows"], "2026-08-21", "2026-08-27", async () =>
     Response.json(
       { error: { code: "RATE_LIMITED", message: "refusé", requestId: "req_test" } },
       { status: 429, headers: { [RATE_LIMIT_RETRY_AFTER_HEADER]: "86400" } },
     ));
-  const bare = await loadAvailability("brows", "2026-08-21", "2026-08-27", async () =>
+  const bare = await loadAvailability(["brows"], "2026-08-21", "2026-08-27", async () =>
     new Response("slow down", { status: 429 }));
 
   for (const result of [missing, bare]) {
@@ -166,6 +179,8 @@ test("booking creation posts the exact validated customer, consent and returned 
     return Response.json({
       reference: "bk_00000000000000000000000000000000",
       serviceKey: "brows",
+      serviceKeys: ["brows"],
+      combinationKey: null,
       state: "confirmed",
       startsAtUtc: bookingRequest.startsAtUtc,
       endsAtUtc: "2026-08-24T07:45:00.000Z",
@@ -216,6 +231,8 @@ test("only a matching confirmed server response is success", async () => {
   const mismatched = await createBooking(bookingRequest, async () => Response.json({
     reference: "bk_00000000000000000000000000000000",
     serviceKey: "lips",
+    serviceKeys: ["lips"],
+    combinationKey: null,
     state: "confirmed",
     startsAtUtc: bookingRequest.startsAtUtc,
     endsAtUtc: "2026-08-24T07:45:00.000Z",

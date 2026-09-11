@@ -8,6 +8,7 @@ import {
   loadAvailability,
   loadBookableServices,
   loadPublishedContent,
+  type PublicBookableCombination,
   type PublicBookableService,
   withSubmissionLock,
 } from "../../lib/booking-api";
@@ -22,7 +23,10 @@ import {
   parisToday,
   rangeFrom,
   reservationFlowReducer,
+  resolveCombination,
   selectedServiceLabel,
+  selectionDurationMinutes,
+  selectionIsBookable,
 } from "../../lib/reservation-flow";
 import { createSiteAppearanceVariables } from "../../lib/site-appearance";
 import {
@@ -54,6 +58,10 @@ function durationLabel(minutes: number): string {
 export function ReservationFlow() {
   const today = parisToday();
   const [services, setServices] = useState<PublicBookableService[]>([]);
+  // ESZ-150: the configured maximum and the combinations the server will
+  // book, both from the catalog read; the page invents neither.
+  const [maxServices, setMaxServices] = useState(1);
+  const [combinations, setCombinations] = useState<PublicBookableCombination[]>([]);
   const [content, setContent] = useState<SiteContent>(defaultSiteContent);
   const [servicesStatus, setServicesStatus] = useState<"loading" | "ready" | "error">("loading");
   const [servicesError, setServicesError] = useState<string | null>(null);
@@ -88,11 +96,13 @@ export function ReservationFlow() {
         setServicesError(serviceResult.failure.message);
         return;
       }
-      setServices(serviceResult.value);
+      setServices(serviceResult.value.services);
+      setMaxServices(serviceResult.value.maxServicesPerAppointment);
+      setCombinations(serviceResult.value.combinations);
       setServicesStatus("ready");
 
       const requested = new URLSearchParams(window.location.search).get("service");
-      const matching = serviceResult.value.find((service) => service.key === requested);
+      const matching = serviceResult.value.services.find((service) => service.key === requested);
       if (matching) dispatch({ type: "select-service", serviceKey: matching.key });
     });
 
@@ -115,8 +125,15 @@ export function ReservationFlow() {
     return () => window.clearInterval(interval);
   }, [state.availabilityRetryAtEpochMs, state.submissionRetryAtEpochMs]);
 
+  // The selection as one string, so the availability effect re-runs exactly
+  // when the set changes and never on a fresh array reference.
+  const selectionKey = state.serviceKeys.join("+");
+  const selectionBookable = selectionIsBookable(combinations, state.serviceKeys, maxServices);
+
   useEffect(() => {
-    if (!state.serviceKey) return;
+    // ESZ-150: a selection that names no validated offer is never sent; the
+    // page says so instead, and the server would refuse it regardless.
+    if (state.serviceKeys.length === 0 || !selectionBookable) return;
     // ESZ-136: while a trusted Retry-After delay from a refused availability
     // load is running, no availability request is started — not even from a
     // control that slipped through. The interval above re-renders at the
@@ -125,7 +142,7 @@ export function ReservationFlow() {
     const controller = new AbortController();
     dispatch({ type: "request" });
     void loadAvailability(
-      state.serviceKey,
+      state.serviceKeys,
       state.fromDate,
       state.untilDate,
       fetch,
@@ -156,10 +173,14 @@ export function ReservationFlow() {
     // gate changes would dispatch a duplicate request — the effect itself
     // clears the gate on every request it does start.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [today, state.serviceKey, state.fromDate, state.untilDate, refreshVersion]);
+  }, [today, selectionKey, selectionBookable, state.fromDate, state.untilDate, refreshVersion]);
 
   const visibleServices = useMemo(() => bookableServicesToOffer(services), [services]);
-  const serviceLabelText = selectedServiceLabel(visibleServices, state.serviceKey);
+  const serviceLabelText = selectedServiceLabel(visibleServices, state.serviceKeys);
+  const selectionDuration = selectionDurationMinutes(visibleServices, combinations, state.serviceKeys);
+  const hasSelection = state.serviceKeys.length > 0;
+  const unapprovedSelection = state.serviceKeys.length > 1
+    && resolveCombination(combinations, state.serviceKeys) === null;
   const dates = state.availabilityStatus === "ready"
     ? datesBetween(state.fromDate, state.untilDate)
     : [];
@@ -183,12 +204,12 @@ export function ReservationFlow() {
   }, [state.notice, state.selectedSlot]);
 
   async function submitBooking() {
-    if (!state.serviceKey || !state.selectedSlot) return;
+    if (!selectionBookable || !state.selectedSlot) return;
     // ESZ-136: a trusted Retry-After delay from a refused creation blocks the
     // confirmation until it elapses; the control is disabled, and this guard
     // closes the same-tick gap for anything that reaches the handler anyway.
     if (isRetryBlocked(state.submissionRetryAtEpochMs, Date.now())) return;
-    const request = createBookingRequest(state.serviceKey, state.selectedSlot, state.customer);
+    const request = createBookingRequest(state.serviceKeys, state.selectedSlot, state.customer);
     const result = await withSubmissionLock(submissionLock.current, async () => {
       dispatch({ type: "submit-start" });
       return createBooking(request);
@@ -282,8 +303,12 @@ export function ReservationFlow() {
             <div className="flex items-start gap-4">
               <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-warm-800 text-sm text-porcelain">1</span>
               <div className="min-w-0 flex-1">
-                <h2 id="service-heading" className="font-display text-2xl text-warm-800 sm:text-3xl">La prestation</h2>
-                <p className="mt-1 text-sm text-warm-500">Seules les prestations actuellement réservables sont proposées.</p>
+                <h2 id="service-heading" className="font-display text-2xl text-warm-800 sm:text-3xl">{maxServices > 1 ? "Les prestations" : "La prestation"}</h2>
+                <p className="mt-1 text-sm text-warm-500">
+                  {maxServices > 1
+                    ? `Seules les prestations actuellement réservables sont proposées. Vous pouvez en combiner jusqu’à ${maxServices} dans un même rendez-vous.`
+                    : "Seules les prestations actuellement réservables sont proposées."}
+                </p>
               </div>
             </div>
 
@@ -300,15 +325,23 @@ export function ReservationFlow() {
             {visibleServices.length > 0 && (
               <div className="mt-7 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {visibleServices.map((booking) => {
-                  const selected = state.serviceKey === booking.key;
+                  const selected = state.serviceKeys.includes(booking.key);
+                  // ESZ-150: with a maximum of one the click replaces the
+                  // selection; above it, it toggles and the extra cards close
+                  // once the maximum is reached.
+                  const atMax = !selected && state.serviceKeys.length >= maxServices;
                   return (
                     <button
                       key={booking.key}
                       type="button"
-                      disabled={submissionInFlight}
+                      disabled={submissionInFlight || (maxServices > 1 && atMax)}
                       aria-pressed={selected}
                       data-service-key={booking.key}
-                      onClick={() => dispatch({ type: "select-service", serviceKey: booking.key })}
+                      onClick={() => dispatch(
+                        maxServices > 1
+                          ? { type: "toggle-service", serviceKey: booking.key, maxServices }
+                          : { type: "select-service", serviceKey: booking.key },
+                      )}
                       className={`overflow-hidden rounded-2xl border text-left transition-all ${selected ? "border-sage-500 bg-sage-100/80 shadow-[0_8px_24px_rgba(44,43,40,0.08)]" : "border-white/70 bg-white/45 hover:border-sage-300 hover:bg-white/70"}`}>
                       {booking.imageSrc !== null && (
                         <span className="relative block aspect-[3/2] w-full overflow-hidden bg-warm-100">
@@ -323,6 +356,11 @@ export function ReservationFlow() {
                       )}
                       <span className="block p-5">
                         <span className="block font-display text-2xl text-warm-800">{booking.label}</span>
+                        {maxServices > 1 && (
+                          <span className={`mt-1 block text-xs font-medium uppercase tracking-wide ${selected ? "text-sage-700" : "text-warm-400"}`}>
+                            {selected ? "Sélectionnée" : atMax ? "Maximum atteint" : "Ajouter"}
+                          </span>
+                        )}
                         <span className="mt-1 block text-sm text-sage-600">{durationLabel(booking.durationMinutes)}</span>
                         {booking.description.length > 0 && (
                           <span className="mt-3 line-clamp-3 block text-sm leading-relaxed text-warm-500">{booking.description}</span>
@@ -333,9 +371,23 @@ export function ReservationFlow() {
                 })}
               </div>
             )}
+            {hasSelection && maxServices > 1 && (
+              <div className="mt-6 rounded-2xl bg-white/60 p-4 text-sm text-warm-700" role="status" aria-live="polite" data-selection-summary>
+                <p>
+                  <span className="text-warm-500">Sélection : </span>
+                  <strong className="text-warm-800">{serviceLabelText}</strong>
+                  {selectionDuration !== null && <span className="text-sage-600"> · {durationLabel(selectionDuration)}</span>}
+                </p>
+                {unapprovedSelection && (
+                  <p className="mt-2 text-warm-600">
+                    Cette combinaison n’est pas proposée en un seul rendez-vous. Modifiez votre sélection ou réservez ces prestations séparément.
+                  </p>
+                )}
+              </div>
+            )}
           </section>
 
-          <section aria-labelledby="date-heading" className={`mt-6 glass-card rounded-3xl border border-white/60 bg-white/45 p-5 backdrop-blur-2xl sm:p-8 ${!state.serviceKey ? "opacity-60" : ""}`}>
+          <section aria-labelledby="date-heading" className={`mt-6 glass-card rounded-3xl border border-white/60 bg-white/45 p-5 backdrop-blur-2xl sm:p-8 ${!selectionBookable ? "opacity-60" : ""}`}>
             <div className="flex items-start gap-4">
               <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-warm-800 text-sm text-porcelain">2</span>
               <div className="min-w-0 flex-1">
@@ -344,8 +396,8 @@ export function ReservationFlow() {
               </div>
             </div>
 
-            {!state.serviceKey && <p className="mt-7 text-warm-500">Choisissez d’abord une prestation.</p>}
-            {state.serviceKey && (
+            {!selectionBookable && <p className="mt-7 text-warm-500">{maxServices > 1 ? "Choisissez d’abord une ou plusieurs prestations proposées ensemble." : "Choisissez d’abord une prestation."}</p>}
+            {selectionBookable && (
               <>
                 <nav aria-label="Navigation des dates" className="mt-7 flex items-center justify-between gap-3">
                   <button type="button" onClick={() => navigate(-RESERVATION_RANGE_DAYS)} disabled={submissionInFlight || state.fromDate <= today} className="rounded-full border border-warm-300 bg-white/50 px-4 py-2 text-sm text-warm-700 disabled:cursor-not-allowed disabled:opacity-40">← Précédent</button>

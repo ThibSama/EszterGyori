@@ -38,14 +38,16 @@ final class SlotAvailability
      */
     public function availability(array $request): array
     {
-        $serviceKey = BookingRequestFields::requiredString($request, 'serviceKey');
+        $serviceKeys = BookingRequestFields::serviceKeys($request);
         $fromDate = BookingRequestFields::requiredString($request, 'fromDate');
         $untilDate = BookingRequestFields::requiredString($request, 'untilDate');
         $this->assertRange($fromDate, $untilDate);
-        $service = $this->catalog->requireActive($serviceKey);
-        $slots = $this->compute($service, $fromDate, $untilDate);
+        // ESZ-150: one key or a validated combination — the catalog decides,
+        // and an unapproved selection is refused before any slot is computed.
+        $offer = $this->catalog->requireOffer($serviceKeys);
+        $slots = $this->compute($offer, $fromDate, $untilDate);
 
-        return $this->availabilityEnvelope($service, $fromDate, $untilDate, $slots);
+        return $this->availabilityEnvelope($offer, $fromDate, $untilDate, $slots);
     }
 
     /**
@@ -65,13 +67,16 @@ final class SlotAvailability
         if ($booking->state->value !== 'confirmed') {
             throw new InvalidBookingTransitionException($booking->state->value, 'moved');
         }
-        $service = $this->catalog->requireActive($booking->serviceKey);
+        // ESZ-150: a combination booking moves as its stored combination —
+        // with the validated duration — and fails closed if that combination
+        // or one of its members is no longer bookable.
+        $offer = $this->catalog->requireOffer($booking->serviceKeys());
 
         return $this->availabilityEnvelope(
-            $service,
+            $offer,
             $fromDate,
             $untilDate,
-            $this->compute($service, $fromDate, $untilDate, $reference),
+            $this->compute($offer, $fromDate, $untilDate, $reference),
         );
     }
 
@@ -82,22 +87,26 @@ final class SlotAvailability
      * The caller (a booking command) holds the serialization boundary and is
      * inside its transaction: this runs after any committed availability or
      * service mutation, so a slot that disappeared can never be confirmed.
-     * The service is re-resolved through the catalogue's single active rule
-     * before any slot is generated.
+     * The offer is re-resolved through the catalogue's single bookability
+     * rule before any slot is generated, and returned beside the slot so the
+     * caller stores exactly what was revalidated (ESZ-150: the combination's
+     * validated duration, its key and its first member).
      *
+     * @param list<string> $serviceKeys
+     * @return array{offer: BookableOffer, slot: Slot}
      * @throws SlotUnavailableException when the schedule no longer offers the
      *     requested instant
      */
     public function requestedSlot(
-        string $serviceKey,
+        array $serviceKeys,
         string $localDate,
         \DateTimeImmutable $requestedStart,
         ?string $excludeReference = null,
-    ): Slot {
-        $service = $this->catalog->requireActive($serviceKey);
-        foreach ($this->compute($service, $localDate, $localDate, $excludeReference) as $slot) {
+    ): array {
+        $offer = $this->catalog->requireOffer($serviceKeys);
+        foreach ($this->compute($offer, $localDate, $localDate, $excludeReference) as $slot) {
             if (IsoTimestamp::format($slot->startsAtUtc) === IsoTimestamp::format($requestedStart)) {
-                return $slot;
+                return ['offer' => $offer, 'slot' => $slot];
             }
         }
 
@@ -148,13 +157,15 @@ final class SlotAvailability
      * @return array<string, mixed>
      */
     private function availabilityEnvelope(
-        BookableService $service,
+        BookableOffer $offer,
         string $fromDate,
         string $untilDate,
         array $slots,
     ): array {
         return [
-            'serviceKey' => $service->key,
+            'serviceKey' => $offer->serviceKey,
+            'serviceKeys' => $offer->serviceKeys,
+            'combinationKey' => $offer->combinationKey,
             'timezone' => $this->contract->timezone,
             'fromDate' => $fromDate,
             'untilDate' => $untilDate,
@@ -164,7 +175,7 @@ final class SlotAvailability
 
     /** @return list<Slot> */
     private function compute(
-        BookableService $service,
+        BookableOffer $offer,
         string $fromDate,
         string $untilDate,
         ?string $excludeReference = null,
@@ -172,7 +183,7 @@ final class SlotAvailability
         [$fromUtc, $untilUtc] = $this->utcDayRange($fromDate, $untilDate);
 
         return $this->engine->generate(
-            $service,
+            $offer,
             $fromDate,
             $untilDate,
             $this->availabilityRepository->weeklyRules(),

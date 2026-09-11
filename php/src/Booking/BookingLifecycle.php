@@ -42,7 +42,7 @@ final class BookingLifecycle
      */
     public function create(array $request): array
     {
-        $serviceKey = BookingRequestFields::requiredString($request, 'serviceKey');
+        $serviceKeys = BookingRequestFields::serviceKeys($request);
         $requestedStart = BookingRequestFields::timestamp($request, 'startsAtUtc');
         $name = BookingRequestFields::requiredString($request, 'customerName');
         $email = BookingRequestFields::requiredString($request, 'customerEmail');
@@ -63,7 +63,7 @@ final class BookingLifecycle
         $this->availability->assertRange($localDate, $localDate);
 
         $booking = $this->database->transactional(function () use (
-            $serviceKey,
+            $serviceKeys,
             $requestedStart,
             $localDate,
             $name,
@@ -75,9 +75,16 @@ final class BookingLifecycle
             // ESZ-146 — the authoritative serialization boundary first (see
             // BookingSerializationLock for the single lock order).
             $this->serialization->acquire();
-            $slot = $this->availability->requestedSlot($serviceKey, $localDate, $requestedStart);
+            // ESZ-150: the offer revalidated under the boundary is what gets
+            // stored — its first member as service_key, its combination key
+            // (or null) and the interval the validated duration produced.
+            ['offer' => $offer, 'slot' => $slot] = $this->availability->requestedSlot(
+                $serviceKeys,
+                $localDate,
+                $requestedStart,
+            );
             $booking = $this->bookings->createConfirmed(
-                $serviceKey,
+                $offer->serviceKey,
                 $slot->startsAtUtc,
                 $slot->endsAtUtc,
                 $name,
@@ -86,6 +93,7 @@ final class BookingLifecycle
                 $note,
                 $this->clock->now(),
                 $consentNoticeId,
+                $offer->combinationKey,
             );
             // ESZ-131: the created event's row id is the lifecycle identity of
             // the confirmation job scheduled just below; the two share this
@@ -195,8 +203,10 @@ final class BookingLifecycle
             if ($booking->startsAtUtc === $this->time->databaseUtc($requestedStart)) {
                 throw new BookingValidationException('startsAtUtc', 'Booking already starts at that instant.');
             }
-            $slot = $this->availability->requestedSlot(
-                $booking->serviceKey,
+            // ESZ-150: a move keeps the booking's stored services and
+            // recomputes against the same combination's validated duration.
+            ['slot' => $slot] = $this->availability->requestedSlot(
+                $booking->serviceKeys(),
                 $localDate,
                 $requestedStart,
                 $reference,

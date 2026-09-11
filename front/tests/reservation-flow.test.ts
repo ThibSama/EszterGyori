@@ -21,6 +21,9 @@ import {
   parisToday,
   rangeFrom,
   reservationFlowReducer,
+  resolveCombination,
+  selectionDurationMinutes,
+  selectionIsBookable,
   validateCustomerDraft,
 } from "../app/lib/reservation-flow";
 import type { ReservationFlowState } from "../app/lib/reservation-flow";
@@ -36,6 +39,8 @@ const slot: BookingSlot = {
 function availability(slots: BookingSlot[]): BookingAvailability {
   return {
     serviceKey: "brows",
+    serviceKeys: ["brows"],
+    combinationKey: null,
     timezone: "Europe/Paris",
     fromDate: "2026-08-21",
     untilDate: "2026-08-27",
@@ -72,9 +77,46 @@ test("the catalog is offered as served: catalog order, no CMS matching, no dupli
     "the fixture key must be one the CMS does not know, or this proves nothing",
   );
 
-  assert.equal(selectedServiceLabel(visible, "microblading-sourcils"), "Microblading");
-  assert.equal(selectedServiceLabel(visible, "archived-key"), "Prestation");
-  assert.equal(selectedServiceLabel(visible, null), "Prestation");
+  assert.equal(selectedServiceLabel(visible, ["microblading-sourcils"]), "Microblading");
+  // ESZ-150: a selection of several services is named in the chosen order;
+  // a key the catalog does not list renders as itself, never invented.
+  assert.equal(selectedServiceLabel(visible, ["microblading-sourcils", "brows"]), "Microblading + Sourcils réservation");
+  assert.equal(selectedServiceLabel(visible, ["archived-key"]), "archived-key");
+  assert.equal(selectedServiceLabel(visible, []), "Prestation");
+});
+
+test("multi-selection toggles up to the maximum and resolves only a validated combination", () => {
+  const combinations = [
+    { key: "brows+lips", serviceKeys: ["brows", "lips"], durationMinutes: 75 },
+  ];
+  let state = initialReservationState("2026-08-21");
+  state = reservationFlowReducer(state, { type: "toggle-service", serviceKey: "lips", maxServices: 2 });
+  state = reservationFlowReducer(state, { type: "toggle-service", serviceKey: "brows", maxServices: 2 });
+  assert.deepEqual(state.serviceKeys, ["lips", "brows"]);
+  // A third pick beyond the maximum is ignored, not truncated.
+  const atMax = reservationFlowReducer(state, { type: "toggle-service", serviceKey: "freckles", maxServices: 2 });
+  assert.equal(atMax, state);
+
+  // Order of selection does not matter: B+A resolves the stored A+B row…
+  assert.equal(resolveCombination(combinations, state.serviceKeys)?.key, "brows+lips");
+  assert.equal(selectionIsBookable(combinations, state.serviceKeys, 2), true);
+  assert.equal(selectionDurationMinutes([], combinations, state.serviceKeys), 75);
+  // …while a set the server never validated, or one above the maximum, is
+  // not bookable and never becomes an availability request.
+  assert.equal(resolveCombination(combinations, ["brows", "freckles"]), null);
+  assert.equal(selectionIsBookable(combinations, ["brows", "freckles"], 2), false);
+  assert.equal(selectionIsBookable(combinations, state.serviceKeys, 1), false);
+  assert.equal(selectionIsBookable([], [], 2), false);
+  assert.equal(selectionIsBookable([], ["brows"], 1), true);
+
+  // Toggling one off clears downstream choices like a service change does.
+  state = reservationFlowReducer(state, { type: "received", availability: availability([slot]) });
+  state = reservationFlowReducer(state, { type: "select-slot", slot });
+  state = reservationFlowReducer(state, { type: "toggle-service", serviceKey: "lips", maxServices: 2 });
+  assert.deepEqual(state.serviceKeys, ["brows"]);
+  assert.equal(state.selectedSlot, null);
+  assert.deepEqual(state.slots, []);
+  assert.equal(state.phase, "selecting");
 });
 
 test("changing service or date clears all downstream choices", () => {
@@ -139,7 +181,7 @@ test("customer validation covers required identity, optional limits and explicit
 });
 
 test("the creation payload preserves the exact slot instant and normalizes optional fields", () => {
-  const request = createBookingRequest("brows", slot, {
+  const request = createBookingRequest(["brows"], slot, {
     name: " Cliente Exemple ",
     email: " cliente@example.test ",
     phone: " ",
@@ -147,7 +189,7 @@ test("the creation payload preserves the exact slot instant and normalizes optio
     consentAccepted: true,
   });
   assert.deepEqual(request, {
-    serviceKey: "brows",
+    serviceKeys: ["brows"],
     startsAtUtc: slot.startsAtUtc,
     customerName: "Cliente Exemple",
     customerEmail: "cliente@example.test",
@@ -164,7 +206,7 @@ test("the creation request names exactly the notice the current checkbox renders
   // `bookingConsentCurrentNotice.text` and the request sends
   // `bookingConsentCurrentNotice.id`, so the server can store which wording
   // was accepted. Notice text is never part of the request.
-  const request = createBookingRequest("brows", slot, {
+  const request = createBookingRequest(["brows"], slot, {
     name: "Cliente Exemple",
     email: "cliente@example.test",
     phone: "",
@@ -200,6 +242,8 @@ test("review, confirmed success and ordinary failure preserve customer and appoi
     confirmation: {
       reference: "bk_00000000000000000000000000000000",
       serviceKey: "brows",
+      serviceKeys: ["brows"],
+      combinationKey: null,
       state: "confirmed",
       startsAtUtc: slot.startsAtUtc,
       endsAtUtc: slot.endsAtUtc,

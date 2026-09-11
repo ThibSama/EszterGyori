@@ -22,6 +22,8 @@ final class BookingPayloads
         return [
             'reference' => $booking->reference,
             'serviceKey' => $booking->serviceKey,
+            'serviceKeys' => $booking->serviceKeys(),
+            'combinationKey' => $booking->combinationKey,
             'state' => $booking->state->value,
             'startsAtUtc' => IsoTimestamp::format(BookingRequestFields::databaseInstant($booking->startsAtUtc)),
             'endsAtUtc' => IsoTimestamp::format(BookingRequestFields::databaseInstant($booking->endsAtUtc)),
