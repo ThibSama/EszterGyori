@@ -10,12 +10,7 @@
   "properties": {
     "serviceKey": {
       "type": "string",
-      "enum": [
-        "brows",
-        "eyeliner",
-        "lips",
-        "freckles"
-      ]
+      "pattern": "^[a-z][a-z0-9-]{1,63}$"
     },
     "timezone": {
       "type": "string",

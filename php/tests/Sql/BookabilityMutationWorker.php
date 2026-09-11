@@ -27,6 +27,7 @@ require_once __DIR__ . '/../../vendor/autoload.php';
  *   php BookabilityMutationWorker.php close <localDate> <readyPath>
  *   php BookabilityMutationWorker.php replace-weekly <weekdayIso> <startLocal> <endLocal> <readyPath>
  *   php BookabilityMutationWorker.php provision <key> <duration> <before> <after> <active> <readyPath>
+ *   php BookabilityMutationWorker.php archive <key> <expectedUpdatedAt> <readyPath>
  *
  * stdout carries `OK <mode>` on success, `FAILED <ExceptionClass>` on refusal
  * (message on stderr); the exit code is 0 on success, 1 on refusal.
@@ -38,6 +39,7 @@ $readyPath = match ($mode) {
     'close' => $argv[3] ?? '',
     'replace-weekly' => $argv[5] ?? '',
     'provision' => $argv[7] ?? '',
+    'archive' => $argv[4] ?? '',
     default => '',
 };
 
@@ -101,6 +103,14 @@ try {
             (int) $argv[5],
             $argv[6] === '1',
         );
+    } elseif ($mode === 'archive') {
+        // ESZ-149: the back-office archive, through the real application
+        // service — the same serialization boundary as every other member.
+        $api->adminMutateService([
+            'action' => 'archive',
+            'key' => $argv[2],
+            'expectedUpdatedAt' => $argv[3],
+        ]);
     } else {
         throw new RuntimeException('unknown mutation mode');
     }

@@ -562,18 +562,27 @@ Boundaries:
 ### Package 4.1 booking policy (ESZ-040/041/042)
 
 - `contracts/generated/booking-domain.json` is the language-neutral source consumed by
-  PHP. Bookable service keys reuse the stable `SiteContent.services.items[].id` values:
-  `brows`, `eyeliner`, `lips`, `freckles`. SQL stores only booking label, duration,
-  buffers, active state and audit timestamps; editorial descriptions and media remain
-  in SiteContent. No migration or boot path seeds rows. Provisioning is an explicit,
-  repeat-safe `php/bin/provision-booking-service.php` action.
-- The booking label is not an independent editorial authority (AUD-14): it mirrors the
-  title of the matching item in the validated *published* SiteContent document.
-  Provisioning (and the development bootstrap) derives it from that document through
-  the content-storage/contract-validation path and persists exactly the item title;
-  the CLI accepts no free `--label`, refuses when no published content exists or the
-  key has no unique item, and re-provisioning after a published title change updates
-  the stored mirror.
+  PHP. Since ESZ-149 it freezes only the *shape* of a service key
+  (`services.keyPattern`); the set of keys is owned by the `booking_services` table,
+  which is the single operational service catalog: key, name (`booking_label`),
+  description, one managed image reference (`image_src`, a media-library public path
+  or NULL), duration, buffers, active state and audit timestamps. The four historical
+  keys (`brows`, `eyeliner`, `lips`, `freckles`) are ordinary rows of that table. No
+  migration or boot path seeds rows.
+- The catalog is administered from the back-office `Prestations` page
+  (`GET`/`PATCH /api/admin/services`, session + CSRF, `expectedUpdatedAt` token):
+  create derives the key from the name server-side, update replaces name/description/
+  duration/image, archive and restore flip `is_active` only — no route deletes a row,
+  so every historical booking keeps a resolvable `service_key`. The public reservation
+  flow consumes `GET /api/booking/services` (active rows with name, description,
+  duration and image) and no longer matches services against `SiteContent.services`.
+  A service image must name a catalogued media asset; the media delete route refuses
+  an asset any catalog row — archived included — still references.
+- `php/bin/provision-booking-service.php` remains the explicit, repeat-safe operator
+  action for the slot-shaping facts (duration, buffers, activity). It names a *new*
+  row from `--label` or from the published SiteContent item of the same key (seeding
+  the description too) and never overwrites an existing row's admin-owned name,
+  description or image.
 - Availability is stored as ISO weekday plus local `DATE`/`TIME` rules and one replacing
   exception per local date. Those wall-clock values are interpreted exclusively in the
   IANA zone `Europe/Paris`; PHP, MySQL and host timezone defaults are irrelevant. No

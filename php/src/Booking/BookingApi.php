@@ -76,4 +76,20 @@ interface BookingApi
      * @return array<string, mixed>
      */
     public function adminMutateAvailabilityException(array $request): array;
+
+    /**
+     * The whole service catalog, archived rows included (ESZ-149).
+     *
+     * @return array<string, mixed>
+     */
+    public function adminServices(): array;
+
+    /**
+     * Creates, updates, archives or restores one catalog service, or refuses
+     * and changes nothing (ESZ-149).
+     *
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function adminMutateService(array $request): array;
 }

@@ -6,6 +6,8 @@ namespace Eszter\Tests\Http;
 
 use Eszter\Booking\AvailabilityWindow;
 use Eszter\Booking\AvailabilityRevisionConflictException;
+use Eszter\Booking\BookableServiceNotFoundException;
+use Eszter\Booking\BookableServiceRevisionConflictException;
 use Eszter\Booking\BookingApi;
 use Eszter\Booking\BookingDomainContract;
 use Eszter\Booking\BookingTimePolicy;
@@ -42,18 +44,40 @@ final class InMemoryBookingApi implements BookingApi
         $this->time = new BookingTimePolicy($this->contract);
     }
 
+    /**
+     * ESZ-149 — the fixture catalog: one active row and one archived row. The
+     * archived one is what proves the admin read lists everything while the
+     * public read lists only what can be booked.
+     */
+    private const SERVICE_UPDATED_AT = '2026-06-01T10:00:00.000Z';
+
     /** @return array<string, mixed> */
     public function services(): array
     {
         return ['services' => [[
             'key' => 'brows',
             'label' => 'Sourcils',
+            'description' => 'Poudré ou poil à poil.',
             'durationMinutes' => 30,
+            'imageSrc' => null,
         ]]];
     }
 
     /** @return array<string, mixed> */
     public function availability(array $request): array
+    {
+        // ESZ-149: the key shape is structural, membership is the catalog's.
+        // The fixture catalog holds exactly one active service, so any other
+        // well-formed key is the domain's refusal, not the schema's.
+        if (($request['serviceKey'] ?? null) !== 'brows') {
+            throw new BookingValidationException('serviceKey', 'Service is not actively bookable.');
+        }
+
+        return $this->fixtureAvailability();
+    }
+
+    /** @return array<string, mixed> */
+    private function fixtureAvailability(): array
     {
         return [
             'serviceKey' => 'brows',
@@ -124,7 +148,9 @@ final class InMemoryBookingApi implements BookingApi
      */
     public function adminMoveAvailability(array $request): array
     {
-        return $this->availability($request);
+        // A move read names a booking, not a service key: the fixture answers
+        // the same computed window without the public key check.
+        return $this->fixtureAvailability();
     }
 
     /** @return array<string, mixed> */
@@ -135,6 +161,70 @@ final class InMemoryBookingApi implements BookingApi
         $start = $action === 'move' ? '2026-06-15T08:00:00.000Z' : '2026-06-15T07:00:00.000Z';
 
         return ['booking' => $this->adminBooking($state, $start)];
+    }
+
+    /** @return array<string, mixed> */
+    public function adminServices(): array
+    {
+        return ['services' => [
+            $this->adminService('brows', 'Sourcils', 30, 'active'),
+            $this->adminService('lashes', 'Cils (ancienne offre)', 45, 'archived'),
+        ]];
+    }
+
+    /** @return array<string, mixed> */
+    public function adminMutateService(array $request): array
+    {
+        $action = $request['action'] ?? null;
+
+        if ($action === 'create') {
+            $label = \is_string($request['label'] ?? null) ? $request['label'] : 'Prestation';
+            $duration = \is_int($request['durationMinutes'] ?? null) ? $request['durationMinutes'] : 60;
+
+            return ['service' => $this->adminService('microblading-sourcils', $label, $duration, 'active')];
+        }
+
+        $key = \is_string($request['key'] ?? null) ? $request['key'] : '';
+        if ($key !== 'brows') {
+            throw new BookableServiceNotFoundException($key);
+        }
+        $expected = \is_string($request['expectedUpdatedAt'] ?? null) ? $request['expectedUpdatedAt'] : '';
+        if ($expected !== self::SERVICE_UPDATED_AT) {
+            throw new BookableServiceRevisionConflictException($key, $expected, self::SERVICE_UPDATED_AT);
+        }
+
+        return ['service' => match ($action) {
+            'update' => $this->adminService(
+                $key,
+                \is_string($request['label'] ?? null) ? $request['label'] : 'Sourcils',
+                \is_int($request['durationMinutes'] ?? null) ? $request['durationMinutes'] : 30,
+                'active',
+                \is_string($request['imageSrc'] ?? null) ? $request['imageSrc'] : null,
+            ),
+            'archive' => $this->adminService($key, 'Sourcils', 30, 'archived'),
+            'restore' => $this->adminService($key, 'Sourcils', 30, 'active'),
+            default => throw new BookingValidationException('action', 'Unknown service mutation action.'),
+        }];
+    }
+
+    /** @return array<string, mixed> */
+    private function adminService(
+        string $key,
+        string $label,
+        int $duration,
+        string $status,
+        ?string $imageSrc = null,
+    ): array {
+        return [
+            'key' => $key,
+            'label' => $label,
+            'description' => 'Poudré ou poil à poil.',
+            'durationMinutes' => $duration,
+            'imageSrc' => $imageSrc,
+            'status' => $status,
+            'createdAt' => '2026-05-01T09:00:00.000Z',
+            'updatedAt' => self::SERVICE_UPDATED_AT,
+        ];
     }
 
     /** @return array<string, mixed> */

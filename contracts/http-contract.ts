@@ -7,8 +7,12 @@ import {
   BOOKING_ADMIN_SUMMARY_MAX_LISTED_ENTRIES,
   BOOKING_CONSENT_CURRENT_NOTICE_ID,
   BOOKING_DST_FOLD_OFFSETS,
+  BOOKING_SERVICE_DESCRIPTION_MAX_LENGTH,
+  BOOKING_SERVICE_DURATION_MAX_MINUTES,
+  BOOKING_SERVICE_DURATION_MIN_MINUTES,
+  BOOKING_SERVICE_KEY_PATTERN,
+  BOOKING_SERVICE_LABEL_MAX_LENGTH,
   BOOKING_TIME_ZONE,
-  bookableServiceKeys,
   bookingConsentNoticeIds,
   bookingStates,
 } from "./booking.js";
@@ -97,6 +101,18 @@ export const ADMIN_AVAILABILITY_QUERY_PATH = "/api/admin/availability/query";
 export const ADMIN_AVAILABILITY_WEEKLY_PATH = "/api/admin/availability/weekly";
 export const ADMIN_AVAILABILITY_EXCEPTIONS_PATH =
   "/api/admin/availability/exceptions";
+
+/**
+ * The service catalog administration surface (ESZ-149).
+ *
+ * One path, two verbs, the shape `/api/admin/media` already has: GET is the
+ * authenticated read of the whole catalog — active and archived rows alike,
+ * because an archived service still names historical bookings the calendar
+ * must render — and PATCH carries its action (create, update, archive,
+ * restore). There is no public write and no DELETE: a service row is never
+ * removed, only archived.
+ */
+export const ADMIN_SERVICES_PATH = "/api/admin/services";
 
 /**
  * Header reporting the current head of the content revision sequence.
@@ -630,7 +646,30 @@ export const BOOKING_LOCAL_TIME_PATTERN = "^([01][0-9]|2[0-3]):[0-5][0-9]$";
 const bookingReferenceSchema = z.string().regex(new RegExp(BOOKING_REFERENCE_PATTERN));
 const bookingLocalDateSchema = z.string().regex(new RegExp(BOOKING_LOCAL_DATE_PATTERN));
 const bookingLocalTimeSchema = z.string().regex(new RegExp(BOOKING_LOCAL_TIME_PATTERN));
-const bookableServiceKeySchema = z.enum(bookableServiceKeys);
+/**
+ * ESZ-149 — a service key is structurally any value of the frozen shape. The
+ * enum that used to sit here was generated from `SiteContent.services.items`
+ * and made "add a service" a source edit; the set of keys now lives in
+ * `booking_services` and only the domain can say whether a well-formed key
+ * names an actively bookable service (400 VALIDATION_FAILED when it does not).
+ */
+const bookableServiceKeySchema = z
+  .string()
+  .regex(new RegExp(BOOKING_SERVICE_KEY_PATTERN), "Doit etre une cle de prestation valide.");
+const bookableServiceLabelSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(BOOKING_SERVICE_LABEL_MAX_LENGTH);
+const bookableServiceDescriptionSchema = z
+  .string()
+  .trim()
+  .max(BOOKING_SERVICE_DESCRIPTION_MAX_LENGTH);
+const bookableServiceDurationSchema = z
+  .number()
+  .int()
+  .min(BOOKING_SERVICE_DURATION_MIN_MINUTES)
+  .max(BOOKING_SERVICE_DURATION_MAX_MINUTES);
 const bookingStateSchema = z.enum(bookingStates);
 const bookingFoldOffsetSchema = z.enum(BOOKING_DST_FOLD_OFFSETS).nullable();
 
@@ -642,11 +681,19 @@ export const bookingAvailabilityRequestSchema = z
   })
   .strict();
 
+/**
+ * ESZ-149 — public discovery carries everything the reservation page renders
+ * for a service: the catalog's name, description and one managed image path
+ * (or null). `imageSrc` is declared with a lazy reference to the media path
+ * schema defined further down; the media block owns that pattern.
+ */
 export const publicBookableServiceSchema = z
   .object({
     key: bookableServiceKeySchema,
-    label: z.string().trim().min(1).max(160),
-    durationMinutes: z.number().int().min(5).max(480),
+    label: bookableServiceLabelSchema,
+    description: bookableServiceDescriptionSchema,
+    durationMinutes: bookableServiceDurationSchema,
+    imageSrc: z.lazy(() => mediaPublicPathSchema).nullable(),
   })
   .strict();
 
@@ -1061,6 +1108,83 @@ export const adminAvailabilityExceptionResponseSchema = z
   })
   .strict();
 
+/**
+ * ESZ-149 — one catalog row as the back-office sees it. `status` is the
+ * explicit archived/active state (never a bare boolean on the wire), and
+ * `updatedAt` doubles as the row's optimistic-concurrency token exactly as a
+ * booking's does (`bookingApiPolicy.optimisticConcurrency`).
+ */
+export const adminBookableServiceSchema = z
+  .object({
+    key: bookableServiceKeySchema,
+    label: bookableServiceLabelSchema,
+    description: bookableServiceDescriptionSchema,
+    durationMinutes: bookableServiceDurationSchema,
+    imageSrc: z.lazy(() => mediaPublicPathSchema).nullable(),
+    status: z.enum(["active", "archived"]),
+    createdAt: isoTimestampSchema,
+    updatedAt: isoTimestampSchema,
+  })
+  .strict();
+
+export const adminServicesResponseSchema = z
+  .object({ services: z.array(adminBookableServiceSchema) })
+  .strict();
+
+const adminServiceCreateSchema = z
+  .object({
+    action: z.literal("create"),
+    label: bookableServiceLabelSchema,
+    description: bookableServiceDescriptionSchema,
+    durationMinutes: bookableServiceDurationSchema,
+    imageSrc: z.lazy(() => mediaPublicPathSchema).nullable(),
+  })
+  .strict();
+
+const adminServiceUpdateSchema = z
+  .object({
+    action: z.literal("update"),
+    key: bookableServiceKeySchema,
+    expectedUpdatedAt: isoTimestampSchema,
+    label: bookableServiceLabelSchema,
+    description: bookableServiceDescriptionSchema,
+    durationMinutes: bookableServiceDurationSchema,
+    imageSrc: z.lazy(() => mediaPublicPathSchema).nullable(),
+  })
+  .strict();
+
+const adminServiceArchiveSchema = z
+  .object({
+    action: z.literal("archive"),
+    key: bookableServiceKeySchema,
+    expectedUpdatedAt: isoTimestampSchema,
+  })
+  .strict();
+
+const adminServiceRestoreSchema = z
+  .object({
+    action: z.literal("restore"),
+    key: bookableServiceKeySchema,
+    expectedUpdatedAt: isoTimestampSchema,
+  })
+  .strict();
+
+/**
+ * ESZ-149 — the closed set of catalog mutations. `archive` and `restore` are
+ * explicit actions rather than a boolean on `update`, so a stale form cannot
+ * silently re-activate a service it did not know had been archived.
+ */
+export const adminServiceMutationRequestSchema = z.discriminatedUnion("action", [
+  adminServiceCreateSchema,
+  adminServiceUpdateSchema,
+  adminServiceArchiveSchema,
+  adminServiceRestoreSchema,
+]);
+
+export const adminServiceResponseSchema = z
+  .object({ service: adminBookableServiceSchema })
+  .strict();
+
 export const adminBookingSummaryEntrySchema = z
   .object({
     reference: bookingReferenceSchema,
@@ -1168,7 +1292,9 @@ export const bookingApiPolicy = {
   publicAvailability:
     "Only active canonical services and dates from the Paris-local today through day 90 inclusive; response order is SlotEngine order and slots are never persisted.",
   publicServices:
-    "Lists only active canonical service keys with booking label and duration; editorial descriptions and media remain in SiteContent.",
+    "Lists only active catalog services — key, name, description, duration and one managed image path or null — in catalog order. ESZ-149: the catalog is the authority; the reservation flow never matches a service against SiteContent.services.",
+  serviceCatalog:
+    "ESZ-149 — booking_services is the single operational service catalog. Authenticated admin reads list every row, archived included, so historical bookings stay nameable; mutations are create (key derived server-side from the name), update (name, description, duration, image), archive and restore, each a PATCH carrying its action behind session and CSRF. update, archive and restore require expectedUpdatedAt and answer 409 REVISION_CONFLICT when the row moved. Archive and restore flip is_active only; no route deletes a service. A managed imageSrc must name a catalogued media asset, and the media delete route refuses an asset any service row references. Mutations that change bookability (create, archive, restore, a duration change) take the booking serialization boundary first, inside their transaction.",
   creation:
     "The client submits a returned UTC start. Inside one transaction the singleton primary resource row is locked, all inputs are re-read, SlotEngine recomputes, and insert plus created history commit together.",
   consent:
@@ -2253,6 +2379,8 @@ export const contractBodyMatchers = [
   "adminAvailabilityResponse",
   "adminAvailabilityWeeklyResponse",
   "adminAvailabilityExceptionResponse",
+  "adminServicesResponse",
+  "adminServiceResponse",
   "empty",
 ] as const;
 
@@ -2382,6 +2510,7 @@ export interface HttpContractCase {
     | "/api/admin/availability/query"
     | "/api/admin/availability/weekly"
     | "/api/admin/availability/exceptions"
+    | "/api/admin/services"
     | "unknown";
   description: string;
   request: {
@@ -4015,7 +4144,8 @@ export const httpContractCases: HttpContractCase[] = [
   {
     id: "booking.availability.post.invalidService",
     endpoint: PUBLIC_BOOKING_AVAILABILITY_PATH,
-    description: "A service key outside SiteContent is rejected without exposing internals.",
+    description:
+      "A well-formed key that names no active catalog service is rejected by the domain without exposing internals (ESZ-149: the key shape is structural, membership is the catalog's).",
     request: {
       method: "POST",
       path: PUBLIC_BOOKING_AVAILABILITY_PATH,
@@ -4574,6 +4704,179 @@ export const httpContractCases: HttpContractCase[] = [
     request: { method: "PATCH", path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH, rawBody: "{invalid" },
     auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
     expect: { status: 403, body: "errorEnvelope", errorCode: "CSRF_TOKEN_INVALID" },
+  },
+  {
+    id: "admin.services.get.ok",
+    endpoint: ADMIN_SERVICES_PATH,
+    description:
+      "The whole catalog, archived rows included, so the back-office can name every historical booking (ESZ-149).",
+    request: { method: "GET", path: ADMIN_SERVICES_PATH },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "adminServicesResponse" },
+  },
+  {
+    id: "admin.services.get.unauthenticated",
+    endpoint: ADMIN_SERVICES_PATH,
+    description: "The catalog read is authenticated: anonymous callers are refused.",
+    request: { method: "GET", path: ADMIN_SERVICES_PATH },
+    auth: { session: "none", csrf: "omitted" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.services.get.disabledAccountIsRejected",
+    endpoint: ADMIN_SERVICES_PATH,
+    description:
+      "A live session whose account has since been disabled is 401 here, resolved per request rather than at login.",
+    request: { method: "GET", path: ADMIN_SERVICES_PATH },
+    auth: { session: "authenticated", account: "disabled" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.services.patch.createOk",
+    endpoint: ADMIN_SERVICES_PATH,
+    description:
+      "Creating a service needs only its name, description, duration and image: the key is derived server-side and no contract or source edit is involved.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_SERVICES_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"create","label":"Microblading sourcils","description":"Une ligne à la fois.","durationMinutes":90,"imageSrc":null}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminServiceResponse" },
+  },
+  {
+    id: "admin.services.patch.updateOk",
+    endpoint: ADMIN_SERVICES_PATH,
+    description: "Name, description, duration and image are replaced together under the row's updatedAt token.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_SERVICES_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"update","key":"brows","expectedUpdatedAt":"2026-06-01T10:00:00.000Z","label":"Sourcils","description":"Poudré ou poil à poil.","durationMinutes":120,"imageSrc":"/media/med_00000000000000000000000000000001.webp"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminServiceResponse" },
+  },
+  {
+    id: "admin.services.patch.archiveOk",
+    endpoint: ADMIN_SERVICES_PATH,
+    description: "Archiving is non-destructive: the row and its bookings survive, the service leaves public discovery.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_SERVICES_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"archive","key":"brows","expectedUpdatedAt":"2026-06-01T10:00:00.000Z"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminServiceResponse" },
+  },
+  {
+    id: "admin.services.patch.restoreOk",
+    endpoint: ADMIN_SERVICES_PATH,
+    description: "An archived service can be restored to active under its current updatedAt token.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_SERVICES_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"restore","key":"brows","expectedUpdatedAt":"2026-06-01T10:00:00.000Z"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminServiceResponse" },
+  },
+  {
+    id: "admin.services.patch.staleRevision",
+    endpoint: ADMIN_SERVICES_PATH,
+    description: "A stale updatedAt token is 409 REVISION_CONFLICT and writes nothing.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_SERVICES_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"archive","key":"brows","expectedUpdatedAt":"2026-01-01T00:00:00.000Z"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 409, body: "errorEnvelope", errorCode: "REVISION_CONFLICT" },
+  },
+  {
+    id: "admin.services.patch.unknownKey",
+    endpoint: ADMIN_SERVICES_PATH,
+    description: "A well-formed key that names no catalog row is 404 NOT_FOUND.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_SERVICES_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"archive","key":"nails","expectedUpdatedAt":"2026-06-01T10:00:00.000Z"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 404, body: "errorEnvelope", errorCode: "NOT_FOUND" },
+  },
+  {
+    id: "admin.services.patch.invalidDuration",
+    endpoint: ADMIN_SERVICES_PATH,
+    description: "A duration outside the domain bounds is refused by the closed request schema.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_SERVICES_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"create","label":"Trop long","description":"","durationMinutes":481,"imageSrc":null}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.services.patch.rawImagePathRefused",
+    endpoint: ADMIN_SERVICES_PATH,
+    description:
+      "The image is a managed media reference or null; an arbitrary path or URL is refused structurally.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_SERVICES_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"create","label":"Image libre","description":"","durationMinutes":60,"imageSrc":"https://example.test/photo.jpg"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.services.patch.unknownAction",
+    endpoint: ADMIN_SERVICES_PATH,
+    description: "There is no delete action: a service is archived, never removed.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_SERVICES_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"delete","key":"brows","expectedUpdatedAt":"2026-06-01T10:00:00.000Z"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.services.patch.unauthenticated",
+    endpoint: ADMIN_SERVICES_PATH,
+    description: "Anonymous callers cannot change the catalog, and are refused before the body is read.",
+    request: { method: "PATCH", path: ADMIN_SERVICES_PATH, rawBody: "{invalid" },
+    auth: { session: "none", csrf: "omitted" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.services.patch.csrfOmitted",
+    endpoint: ADMIN_SERVICES_PATH,
+    description: "An authenticated catalog mutation without CSRF is rejected before parsing.",
+    request: { method: "PATCH", path: ADMIN_SERVICES_PATH, rawBody: "{invalid" },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 403, body: "errorEnvelope", errorCode: "CSRF_TOKEN_INVALID" },
+  },
+  {
+    id: "admin.services.delete.methodNotAllowed",
+    endpoint: ADMIN_SERVICES_PATH,
+    description: "No route deletes a service; the collection path admits GET and PATCH only.",
+    request: { method: "DELETE", path: ADMIN_SERVICES_PATH },
+    expect: {
+      status: 405,
+      body: "errorEnvelope",
+      errorCode: "METHOD_NOT_ALLOWED",
+      headers: { allow: "GET, PATCH" },
+    },
   },
 ];
 

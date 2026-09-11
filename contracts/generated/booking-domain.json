@@ -1,17 +1,14 @@
 {
-  "version": 7,
+  "version": 8,
   "scope": "Package 4.1/4.2 booking domain and dynamic slot computation; no booking HTTP API.",
   "services": {
-    "keys": [
-      "brows",
-      "eyeliner",
-      "lips",
-      "freckles"
-    ],
-    "source": "SiteContent.services.items[].id",
+    "keyAuthority": "booking_services.service_key",
     "keyPattern": "^[a-z][a-z0-9-]{1,63}$",
     "labelMaxLength": 160,
-    "labelSource": "The booking label stored beside a service key is that item's title from the validated published SiteContent document, mirrored at provisioning time; re-provisioning after a published title change updates it. It is never operator-supplied and never falls back to a draft, the defaults or an existing row.",
+    "descriptionMaxLength": 2000,
+    "catalogAuthority": "booking_services owns the name (booking_label), description and one managed image reference of every reservable service. The public reservation flow consumes this catalog; SiteContent.services stays the marketing copy of the home page and is not a reservation authority.",
+    "keyDerivation": "A new service's key is derived server-side from its name (lowercase ASCII slug matching keyPattern, de-duplicated with a numeric suffix) and is immutable afterwards.",
+    "archive": "Archiving sets is_active = 0 and nothing else: the row, its key and every booking that references it survive, the service leaves public discovery and can no longer be booked, and it can be restored. No service row is ever hard-deleted.",
     "durationMinutes": {
       "min": 5,
       "max": 480
@@ -20,7 +17,8 @@
       "min": 0,
       "max": 240
     },
-    "provisioning": "Explicit, repeat-safe operator action. Migrations and application boot seed no service rows."
+    "provisioning": "Explicit, repeat-safe operator action or an authenticated admin mutation. Migrations and application boot seed no service rows; the operator CLI seeds a new row's editorial facts from the published SiteContent item of the same key when one exists and never overwrites an existing row's admin-owned name, description or image.",
+    "futureBookabilityOnly": "Activation, archival and duration changes affect future bookability only: an existing booking keeps its stored service key, start and end instants."
   },
   "timezone": {
     "iana": "Europe/Paris",
@@ -258,7 +256,7 @@
       "booking create, move and cancel",
       "weekly availability replacement",
       "date exception open, close and remove",
-      "service provisioning that changes is_active, duration, buffer-before or buffer-after"
+      "service provisioning or an admin service mutation (create, update, archive, restore) that changes is_active, duration, buffer-before or buffer-after"
     ],
     "lockOrder": "booking_resource_locks.primary, acquired inside the owning transaction and before any other mutable row lock, then the availability revision / service / booking rows, then writes.",
     "linearization": "The operation that acquires the boundary first is ordered first. If a bookability mutation commits first, a create/move that started concurrently acquires the boundary only afterwards, re-reads the new service/availability state and may confirm only if the requested slot is still valid. If create/move owns the boundary first it may commit first, and the mutation then follows; both sides finish without deadlock because the boundary is their only shared lock order.",

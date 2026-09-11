@@ -10,6 +10,7 @@ use Eszter\Booking\BookingApi;
 use Eszter\Booking\BookingLifecycle;
 use Eszter\Booking\BookingPayloads;
 use Eszter\Booking\BookingRequestFields;
+use Eszter\Booking\BookingServiceAdministration;
 use Eszter\Booking\BookingServiceCatalog;
 use Eszter\Booking\PdoBookingApi;
 use Eszter\Booking\SlotAvailability;
@@ -30,7 +31,10 @@ use PHPUnit\Framework\TestCase;
  */
 final class BookingApiCompositionTest extends TestCase
 {
-    /** The frozen 10-method booking surface (ESZ-105/ESZ-106). */
+    /**
+     * The frozen booking surface (ESZ-105/ESZ-106): ten methods, plus the two
+     * catalog-administration methods ESZ-149 adds.
+     */
     private const API_METHODS = [
         'services',
         'availability',
@@ -42,6 +46,8 @@ final class BookingApiCompositionTest extends TestCase
         'adminAvailability',
         'adminReplaceWeeklyAvailability',
         'adminMutateAvailabilityException',
+        'adminServices',
+        'adminMutateService',
     ];
 
     /**
@@ -61,6 +67,8 @@ final class BookingApiCompositionTest extends TestCase
         'adminAvailability' => [AvailabilityAdministration::class, 'availabilityAdministration'],
         'adminReplaceWeeklyAvailability' => [AvailabilityAdministration::class, 'availabilityAdministration'],
         'adminMutateAvailabilityException' => [AvailabilityAdministration::class, 'availabilityAdministration'],
+        'adminServices' => [BookingServiceAdministration::class, 'serviceAdministration'],
+        'adminMutateService' => [BookingServiceAdministration::class, 'serviceAdministration'],
     ];
 
     /**

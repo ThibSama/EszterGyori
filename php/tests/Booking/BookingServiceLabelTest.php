@@ -82,20 +82,25 @@ final class BookingServiceLabelTest extends TestCase
         self::assertSame('Lèvres pulpeuses', $label);
     }
 
-    public function testAnUnknownKeyIsRefusedBeforeAnyEnvelopeReading(): void
+    public function testAMalformedKeyIsRefusedBeforeAnyEnvelopeReading(): void
     {
         try {
             $this->resolver->resolve(
-                'nails',
+                '../nails',
                 $this->envelopeWithItems($this->canonicalItemsWithTitle('brows', 'Sourcils')),
             );
-            self::fail('an unknown service key was resolved to a label');
+            self::fail('a malformed service key was resolved to a label');
         } catch (BookingValidationException $exception) {
             self::assertSame('serviceKey', $exception->field);
         }
     }
 
-    public function testAKeyWithNoPublishedItemIsRefused(): void
+    /**
+     * ESZ-149: a well-formed key with no published item is not a fault — a
+     * service created in the back-office has no CMS item — so the seed is
+     * null and only the label-only `resolve()` refuses.
+     */
+    public function testAKeyWithNoPublishedItemSeedsNothing(): void
     {
         $items = $this->canonicalItemsWithTitle('brows', 'Sourcils');
         $items = array_values(array_filter(
@@ -103,9 +108,34 @@ final class BookingServiceLabelTest extends TestCase
             static fn (array $item): bool => $item['id'] !== 'brows',
         ));
 
+        self::assertNull($this->resolver->seed('brows', $this->envelopeWithItems($items)));
+        self::assertNull($this->resolver->seed('nails', $this->envelopeWithItems($items)));
+
         $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('exactly one is required');
+        $this->expectExceptionMessage('no services item with id "brows"');
         $this->resolver->resolve('brows', $this->envelopeWithItems($items));
+    }
+
+    /** ESZ-149: the seed carries the description and the visual beside the title. */
+    public function testTheSeedCarriesTheDescriptionAndTheVisualOfTheItem(): void
+    {
+        $items = $this->canonicalItemsWithTitle('brows', 'Sourcils');
+        foreach ($items as &$item) {
+            if ($item['id'] === 'brows') {
+                $item['description'] = '  Poudré ou poil à poil.  ';
+                $item['visual'] = ['id' => 'x', 'src' => '/media/med_' . str_repeat('a', 32) . '.webp', 'alt' => ''];
+            }
+        }
+        unset($item);
+
+        self::assertSame(
+            [
+                'label' => 'Sourcils',
+                'description' => 'Poudré ou poil à poil.',
+                'imageSrc' => '/media/med_' . str_repeat('a', 32) . '.webp',
+            ],
+            $this->resolver->seed('brows', $this->envelopeWithItems($items)),
+        );
     }
 
     public function testANonUniquePublishedItemIsRefused(): void

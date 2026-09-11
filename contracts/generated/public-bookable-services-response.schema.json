@@ -1,7 +1,7 @@
 {
   "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
   "title": "PublicBookableServicesResponse",
-  "description": "Active canonical booking services without editorial duplication.",
+  "description": "Active catalog services with the name, description, duration and managed image the reservation page renders (ESZ-149).",
   "x-eszter-io": "output",
   "x-eszter-contentSchemaVersion": 1,
   "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
@@ -15,28 +15,40 @@
         "properties": {
           "key": {
             "type": "string",
-            "enum": [
-              "brows",
-              "eyeliner",
-              "lips",
-              "freckles"
-            ]
+            "pattern": "^[a-z][a-z0-9-]{1,63}$"
           },
           "label": {
             "type": "string",
             "minLength": 1,
             "maxLength": 160
           },
+          "description": {
+            "type": "string",
+            "maxLength": 2000
+          },
           "durationMinutes": {
             "type": "integer",
             "minimum": 5,
             "maximum": 480
+          },
+          "imageSrc": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\/media\\/med_[0-9a-f]{32}\\.(jpg|png|webp)$"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
           "key",
           "label",
-          "durationMinutes"
+          "description",
+          "durationMinutes",
+          "imageSrc"
         ],
         "additionalProperties": false
       }

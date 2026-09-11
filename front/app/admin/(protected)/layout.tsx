@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { AdminServiceCatalogProvider } from "../../components/admin/admin-service-catalog-provider";
 import { AdminShell } from "../../components/admin/admin-shell";
 import { AdminSessionProvider } from "../../components/admin/admin-session-provider";
 import { PRIVATE_ROBOTS } from "../../lib/metadata/site-metadata";
@@ -32,6 +33,10 @@ export const metadata: Metadata = {
  * The chrome itself moved into {@link AdminShell} (ESZ-154). This layout is the
  * only place that mounts it, which is what keeps every protected view on one
  * navigation instead of a per-page copy.
+ *
+ * {@link AdminServiceCatalogProvider} (ESZ-149) sits inside the session so every
+ * protected view names services from one catalog read: the `Prestations` page
+ * edits it, the calendar and the summary read labels from it.
  */
 export default function ProtectedAdminLayout({
   children,
@@ -40,7 +45,9 @@ export default function ProtectedAdminLayout({
 }>) {
   return (
     <AdminSessionProvider>
-      <AdminShell>{children}</AdminShell>
+      <AdminServiceCatalogProvider>
+        <AdminShell>{children}</AdminShell>
+      </AdminServiceCatalogProvider>
     </AdminSessionProvider>
   );
 }

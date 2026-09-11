@@ -11,6 +11,7 @@ use Eszter\Http\Endpoint\AdminMediaUploadEndpoint;
 use Eszter\Http\Router;
 use Eszter\Media\ImagePipeline;
 use Eszter\Media\MediaIngest;
+use Eszter\Media\MediaReferenceSource;
 use Eszter\Media\UploadTransport;
 
 /**
@@ -46,6 +47,14 @@ final class AdminMediaRoutes
         private readonly KernelServices $services,
         private readonly AuthenticatedServices $auth,
         private readonly UploadTransport $transport,
+        /**
+         * ESZ-149 — stores beyond the content documents that the delete
+         * reference check must consult (the service catalog, when a database
+         * is configured).
+         *
+         * @var list<MediaReferenceSource>
+         */
+        private readonly array $referenceSources = [],
     ) {
     }
 
@@ -84,7 +93,11 @@ final class AdminMediaRoutes
         $router->register(
             'DELETE',
             AdminMediaEndpoint::PATH,
-            new AdminMediaDeleteEndpoint(...$shared, storage: $this->services->storage),
+            new AdminMediaDeleteEndpoint(
+                ...$shared,
+                storage: $this->services->storage,
+                referenceSources: $this->referenceSources,
+            ),
         );
     }
 }

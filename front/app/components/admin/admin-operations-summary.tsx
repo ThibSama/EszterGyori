@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAdminSession } from "./admin-session-provider";
+import { useServiceLabel } from "./admin-service-catalog-provider";
 import type { AdminApiFailure, AdminBookingsSummary } from "../../lib/admin-api";
 import { formatParisDate, formatParisTime } from "../../lib/admin-booking-calendar";
 
@@ -18,17 +19,13 @@ import { formatParisDate, formatParisTime } from "../../lib/admin-booking-calend
  * the calendar's job; this band is read-only on purpose.
  */
 
-const SERVICE_LABELS: Record<string, string> = {
-  brows: "Sourcils",
-  lashes: "Cils",
-  makeup: "Maquillage",
-  nails: "Ongles",
-};
 
 const UPCOMING_DAYS = 7;
 
 export function AdminOperationsSummary() {
   const { api, markExpired } = useAdminSession();
+  // ESZ-149: names from the catalog, never from a hard-coded map.
+  const serviceLabel = useServiceLabel();
   const [summary, setSummary] = useState<AdminBookingsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
@@ -139,7 +136,7 @@ export function AdminOperationsSummary() {
                   {summary.today.map((entry) => (
                     <li key={entry.reference} className="admin-text-muted text-sm">
                       <span className="font-medium">{entry.localStart}</span> · {entry.customerName} ·{" "}
-                      {SERVICE_LABELS[entry.serviceKey] ?? entry.serviceKey}
+                      {serviceLabel(entry.serviceKey)}
                     </li>
                   ))}
                 </ul>
@@ -166,7 +163,7 @@ export function AdminOperationsSummary() {
                       <span className="font-medium">
                         {entry.localDate.slice(8)}/{entry.localDate.slice(5, 7)} {entry.localStart}
                       </span>{" "}
-                      · {entry.customerName} · {SERVICE_LABELS[entry.serviceKey] ?? entry.serviceKey}
+                      · {entry.customerName} · {serviceLabel(entry.serviceKey)}
                     </li>
                   ))}
                   {summary.counts.upcomingConfirmed > 6 && (

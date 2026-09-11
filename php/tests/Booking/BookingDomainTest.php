@@ -32,12 +32,23 @@ final class BookingDomainTest extends TestCase
         $this->states = new BookingStateMachine($this->contract);
     }
 
-    public function testServiceKeysAreTheStableSiteContentIdentifiers(): void
+    /**
+     * ESZ-149: the contract freezes the *shape* of a key, never the set. A
+     * key the four historical ones never included is accepted structurally —
+     * creating a service must not need a contract edit — and only the
+     * catalog decides whether it names an active service.
+     */
+    public function testServiceKeysAreShapeCheckedNotEnumerated(): void
     {
-        self::assertSame(['brows', 'eyeliner', 'lips', 'freckles'], $this->contract->serviceKeys);
         self::assertTrue($this->contract->acceptsServiceKey('brows'));
+        self::assertTrue($this->contract->acceptsServiceKey('microblading-sourcils'));
+        self::assertTrue($this->contract->acceptsServiceKey('prestation-2'));
         self::assertFalse($this->contract->acceptsServiceKey('Sourcils'));
         self::assertFalse($this->contract->acceptsServiceKey('../brows'));
+        self::assertFalse($this->contract->acceptsServiceKey('2brows'));
+        self::assertFalse($this->contract->acceptsServiceKey('a'));
+        self::assertFalse($this->contract->acceptsServiceKey(str_repeat('a', 65)));
+        self::assertSame(2000, $this->contract->descriptionMaxLength);
     }
 
     public function testTheV1StateGraphContainsOnlyExplicitCancellation(): void

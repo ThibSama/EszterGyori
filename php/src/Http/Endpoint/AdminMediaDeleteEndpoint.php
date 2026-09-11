@@ -15,6 +15,7 @@ use Eszter\Http\Response;
 use Eszter\Media\MediaContract;
 use Eszter\Media\MediaLibrary;
 use Eszter\Media\MediaMissingException;
+use Eszter\Media\MediaReferenceSource;
 use Eszter\Media\MediaReferencedException;
 use Eszter\Media\MediaReferences;
 use Eszter\Storage\ContentStorage;
@@ -31,7 +32,10 @@ use Eszter\Support\Logger;
  * ## The reference check is the point of this endpoint
  *
  * An asset is deletable only when **neither** the authoritative draft **nor** the
- * published document points at it. Both, because they can differ: an image
+ * published document points at it — nor, since ESZ-149, any row of the service
+ * catalog (`booking_services.image_src`, consulted through the
+ * {@see MediaReferenceSource} seam the composition root wires when a database
+ * exists). Both, because they can differ: an image
  * removed from the draft is still on the live site until someone publishes, and
  * deleting it then would break the public page for every visitor while the CMS
  * showed nothing wrong. Checking only the published side is the mirror mistake —
@@ -69,6 +73,8 @@ final class AdminMediaDeleteEndpoint extends AdminMediaEndpoint
         StructuralValidator $structural,
         Logger $logger,
         private readonly ContentStorage $storage,
+        /** @var list<MediaReferenceSource> */
+        private readonly array $referenceSources = [],
     ) {
         parent::__construct($auth, $sessions, $csrf, $contract, $library, $structural, $logger);
     }
@@ -146,6 +152,12 @@ final class AdminMediaDeleteEndpoint extends AdminMediaEndpoint
             }
 
             if (MediaReferences::isReferenced($content, $publicPath)) {
+                return true;
+            }
+        }
+
+        foreach ($this->referenceSources as $source) {
+            if ($source->references($publicPath)) {
                 return true;
             }
         }

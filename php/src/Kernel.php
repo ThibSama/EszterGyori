@@ -12,7 +12,10 @@ use Eszter\Auth\PdoSessionStore;
 use Eszter\Auth\SessionCookie;
 use Eszter\Auth\SessionManager;
 use Eszter\Auth\SessionStore;
+use Eszter\Booking\BookableServiceRepository;
 use Eszter\Booking\BookingApi;
+use Eszter\Booking\BookingSerializationLock;
+use Eszter\Booking\BookingServiceImageReferences;
 use Eszter\Booking\BookingDomainContract;
 use Eszter\Booking\PdoBookingApi;
 use Eszter\Composition\AdminContentRoutes;
@@ -39,6 +42,7 @@ use Eszter\Http\RequestId;
 use Eszter\Http\Response;
 use Eszter\Http\Router;
 use Eszter\Media\ManagedMediaReferenceGuard;
+use Eszter\Media\ManagedServiceImageReferencePolicy;
 use Eszter\Media\MediaContract;
 use Eszter\Media\MediaLibrary;
 use Eszter\Media\PhpUploadTransport;
@@ -50,6 +54,7 @@ use Eszter\Security\RateLimitGuard;
 use Eszter\Security\RateLimitPolicy;
 use Eszter\Storage\ContentStorage;
 use Eszter\Storage\ExportedPageFile;
+use Eszter\Storage\MediaContentLock;
 use Eszter\Storage\PublishedContentReader;
 use Eszter\Storage\StorageException;
 use Eszter\Support\Clock;
@@ -246,14 +251,39 @@ final class Kernel
         $accounts = $accountDirectory
             ?? ($database === null ? null : new AdminAccountRepository($database, $clock));
         $sessionStore ??= $database === null ? null : new PdoSessionStore($database, $clock);
-        $bookingApi ??= $database === null
-            ? null
-            : PdoBookingApi::createDefault(
+        // ESZ-149: the service catalog and the media library protect each
+        // other through two seams. A catalog write that stores an image
+        // resolves it against the catalogue and holds the media/content
+        // boundary shared across its commit (the same boundary and the same
+        // lock file ContentStorage uses); the media delete consults the
+        // catalog before removing bytes. Both exist only where a database
+        // does, because the catalog lives there.
+        $serviceImageReferences = [];
+        if ($database !== null) {
+            $bookingContract = BookingDomainContract::fromArtifacts($artifacts);
+            $serviceImages = new ManagedServiceImageReferencePolicy(
+                $media,
+                $mediaLibrary,
+                new MediaContentLock($config->lockDir),
+            );
+            $bookingApi ??= PdoBookingApi::createDefault(
                 $database,
                 $clock,
-                BookingDomainContract::fromArtifacts($artifacts),
+                $bookingContract,
                 NotificationPolicy::fromArtifacts($artifacts),
+                null,
+                $serviceImages,
             );
+            $serviceImageReferences[] = new BookingServiceImageReferences(
+                new BookableServiceRepository(
+                    $database,
+                    $clock,
+                    $bookingContract,
+                    new BookingSerializationLock($database),
+                    $serviceImages,
+                ),
+            );
+        }
 
         // Read from the artifact at boot so a malformed or unhonourable policy
         // fails the whole request with INVALID_CONFIGURATION, rather than at the
@@ -352,6 +382,7 @@ final class Kernel
                 $services,
                 $authenticated,
                 $uploadTransport ?? new PhpUploadTransport(),
+                $serviceImageReferences,
             ))->register($router);
         }
 

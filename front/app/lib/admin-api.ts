@@ -10,6 +10,7 @@ import {
   ADMIN_AVAILABILITY_QUERY_PATH,
   ADMIN_AVAILABILITY_WEEKLY_PATH,
   ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+  ADMIN_SERVICES_PATH,
   AUTH_LOGIN_PATH,
   AUTH_LOGOUT_PATH,
   AUTH_SESSION_PATH,
@@ -32,6 +33,8 @@ import {
   adminAvailabilityResponseSchema,
   adminAvailabilityWeeklyResponseSchema,
   adminAvailabilityExceptionResponseSchema,
+  adminServiceResponseSchema,
+  adminServicesResponseSchema,
   publishedContentEnvelopeV1Schema,
   serverDraftEnvelopeV1Schema,
   type ApiErrorCode,
@@ -135,6 +138,32 @@ export type AdminAvailabilityWindow = AdminAvailabilityException["windows"][numb
 
 /** A weekly rule as it is *sent*: no id, because the whole set is replaced. */
 export type AdminWeeklyRuleInput = Omit<AdminWeeklyRule, "id">;
+
+/**
+ * ESZ-149 — one catalog row as the back-office sees it. `updatedAt` is the
+ * row's optimistic-concurrency token, sent back byte-for-byte as
+ * `expectedUpdatedAt` on every mutation of that row.
+ */
+export type AdminBookableService = z.infer<typeof adminServicesResponseSchema>["services"][number];
+export type AdminServiceMutation =
+  | {
+      action: "create";
+      label: string;
+      description: string;
+      durationMinutes: number;
+      imageSrc: string | null;
+    }
+  | {
+      action: "update";
+      key: string;
+      expectedUpdatedAt: string;
+      label: string;
+      description: string;
+      durationMinutes: number;
+      imageSrc: string | null;
+    }
+  | { action: "archive"; key: string; expectedUpdatedAt: string }
+  | { action: "restore"; key: string; expectedUpdatedAt: string };
 
 export type AdminAvailabilityExceptionMutation =
   | { action: "close"; expectedRevision: number; localDate: string; note: string | null }
@@ -293,6 +322,19 @@ export interface AdminApiClient {
     input: AdminAvailabilityExceptionMutation,
     csrfToken: string,
   ): Promise<AdminApiResult<AdminAvailabilityExceptionResult>>;
+  /**
+   * ESZ-149 — the whole service catalog, archived rows included, in catalog
+   * order. An authenticated read, no CSRF.
+   */
+  listServices(): Promise<AdminApiResult<AdminBookableService[]>>;
+  /**
+   * ESZ-149 — create, update, archive or restore one service, and resolve
+   * with what the server stored — never with what was sent.
+   */
+  mutateService(
+    input: AdminServiceMutation,
+    csrfToken: string,
+  ): Promise<AdminApiResult<AdminBookableService>>;
 }
 
 /** The only reset source the contract defines. Stated once, sent from here. */
@@ -745,6 +787,24 @@ export function createAdminApiClient(
       });
       if (!response.ok) return response;
       return parsed(adminAvailabilityExceptionResponseSchema, response.body);
+    },
+
+    async listServices() {
+      const response = await send(ADMIN_SERVICES_PATH, { method: "GET" });
+      if (!response.ok) return response;
+      const catalog = parsed(adminServicesResponseSchema, response.body);
+      return catalog.ok ? { ok: true as const, value: catalog.value.services } : catalog;
+    },
+
+    async mutateService(input, csrfToken) {
+      const response = await send(ADMIN_SERVICES_PATH, {
+        method: "PATCH",
+        csrfToken,
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      const stored = parsed(adminServiceResponseSchema, response.body);
+      return stored.ok ? { ok: true as const, value: stored.value.service } : stored;
     },
   };
 }

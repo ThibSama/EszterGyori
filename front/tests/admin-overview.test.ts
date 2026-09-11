@@ -102,14 +102,16 @@ test("“Vue d’ensemble” and “Contenu du site” point at the routes they 
   assert.equal(activeAdminNavKey("/admin/content"), "content");
 });
 
-test("the accepted Calendrier mapping and the pending Prestations survive ESZ-155", () => {
+test("the accepted Calendrier mapping survives ESZ-155 and Prestations is live since ESZ-149", () => {
   const calendar = adminNavItem("calendar");
   assert.ok(calendar.status === "available" && calendar.href === "/admin/bookings");
   // Availability is still represented by Calendrier rather than by an entry of
   // its own — the ESZ-154 contract this checkpoint builds on.
   assert.equal(activeAdminNavKey("/admin/availability"), "calendar");
 
-  assert.equal(adminNavItem("services").status, "pending");
+  const services = adminNavItem("services");
+  assert.ok(services.status === "available" && services.href === "/admin/services");
+  assert.equal(activeAdminNavKey("/admin/services"), "services");
 });
 
 test("no navigation or quick action points at a route that does not exist", () => {
@@ -117,6 +119,7 @@ test("no navigation or quick action points at a route that does not exist", () =
     "/admin": join(appRoot, "admin", "(protected)", "page.tsx"),
     "/admin/content": join(appRoot, "admin", "(protected)", "content", "page.tsx"),
     "/admin/bookings": join(appRoot, "admin", "(protected)", "bookings", "page.tsx"),
+    "/admin/services": join(appRoot, "admin", "(protected)", "services", "page.tsx"),
   };
 
   for (const item of ADMIN_NAV_ITEMS) {

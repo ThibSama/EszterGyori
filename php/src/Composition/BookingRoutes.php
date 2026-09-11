@@ -12,6 +12,8 @@ use Eszter\Http\Endpoint\AdminBookingMoveAvailabilityEndpoint;
 use Eszter\Http\Endpoint\AdminBookingsMutationEndpoint;
 use Eszter\Http\Endpoint\AdminBookingsQueryEndpoint;
 use Eszter\Http\Endpoint\AdminBookingsSummaryEndpoint;
+use Eszter\Http\Endpoint\AdminServicesMutationEndpoint;
+use Eszter\Http\Endpoint\AdminServicesQueryEndpoint;
 use Eszter\Http\Endpoint\PublicBookableServicesEndpoint;
 use Eszter\Http\Endpoint\PublicBookingAvailabilityEndpoint;
 use Eszter\Http\Endpoint\PublicBookingCreateEndpoint;
@@ -26,8 +28,8 @@ use Eszter\Http\Router;
  * frozen registration condition: without booking use cases these routes would
  * only ever answer 500, so they are not routed at all.
  *
- * The admin half — query, mutation, move-availability, summary and the
- * availability editor (ESZ-063/064/065) — is gated on the same condition as
+ * The admin half — query, mutation, move-availability, summary, the
+ * availability editor (ESZ-063/064/065) and the service catalog (ESZ-149) — is gated on the same condition as
  * every other admin surface: an authenticated session must exist. This
  * composer therefore receives the {@see AuthenticatedServices} bundle when the
  * root wired an authenticated surface and `null` otherwise, and registers the
@@ -109,6 +111,16 @@ final class BookingRoutes
             'PATCH',
             AdminAvailabilityExceptionsEndpoint::PATH,
             new AdminAvailabilityExceptionsEndpoint(...$admin),
+        );
+        $router->register(
+            'GET',
+            AdminServicesQueryEndpoint::PATH,
+            new AdminServicesQueryEndpoint(...$admin),
+        );
+        $router->register(
+            'PATCH',
+            AdminServicesMutationEndpoint::PATH,
+            new AdminServicesMutationEndpoint(...$admin),
         );
     }
 }

@@ -196,15 +196,16 @@ The admin password is read interactively or from standard input, never an argume
 Repeat `provision-booking-service.php` per service key to update or disable
 (`--disable`) it.
 
-The booking command takes no `--label` (AUD-14): the stored booking label is the
-title of the matching item in the *published* SiteContent document — the item whose
-`id` is the `--key` — so the CMS stays the single label authority and re-provisioning
-after a published title change refreshes the stored copy. The command therefore
-refuses, without touching `booking_services`, when the key is unknown or when no
-published content exists yet: publish the site content from the admin editor (or let
-the first site request initialize the content store with the canonical defaults)
-before first provisioning. Unknown keys, invalid published content and the now-rejected
-`--label` option all exit non-zero and change no row.
+Since ESZ-149 the `booking_services` table is the administrable service catalog: the
+back-office `Prestations` page adds, edits and archives services (name, description,
+duration, image) and the reservation page reads that catalog. The CLI therefore never
+overwrites an existing row's admin-owned name, description or image — re-provisioning
+rewrites duration, buffers and activity only, and `--label=NAME` is the one explicit
+way to rename from the command line. When the CLI *creates* a row it names it from
+`--label` or, absent that, from the matching item of the *published* SiteContent
+document (whose description seeds the new row); a new key with neither is refused,
+and nothing is invented. Malformed keys exit 2 and change no row; a missing or
+unreadable published document refuses only a new CMS-named row (exit 1).
 
 ## 4. Configure SMTP and the cron entries
 

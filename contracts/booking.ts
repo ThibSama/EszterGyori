@@ -1,5 +1,3 @@
-import { serviceItemIds } from "./site-content.js";
-
 /**
  * Package 4.1/4.2/7.1 language-neutral booking-domain contract.
  *
@@ -28,8 +26,18 @@ import { serviceItemIds } from "./site-content.js";
  * current frontend renders, and `POST /api/bookings` requires the machine id
  * of the displayed notice beside `consentAccepted: true`. The request never
  * carries notice text; the server accepts only an id the catalog contains.
+ *
+ * Version 8 (ESZ-149) makes the operational service catalog
+ * (`booking_services`) the single authority for what can be reserved. Service
+ * keys are no longer a frozen enum mirrored from `SiteContent.services.items`:
+ * a key is any string matching `services.keyPattern` that names a catalog
+ * row, so an administrator can create a service without a contract edit. The
+ * catalog now also owns the editorial facts the reservation flow renders —
+ * name, description and one managed image reference — and archival is a
+ * non-destructive `is_active = 0` that removes a service from new reservation
+ * choices while every historical booking keeps its stored key and times.
  */
-export const BOOKING_DOMAIN_VERSION = 7;
+export const BOOKING_DOMAIN_VERSION = 8;
 
 /**
  * The business operates in metropolitan France. Rules are authored as local
@@ -38,16 +46,24 @@ export const BOOKING_DOMAIN_VERSION = 7;
 export const BOOKING_TIME_ZONE = "Europe/Paris";
 
 /**
- * Reuse the CMS's stable business identifiers as keys; a key is never an
- * editorial title. The stored booking label (see `services.labelSource`) is
- * the matching published item's title mirrored at provisioning — a cache of
- * the SiteContent authority, never an independent copy.
+ * A service key is a stable, lowercase, URL-safe identifier that names one
+ * `booking_services` row; it is never an editorial title. Since ESZ-149 the
+ * set of keys is owned by that table alone: the wire accepts any value
+ * matching {@link BOOKING_SERVICE_KEY_PATTERN} and the domain decides whether
+ * it names an actively bookable service. The four keys that existed before
+ * (`brows`, `eyeliner`, `lips`, `freckles`) are ordinary rows of that table
+ * and keep every booking that references them.
  */
-export const bookableServiceKeys = serviceItemIds;
-export type BookableServiceKey = (typeof bookableServiceKeys)[number];
+export type BookableServiceKey = string;
 
 export const BOOKING_SERVICE_KEY_PATTERN = "^[a-z][a-z0-9-]{1,63}$";
 export const BOOKING_SERVICE_LABEL_MAX_LENGTH = 160;
+/**
+ * ESZ-149 — the bound on the catalog's own description of a service. Same
+ * ceiling as a booking note: long enough for a paragraph the reservation
+ * page can show, bounded so the public discovery payload stays small.
+ */
+export const BOOKING_SERVICE_DESCRIPTION_MAX_LENGTH = 2000;
 export const BOOKING_SERVICE_DURATION_MIN_MINUTES = 5;
 export const BOOKING_SERVICE_DURATION_MAX_MINUTES = 480;
 export const BOOKING_SERVICE_BUFFER_MAX_MINUTES = 240;
@@ -441,7 +457,7 @@ export const bookingSerializationPolicy = {
     "booking create, move and cancel",
     "weekly availability replacement",
     "date exception open, close and remove",
-    "service provisioning that changes is_active, duration, buffer-before or buffer-after",
+    "service provisioning or an admin service mutation (create, update, archive, restore) that changes is_active, duration, buffer-before or buffer-after",
   ],
   lockOrder:
     "booking_resource_locks.primary, acquired inside the owning transaction and before any other mutable row lock, then the availability revision / service / booking rows, then writes.",
@@ -604,29 +620,42 @@ export const bookingDomainContract = {
   version: BOOKING_DOMAIN_VERSION,
   scope: "Package 4.1/4.2 booking domain and dynamic slot computation; no booking HTTP API.",
   services: {
-    keys: bookableServiceKeys,
-    source: "SiteContent.services.items[].id",
+    /**
+     * ESZ-149 — the catalog is the authority. There is no frozen key list:
+     * `booking_services.service_key` is the complete set of keys and the
+     * wire admits any value of the frozen shape, which the domain then
+     * resolves against that table.
+     */
+    keyAuthority: "booking_services.service_key",
     keyPattern: BOOKING_SERVICE_KEY_PATTERN,
     labelMaxLength: BOOKING_SERVICE_LABEL_MAX_LENGTH,
+    descriptionMaxLength: BOOKING_SERVICE_DESCRIPTION_MAX_LENGTH,
     /**
-     * AUD-14 — where a stored booking label may come from. There is exactly one
-     * authority: the *published* SiteContent services item whose `id` is the
-     * service key. Provisioning persists exactly that item's title (trimmed of
-     * boundary whitespace only) and re-provisioning after a published title
-     * change refreshes the stored label; an operator-supplied `--label`, a
-     * draft, the canonical defaults or a pre-existing row are never an
-     * authority, and a missing key or unreadable published content refuses
-     * provisioning before any row changes.
+     * ESZ-149 — where the name, description and image of a service come
+     * from. The catalog row is the single authority for all three: the
+     * administrator edits them in the back-office, the public reservation
+     * flow reads them from the catalog and never matches a service against
+     * the fixed `SiteContent.services.items` again. The image is one
+     * reference to a managed media asset (`MEDIA_PUBLIC_PATH_PATTERN`, or
+     * null): the same stored bytes serve the admin list thumbnail, the edit
+     * form and the public reservation page, and a referenced asset cannot be
+     * deleted from the media library.
      */
-    labelSource:
-      "The booking label stored beside a service key is that item's title from the validated published SiteContent document, mirrored at provisioning time; re-provisioning after a published title change updates it. It is never operator-supplied and never falls back to a draft, the defaults or an existing row.",
+    catalogAuthority:
+      "booking_services owns the name (booking_label), description and one managed image reference of every reservable service. The public reservation flow consumes this catalog; SiteContent.services stays the marketing copy of the home page and is not a reservation authority.",
+    keyDerivation:
+      "A new service's key is derived server-side from its name (lowercase ASCII slug matching keyPattern, de-duplicated with a numeric suffix) and is immutable afterwards.",
+    archive:
+      "Archiving sets is_active = 0 and nothing else: the row, its key and every booking that references it survive, the service leaves public discovery and can no longer be booked, and it can be restored. No service row is ever hard-deleted.",
     durationMinutes: {
       min: BOOKING_SERVICE_DURATION_MIN_MINUTES,
       max: BOOKING_SERVICE_DURATION_MAX_MINUTES,
     },
     bufferMinutes: { min: 0, max: BOOKING_SERVICE_BUFFER_MAX_MINUTES },
     provisioning:
-      "Explicit, repeat-safe operator action. Migrations and application boot seed no service rows.",
+      "Explicit, repeat-safe operator action or an authenticated admin mutation. Migrations and application boot seed no service rows; the operator CLI seeds a new row's editorial facts from the published SiteContent item of the same key when one exists and never overwrites an existing row's admin-owned name, description or image.",
+    futureBookabilityOnly:
+      "Activation, archival and duration changes affect future bookability only: an existing booking keeps its stored service key, start and end instants.",
   },
   timezone: {
     iana: BOOKING_TIME_ZONE,

@@ -1,4 +1,4 @@
-type TextInputType = "text" | "url" | "email";
+type TextInputType = "text" | "url" | "email" | "number";
 
 export function Field({
   id,

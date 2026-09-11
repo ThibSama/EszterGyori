@@ -40,6 +40,10 @@ const LIVE_ADMIN_ROUTES = [
     href: "/admin/availability",
     page: join(appRoot, "admin", "(protected)", "availability", "page.tsx"),
   },
+  {
+    href: "/admin/services",
+    page: join(appRoot, "admin", "(protected)", "services", "page.tsx"),
+  },
 ] as const;
 
 test("the first level is exactly the four canonical business destinations, in order", () => {
@@ -80,10 +84,11 @@ test("every clickable entry points at a route that exists, and nothing else is c
     Object.fromEntries(navigable),
     {
       // ESZ-155 turned `/admin` into the overview and moved the CMS to its own
-      // route. Both are live; `Prestations` still has no page to open.
+      // route; ESZ-149 gave `Prestations` the service catalog to open.
       "Vue d’ensemble": "/admin",
       "Contenu du site": "/admin/content",
       Calendrier: "/admin/bookings",
+      Prestations: "/admin/services",
     },
     "only destinations backed by a usable route may be clickable",
   );
@@ -153,7 +158,6 @@ test("pending destinations are declared but announce themselves as not yet avail
   );
 
   assert.deepEqual(pending.map((item) => item.label), [
-    "Prestations",
     "Besoin d’aide",
     "Paramètres",
   ]);
@@ -169,7 +173,6 @@ test("pending destinations are declared but announce themselves as not yet avail
 test("no placeholder page was created for a pending destination", () => {
   for (const segment of [
     "overview",
-    "services",
     "prestations",
     "settings",
     "parametres",
@@ -393,9 +396,12 @@ test("the signed-in account identity survives the narrow layout", () => {
 });
 
 test("the protected layout mounts the shell once, inside the unchanged session provider", () => {
+  // ESZ-149: the service catalog provider sits between the session and the
+  // shell — inside the session so it can read the admin API, outside the
+  // shell so every protected view shares one catalog read.
   assert.match(
     layoutSource,
-    /<AdminSessionProvider>\s*<AdminShell>\{children\}<\/AdminShell>\s*<\/AdminSessionProvider>/,
+    /<AdminSessionProvider>\s*<AdminServiceCatalogProvider>\s*<AdminShell>\{children\}<\/AdminShell>\s*<\/AdminServiceCatalogProvider>\s*<\/AdminSessionProvider>/,
     "the session/logout flow must still wrap the whole protected area",
   );
   assert.equal((layoutSource.match(/<AdminShell>/g) ?? []).length, 1);

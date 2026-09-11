@@ -10,14 +10,15 @@ use Eszter\Contract\ContractArtifacts;
 /**
  * The generated Package 4.1/4.2 booking contract, consumed rather than restated.
  *
- * Service keys come directly from `SiteContent.services.items[].id`; the timezone
- * and state graph are frozen beside them. PHP therefore cannot quietly accept a
- * service or transition the language-neutral contract does not contain.
+ * The timezone and state graph are frozen here. Service keys are not (ESZ-149):
+ * the artifact freezes only their *shape* (`services.keyPattern`), and the set
+ * of keys is owned by the `booking_services` catalog table — so PHP cannot
+ * quietly accept a transition the language-neutral contract does not contain,
+ * and it cannot require a contract edit to add a service either.
  */
 final class BookingDomainContract
 {
     /**
-     * @param list<string> $serviceKeys
      * @param list<string> $foldOffsets
      * @param list<string> $states
      * @param array<string, list<string>> $transitions
@@ -26,9 +27,9 @@ final class BookingDomainContract
     private function __construct(
         public readonly int $version,
         public readonly string $timezone,
-        public readonly array $serviceKeys,
         public readonly string $serviceKeyPattern,
         public readonly int $labelMaxLength,
+        public readonly int $descriptionMaxLength,
         public readonly int $durationMinMinutes,
         public readonly int $durationMaxMinutes,
         public readonly int $bufferMaxMinutes,
@@ -81,9 +82,9 @@ final class BookingDomainContract
         return new self(
             self::positiveInt($document, 'version'),
             self::string($timezone, 'iana'),
-            self::stringList($services, 'keys'),
             self::string($services, 'keyPattern'),
             self::positiveInt($services, 'labelMaxLength'),
+            self::positiveInt($services, 'descriptionMaxLength'),
             self::positiveInt($duration, 'min'),
             self::positiveInt($duration, 'max'),
             self::nonNegativeInt($buffer, 'max'),
@@ -104,10 +105,15 @@ final class BookingDomainContract
         );
     }
 
+    /**
+     * Whether `$key` has the frozen service-key shape. Shape only: whether a
+     * well-formed key names an actively bookable service is the catalog's
+     * decision ({@see BookingServiceCatalog::requireActive()}), never a
+     * contract enum's.
+     */
     public function acceptsServiceKey(string $key): bool
     {
-        return \in_array($key, $this->serviceKeys, true)
-            && preg_match('#' . $this->serviceKeyPattern . '#D', $key) === 1;
+        return preg_match('#' . $this->serviceKeyPattern . '#D', $key) === 1;
     }
 
     public function acceptsState(string $state): bool

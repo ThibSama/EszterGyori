@@ -71,8 +71,9 @@ export const ADMIN_NAV_PENDING_LABEL = "Bientôt";
  * `/admin/availability` keeps working as a direct route without a first-level
  * label of its own.
  *
- * `Prestations` is pending: Package 10.2 owns that surface too, and no route
- * for it exists.
+ * `Prestations` is live (ESZ-149): `/admin/services` is the service catalog —
+ * add, edit and archive a service with its name, description, duration and
+ * image — and the entry got its `href` the moment that route became usable.
  */
 export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
   {
@@ -107,8 +108,11 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
   {
     key: "services",
     label: "Prestations",
-    status: "pending",
-    pendingLabel: ADMIN_NAV_PENDING_LABEL,
+    href: "/admin/services",
+    status: "available",
+    // Nothing lives below `/admin/services` today; prefix-matching keeps the
+    // entry lit if the catalog ever gains a detail route.
+    exact: false,
   },
 ];
 

@@ -14,14 +14,15 @@ import {
 import {
   RESERVATION_HORIZON_DAYS,
   RESERVATION_RANGE_DAYS,
-  activeEditorialServices,
   addCivilDays,
+  bookableServicesToOffer,
   datesBetween,
   createBookingRequest,
   initialReservationState,
   parisToday,
   rangeFrom,
   reservationFlowReducer,
+  selectedServiceLabel,
 } from "../../lib/reservation-flow";
 import { createSiteAppearanceVariables } from "../../lib/site-appearance";
 import {
@@ -29,6 +30,7 @@ import {
   retryAllowedAtEpochMs,
   retryWaitLabel,
 } from "../../lib/retry-after";
+import { EditorialImage } from "../editorial-image";
 import { ReservationDetails } from "./reservation-details";
 
 const DATE_FORMAT = new Intl.DateTimeFormat("fr-FR", {
@@ -156,13 +158,8 @@ export function ReservationFlow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [today, state.serviceKey, state.fromDate, state.untilDate, refreshVersion]);
 
-  const visibleServices = useMemo(
-    () => activeEditorialServices(content.services.items, services),
-    [content.services.items, services],
-  );
-  const selectedServiceLabel = visibleServices.find(
-    ({ booking }) => booking.key === state.serviceKey,
-  )?.editorial.title ?? "Prestation";
+  const visibleServices = useMemo(() => bookableServicesToOffer(services), [services]);
+  const serviceLabelText = selectedServiceLabel(visibleServices, state.serviceKey);
   const dates = state.availabilityStatus === "ready"
     ? datesBetween(state.fromDate, state.untilDate)
     : [];
@@ -272,7 +269,7 @@ export function ReservationFlow() {
           {state.phase === "confirmed" ? (
             <ReservationDetails
               state={state}
-              serviceLabel={selectedServiceLabel}
+              serviceLabel={serviceLabelText}
               dateLabel={dateLabel}
               dispatch={dispatch}
               nowEpochMs={nowEpochMs}
@@ -302,7 +299,7 @@ export function ReservationFlow() {
             )}
             {visibleServices.length > 0 && (
               <div className="mt-7 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {visibleServices.map(({ editorial, booking }) => {
+                {visibleServices.map((booking) => {
                   const selected = state.serviceKey === booking.key;
                   return (
                     <button
@@ -310,11 +307,27 @@ export function ReservationFlow() {
                       type="button"
                       disabled={submissionInFlight}
                       aria-pressed={selected}
+                      data-service-key={booking.key}
                       onClick={() => dispatch({ type: "select-service", serviceKey: booking.key })}
-                      className={`rounded-2xl border p-5 text-left transition-all ${selected ? "border-sage-500 bg-sage-100/80 shadow-[0_8px_24px_rgba(44,43,40,0.08)]" : "border-white/70 bg-white/45 hover:border-sage-300 hover:bg-white/70"}`}>
-                      <span className="block font-display text-2xl text-warm-800">{editorial.title || booking.label}</span>
-                      <span className="mt-1 block text-sm text-sage-600">{durationLabel(booking.durationMinutes)}</span>
-                      <span className="mt-3 line-clamp-2 block text-sm leading-relaxed text-warm-500">{editorial.description}</span>
+                      className={`overflow-hidden rounded-2xl border text-left transition-all ${selected ? "border-sage-500 bg-sage-100/80 shadow-[0_8px_24px_rgba(44,43,40,0.08)]" : "border-white/70 bg-white/45 hover:border-sage-300 hover:bg-white/70"}`}>
+                      {booking.imageSrc !== null && (
+                        <span className="relative block aspect-[3/2] w-full overflow-hidden bg-warm-100">
+                          <EditorialImage
+                            src={booking.imageSrc}
+                            alt=""
+                            surface={`reservation-service-${booking.key}`}
+                            className="absolute inset-0 h-full w-full object-cover"
+                            fallback={null}
+                          />
+                        </span>
+                      )}
+                      <span className="block p-5">
+                        <span className="block font-display text-2xl text-warm-800">{booking.label}</span>
+                        <span className="mt-1 block text-sm text-sage-600">{durationLabel(booking.durationMinutes)}</span>
+                        {booking.description.length > 0 && (
+                          <span className="mt-3 line-clamp-3 block text-sm leading-relaxed text-warm-500">{booking.description}</span>
+                        )}
+                      </span>
                     </button>
                   );
                 })}
@@ -413,7 +426,7 @@ export function ReservationFlow() {
           </section>
           <ReservationDetails
             state={state}
-            serviceLabel={selectedServiceLabel}
+            serviceLabel={serviceLabelText}
             dateLabel={dateLabel}
             dispatch={dispatch}
             nowEpochMs={nowEpochMs}

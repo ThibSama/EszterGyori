@@ -135,7 +135,7 @@ final class AvailabilitySlotEngineTest extends TestCase
 
     public function testInactiveServicesCannotProduceSlots(): void
     {
-        $service = new BookableService('brows', 'Sourcils', 30, 0, 0, false, 'now', 'now');
+        $service = new BookableService('brows', 'Sourcils', '', null, 30, 0, 0, false, 'now', 'now');
 
         $this->expectException(BookingValidationException::class);
         $this->engine->generate(
@@ -248,6 +248,6 @@ final class AvailabilitySlotEngineTest extends TestCase
 
     private function service(int $duration, int $before = 0, int $after = 0): BookableService
     {
-        return new BookableService('brows', 'Sourcils', $duration, $before, $after, true, 'now', 'now');
+        return new BookableService('brows', 'Sourcils', '', null, $duration, $before, $after, true, 'now', 'now');
     }
 }

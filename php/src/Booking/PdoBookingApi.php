@@ -30,7 +30,9 @@ use Eszter\Support\Clock;
  *   (locks, stale-token refusal, history and notification scheduling);
  * - {@see BookingAdminReader} — admin query/summary reads and their bounds;
  * - {@see AvailabilityAdministration} — availability editor reads and
- *   revision-protected schedule writes.
+ *   revision-protected schedule writes;
+ * - {@see BookingServiceAdministration} — the back-office catalog reads and
+ *   token-protected service mutations (ESZ-149).
  *
  * The class owns no domain rule of its own; it only routes. MySQL-owned
  * concurrency control stays in {@see BookingSerializationLock} and the
@@ -44,6 +46,7 @@ final class PdoBookingApi implements BookingApi
         private readonly BookingLifecycle $lifecycle,
         private readonly BookingAdminReader $adminReader,
         private readonly AvailabilityAdministration $availabilityAdministration,
+        private readonly BookingServiceAdministration $serviceAdministration,
     ) {
     }
 
@@ -53,10 +56,17 @@ final class PdoBookingApi implements BookingApi
         BookingDomainContract $contract,
         NotificationPolicy $notificationPolicy,
         ?BookingNotificationProducer $notificationProducer = null,
+        ?ServiceImageReferencePolicy $serviceImages = null,
     ): self {
         $time = new BookingTimePolicy($contract);
         $serialization = new BookingSerializationLock($database);
-        $services = new BookableServiceRepository($database, $clock, $contract, $serialization);
+        $services = new BookableServiceRepository(
+            $database,
+            $clock,
+            $contract,
+            $serialization,
+            $serviceImages ?? new NullServiceImageReferencePolicy(),
+        );
         $bookings = new BookingRepository(
             $database,
             $clock,
@@ -106,6 +116,7 @@ final class PdoBookingApi implements BookingApi
             ),
             new BookingAdminReader($contract, $time, $clock, $availability, $bookings, $history),
             new AvailabilityAdministration($contract, $availabilityRepository),
+            new BookingServiceAdministration($services),
         );
     }
 
@@ -167,5 +178,17 @@ final class PdoBookingApi implements BookingApi
     public function adminMutateAvailabilityException(array $request): array
     {
         return $this->availabilityAdministration->adminMutateAvailabilityException($request);
+    }
+
+    /** @inheritDoc */
+    public function adminServices(): array
+    {
+        return $this->serviceAdministration->adminServices();
+    }
+
+    /** @inheritDoc */
+    public function adminMutateService(array $request): array
+    {
+        return $this->serviceAdministration->adminMutateService($request);
     }
 }

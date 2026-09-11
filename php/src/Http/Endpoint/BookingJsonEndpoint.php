@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Eszter\Http\Endpoint;
 
+use Eszter\Booking\BookableServiceNotFoundException;
+use Eszter\Booking\BookableServiceRevisionConflictException;
 use Eszter\Booking\BookingApi;
 use Eszter\Booking\BookingNotFoundException;
 use Eszter\Booking\BookingRevisionConflictException;
@@ -78,9 +80,20 @@ abstract class BookingJsonEndpoint
                 $this->headers(),
                 $exception->getMessage(),
             );
+        } catch (BookableServiceRevisionConflictException $exception) {
+            $this->logger->info(
+                'Service write refused: the catalog row changed under the caller.',
+                $exception->logContext(),
+            );
+            throw new HttpException(
+                409,
+                \Eszter\Http\ErrorCatalog::REVISION_CONFLICT,
+                $this->headers(),
+                $exception->getMessage(),
+            );
         } catch (SlotUnavailableException $exception) {
             throw HttpException::slotUnavailable($this->headers(), $exception->getMessage());
-        } catch (BookingNotFoundException $exception) {
+        } catch (BookingNotFoundException | BookableServiceNotFoundException $exception) {
             throw new HttpException(
                 404,
                 \Eszter\Http\ErrorCatalog::NOT_FOUND,

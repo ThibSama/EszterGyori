@@ -13,7 +13,8 @@ import {
 import type { BookingAvailability, BookingSlot } from "../app/lib/booking-api";
 import {
   RESERVATION_HORIZON_DAYS,
-  activeEditorialServices,
+  bookableServicesToOffer,
+  selectedServiceLabel,
   addCivilDays,
   createBookingRequest,
   initialReservationState,
@@ -51,15 +52,29 @@ test("Paris today ignores the host timezone and ranges stay inside the 90-day ho
   assert.equal(addCivilDays("2026-03-29", RESERVATION_HORIZON_DAYS - 1), "2026-06-26");
 });
 
-test("only server-active canonical services are merged with editorial content", () => {
-  const visible = activeEditorialServices(defaultSiteContent.services.items, [
-    { key: "lips", label: "Lèvres réservation", durationMinutes: 45 },
-    { key: "brows", label: "Sourcils réservation", durationMinutes: 30 },
-  ]);
+test("the catalog is offered as served: catalog order, no CMS matching, no duplicate key (ESZ-149)", () => {
+  const catalog = [
+    { key: "lips", label: "Lèvres réservation", description: "Contour.", durationMinutes: 45, imageSrc: null },
+    { key: "microblading-sourcils", label: "Microblading", description: "", durationMinutes: 90, imageSrc: "/media/med_" + "a".repeat(32) + ".webp" },
+    { key: "brows", label: "Sourcils réservation", description: "Poudré.", durationMinutes: 30, imageSrc: null },
+    { key: "brows", label: "Doublon", description: "", durationMinutes: 30, imageSrc: null },
+  ];
+  const visible = bookableServicesToOffer(catalog);
 
-  assert.deepEqual(visible.map(({ editorial }) => editorial.id), ["brows", "lips"]);
-  assert.equal(visible[0].editorial.title, "Sourcils");
-  assert.equal(visible[0].booking.durationMinutes, 30);
+  // A key the fixed CMS list never contained is offered exactly like the
+  // historical ones, in the order the server chose.
+  assert.deepEqual(visible.map((service) => service.key), ["lips", "microblading-sourcils", "brows"]);
+  assert.equal(visible[1].imageSrc, "/media/med_" + "a".repeat(32) + ".webp");
+  assert.equal(visible[2].label, "Sourcils réservation");
+  assert.equal(visible[2].description, "Poudré.");
+  assert.ok(
+    !defaultSiteContent.services.items.some((item) => (item.id as string) === "microblading-sourcils"),
+    "the fixture key must be one the CMS does not know, or this proves nothing",
+  );
+
+  assert.equal(selectedServiceLabel(visible, "microblading-sourcils"), "Microblading");
+  assert.equal(selectedServiceLabel(visible, "archived-key"), "Prestation");
+  assert.equal(selectedServiceLabel(visible, null), "Prestation");
 });
 
 test("changing service or date clears all downstream choices", () => {

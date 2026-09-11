@@ -69,7 +69,7 @@ final class MigrationTest extends TestCase
 
         self::assertSame(
             ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
-             '0009', '0010', '0011', '0012', '0013', '0014', '0015'],
+             '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016'],
             $applied,
         );
     }
@@ -371,7 +371,7 @@ final class MigrationTest extends TestCase
                     'last_seen_at', 'expires_at', 'absolute_expires_at',
                 ],
                 'booking_services' => [
-                    'service_key', 'booking_label', 'duration_minutes',
+                    'service_key', 'booking_label', 'description', 'image_src', 'duration_minutes',
                     'buffer_before_minutes', 'buffer_after_minutes', 'is_active',
                     'created_at', 'updated_at',
                 ],
@@ -933,6 +933,77 @@ final class MigrationTest extends TestCase
             ['booking' => $bookingId],
         );
         self::assertSame(41, $updated['lifecycle_event_id'] ?? null);
+    }
+
+    // --- ESZ-149: the catalog's editorial columns --------------------------
+
+    /**
+     * Migration 0016 turns booking_services into the administrable catalog:
+     * a NOT NULL description defaulting to empty (an old row gains nothing
+     * fabricated), a nullable ascii_bin image_src bounded by a CHECK to the
+     * managed media path shape, and every guard repeat-safe.
+     */
+    public function testMigration0016AddsTheCatalogColumnsWithoutTouchingExistingRows(): void
+    {
+        $this->migrator()->migrate();
+
+        $description = $this->column('booking_services', 'description');
+        self::assertSame('varchar', $description['DATA_TYPE']);
+        self::assertSame('NO', $description['IS_NULLABLE']);
+        self::assertSame(2000, (int) $this->database->fetchOne(
+            'SELECT CHARACTER_MAXIMUM_LENGTH AS n FROM information_schema.columns'
+            . " WHERE table_schema = DATABASE() AND table_name = 'booking_services' AND column_name = 'description'",
+        )['n']);
+        $image = $this->column('booking_services', 'image_src');
+        self::assertSame('YES', $image['IS_NULLABLE']);
+        self::assertSame('ascii_bin', $image['COLLATION_NAME']);
+        $check = $this->checkClause('booking_services', 'chk_booking_services_image_src');
+        self::assertNotNull($check);
+        self::assertStringContainsString('is null', (string) $check);
+        self::assertStringContainsString('regexp_like', (string) $check);
+
+        // A pre-0016-style insert (neither column stated) lands with an empty
+        // description and no image: nothing is invented for an old row.
+        $this->database->run(
+            'INSERT INTO booking_services'
+            . ' (service_key, booking_label, duration_minutes, buffer_before_minutes,'
+            . ' buffer_after_minutes, is_active, created_at, updated_at)'
+            . " VALUES ('brows', 'Sourcils', 60, 0, 0, 1, :created, :updated)",
+            ['created' => self::NOW, 'updated' => self::NOW],
+        );
+        $legacy = $this->database->fetchOne(
+            "SELECT description, image_src FROM booking_services WHERE service_key = 'brows'",
+        );
+        self::assertIsArray($legacy);
+        self::assertSame('', $legacy['description']);
+        self::assertArrayHasKey('image_src', $legacy);
+        self::assertNull($legacy['image_src']);
+
+        // A managed path round-trips…
+        $managed = '/media/med_' . str_repeat('a', 32) . '.webp';
+        $this->database->run(
+            "UPDATE booking_services SET image_src = :src WHERE service_key = 'brows'",
+            ['src' => $managed],
+        );
+        self::assertSame($managed, $this->database->fetchOne(
+            "SELECT image_src FROM booking_services WHERE service_key = 'brows'",
+        )['image_src'] ?? null);
+
+        // …and an arbitrary path, an external URL and a wrong extension are
+        // refused by the schema itself.
+        foreach (['/etc/passwd', 'https://example.test/p.jpg', '/media/med_' . str_repeat('a', 32) . '.gif'] as $bad) {
+            $this->expectConstraintFailure(fn () => $this->database->run(
+                "UPDATE booking_services SET image_src = :src WHERE service_key = 'brows'",
+                ['src' => $bad],
+            ));
+        }
+
+        // Repeat-safe: re-running the migrator applies nothing and changes
+        // nothing.
+        self::assertSame([], $this->migrator()->migrate());
+        self::assertSame($managed, $this->database->fetchOne(
+            "SELECT image_src FROM booking_services WHERE service_key = 'brows'",
+        )['image_src'] ?? null);
     }
 
     /**

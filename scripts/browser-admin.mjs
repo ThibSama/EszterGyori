@@ -54,6 +54,7 @@ import {
   evaluate,
   setReactInput,
   clickButton,
+  clickButtonWhere,
   pressTab,
   pressEnter,
   typeText,
@@ -306,8 +307,9 @@ async function main() {
     `the chrome still exposes removed first-level labels: ${JSON.stringify(removedLabels)}`,
   );
   const hrefs = JSON.stringify(shell.entries.filter((entry) => entry.link).map((entry) => entry.href));
+  // ESZ-149: Prestations is live — /admin/services is the service catalog.
   assert(
-    hrefs === JSON.stringify(["/admin", "/admin/content", "/admin/bookings"]),
+    hrefs === JSON.stringify(["/admin", "/admin/content", "/admin/bookings", "/admin/services"]),
     `only destinations backed by a usable route may be clickable, got ${hrefs}`,
   );
   for (const entry of shell.entries.filter((candidate) => !candidate.link)) {
@@ -383,8 +385,8 @@ async function main() {
   })()`);
   assert(
     JSON.stringify(navTabStops.nav) ===
-      JSON.stringify(["Vue d’ensemble", "Contenu du site", "Calendrier"]),
-    `the navigation tab stops are not exactly the three live destinations: ${JSON.stringify(navTabStops.nav)}`,
+      JSON.stringify(["Vue d’ensemble", "Contenu du site", "Calendrier", "Prestations"]),
+    `the navigation tab stops are not exactly the four live destinations: ${JSON.stringify(navTabStops.nav)}`,
   );
   assert(
     JSON.stringify(navTabStops.band) === JSON.stringify(["Se déconnecter"]),
@@ -677,6 +679,13 @@ async function main() {
   // The seeded appointment, opened from the grid. It may sit in a later week
   // than the one on screen, which is itself the navigation being exercised.
   const dayHeadPresent = `[...document.querySelectorAll("button")].some((candidate) => candidate.getAttribute("aria-label")?.startsWith(${JSON.stringify(parisDayCellPrefix(seededDate))}))`;
+  // "Aujourd’hui" re-reads the range: the heading is back before the day heads
+  // are, so wait for the reload to finish before deciding the week must move.
+  await waitFor(
+    () => evaluate(cdp, `!document.body.innerText.includes("Chargement des rendez-vous")`),
+    "the current week finished loading",
+    45_000,
+  );
   for (let step = 0; step < 4 && !(await evaluate(cdp, dayHeadPresent)); ++step) {
     await clickButton(cdp, "Semaine suivante");
     await waitFor(
@@ -685,7 +694,10 @@ async function main() {
       45_000,
     );
   }
-  assert(await evaluate(cdp, dayHeadPresent), `the week grid never reached ${seededDate}`);
+  assert(
+    await evaluate(cdp, dayHeadPresent),
+    `the week grid never reached ${seededDate}; day heads on screen: ${await evaluate(cdp, `JSON.stringify([...document.querySelectorAll("button")].map((candidate) => candidate.getAttribute("aria-label")).filter((label) => label && /rendez-vous/.test(label)))`)}`,
+  );
   const appointmentChip = await evaluate(cdp, `(() => {
     const chip = [...document.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-label")?.includes(${JSON.stringify(seededName)}));
     if (!chip) return null;
@@ -949,8 +961,8 @@ async function main() {
   }
   assert(!overview.forbidden, "the overview renders an invented commercial metric");
   assert(!overview.overflows, "the overview overflows horizontally");
-  // The quick actions must tell the same truth as the shell: the two live
-  // destinations are links, and Prestations — which has no page — is inert.
+  // The quick actions must tell the same truth as the shell: every live
+  // destination is a link, Prestations included since ESZ-149.
   const actionsByKey = Object.fromEntries(overview.actions.map((action) => [action.key, action]));
   assert(
     actionsByKey.calendar?.link && actionsByKey.calendar.href === "/admin/bookings",
@@ -961,12 +973,8 @@ async function main() {
     `the Contenu du site quick action does not point at the CMS: ${JSON.stringify(actionsByKey.content)}`,
   );
   assert(
-    actionsByKey.services && !actionsByKey.services.link && actionsByKey.services.status === "pending",
-    `Prestations has no route, so its quick action must be inert: ${JSON.stringify(actionsByKey.services)}`,
-  );
-  assert(
-    actionsByKey.services.tabIndex === null,
-    "the inert Prestations quick action must take no tab stop",
+    actionsByKey.services?.link && actionsByKey.services.href === "/admin/services",
+    `the Prestations quick action does not point at the catalog: ${JSON.stringify(actionsByKey.services)}`,
   );
 
   // The overview at tablet and phone widths. `captureBothLayouts` is a no-op
@@ -1431,6 +1439,106 @@ async function main() {
   assert(editor320.saveUsable && editor320.publishUsable, "the editor's critical controls are not usable at 320 px");
   await setViewport(cdp, 1280, 800);
 
+  // ── 4b. ESZ-149: Prestations is a real destination — add, edit, archive ─
+  // The catalog is administered from the shell and the public reservation
+  // flow consumes it: a service added here, with a key no source file ever
+  // named, appears in public discovery; archiving it removes it from public
+  // discovery while its row survives; nothing here shows a price.
+  await navigateAndWait(
+    cdp,
+    `${origin}/admin/services`,
+    "the Prestations page",
+    `document.querySelector("h1")?.textContent?.trim() === "Prestations"`,
+  );
+  await waitFor(
+    () => evaluate(cdp, `document.querySelectorAll('[role="table"][aria-label="Prestations"] li[role="row"]').length >= 4`),
+    "the seeded catalog rows",
+  );
+  const catalogView = await evaluate(cdp, `(() => {
+    const headers = [...document.querySelectorAll('[role="columnheader"]')].map((node) => node.textContent?.trim());
+    const rows = [...document.querySelectorAll('[role="table"][aria-label="Prestations"] li[role="row"]')].map((row) => ({
+      key: row.getAttribute("data-service-key"),
+      status: row.getAttribute("data-service-status"),
+    }));
+    const current = document.querySelector('nav[aria-label="Navigation de l’administration"] [aria-current="page"]')?.textContent?.trim() ?? null;
+    return { headers, rows, current, text: document.body.innerText, overflows: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1 };
+  })()`);
+  assert(
+    JSON.stringify(catalogView.headers) === JSON.stringify(["Prestation", "Durée", "Statut", "Actions"]),
+    `the catalog list is not Prestation › Durée › Statut › Actions: ${JSON.stringify(catalogView.headers)}`,
+  );
+  assert(catalogView.current === "Prestations", `the shell does not mark Prestations as current: ${catalogView.current}`);
+  assert(
+    ["brows", "eyeliner", "lips", "freckles"].every((key) => catalogView.rows.some((row) => row.key === key && row.status === "active")),
+    `the four pre-existing services are not all listed as active: ${JSON.stringify(catalogView.rows)}`,
+  );
+  assert(!/prix|tarif|€|revenu|catégorie/i.test(catalogView.text), "the catalog page shows a price, category or revenue");
+  assert(!catalogView.overflows, "the catalog page overflows horizontally at 1280 px");
+
+  const serviceName = `Microblading test ${Date.now().toString(36)}`;
+  await clickButton(cdp, "Ajouter une prestation");
+  await waitFor(() => evaluate(cdp, `Boolean(document.querySelector('form input[type="number"]'))`), "the add form");
+  const fieldIds = await evaluate(cdp, `(() => {
+    const form = document.querySelector("form");
+    const byLabel = (text) => [...form.querySelectorAll("label")].find((label) => label.textContent?.trim() === text)?.getAttribute("for") ?? null;
+    return { label: byLabel("Nom"), description: byLabel("Description"), duration: byLabel("Durée (minutes)"), rawPath: form.innerText.includes("Source de l'image") };
+  })()`);
+  assert(fieldIds.label && fieldIds.description && fieldIds.duration, `the form is missing a field: ${JSON.stringify(fieldIds)}`);
+  assert(!fieldIds.rawPath, "the form exposes a raw image path field instead of the media library");
+  await setReactInput(cdp, fieldIds.label, serviceName);
+  await setReactInput(cdp, fieldIds.description, "Une ligne à la fois, ajoutée depuis le back-office.");
+  await setReactInput(cdp, fieldIds.duration, "75");
+  await clickButton(cdp, "Ajouter la prestation");
+  await waitFor(
+    () => evaluate(cdp, `document.body.innerText.includes("La prestation a été ajoutée")`),
+    "the creation notice",
+  );
+  const createdRow = mysqlJson(`SELECT JSON_OBJECT('key', service_key, 'label', booking_label, 'duration', duration_minutes, 'active', is_active, 'description', description) FROM booking_services WHERE booking_label = '${serviceName}'`);
+  assert(createdRow && createdRow.duration === 75 && createdRow.active === 1, `the new service was not stored as expected: ${JSON.stringify(createdRow)}`);
+  assert(/^microblading-test-[a-z0-9]+$/.test(createdRow.key), `the key was not derived from the name: ${createdRow.key}`);
+  const publicAfterCreate = await json("/api/booking/services", { headers: { accept: "application/json" } });
+  const publicCreated = publicAfterCreate.body.services.find((service) => service.key === createdRow.key);
+  assert(
+    publicCreated && publicCreated.label === serviceName && publicCreated.durationMinutes === 75 && typeof publicCreated.description === "string" && "imageSrc" in publicCreated,
+    `public discovery does not carry the new service: ${JSON.stringify(publicAfterCreate.body.services.map((service) => service.key))}`,
+  );
+
+  // Edit: the duration changes, and public discovery follows.
+  const editClicked = await clickButtonWhere(cdp, `candidate.textContent?.trim() === "Modifier" && candidate.closest('li[role="row"]')?.getAttribute("data-service-key") === ${JSON.stringify(createdRow.key)}`);
+  assert(editClicked, "could not open the new service for editing");
+  await waitFor(() => evaluate(cdp, `document.querySelector('form input[type="number"]')?.value === "75"`), "the edit form");
+  const durationId = await evaluate(cdp, `document.querySelector('form input[type="number"]').id`);
+  await setReactInput(cdp, durationId, "90");
+  await clickButton(cdp, "Enregistrer");
+  await waitFor(() => evaluate(cdp, `document.body.innerText.includes("La prestation a été enregistrée")`), "the edit notice");
+  const publicAfterEdit = await json("/api/booking/services", { headers: { accept: "application/json" } });
+  assert(
+    publicAfterEdit.body.services.find((service) => service.key === createdRow.key)?.durationMinutes === 90,
+    "public discovery does not reflect the edited duration",
+  );
+
+  // Archive: confirmed in place; gone from public discovery; the row survives.
+  const archiveClicked = await clickButtonWhere(cdp, `candidate.textContent?.trim() === "Archiver" && candidate.closest('li[role="row"]')?.getAttribute("data-service-key") === ${JSON.stringify(createdRow.key)}`);
+  assert(archiveClicked, "could not request the archive of the new service");
+  await clickButton(cdp, "Confirmer l’archivage");
+  await waitFor(
+    () => evaluate(cdp, `document.querySelector('li[role="row"][data-service-key=${JSON.stringify(createdRow.key)}]')?.getAttribute("data-service-status") === "archived"`),
+    "the archived status",
+  );
+  const publicAfterArchive = await json("/api/booking/services", { headers: { accept: "application/json" } });
+  assert(
+    !publicAfterArchive.body.services.some((service) => service.key === createdRow.key),
+    "an archived service is still offered to the public",
+  );
+  const archivedRow = mysqlJson(`SELECT JSON_OBJECT('active', is_active) FROM booking_services WHERE service_key = '${createdRow.key}'`);
+  assert(archivedRow && archivedRow.active === 0, "archiving did not keep the row with is_active = 0");
+  const seededStillOffered = await json("/api/booking/services", { headers: { accept: "application/json" } });
+  assert(
+    seededStillOffered.body.services.length >= 4,
+    "the four pre-existing services are no longer offered after the catalog edits",
+  );
+  await captureBothLayouts(cdp, "admin-services");
+
   // ── 5. Logout invalidates the server session; reload returns to login ───
   await clickButton(cdp, "Se déconnecter");
   await waitFor(
@@ -1517,6 +1625,7 @@ async function main() {
   process.stdout.write(`focused CMS: /admin/content opens on “Page d’accueil › Hero” (#editor-hero) with exactly one section editor in the document; an unsaved edit reached the live preview, survived a move to Contact and back, and wrote nothing to the server (draft revision ${draftAfterNavigation.body.revision} unchanged); desktop 1280 px keeps the preview sticky beside the editor, 834 px and 375 px switch between Éditeur and Aperçu without losing the section or the edit\n`);
     process.stdout.write(`content workflow: hero suffix -> "${marker}" saved (revision ${draftBefore.body.revision} -> ${draftSaved.body.revision}; published head before: ${publishedHeadBefore}), published, public page shows ${MARKER}\n`);
   process.stdout.write(`unified calendar (ESZ-159): /admin/bookings opens on Semaine (${JSON.parse(scales).labels.join(" › ")}), 7 day heads naming their availability (${JSON.parse(weekHeads)[0]}), ${firstWeek} -> ${nextWeek} -> back via Aujourd’hui; the seeded appointment reads as "${appointmentChip}" on the grid and keeps Modifier les coordonnées › Déplacer › Annuler; availability settings (Horaires hebdomadaires + Exceptions à venir) open inside the calendar and a day head opens its own exception; no document overflow at 1280/1024/375 px — the whole week fits unscrolled at 1280 px, scrolls inside its own container at 1024/375 px, and the Mois scale keeps its detail column beside the grid; ${bookingRowsAfter.length} booking row(s) byte-identical before and after all navigation; /admin/availability converges on the same calendar with the panel already open\n`);
+  process.stdout.write(`service catalog (ESZ-149): /admin/services lists Prestation › Durée › Statut › Actions with the four seeded services; "${serviceName}" added from the form with key ${createdRow.key} (derived, no source edit), offered publicly at 75 min, edited to 90 min and reflected publicly, then archived in place: row kept with is_active = 0, gone from /api/booking/services, no price anywhere\n`);
   process.stdout.write("logout: 0 authenticated session rows, pre-logout cookie authenticated=false, protected reload -> login gate; keyboard-only login reached the overview\n");
   process.stdout.write("accessibility: CTA keyboard-reachable, live regions updated on save, labels bound, no contradictory ARIA, 320 px login+editor without overflow\n");
 }

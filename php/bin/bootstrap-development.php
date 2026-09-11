@@ -89,13 +89,15 @@ function bootstrapDevelopmentMain(array $arguments): int
             $bookingContract,
             new BookingSerializationLock($database),
         );
-        // AUD-14: development seeding derives every booking label from the
-        // same authority as production provisioning — the published
-        // SiteContent item for the key, read through the configured
-        // content-storage/contract-validation path (which seeds the canonical
-        // defaults when the store is empty, exactly as the site itself does).
-        // This file therefore holds no hard-coded second copy of editorial
-        // titles.
+        // ESZ-149: development seeding names a *new* row from the same seed
+        // as production provisioning — the published SiteContent item for
+        // the key, read through the configured content-storage/contract-
+        // validation path (which seeds the canonical defaults when the store
+        // is empty, exactly as the site itself does). A row that already
+        // exists keeps its admin-owned name, description and image: a
+        // re-bootstrap refreshes the operational facts only, so a developer's
+        // catalog edits survive it. This file therefore holds no hard-coded
+        // second copy of editorial titles.
         $storage = new ContentStorage(
             $config->contentDir,
             $config->tmpDir,
@@ -107,13 +109,20 @@ function bootstrapDevelopmentMain(array $arguments): int
         $labelResolver = new BookingServiceLabelResolver($bookingContract);
         $published = $storage->readPublished();
         foreach (bootstrapDevelopmentServices() as $service) {
+            $existing = $services->find($service['key']);
+            $seed = $existing === null ? $labelResolver->seed($service['key'], $published) : null;
             $services->provision(
                 $service['key'],
-                $labelResolver->resolve($service['key'], $published),
+                $existing === null ? $labelResolver->resolve($service['key'], $published) : $existing->label,
                 $service['duration'],
                 $service['bufferBefore'],
                 $service['bufferAfter'],
-                true,
+                $existing === null || $existing->isActive,
+                $seed['description'] ?? null,
+                // The canonical defaults carry null visuals; a managed path
+                // needs the media library to resolve it, which the bootstrap
+                // does not wire, so a seed image is never stored here.
+                null,
             );
         }
 

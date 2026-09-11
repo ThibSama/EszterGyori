@@ -447,15 +447,21 @@ final class SqlIntegrationTest extends TestCase
             'key' => 'brows',
         ]);
         self::assertIsArray($row);
-        self::assertArrayNotHasKey('description', $row);
+        // ESZ-149: the row now carries the catalog's own description and one
+        // managed image reference; legacy provisioning fabricates neither.
+        self::assertSame('', $row['description']);
+        self::assertNull($row['image_src']);
         self::assertArrayNotHasKey('media', $row);
+        self::assertArrayNotHasKey('price', $row);
     }
 
     public function testServiceValidationUsesTheCanonicalKeysAndTypedFailures(): void
     {
         foreach (
             [
-                ['not-in-content', 'Unknown', 60, 0, 0],
+                // ESZ-149: a key is refused for its shape, never for absence
+                // from a frozen list — `not-in-content` is a valid key now.
+                ['Not-Valid', 'Unknown', 60, 0, 0],
                 ['brows', '', 60, 0, 0],
                 ['brows', 'Brows', 4, 0, 0],
                 ['brows', 'Brows', 60, -1, 0],
@@ -728,7 +734,9 @@ final class SqlIntegrationTest extends TestCase
             'services' => [[
                 'key' => 'brows',
                 'label' => 'Sourcils réservation',
+                'description' => '',
                 'durationMinutes' => 30,
+                'imageSrc' => null,
             ]],
         ], $this->bookingApi->services());
     }
@@ -2162,6 +2170,64 @@ final class SqlIntegrationTest extends TestCase
             )['is_active'] ?? ''),
             'the disable committed before the create could confirm',
         );
+    }
+
+    /**
+     * ESZ-149: the back-office archive is a member of the same boundary as
+     * the operator's disable — a create that starts behind a committed
+     * archive re-reads the row and cannot confirm.
+     */
+    public function testEs149CreateCannotConfirmBehindACommittedAdminArchive(): void
+    {
+        $this->esz146Seed();
+        $token = (string) ($this->bookingApi->adminServices()['services'][0]['updatedAt'] ?? '');
+        self::assertNotSame('', $token);
+        $pause = TestDatabase::connectSeparately();
+        $pause->beginTransaction();
+        $this->esz146PauseOnService($pause);
+
+        $this->database->beginTransaction();
+        $this->esz146LockSingleton($this->database);
+        $mutation = $this->esz146Spawn('BookabilityMutationWorker.php', 't9-m', ['archive', 'brows', $token]);
+        $this->esz146AwaitReady($mutation, 'archive');
+        $this->database->rollBack();
+        $booking = $this->esz146Spawn('BookingMutationWorker.php', 't9-b', ['create', 'brows', self::ESZ146_SLOT]);
+        $this->esz146AwaitReady($booking, 'create');
+
+        $pause->rollBack();
+        [$exit, $out, $err] = $this->esz146Reap($mutation, 'archive');
+        self::assertSame(0, $exit, $err);
+        self::assertStringContainsString('OK archive', $out);
+
+        [$exit, $out, $err] = $this->esz146Reap($booking, 'create');
+        self::assertSame(1, $exit, $err);
+        self::assertStringContainsString('BookingValidationException', $out);
+        self::assertStringContainsString('not actively bookable', $err);
+
+        $this->esz146Release($pause);
+        self::assertSame(
+            '0',
+            (string) ($this->database->fetchOne('SELECT COUNT(*) AS n FROM bookings')['n'] ?? ''),
+        );
+        $row = $this->database->fetchOne(
+            'SELECT is_active, updated_at FROM booking_services WHERE service_key = :key',
+            ['key' => 'brows'],
+        );
+        self::assertSame('0', (string) ($row['is_active'] ?? ''), 'the archive committed before the create');
+        self::assertNotSame($token, $row['updated_at'] ?? null, 'the archive minted a new token');
+
+        // A second archive replaying the consumed token is a deterministic
+        // conflict that writes nothing (ESZ-137 shape, ESZ-149 row).
+        try {
+            $this->bookingApi->adminMutateService([
+                'action' => 'archive',
+                'key' => 'brows',
+                'expectedUpdatedAt' => $token,
+            ]);
+            self::fail('a consumed token archived the service again');
+        } catch (\Eszter\Booking\BookableServiceRevisionConflictException $conflict) {
+            self::assertSame($row['updated_at'] ?? null, $conflict->currentUpdatedAt);
+        }
     }
 
     public function testEs146CreateCannotConfirmBehindADurationChangeInvalidatingTheSlot(): void
@@ -3610,7 +3676,9 @@ final class SqlIntegrationTest extends TestCase
         self::assertSame([[
             'key' => 'brows',
             'label' => 'Sourcils',
+            'description' => '',
             'durationMinutes' => 30,
+            'imageSrc' => null,
         ]], $services['services']);
 
         // 2. availability() — the public read computes the 09:00-11:00 grid.
@@ -6554,16 +6622,17 @@ final class SqlIntegrationTest extends TestCase
         )['customer_data_erased_at']);
     }
 
-    // --- ESZ-109 / AUD-14: provisioning derives the label from published ------
-    // --- content, never from operator input ----------------------------
+    // --- ESZ-109 / AUD-14, narrowed by ESZ-149: the CLI seeds a new row from ---
+    // --- published content and never overwrites an admin-owned row -----------
 
     /**
-     * Proofs 2 and 3 of the AUD-14 correction, through the real CLI against
-     * the disposable MySQL: provisioning stores the title of the matching
-     * item of the validated published SiteContent document, and a published
-     * title change followed by re-provisioning updates the stored mirror.
+     * Through the real CLI against the disposable MySQL: a *new* row is named
+     * from the published SiteContent item of its key (title, description
+     * seeded together), and re-provisioning after a published title change
+     * leaves the stored name alone — the catalog row is the authority now —
+     * while `--label` is the one explicit way to rename it.
      */
-    public function testProvisioningCliStoresThePublishedTitleAndFollowsPublishedTitleChanges(): void
+    public function testProvisioningCliSeedsANewRowFromPublishedContentAndKeepsAnExistingName(): void
     {
         $this->leaveTheWrapperTransaction();
         $config = $this->writeDeploymentWithDatabase();
@@ -6588,8 +6657,16 @@ final class SqlIntegrationTest extends TestCase
         self::assertSame(5, (int) $row['buffer_before_minutes']);
         self::assertSame(10, (int) $row['buffer_after_minutes']);
         self::assertSame(1, (int) $row['is_active']);
+        $editorial = $this->database->fetchOne(
+            'SELECT description, image_src FROM booking_services WHERE service_key = :key',
+            ['key' => 'brows'],
+        );
+        self::assertIsArray($editorial);
+        self::assertNotSame('', $editorial['description'], 'the published description seeds the new row');
+        self::assertNull($editorial['image_src'], 'the canonical defaults carry no managed visual');
 
-        // The published title changes; re-provisioning must follow it.
+        // The published title changes; the stored name is the catalog's own
+        // now and must NOT follow it. The operational facts do update.
         $this->writePublishedTitle('brows', 'Sourcils design n°2', 2);
 
         [$secondExit, $secondOut, $secondErr] = $this->runProvisioningCli(
@@ -6601,50 +6678,51 @@ final class SqlIntegrationTest extends TestCase
         );
 
         self::assertSame(0, $secondExit, $secondErr);
-        self::assertStringContainsString('booking label: Sourcils design n°2.', $secondOut);
+        self::assertStringContainsString('booking label: Sourcils n°1.', $secondOut);
 
         $row = $this->bookingServiceRow('brows');
         self::assertIsArray($row);
         self::assertSame(
-            'Sourcils design n°2',
+            'Sourcils n°1',
             $row['booking_label'],
-            're-provisioning must refresh the stored mirror',
+            're-provisioning must not overwrite the admin-owned name',
         );
         self::assertSame(45, (int) $row['duration_minutes']);
+
+        // --label is the explicit rename; description and image stay as stored.
+        [$thirdExit, $thirdOut, $thirdErr] = $this->runProvisioningCli(
+            $config,
+            '--key=brows',
+            '--label=Sourcils signature',
+            '--duration=45',
+            '--buffer-before=10',
+            '--buffer-after=15',
+        );
+        self::assertSame(0, $thirdExit, $thirdErr);
+        self::assertStringContainsString('booking label: Sourcils signature.', $thirdOut);
+        self::assertSame(
+            $editorial,
+            $this->database->fetchOne(
+                'SELECT description, image_src FROM booking_services WHERE service_key = :key',
+                ['key' => 'brows'],
+            ),
+        );
         self::assertSame(1, (int) $this->database->fetchOne(
             'SELECT COUNT(*) AS n FROM booking_services',
         )['n']);
     }
 
     /**
-     * Proofs 1 and 4 of the AUD-14 correction: `--label` is no longer
-     * accepted and an unknown key refuses — both before any row appears.
+     * A key with no published item is not canonical-or-nothing any more: it
+     * needs `--label` to be created, refuses without one (zero rows), and a
+     * malformed key is refused before anything is read.
      */
-    public function testProvisioningCliRefusesLabelAndUnknownKeyBeforeAnyMutation(): void
+    public function testProvisioningCliNamesANewKeyFromLabelOrRefusesBeforeAnyMutation(): void
     {
         $this->leaveTheWrapperTransaction();
         $config = $this->writeDeploymentWithDatabase();
         $this->writePublishedTitle('brows', 'Sourcils n°1', 1);
 
-        // AUD-14, proof 1: the free operator label is refused, not ignored —
-        // a stale provisioning habit must fail loudly instead of silently
-        // re-creating a second label authority.
-        [$labelExit, $labelOut, $labelErr] = $this->runProvisioningCli(
-            $config,
-            '--key=brows',
-            '--label=Sourcils saisis à la main',
-            '--duration=30',
-            '--buffer-before=5',
-            '--buffer-after=10',
-        );
-
-        self::assertSame(2, $labelExit);
-        self::assertSame('', $labelOut);
-        self::assertStringContainsString('unknown option --label', $labelErr);
-        self::assertSame([], $this->allBookingServiceRows(), 'a refused --label must leave zero rows');
-
-        // AUD-14, proof 4 (unknown key): the resolver refuses before the
-        // repository is even reached, so zero rows exist afterwards.
         [$keyExit, $keyOut, $keyErr] = $this->runProvisioningCli(
             $config,
             '--key=nails',
@@ -6653,37 +6731,72 @@ final class SqlIntegrationTest extends TestCase
             '--buffer-after=10',
         );
 
-        self::assertSame(2, $keyExit);
+        self::assertSame(1, $keyExit);
         self::assertSame('', $keyOut);
-        self::assertStringContainsString('Unknown canonical service key', $keyErr);
+        self::assertStringContainsString('no services item with id "nails"', $keyErr);
         self::assertSame([], $this->allBookingServiceRows());
 
-        // The same key still provisions cleanly without any --label.
+        [$badExit, $badOut, $badErr] = $this->runProvisioningCli(
+            $config,
+            '--key=Nails',
+            '--label=Ongles',
+            '--duration=30',
+            '--buffer-before=5',
+            '--buffer-after=10',
+        );
+        self::assertSame(2, $badExit);
+        self::assertSame('', $badOut);
+        self::assertStringContainsString('Malformed service key', $badErr);
+        self::assertSame([], $this->allBookingServiceRows());
+
+        [$emptyExit, , $emptyErr] = $this->runProvisioningCli(
+            $config,
+            '--key=nails',
+            '--label=',
+            '--duration=30',
+            '--buffer-before=5',
+            '--buffer-after=10',
+        );
+        self::assertSame(2, $emptyExit);
+        self::assertStringContainsString('--label=VALUE must not be empty', $emptyErr);
+        self::assertSame([], $this->allBookingServiceRows());
+
+        // With --label the new key is created: no enum, no contract edit.
         [$okExit, $okOut, $okErr] = $this->runProvisioningCli(
             $config,
-            '--key=brows',
+            '--key=nails',
+            '--label=Ongles',
             '--duration=30',
             '--buffer-before=5',
             '--buffer-after=10',
         );
 
         self::assertSame(0, $okExit, $okErr);
-        self::assertStringContainsString('booking label: Sourcils n°1.', $okOut);
-        self::assertCount(1, $this->allBookingServiceRows());
+        self::assertStringContainsString('Created nails', $okOut);
+        self::assertStringContainsString('booking label: Ongles.', $okOut);
+        self::assertSame([['service_key' => 'nails']], $this->allBookingServiceRows());
+        self::assertSame(
+            '',
+            $this->database->fetchOne(
+                'SELECT description FROM booking_services WHERE service_key = :key',
+                ['key' => 'nails'],
+            )['description'] ?? null,
+            'nothing is fabricated for a key the CMS does not describe',
+        );
     }
 
     /**
-     * Proof 4 of the AUD-14 correction: missing or invalid published content
-     * refuses before any mutation — including when a row already exists,
-     * whose stored label must survive the refused re-provisioning untouched.
+     * Missing or invalid published content refuses a *new* CMS-named row
+     * before any mutation, and is simply not consulted for an existing row —
+     * whose stored name survives re-provisioning untouched.
      */
-    public function testProvisioningCliRefusesMissingOrInvalidPublishedContentBeforeAnyMutation(): void
+    public function testProvisioningCliConsultsPublishedContentOnlyForANewRow(): void
     {
         $this->leaveTheWrapperTransaction();
         $config = $this->writeDeploymentWithDatabase();
 
-        // No published document at all: nothing to mirror, so provisioning
-        // refuses instead of silently seeding defaults.
+        // No published document at all and no --label: nothing to seed, so
+        // provisioning refuses instead of silently inventing a name.
         [$missingExit, $missingOut, $missingErr] = $this->runProvisioningCli(
             $config,
             '--key=brows',
@@ -6697,19 +6810,19 @@ final class SqlIntegrationTest extends TestCase
         self::assertStringContainsString('No published SiteContent', $missingErr);
         self::assertSame([], $this->allBookingServiceRows());
 
-        // A row exists with the label of a previously valid published title…
+        // A row exists…
         $this->bookingServices->provision('brows', 'Sourcils n°1', 30, 0, 0, true);
         self::assertCount(1, $this->allBookingServiceRows());
 
-        // …and the published document becomes unreadable. Re-provisioning
-        // must fail with the existing row byte-untouched: no partial update,
-        // no fallback to the existing DB label.
+        // …and the published document is unreadable. Re-provisioning the
+        // existing row does not read it: the operational facts update and the
+        // stored name is exactly what it was.
         file_put_contents(
             $this->root . '/data/content/published.json',
             '{"schemaVersion": 1, "revision": 1, "publishedAt": null, "content": {not json',
         );
 
-        [$invalidExit, $invalidOut, $invalidErr] = $this->runProvisioningCli(
+        [$exit, $out, $err] = $this->runProvisioningCli(
             $config,
             '--key=brows',
             '--duration=45',
@@ -6717,18 +6830,26 @@ final class SqlIntegrationTest extends TestCase
             '--buffer-after=15',
         );
 
-        self::assertSame(1, $invalidExit);
-        self::assertSame('', $invalidOut);
-        self::assertStringContainsString('provision-booking-service:', $invalidErr);
+        self::assertSame(0, $exit, $err);
+        self::assertStringContainsString('booking label: Sourcils n°1.', $out);
 
         $row = $this->bookingServiceRow('brows');
         self::assertIsArray($row);
-        self::assertSame(
-            'Sourcils n°1',
-            $row['booking_label'],
-            'a refused provisioning must never fall back to the existing DB label',
+        self::assertSame('Sourcils n°1', $row['booking_label']);
+        self::assertSame(45, (int) $row['duration_minutes']);
+        self::assertCount(1, $this->allBookingServiceRows());
+
+        // A new CMS-named key against the unreadable document still refuses
+        // with zero new rows.
+        [$newExit, $newOut] = $this->runProvisioningCli(
+            $config,
+            '--key=lips',
+            '--duration=45',
+            '--buffer-before=10',
+            '--buffer-after=15',
         );
-        self::assertSame(30, (int) $row['duration_minutes']);
+        self::assertSame(1, $newExit);
+        self::assertSame('', $newOut);
         self::assertCount(1, $this->allBookingServiceRows());
     }
 

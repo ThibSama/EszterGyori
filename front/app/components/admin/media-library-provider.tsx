@@ -65,8 +65,19 @@ export function useMediaLibrary(): MediaLibraryContextValue | null {
 
 export function MediaLibraryProvider({
   content,
+  additionalUsagesOf,
   children,
-}: Readonly<{ content: SiteContent; children: React.ReactNode }>) {
+}: Readonly<{
+  /**
+   * The document whose media references count as usages. Optional since
+   * ESZ-149: the service catalog editor mounts the library without a content
+   * document and reports its own references through `additionalUsagesOf`.
+   */
+  content?: SiteContent;
+  /** Extra usages of a path outside the content document (catalog rows). */
+  additionalUsagesOf?: (path: string) => number;
+  children: React.ReactNode;
+}>) {
   const { api, csrfToken, markExpired, refreshSession } = useAdminSession();
   const [state, dispatch] = useReducer(
     mediaLibraryReducer,
@@ -87,11 +98,13 @@ export function MediaLibraryProvider({
   // library panel draws a delete control, never during the render that changed
   // the document.
   const contentRef = useRef(content);
+  const additionalRef = useRef(additionalUsagesOf);
   const requestedRef = useRef(false);
 
   useEffect(() => {
     contentRef.current = content;
-  }, [content]);
+    additionalRef.current = additionalUsagesOf;
+  }, [content, additionalUsagesOf]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -208,7 +221,9 @@ export function MediaLibraryProvider({
       requestDelete: (id: string) => dispatch({ type: "delete-requested", id }),
       cancelDelete: () => dispatch({ type: "delete-cancelled" }),
       confirmDelete,
-      usagesOf: (path: string) => mediaUsagesIn(contentRef.current, path),
+      usagesOf: (path: string) =>
+        (contentRef.current === undefined ? 0 : mediaUsagesIn(contentRef.current, path))
+        + (additionalRef.current?.(path) ?? 0),
     }),
     [state, ensureLoaded, read, upload, confirmDelete],
   );

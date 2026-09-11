@@ -121,12 +121,16 @@ async function main() {
   const today = parisToday();
   const servicesResponse = await json("/api/booking/services", { headers: { accept: "application/json" } });
   assert(servicesResponse.status === 200 && servicesResponse.body?.services?.length > 0, "public bookable services are not available");
-  const contentResponse = await json("/api/content", { headers: { accept: "application/json" } });
-  assert(contentResponse.status === 200 && Array.isArray(contentResponse.body?.content?.services?.items), "published content is not available");
-  const serviceKeys = new Set(servicesResponse.body.services.map((service) => service.key));
-  const serviceKey = contentResponse.body.content.services.items.find((item) => serviceKeys.has(item.id))?.id
-    ?? servicesResponse.body.services[0].key;
+  // ESZ-149: the catalog is the authority and the page offers it in catalog
+  // order, so the first card is the first service the API served — no
+  // matching against the published content's fixed service list.
+  const firstService = servicesResponse.body.services[0];
+  const serviceKey = firstService.key;
   assert(typeof serviceKey === "string", "no bookable service key could be resolved");
+  assert(
+    typeof firstService.description === "string" && "imageSrc" in firstService,
+    `public discovery does not carry the catalog's description and image: ${JSON.stringify(firstService)}`,
+  );
 
   // ESZ-116 — the earliest real slot whose *reminder* is still safely pending.
   //
@@ -207,7 +211,7 @@ async function main() {
   // The first service card under "La prestation" (published content order).
   // The cards only render once the real services bootstrap has resolved, so
   // wait for the control before clicking it.
-  const serviceCardSource = `candidate.closest("section")?.querySelector("h2")?.textContent?.trim() === "La prestation" && candidate.getAttribute("aria-pressed") === "false"`;
+  const serviceCardSource = `candidate.closest("section")?.querySelector("h2")?.textContent?.trim() === "La prestation" && candidate.getAttribute("aria-pressed") === "false" && candidate.getAttribute("data-service-key") === ${JSON.stringify(serviceKey)}`;
   await waitFor(
     () => evaluate(cdp, `(() => {
       const button = [...document.querySelectorAll("button")].find((candidate) => (${serviceCardSource}));

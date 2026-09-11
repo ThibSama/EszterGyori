@@ -5,14 +5,18 @@ declare(strict_types=1);
 namespace Eszter\Booking;
 
 /**
- * AUD-14 (ESZ-109): the single authority for a stored booking label.
+ * AUD-14 (ESZ-109), narrowed by ESZ-149: the published SiteContent item of a
+ * service key as a *seed* for a new catalog row.
  *
- * The booking label is an editorial fact, so its authority lives in the CMS:
- * the *published* SiteContent services item whose `id` is the service key.
- * Provisioning stores exactly that item's title (trimmed of boundary
- * whitespace only) and re-provisioning after a published title change
- * refreshes the stored copy. An operator-supplied label, a draft, the
- * canonical defaults or a pre-existing row are never an authority.
+ * Until ESZ-149 the published title was the standing authority for the
+ * stored booking label. The catalog row is that authority now — the
+ * administrator edits the name, description and image in the back-office —
+ * so this resolver is consulted only when the operator CLI creates a row and
+ * has nothing else to name it with: the published item's title becomes the
+ * initial label, its description the initial description and its managed
+ * visual the initial image. It never overwrites a row that already exists,
+ * and a draft, the canonical defaults or an existing row are still never a
+ * source.
  *
  * The envelope passed to {@see resolve()} must already be the validated
  * published envelope — callers obtain it through the configured
@@ -39,8 +43,36 @@ final class BookingServiceLabelResolver
      */
     public function resolve(string $key, array $envelope): string
     {
+        $seed = $this->seed($key, $envelope);
+        if ($seed === null) {
+            throw new \RuntimeException(\sprintf(
+                'The published SiteContent holds no services item with id "%s".',
+                $key,
+            ));
+        }
+
+        return $seed['label'];
+    }
+
+    /**
+     * The editorial seed for one key, or null when the published document
+     * holds no item for it (ESZ-149: a key created in the back-office has no
+     * CMS item, and that is not a fault).
+     *
+     * `imageSrc` is the item's visual `src` only when it is a string; the
+     * caller decides whether that path is a managed one it can store.
+     *
+     * @param array<string, mixed> $envelope The validated published envelope.
+     * @return array{label: string, description: string, imageSrc: ?string}|null
+     * @throws BookingValidationException When the key is malformed.
+     * @throws \RuntimeException When the published document is unusable —
+     *         no content, no services list, more than one item for the key,
+     *         or a title that cannot be stored as the booking label.
+     */
+    public function seed(string $key, array $envelope): ?array
+    {
         if (!$this->contract->acceptsServiceKey($key)) {
-            throw new BookingValidationException('serviceKey', 'Unknown canonical service key.');
+            throw new BookingValidationException('serviceKey', 'Malformed service key.');
         }
 
         $content = $envelope['content'] ?? null;
@@ -60,6 +92,9 @@ final class BookingServiceLabelResolver
             }
         }
 
+        if ($matches === []) {
+            return null;
+        }
         if (\count($matches) !== 1) {
             throw new \RuntimeException(\sprintf(
                 'The published SiteContent holds %d services item(s) with id "%s"; exactly one is required.',
@@ -87,6 +122,19 @@ final class BookingServiceLabelResolver
             ));
         }
 
-        return $title;
+        /** @var mixed $description */
+        $description = $matches[0]['description'] ?? '';
+        /** @var mixed $visual */
+        $visual = $matches[0]['visual'] ?? null;
+        /** @var mixed $src */
+        $src = \is_array($visual) ? ($visual['src'] ?? null) : null;
+
+        return [
+            'label' => $title,
+            'description' => \is_string($description)
+                ? mb_substr(trim($description), 0, $this->contract->descriptionMaxLength)
+                : '',
+            'imageSrc' => \is_string($src) && $src !== '' ? $src : null,
+        ];
     }
 }

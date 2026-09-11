@@ -1,5 +1,5 @@
 import { BOOKING_CONSENT_CURRENT_NOTICE_ID } from "@eszter/contracts";
-import type { BookableServiceKey, ServiceItemContent } from "@eszter/contracts";
+import type { BookableServiceKey } from "@eszter/contracts";
 import type {
   BookingAvailability,
   BookingCreationFailure,
@@ -39,14 +39,33 @@ export function datesBetween(fromDate: string, untilDate: string): string[] {
   return dates;
 }
 
-export function activeEditorialServices(
-  editorial: ServiceItemContent[],
+/**
+ * ESZ-149 — the services the reservation page offers are exactly what the
+ * catalog served, in catalog order. There is no matching against the CMS's
+ * `services.items` any more: the catalog carries the name, description and
+ * image itself, and a service the administrator adds or archives appears or
+ * disappears here without the published content knowing about it.
+ *
+ * Defensive de-duplication only: a malformed response that repeated a key
+ * would otherwise render one service twice and mis-key the list.
+ */
+export function bookableServicesToOffer(
   active: PublicBookableService[],
-) {
-  const activeByKey = new Map(active.map((service) => [service.key, service]));
-  return editorial
-    .filter((service) => activeByKey.has(service.id))
-    .map((service) => ({ editorial: service, booking: activeByKey.get(service.id)! }));
+): PublicBookableService[] {
+  const seen = new Set<string>();
+  return active.filter((service) => {
+    if (seen.has(service.key)) return false;
+    seen.add(service.key);
+    return true;
+  });
+}
+
+/** The catalog name of the selected service, for the summary and the confirmation. */
+export function selectedServiceLabel(
+  services: PublicBookableService[],
+  serviceKey: BookableServiceKey | null,
+): string {
+  return services.find((service) => service.key === serviceKey)?.label ?? "Prestation";
 }
 
 export interface ReservationFlowState {

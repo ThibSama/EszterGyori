@@ -11,6 +11,7 @@ import {
 import { parityCases, semanticRules } from "../semantic-rules.js";
 import {
   ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+  ADMIN_SERVICES_PATH,
   ADMIN_AVAILABILITY_WEEKLY_PATH,
   ADMIN_BOOKINGS_SUMMARY_PATH,
   BOOKING_LOCAL_TIME_PATTERN,
@@ -47,7 +48,6 @@ import {
   BOOKING_SLOT_MAX_HORIZON_DAYS,
   BOOKING_SLOT_MAX_RESULTS,
   BOOKING_TIME_ZONE,
-  bookableServiceKeys,
   bookingConsentNoticePolicy,
   bookingDomainContract,
   bookingSerializationPolicy,
@@ -119,7 +119,14 @@ test("generated schemas warn that structural validation is not sufficient", asyn
 
 test("the generated booking domain freezes service identity, timezone and states", async () => {
   const booking = JSON.parse(await readGenerated("booking-domain.json")) as {
-    services: { keys: string[]; source: string };
+    services: {
+      keyAuthority: string;
+      keyPattern: string;
+      descriptionMaxLength: number;
+      catalogAuthority: string;
+      archive: string;
+      futureBookabilityOnly: string;
+    };
     timezone: { iana: string; dst: { nonexistent: string; ambiguous: string } };
     availability: {
       generatedSlotsPersisted: boolean;
@@ -148,8 +155,15 @@ test("the generated booking domain freezes service identity, timezone and states
     version: number;
   };
 
-  assert.deepEqual(booking.services.keys, [...bookableServiceKeys]);
-  assert.equal(booking.services.source, "SiteContent.services.items[].id");
+  // ESZ-149: no frozen key list survives in the artifact — the catalog table
+  // is the authority and the wire admits any key of the frozen shape.
+  assert.equal("keys" in booking.services, false, "the service key enum must be gone");
+  assert.equal(booking.services.keyAuthority, "booking_services.service_key");
+  assert.equal(booking.services.keyPattern, "^[a-z][a-z0-9-]{1,63}$");
+  assert.equal(booking.services.descriptionMaxLength, 2000);
+  assert.match(booking.services.catalogAuthority, /booking_services owns the name/);
+  assert.match(booking.services.archive, /never hard-deleted|is ever hard-deleted/);
+  assert.match(booking.services.futureBookabilityOnly, /future bookability only/);
   assert.equal(booking.timezone.iana, BOOKING_TIME_ZONE);
   assert.match(booking.timezone.dst.nonexistent, /Reject/);
   assert.match(booking.timezone.dst.ambiguous, /explicit numeric UTC offset/);
@@ -177,7 +191,7 @@ test("the generated booking domain freezes service identity, timezone and states
   );
   assert.match(booking.adminViews.rangeRead.hasMore, /pageSize\+1/);
   assert.match(booking.adminViews.summary.counts, /aggregation/);
-  assert.equal(booking.version, 7, "adding a policy block is a domain version bump");
+  assert.equal(booking.version, 8, "adding a policy block is a domain version bump");
 
   // ESZ-146: the serialization block freezes byte-for-byte, the way the SQL
   // layer enforces it — booking create/move/cancel, every availability
@@ -204,7 +218,7 @@ test("the generated booking domain freezes the Package 7.1 notification policy",
   // The whole block, byte for byte. PHP reads this file rather than a second
   // copy of these constants, so anything that drifts here drifts everywhere.
   assert.deepEqual(document.notifications, notificationPolicy);
-  assert.equal(document.version, 7, "adding a policy block is a domain version bump");
+  assert.equal(document.version, 8, "adding a policy block is a domain version bump");
 
   // ESZ-142: the consent-notice catalog (immutable entries with their exact
   // French text, the bounded-ASCII id pattern and the current pointer) is
@@ -364,6 +378,7 @@ test("the generated HTTP contract carries every frozen case", async () => {
       "/api/admin/content/publish",
       "/api/admin/content/reset",
       "/api/admin/media",
+      "/api/admin/services",
       "/api/auth/login",
       "/api/auth/logout",
       "/api/auth/session",
@@ -463,6 +478,8 @@ test("the generated HTTP contract freezes availability administration and the su
     ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
   );
   assert.equal(contract.booking?.paths?.adminSummary, ADMIN_BOOKINGS_SUMMARY_PATH);
+  // ESZ-149: the catalog administration surface is frozen beside availability.
+  assert.equal(contract.booking?.paths?.adminServices, ADMIN_SERVICES_PATH);
 
   // The whole point of the PUT shape: say so in the artifact, not only in a
   // comment the server can drift away from.

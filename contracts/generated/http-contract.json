@@ -663,13 +663,15 @@
       "adminSummary": "/api/admin/bookings/summary",
       "adminAvailabilityQuery": "/api/admin/availability/query",
       "adminAvailabilityWeekly": "/api/admin/availability/weekly",
-      "adminAvailabilityExceptions": "/api/admin/availability/exceptions"
+      "adminAvailabilityExceptions": "/api/admin/availability/exceptions",
+      "adminServices": "/api/admin/services"
     },
     "publicErrors": "The frozen error envelope only; no booking, customer, SQL, lock or validation detail.",
     "adminMutationSecurity": "authenticated session followed by CSRF, before body parsing",
     "policy": {
       "publicAvailability": "Only active canonical services and dates from the Paris-local today through day 90 inclusive; response order is SlotEngine order and slots are never persisted.",
-      "publicServices": "Lists only active canonical service keys with booking label and duration; editorial descriptions and media remain in SiteContent.",
+      "publicServices": "Lists only active catalog services — key, name, description, duration and one managed image path or null — in catalog order. ESZ-149: the catalog is the authority; the reservation flow never matches a service against SiteContent.services.",
+      "serviceCatalog": "ESZ-149 — booking_services is the single operational service catalog. Authenticated admin reads list every row, archived included, so historical bookings stay nameable; mutations are create (key derived server-side from the name), update (name, description, duration, image), archive and restore, each a PATCH carrying its action behind session and CSRF. update, archive and restore require expectedUpdatedAt and answer 409 REVISION_CONFLICT when the row moved. Archive and restore flip is_active only; no route deletes a service. A managed imageSrc must name a catalogued media asset, and the media delete route refuses an asset any service row references. Mutations that change bookability (create, archive, restore, a duration change) take the booking serialization boundary first, inside their transaction.",
       "creation": "The client submits a returned UTC start. Inside one transaction the singleton primary resource row is locked, all inputs are re-read, SlotEngine recomputes, and insert plus created history commit together.",
       "consent": "ESZ-142 — the request must pair consentAccepted: true with consentNoticeId naming the entry of the immutable notice catalog (booking-domain consentNotices) whose text the client displayed. The server accepts only an id the catalog contains and stores it beside consent_at_utc; it never accepts notice text. Bookings created before the catalog keep a null consent_notice_id and are never retro-attributed one.",
       "adminMutableFields": {
@@ -1073,6 +1075,25 @@
       ],
       "requestBodySchema": "admin-availability-exception-mutation-request.schema.json",
       "successBodySchema": "admin-availability-exception-response.schema.json"
+    },
+    {
+      "path": "/api/admin/services",
+      "methods": [
+        "GET",
+        "PATCH"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        405,
+        409,
+        500
+      ],
+      "requestBodySchema": "admin-service-mutation-request.schema.json",
+      "successBodySchema": "admin-service-response.schema.json"
     }
   ],
   "unknownRouteStatus": 404,
@@ -3155,7 +3176,7 @@
     {
       "id": "booking.availability.post.invalidService",
       "endpoint": "/api/booking/availability",
-      "description": "A service key outside SiteContent is rejected without exposing internals.",
+      "description": "A well-formed key that names no active catalog service is rejected by the domain without exposing internals (ESZ-149: the key shape is structural, membership is the catalog's).",
       "request": {
         "method": "POST",
         "path": "/api/booking/availability",
@@ -4074,6 +4095,319 @@
         "status": 403,
         "body": "errorEnvelope",
         "errorCode": "CSRF_TOKEN_INVALID"
+      }
+    },
+    {
+      "id": "admin.services.get.ok",
+      "endpoint": "/api/admin/services",
+      "description": "The whole catalog, archived rows included, so the back-office can name every historical booking (ESZ-149).",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/services"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminServicesResponse"
+      }
+    },
+    {
+      "id": "admin.services.get.unauthenticated",
+      "endpoint": "/api/admin/services",
+      "description": "The catalog read is authenticated: anonymous callers are refused.",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/services"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.services.get.disabledAccountIsRejected",
+      "endpoint": "/api/admin/services",
+      "description": "A live session whose account has since been disabled is 401 here, resolved per request rather than at login.",
+      "request": {
+        "method": "GET",
+        "path": "/api/admin/services"
+      },
+      "auth": {
+        "session": "authenticated",
+        "account": "disabled"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.services.patch.createOk",
+      "endpoint": "/api/admin/services",
+      "description": "Creating a service needs only its name, description, duration and image: the key is derived server-side and no contract or source edit is involved.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"create\",\"label\":\"Microblading sourcils\",\"description\":\"Une ligne à la fois.\",\"durationMinutes\":90,\"imageSrc\":null}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminServiceResponse"
+      }
+    },
+    {
+      "id": "admin.services.patch.updateOk",
+      "endpoint": "/api/admin/services",
+      "description": "Name, description, duration and image are replaced together under the row's updatedAt token.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"update\",\"key\":\"brows\",\"expectedUpdatedAt\":\"2026-06-01T10:00:00.000Z\",\"label\":\"Sourcils\",\"description\":\"Poudré ou poil à poil.\",\"durationMinutes\":120,\"imageSrc\":\"/media/med_00000000000000000000000000000001.webp\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminServiceResponse"
+      }
+    },
+    {
+      "id": "admin.services.patch.archiveOk",
+      "endpoint": "/api/admin/services",
+      "description": "Archiving is non-destructive: the row and its bookings survive, the service leaves public discovery.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"archive\",\"key\":\"brows\",\"expectedUpdatedAt\":\"2026-06-01T10:00:00.000Z\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminServiceResponse"
+      }
+    },
+    {
+      "id": "admin.services.patch.restoreOk",
+      "endpoint": "/api/admin/services",
+      "description": "An archived service can be restored to active under its current updatedAt token.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"restore\",\"key\":\"brows\",\"expectedUpdatedAt\":\"2026-06-01T10:00:00.000Z\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminServiceResponse"
+      }
+    },
+    {
+      "id": "admin.services.patch.staleRevision",
+      "endpoint": "/api/admin/services",
+      "description": "A stale updatedAt token is 409 REVISION_CONFLICT and writes nothing.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"archive\",\"key\":\"brows\",\"expectedUpdatedAt\":\"2026-01-01T00:00:00.000Z\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 409,
+        "body": "errorEnvelope",
+        "errorCode": "REVISION_CONFLICT"
+      }
+    },
+    {
+      "id": "admin.services.patch.unknownKey",
+      "endpoint": "/api/admin/services",
+      "description": "A well-formed key that names no catalog row is 404 NOT_FOUND.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"archive\",\"key\":\"nails\",\"expectedUpdatedAt\":\"2026-06-01T10:00:00.000Z\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND"
+      }
+    },
+    {
+      "id": "admin.services.patch.invalidDuration",
+      "endpoint": "/api/admin/services",
+      "description": "A duration outside the domain bounds is refused by the closed request schema.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"create\",\"label\":\"Trop long\",\"description\":\"\",\"durationMinutes\":481,\"imageSrc\":null}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.services.patch.rawImagePathRefused",
+      "endpoint": "/api/admin/services",
+      "description": "The image is a managed media reference or null; an arbitrary path or URL is refused structurally.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"create\",\"label\":\"Image libre\",\"description\":\"\",\"durationMinutes\":60,\"imageSrc\":\"https://example.test/photo.jpg\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.services.patch.unknownAction",
+      "endpoint": "/api/admin/services",
+      "description": "There is no delete action: a service is archived, never removed.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"delete\",\"key\":\"brows\",\"expectedUpdatedAt\":\"2026-06-01T10:00:00.000Z\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.services.patch.unauthenticated",
+      "endpoint": "/api/admin/services",
+      "description": "Anonymous callers cannot change the catalog, and are refused before the body is read.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.services.patch.csrfOmitted",
+      "endpoint": "/api/admin/services",
+      "description": "An authenticated catalog mutation without CSRF is rejected before parsing.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/services",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID"
+      }
+    },
+    {
+      "id": "admin.services.delete.methodNotAllowed",
+      "endpoint": "/api/admin/services",
+      "description": "No route deletes a service; the collection path admits GET and PATCH only.",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/admin/services"
+      },
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "GET, PATCH"
+        }
       }
     }
   ],

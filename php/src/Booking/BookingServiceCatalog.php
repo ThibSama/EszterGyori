@@ -6,12 +6,15 @@ namespace Eszter\Booking;
 
 /**
  * Public service discovery and the single "actively bookable service" rule
- * (ESZ-106).
+ * (ESZ-106, ESZ-149).
  *
- * `services()` is the public catalogue read. {@see requireActive()} is the one
- * place a service key becomes a bookable service: slot reads and booking
- * revalidation all go through it, so a booking can never be computed or
- * confirmed against a service that is missing or no longer active.
+ * `services()` is the public catalogue read: every active row with the
+ * name, description, duration and image the reservation page renders — the
+ * catalog is the authority and the page matches nothing against SiteContent.
+ * {@see requireActive()} is the one place a service key becomes a bookable
+ * service: slot reads and booking revalidation all go through it, so a
+ * booking can never be computed or confirmed against a service that is
+ * missing or archived.
  */
 final class BookingServiceCatalog
 {
@@ -24,11 +27,7 @@ final class BookingServiceCatalog
     {
         return [
             'services' => array_map(
-                static fn (BookableService $service): array => [
-                    'key' => $service->key,
-                    'label' => $service->label,
-                    'durationMinutes' => $service->durationMinutes,
-                ],
+                static fn (BookableService $service): array => $service->toPublicPayload(),
                 $this->services->all(true),
             ),
         ];

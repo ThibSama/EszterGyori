@@ -30,12 +30,40 @@ test("active services come only from the frozen discovery endpoint", async () =>
   const calls: Array<{ input: string; init?: RequestInit }> = [];
   const result = await loadBookableServices(async (input, init) => {
     calls.push({ input: String(input), init });
-    return Response.json({ services: [{ key: "brows", label: "Sourcils", durationMinutes: 30 }] });
+    return Response.json({
+      services: [
+        // ESZ-149: the catalog carries description and image, and a key the
+        // fixed CMS list never contained is a first-class service.
+        { key: "brows", label: "Sourcils", description: "Poudré.", durationMinutes: 30, imageSrc: null },
+        {
+          key: "microblading-sourcils",
+          label: "Microblading",
+          description: "",
+          durationMinutes: 90,
+          imageSrc: "/media/med_" + "a".repeat(32) + ".webp",
+        },
+      ],
+    });
   });
 
   assert.equal(result.ok, true);
   assert.equal(calls[0].input, "/api/booking/services");
   assert.equal(calls[0].init?.method, "GET");
+  assert.ok(result.ok && result.value[1].key === "microblading-sourcils");
+});
+
+test("a discovery payload that lost the catalog fields or names a raw image path is malformed", async () => {
+  const legacy = await loadBookableServices(async () =>
+    Response.json({ services: [{ key: "brows", label: "Sourcils", durationMinutes: 30 }] }),
+  );
+  assert.ok(!legacy.ok && legacy.failure.kind === "malformed");
+
+  const rawPath = await loadBookableServices(async () =>
+    Response.json({
+      services: [{ key: "brows", label: "Sourcils", description: "", durationMinutes: 30, imageSrc: "/etc/passwd" }],
+    }),
+  );
+  assert.ok(!rawPath.ok && rawPath.failure.kind === "malformed");
 });
 
 test("availability posts the selected key and exact visible range", async () => {

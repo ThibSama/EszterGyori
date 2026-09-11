@@ -52,7 +52,14 @@ function normalizeOptionalSource(value: string): string | null {
 
 const ACCEPTED_FILE_TYPES = mediaMimeTypes.join(",");
 
-function MediaLibraryPanel({
+/**
+ * The library picker on its own (ESZ-149): upload, browse, select, delete —
+ * without the manual source field. The CMS media field composes it below; the
+ * service catalog editor uses it directly, because a service image is a
+ * managed asset or nothing, and a raw path field would let a service point at
+ * an image the library does not own.
+ */
+export function MediaLibraryPanel({
   idPrefix,
   selected,
   onSelect,
