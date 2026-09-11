@@ -15,7 +15,7 @@
         "properties": {
           "reference": {
             "type": "string",
-            "pattern": "^bk_[0-9a-f]{32}$"
+            "pattern": "^(bk_[0-9a-f]{32}|[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})$"
           },
           "serviceKey": {
             "type": "string",
@@ -92,7 +92,35 @@
             ]
           },
           "consentAtUtc": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "privacyNoticeId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "privacyNoticePresentedAtUtc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "cancelledAtUtc": {
             "anyOf": [
@@ -136,6 +164,8 @@
           "customerPhone",
           "customerNote",
           "consentAtUtc",
+          "privacyNoticeId",
+          "privacyNoticePresentedAtUtc",
           "cancelledAtUtc",
           "cancellationReason",
           "createdAt",
@@ -164,7 +194,7 @@
                 },
                 "reference": {
                   "type": "string",
-                  "pattern": "^bk_[0-9a-f]{32}$"
+                  "pattern": "^(bk_[0-9a-f]{32}|[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})$"
                 }
               },
               "required": [

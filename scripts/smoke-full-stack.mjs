@@ -7,7 +7,7 @@
  * Real PHP, real MySQL, real content, auth, booking and admin paths are
  * exercised end to end — the injected public page and generated assets, HTTP
  * routing, deterministic availability, a real booking creation (carrying the
- * ESZ-142 consent-notice id), the anonymous-session bootstrap, an
+ * ESZ-161 privacy-notice id), the anonymous-session bootstrap, an
  * authenticated admin login, the admin reference query and an admin cancel.
  * The smoke's own exit code is the outcome, so no skipped PHPUnit or missing
  * infrastructure can ever read as PASS.
@@ -480,13 +480,13 @@ export async function runSmokeProof(handle, { shouldAbort = () => false } = {}) 
     customerEmail: `smoke+${Date.now()}@example.test`,
     customerPhone: null,
     customerNote: "Created by the disposable full-stack smoke; the whole backing state is removed on every exit.",
-    // ESZ-142: the catalog's current consent notice id.
-    consentNoticeId: "booking-consent-v1",
-    consentAccepted: true,
+    // ESZ-161: the catalog's current privacy notice id; no consent field.
+    privacyNoticeId: "booking-privacy-v1",
   });
   assert(created.response.status === 201, `Booking creation returned ${created.response.status}.`);
   const bookingReference = created.body?.reference ?? null;
-  assert(/^bk_[0-9a-f]{32}$/.test(bookingReference ?? ""), "Booking creation returned no valid reference.");
+  // ESZ-161: a new booking is issued the current XXXX-XXXX reference.
+  assert(/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/.test(bookingReference ?? ""), "Booking creation returned no valid reference.");
 
   const anonymous = await request("/api/auth/session", { headers: { accept: "application/json" } });
   assert(anonymous.response.status === 200 && anonymous.body?.authenticated === false, "Anonymous session bootstrap failed.");

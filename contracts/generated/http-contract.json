@@ -675,7 +675,8 @@
       "serviceCatalog": "ESZ-149 — booking_services is the single operational service catalog. Authenticated admin reads list every row, archived included, so historical bookings stay nameable; mutations are create (key derived server-side from the name), update (name, description, duration, image), archive and restore, each a PATCH carrying its action behind session and CSRF. update, archive and restore require expectedUpdatedAt and answer 409 REVISION_CONFLICT when the row moved. Archive and restore flip is_active only; no route deletes a service. A managed imageSrc must name a catalogued media asset, and the media delete route refuses an asset any service row references. Mutations that change bookability (create, archive, restore, a duration change) take the booking serialization boundary first, inside their transaction.",
       "serviceCombinations": "ESZ-150 — a public read or creation names its services with serviceKeys (or the pre-ESZ-150 single serviceKey; exactly one of the two). One key is the service itself. Two or more keys are resolved, in canonical sorted form, against booking_service_combinations: the row must exist, be active, carry a validated duration, every member must be an active service and the count must be within the configured maximum (system_settings booking.max_services_per_appointment, default 1), otherwise 400 VALIDATION_FAILED. The validated duration alone shapes the slots and the stored interval; the proposal (sum of component durations) is advisory. Public discovery lists the maximum and the currently bookable combinations. The admin catalog read lists the maximum, every stored combination and the candidate subsets of active services (bounded, with a completeness flag); setMaxServices, validateCombination, disableCombination and enableCombination are PATCH actions on the same path behind session and CSRF, disable/enable and re-validation under the row's updatedAt token (409 REVISION_CONFLICT when stale), and every one of them takes the booking serialization boundary first. Existing bookings keep their stored service_key, start and end; a combination booking additionally stores its combination_key, and none is ever migrated or recomputed.",
       "creation": "The client submits a returned UTC start. Inside one transaction the singleton primary resource row is locked, all inputs are re-read, SlotEngine recomputes, and insert plus created history commit together.",
-      "consent": "ESZ-142 — the request must pair consentAccepted: true with consentNoticeId naming the entry of the immutable notice catalog (booking-domain consentNotices) whose text the client displayed. The server accepts only an id the catalog contains and stores it beside consent_at_utc; it never accepts notice text. Bookings created before the catalog keep a null consent_notice_id and are never retro-attributed one.",
+      "privacyNotice": "ESZ-161 — the request carries privacyNoticeId naming the entry of the immutable privacy-notice catalog (booking-domain privacyNotices) whose text the form displayed; the server accepts only an id the catalog contains, stores it with its presentation instant and never accepts notice text. No consent field exists: the legal basis is the execution of the requested service and pre-contractual steps, and the strict schema refuses consentAccepted / consentNoticeId. Bookings made under ESZ-142 keep their consent_at_utc and consent_notice_id unchanged, and admin reads expose consentAtUtc / privacyNoticeId / privacyNoticePresentedAtUtc as nullable facts.",
+      "publicReference": "ESZ-161 — a new booking is issued an XXXX-XXXX reference (booking-domain publicReferences.current); every reference field accepts both that shape and the legacy bk_ + 32 hex one, and a stored legacy reference resolves unchanged through mode=reference, the range cursor and every mutation.",
       "adminMutableFields": {
         "update": [
           "customerName",
@@ -3326,14 +3327,14 @@
     {
       "id": "booking.create.post.ok",
       "endpoint": "/api/bookings",
-      "description": "A currently available slot with explicit consent for the current catalog notice creates one confirmed booking and returns no customer data.",
+      "description": "A currently available slot with the current privacy notice id creates one confirmed booking and returns no customer data.",
       "request": {
         "method": "POST",
         "path": "/api/bookings",
         "headers": {
           "content-type": "application/json"
         },
-        "rawBody": "{\"serviceKey\":\"brows\",\"startsAtUtc\":\"2026-06-15T07:00:00.000Z\",\"customerName\":\"Cliente Exemple\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null,\"consentNoticeId\":\"booking-consent-v1\",\"consentAccepted\":true}"
+        "rawBody": "{\"serviceKey\":\"brows\",\"startsAtUtc\":\"2026-06-15T07:00:00.000Z\",\"customerName\":\"Cliente Exemple\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null,\"privacyNoticeId\":\"booking-privacy-v1\"}"
       },
       "expect": {
         "status": 201,
@@ -3350,7 +3351,7 @@
         "headers": {
           "content-type": "application/json"
         },
-        "rawBody": "{\"serviceKey\":\"brows\",\"startsAtUtc\":\"2026-06-15T07:15:00.000Z\",\"customerName\":\"Cliente Exemple\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null,\"consentNoticeId\":\"booking-consent-v1\",\"consentAccepted\":true}"
+        "rawBody": "{\"serviceKey\":\"brows\",\"startsAtUtc\":\"2026-06-15T07:15:00.000Z\",\"customerName\":\"Cliente Exemple\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null,\"privacyNoticeId\":\"booking-privacy-v1\"}"
       },
       "expect": {
         "status": 409,
@@ -3359,16 +3360,16 @@
       }
     },
     {
-      "id": "booking.create.post.invalidConsent",
+      "id": "booking.create.post.consentFieldRefused",
       "endpoint": "/api/bookings",
-      "description": "Consent must be explicitly true before customer facts reach persistence.",
+      "description": "ESZ-161 — booking no longer models consent: the pre-ESZ-161 consentAccepted / consentNoticeId fields are unknown to the strict request and are refused before persistence.",
       "request": {
         "method": "POST",
         "path": "/api/bookings",
         "headers": {
           "content-type": "application/json"
         },
-        "rawBody": "{\"serviceKey\":\"brows\",\"startsAtUtc\":\"2026-06-15T07:00:00.000Z\",\"customerName\":\"Cliente Exemple\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null,\"consentNoticeId\":\"booking-consent-v1\",\"consentAccepted\":false}"
+        "rawBody": "{\"serviceKey\":\"brows\",\"startsAtUtc\":\"2026-06-15T07:00:00.000Z\",\"customerName\":\"Cliente Exemple\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null,\"privacyNoticeId\":\"booking-privacy-v1\",\"consentNoticeId\":\"booking-consent-v1\",\"consentAccepted\":true}"
       },
       "expect": {
         "status": 400,
@@ -3377,16 +3378,16 @@
       }
     },
     {
-      "id": "booking.create.post.missingConsentNotice",
+      "id": "booking.create.post.missingPrivacyNotice",
       "endpoint": "/api/bookings",
-      "description": "ESZ-142 — a request without the consent notice id cannot name which wording was accepted, so it is refused before persistence.",
+      "description": "ESZ-161 — a request without the privacy notice id cannot name which information was shown, so it is refused before persistence.",
       "request": {
         "method": "POST",
         "path": "/api/bookings",
         "headers": {
           "content-type": "application/json"
         },
-        "rawBody": "{\"serviceKey\":\"brows\",\"startsAtUtc\":\"2026-06-15T07:00:00.000Z\",\"customerName\":\"Cliente Exemple\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null,\"consentAccepted\":true}"
+        "rawBody": "{\"serviceKey\":\"brows\",\"startsAtUtc\":\"2026-06-15T07:00:00.000Z\",\"customerName\":\"Cliente Exemple\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null}"
       },
       "expect": {
         "status": 400,
@@ -3395,16 +3396,16 @@
       }
     },
     {
-      "id": "booking.create.post.unknownConsentNotice",
+      "id": "booking.create.post.unknownPrivacyNotice",
       "endpoint": "/api/bookings",
-      "description": "ESZ-142 — an id the immutable catalog does not contain is refused before persistence; the server never guesses which notice the client meant.",
+      "description": "ESZ-161 — an id the immutable catalog does not contain (a historical consent notice id included) is refused before persistence; the server never guesses which notice the client meant.",
       "request": {
         "method": "POST",
         "path": "/api/bookings",
         "headers": {
           "content-type": "application/json"
         },
-        "rawBody": "{\"serviceKey\":\"brows\",\"startsAtUtc\":\"2026-06-15T07:00:00.000Z\",\"customerName\":\"Cliente Exemple\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null,\"consentNoticeId\":\"booking-consent-9999\",\"consentAccepted\":true}"
+        "rawBody": "{\"serviceKey\":\"brows\",\"startsAtUtc\":\"2026-06-15T07:00:00.000Z\",\"customerName\":\"Cliente Exemple\",\"customerEmail\":\"cliente@example.test\",\"customerPhone\":null,\"customerNote\":null,\"privacyNoticeId\":\"booking-consent-v1\"}"
       },
       "expect": {
         "status": 400,
@@ -3454,6 +3455,51 @@
       "expect": {
         "status": 200,
         "body": "adminBookingReferenceResponse"
+      }
+    },
+    {
+      "id": "admin.bookings.query.post.currentReferenceOk",
+      "endpoint": "/api/admin/bookings/query",
+      "description": "ESZ-161 — the exact lookup accepts the current XXXX-XXXX reference shape exactly as it accepts the legacy bk_ one.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/bookings/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"reference\",\"reference\":\"XG73-UVK9\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminBookingReferenceResponse"
+      }
+    },
+    {
+      "id": "admin.bookings.query.post.malformedReference",
+      "endpoint": "/api/admin/bookings/query",
+      "description": "ESZ-161 — a reference of neither frozen shape (ambiguous characters, lowercase, wrong grouping) is a structural 400 before any lookup.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/bookings/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"reference\",\"reference\":\"XG70-UVK1\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
       }
     },
     {

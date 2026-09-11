@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  BOOKING_CONSENT_CURRENT_NOTICE_ID,
-  bookingConsentCurrentNotice,
+  BOOKING_PRIVACY_CURRENT_NOTICE_ID,
+  bookingPrivacyCurrentNotice,
   defaultSiteContent,
 } from "@eszter/contracts";
 import { BOOKING_API_MESSAGES } from "../app/lib/booking-api";
@@ -164,15 +164,20 @@ test("navigation clears date and slot state before the new authoritative respons
   assert.deepEqual(state.slots, []);
 });
 
-test("customer validation covers required identity, optional limits and explicit consent", () => {
+test("customer validation covers required identity and optional limits, and requires no consent", () => {
   assert.deepEqual(Object.keys(validateCustomerDraft({
     firstName: "",
     lastName: "",
     email: "not-an-email",
     phone: "x".repeat(33),
     note: "x".repeat(2001),
-    consentAccepted: false,
-  })).sort(), ["consentAccepted", "email", "firstName", "lastName", "note", "phone"]);
+  })).sort(), ["email", "firstName", "lastName", "note", "phone"]);
+
+  // ESZ-161: the phone and the "précision" stay optional — an empty value
+  // is never an error — and no acceptance is asked for.
+  const draft = { firstName: "Cliente", lastName: "Exemple", email: "cliente@example.test", phone: "", note: "" };
+  assert.deepEqual(validateCustomerDraft(draft), {});
+  assert.equal("consentAccepted" in draft, false);
 
   // ESZ-160: first and last names fail independently, and each part is
   // capped so the composed `customerName` fits the API's 160 characters.
@@ -182,7 +187,6 @@ test("customer validation covers required identity, optional limits and explicit
     email: "cliente@example.test",
     phone: "",
     note: "",
-    consentAccepted: true,
   })), ["lastName"]);
   assert.deepEqual(Object.keys(validateCustomerDraft({
     firstName: "x".repeat(CUSTOMER_NAME_PART_MAX_LENGTH + 1),
@@ -190,7 +194,6 @@ test("customer validation covers required identity, optional limits and explicit
     email: "cliente@example.test",
     phone: "",
     note: "",
-    consentAccepted: true,
   })), ["firstName"]);
   assert.equal(
     composeCustomerName({
@@ -206,7 +209,6 @@ test("customer validation covers required identity, optional limits and explicit
     email: " cliente@example.test ",
     phone: "",
     note: "",
-    consentAccepted: true,
   }), {});
 });
 
@@ -217,7 +219,6 @@ test("the creation payload preserves the exact slot instant and normalizes optio
     email: " cliente@example.test ",
     phone: " ",
     note: " question ",
-    consentAccepted: true,
   });
   assert.deepEqual(request, {
     serviceKeys: ["brows"],
@@ -226,29 +227,30 @@ test("the creation payload preserves the exact slot instant and normalizes optio
     customerEmail: "cliente@example.test",
     customerPhone: null,
     customerNote: "question",
-    // ESZ-142: the id of the catalog entry whose text the checkbox displayed.
-    consentNoticeId: BOOKING_CONSENT_CURRENT_NOTICE_ID,
-    consentAccepted: true,
+    // ESZ-161: the id of the catalog entry whose text the form displayed.
+    privacyNoticeId: BOOKING_PRIVACY_CURRENT_NOTICE_ID,
   });
+  // No consent boolean and no consent notice travel any more.
+  assert.equal("consentAccepted" in request, false);
+  assert.equal("consentNoticeId" in request, false);
 });
 
-test("the creation request names exactly the notice the current checkbox renders", () => {
-  // The pair is the point of ESZ-142: `reservation-details.tsx` renders
-  // `bookingConsentCurrentNotice.text` and the request sends
-  // `bookingConsentCurrentNotice.id`, so the server can store which wording
-  // was accepted. Notice text is never part of the request.
+test("the creation request names exactly the privacy notice the form renders", () => {
+  // The pair is the point of ESZ-161: `reservation-details.tsx` renders
+  // `bookingPrivacyCurrentNotice.content` and the request sends
+  // `bookingPrivacyCurrentNotice.id`, so the server can store which
+  // information was shown. Notice text is never part of the request.
   const request = createBookingRequest(["brows"], slot, {
     firstName: "Cliente",
     lastName: "Exemple",
     email: "cliente@example.test",
     phone: "",
     note: "",
-    consentAccepted: true,
   });
-  assert.equal(request.consentNoticeId, bookingConsentCurrentNotice.id);
-  assert.equal(request.consentNoticeId, BOOKING_CONSENT_CURRENT_NOTICE_ID);
-  assert.equal("consentNoticeText" in request, false);
-  assert.equal(Object.keys(request).includes("consentNoticeText"), false);
+  assert.equal(request.privacyNoticeId, bookingPrivacyCurrentNotice.id);
+  assert.equal(request.privacyNoticeId, BOOKING_PRIVACY_CURRENT_NOTICE_ID);
+  assert.equal("privacyNoticeText" in request, false);
+  assert.equal(Object.keys(request).includes("privacyNoticeText"), false);
 });
 
 test("review, confirmed success and ordinary failure preserve customer and appointment facts", () => {
@@ -274,7 +276,8 @@ test("review, confirmed success and ordinary failure preserve customer and appoi
   state = reservationFlowReducer(state, {
     type: "submit-success",
     confirmation: {
-      reference: "bk_00000000000000000000000000000000",
+      // ESZ-161: a current XXXX-XXXX reference.
+      reference: "XG73-UVK9",
       serviceKey: "brows",
       serviceKeys: ["brows"],
       combinationKey: null,
@@ -284,7 +287,7 @@ test("review, confirmed success and ordinary failure preserve customer and appoi
     },
   });
   assert.equal(state.phase, "confirmed");
-  assert.equal(state.confirmation?.reference, "bk_00000000000000000000000000000000");
+  assert.equal(state.confirmation?.reference, "XG73-UVK9");
 });
 
 test("last-second unavailability clears only the stale slot and preserves safe input", () => {

@@ -15,6 +15,7 @@ use Eszter\Booking\AvailabilityRevisionConflictException;
 use Eszter\Booking\AvailabilityWindow;
 use Eszter\Booking\Booking;
 use Eszter\Booking\BookingDomainContract;
+use Eszter\Booking\BookingPayloads;
 use Eszter\Booking\BookingRepository;
 use Eszter\Booking\BookingRevisionConflictException;
 use Eszter\Booking\BookingSerializationLock;
@@ -494,7 +495,7 @@ final class SqlIntegrationTest extends TestCase
             '+336****0000',
             'Test only',
             new \DateTimeImmutable('2026-06-13T12:00:00.000Z'),
-            $this->bookingContract->currentConsentNoticeId,
+            $this->bookingContract->currentPrivacyNoticeId,
         );
 
         self::assertSame('confirmed', $booking->state->value);
@@ -502,7 +503,7 @@ final class SqlIntegrationTest extends TestCase
         self::assertSame('2026-07-01 08:00:00.000', $booking->startsAtUtc);
         self::assertSame('2026-07-01 10:00:00.000', $booking->endsAtUtc);
         self::assertNull($booking->cancelledAtUtc);
-        self::assertMatchesRegularExpression('/^bk_[0-9a-f]{32}$/', $booking->reference);
+        self::assertMatchesRegularExpression('/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/', $booking->reference);
     }
 
     public function testBookingRequiresAProvisionedActiveService(): void
@@ -720,7 +721,7 @@ final class SqlIntegrationTest extends TestCase
             null,
             null,
             new \DateTimeImmutable(self::NOW),
-            $this->bookingContract->currentConsentNoticeId,
+            $this->bookingContract->currentPrivacyNoticeId,
         );
 
         $rangeStart = new \DateTimeImmutable('2026-07-05T22:00:00Z');
@@ -859,40 +860,119 @@ final class SqlIntegrationTest extends TestCase
         self::assertSame('2026-10-25T01:00:00.000Z', $response['slots'][0]['startsAtUtc']);
     }
 
-    public function testAtomicPublicCreationStoresConsentAndCreatedHistory(): void
+    /**
+     * ESZ-161 — the focused creation proof: a public creation stores no
+     * consent boolean and no consent instant, stores the privacy notice it
+     * displayed with its presentation instant, is issued a current
+     * `XXXX-XXXX` reference, and a legacy `bk_` reference stays readable
+     * beside it.
+     */
+    public function testAtomicPublicCreationStoresThePrivacyNoticeAndACurrentReference(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
         $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
 
         $created = $this->bookingApi->create($this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z'));
-        $stored = $this->bookings->find((string) $created['reference']);
+        $reference = (string) $created['reference'];
+        self::assertMatchesRegularExpression('/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/', $reference);
+        self::assertTrue($this->bookingContract->isCurrentReference($reference));
+        $stored = $this->bookings->find($reference);
 
         self::assertNotNull($stored);
         self::assertSame('confirmed', $created['state']);
-        self::assertSame('2026-06-13 12:00:00.000', $stored->consentAtUtc);
         self::assertSame('Cliente Exemple', $stored->customerName);
-        // ESZ-142: the notice id the request carried is stored beside the
-        // consent instant — the durable mapping to the accepted wording.
-        self::assertSame(
-            $this->bookingContract->currentConsentNoticeId,
-            $stored->consentNoticeId,
-        );
+        // No consent is modelled: no instant is fabricated, no consent notice
+        // is attributed.
+        self::assertNull($stored->consentAtUtc);
+        self::assertNull($stored->consentNoticeId);
+        // The privacy notice the request named is stored with the instant it
+        // was presented — the creation instant.
+        self::assertSame($this->bookingContract->currentPrivacyNoticeId, $stored->privacyNoticeId);
+        self::assertSame('2026-06-13 12:00:00.000', $stored->privacyNoticePresentedAtUtc);
         $row = $this->database->fetchOne(
-            'SELECT consent_notice_id, consent_at_utc FROM bookings WHERE id = :booking',
+            'SELECT reference, consent_at_utc, consent_notice_id, privacy_notice_id,'
+            . ' privacy_notice_presented_at_utc FROM bookings WHERE id = :booking',
             ['booking' => $stored->id],
         );
-        self::assertSame($this->bookingContract->currentConsentNoticeId, $row['consent_notice_id']);
-        self::assertSame('2026-06-13 12:00:00.000', $row['consent_at_utc']);
+        self::assertSame($reference, $row['reference']);
+        self::assertNull($row['consent_at_utc']);
+        self::assertNull($row['consent_notice_id']);
+        self::assertSame($this->bookingContract->currentPrivacyNoticeId, $row['privacy_notice_id']);
+        self::assertSame('2026-06-13 12:00:00.000', $row['privacy_notice_presented_at_utc']);
         $history = $this->database->fetchAll(
             'SELECT event_type, actor_type FROM booking_history WHERE booking_id = :booking',
             ['booking' => $stored->id],
         );
         self::assertSame([['event_type' => 'created', 'actor_type' => 'public']], $history);
         self::assertArrayNotHasKey('customerEmail', $created);
+
+        // The admin payload exposes the evidence as nullable facts.
+        $payload = BookingPayloads::adminBookingPayload($stored);
+        self::assertNull($payload['consentAtUtc']);
+        self::assertSame($this->bookingContract->currentPrivacyNoticeId, $payload['privacyNoticeId']);
+        self::assertSame('2026-06-13T12:00:00.000Z', $payload['privacyNoticePresentedAtUtc']);
+
+        // A legacy bk_ reference stored under the consent framing remains
+        // readable, unchanged, through the same repository and admin read.
+        $legacyReference = 'bk_00000000000000000000000000000abc';
+        $this->insertRetentionBooking(
+            $legacyReference,
+            'confirmed',
+            '2026-06-16 08:00:00.000',
+            '2026-06-16 08:30:00.000',
+            null,
+            null,
+            $this->bookingContract->currentConsentNoticeId,
+        );
+        $legacy = $this->bookings->find($legacyReference);
+        self::assertNotNull($legacy);
+        self::assertSame($legacyReference, $legacy->reference);
+        self::assertSame('2025-11-01 09:00:00.000', $legacy->consentAtUtc);
+        self::assertSame($this->bookingContract->currentConsentNoticeId, $legacy->consentNoticeId);
+        self::assertNull($legacy->privacyNoticeId);
+        self::assertNull($legacy->privacyNoticePresentedAtUtc);
+        $legacyPayload = BookingPayloads::adminBookingPayload($legacy);
+        self::assertSame('2025-11-01T09:00:00.000Z', $legacyPayload['consentAtUtc']);
+        self::assertNull($legacyPayload['privacyNoticeId']);
+        $adminRead = $this->bookingApi->adminQuery(['mode' => 'reference', 'reference' => $legacyReference]);
+        self::assertSame($legacyReference, $adminRead['booking']['reference']);
+        $currentRead = $this->bookingApi->adminQuery(['mode' => 'reference', 'reference' => $reference]);
+        self::assertSame($reference, $currentRead['booking']['reference']);
     }
 
     /**
-     * ESZ-142 — a missing notice id is refused by the booking domain before
+     * ESZ-161 — the consent fields are gone from the domain, not merely from
+     * the wire: a request carrying `consentAccepted` or `consentNoticeId`
+     * is refused before the transaction opens, whatever their values.
+     */
+    public function testCreatingWithAConsentFieldIsRefusedBeforeInsertion(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
+
+        foreach (
+            [
+                'consentAccepted' => true,
+                'consentNoticeId' => $this->bookingContract->currentConsentNoticeId,
+            ] as $field => $value
+        ) {
+            $request = $this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z');
+            $request[$field] = $value;
+
+            try {
+                $this->bookingApi->create($request);
+                self::fail("a booking carrying {$field} was accepted.");
+            } catch (BookingValidationException $exception) {
+                self::assertSame($field, $exception->field);
+            }
+        }
+
+        self::assertSame(0, (int) $this->database->fetchOne('SELECT COUNT(*) AS n FROM bookings')['n']);
+        self::assertSame(0, (int) $this->database->fetchOne('SELECT COUNT(*) AS n FROM booking_history')['n']);
+    }
+
+    /**
+     * ESZ-161 — a missing notice id is refused by the booking domain before
      * the transaction opens: nothing is inserted, no history row and no
      * notification job can survive a refusal.
      */
@@ -902,13 +982,13 @@ final class SqlIntegrationTest extends TestCase
         $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
 
         $request = $this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z');
-        unset($request['consentNoticeId']);
+        unset($request['privacyNoticeId']);
 
         try {
             $this->bookingApi->create($request);
-            self::fail('a booking without a consent notice id was accepted.');
+            self::fail('a booking without a privacy notice id was accepted.');
         } catch (BookingValidationException $exception) {
-            self::assertSame('consentNoticeId', $exception->field);
+            self::assertSame('privacyNoticeId', $exception->field);
         }
 
         self::assertSame(0, (int) $this->database->fetchOne('SELECT COUNT(*) AS n FROM bookings')['n']);
@@ -916,23 +996,26 @@ final class SqlIntegrationTest extends TestCase
     }
 
     /**
-     * ESZ-142 — an id the immutable catalog does not contain is refused by
-     * the booking domain before the transaction opens; the server never
-     * guesses which notice the client meant.
+     * ESZ-161 — an id the immutable privacy catalog does not contain is
+     * refused by the booking domain before the transaction opens; a
+     * historical consent notice id is not a privacy notice and is refused
+     * the same way. The server never guesses which notice the client meant.
      */
     public function testCreatingWithAnUnknownNoticeIdIsRefusedBeforeInsertion(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
         $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
 
-        $request = $this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z');
-        $request['consentNoticeId'] = 'booking-consent-9999';
+        foreach (['booking-privacy-9999', $this->bookingContract->currentConsentNoticeId] as $unknown) {
+            $request = $this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z');
+            $request['privacyNoticeId'] = $unknown;
 
-        try {
-            $this->bookingApi->create($request);
-            self::fail('an unknown consent notice id was accepted.');
-        } catch (BookingValidationException $exception) {
-            self::assertSame('consentNoticeId', $exception->field);
+            try {
+                $this->bookingApi->create($request);
+                self::fail("the notice id {$unknown} was accepted as a privacy notice.");
+            } catch (BookingValidationException $exception) {
+                self::assertSame('privacyNoticeId', $exception->field);
+            }
         }
 
         self::assertSame(0, (int) $this->database->fetchOne('SELECT COUNT(*) AS n FROM bookings')['n']);
@@ -940,9 +1023,9 @@ final class SqlIntegrationTest extends TestCase
     }
 
     /**
-     * ESZ-142 — an id that is well-formed ASCII but names no catalog entry
+     * ESZ-161 — an id that is well-formed ASCII but names no catalog entry
      * (bypassing the structural enum, exactly as a direct domain caller can)
-     * is refused the same way.
+     * is refused the same way; no field ever accepts notice text.
      */
     public function testCreatingWithAWireTextPayloadIsRefusedBecauseNoFieldAcceptsText(): void
     {
@@ -950,29 +1033,30 @@ final class SqlIntegrationTest extends TestCase
         $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
 
         $request = $this->publicBookingRequest('brows', '2026-06-15T07:00:00.000Z');
-        // A client can never make the server store what the visitor did NOT
-        // read: the only accepted value is an id from the catalog. Any extra
+        // A client can never make the server store what the visitor was NOT
+        // shown: the only accepted value is an id from the catalog. Any extra
         // "notice text" field is ignored by the strict schema at the HTTP
         // layer and refused here by the required id check.
-        unset($request['consentNoticeId']);
-        $request['consentNoticeText'] = "J'accepte que mes coordonnées soient utilisées.";
+        unset($request['privacyNoticeId']);
+        $request['privacyNoticeText'] = 'Responsable du traitement : Eszter Gyori.';
 
         try {
             $this->bookingApi->create($request);
             self::fail('a request with notice text but no notice id was accepted.');
         } catch (BookingValidationException $exception) {
-            self::assertSame('consentNoticeId', $exception->field);
+            self::assertSame('privacyNoticeId', $exception->field);
         }
 
         self::assertSame(0, (int) $this->database->fetchOne('SELECT COUNT(*) AS n FROM bookings')['n']);
     }
 
     /**
-     * ESZ-142 — the stored notice id is immutable evidence: an admin contact
-     * update (the only mutation that touches customer fields) never rewrites
-     * consent_at_utc or consent_notice_id.
+     * ESZ-161 — the stored notice facts are immutable evidence: an admin
+     * contact update (the only mutation that touches customer fields) never
+     * rewrites privacy_notice_id, its presentation instant, or the consent
+     * columns (which stay NULL — never back-filled).
      */
-    public function testAdminContactUpdatesNeverRewriteTheStoredConsentFacts(): void
+    public function testAdminContactUpdatesNeverRewriteTheStoredNoticeFacts(): void
     {
         $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
         $this->availability->replaceWeeklyRules($this->availabilityHead(), [$this->weeklyRule(1, '09:00', '11:00')]);
@@ -987,12 +1071,15 @@ final class SqlIntegrationTest extends TestCase
         ]);
 
         $row = $this->database->fetchOne(
-            'SELECT customer_name, consent_at_utc, consent_notice_id FROM bookings WHERE id = :booking',
+            'SELECT customer_name, consent_at_utc, consent_notice_id, privacy_notice_id,'
+            . ' privacy_notice_presented_at_utc FROM bookings WHERE id = :booking',
             ['booking' => $booking->id],
         );
         self::assertSame('Cliente Modifiée', $row['customer_name']);
-        self::assertSame('2026-06-13 12:00:00.000', $row['consent_at_utc']);
-        self::assertSame($this->bookingContract->currentConsentNoticeId, $row['consent_notice_id']);
+        self::assertNull($row['consent_at_utc']);
+        self::assertNull($row['consent_notice_id']);
+        self::assertSame($this->bookingContract->currentPrivacyNoticeId, $row['privacy_notice_id']);
+        self::assertSame('2026-06-13 12:00:00.000', $row['privacy_notice_presented_at_utc']);
     }
 
     public function testBookingLifecycleProducesStableAtomicEmailJobsAndSupersedesOutdatedOnes(): void
@@ -4181,7 +4268,7 @@ final class SqlIntegrationTest extends TestCase
             null,
             null,
             new \DateTimeImmutable('2026-06-13T12:00:00.000Z'),
-            $this->bookingContract->currentConsentNoticeId,
+            $this->bookingContract->currentPrivacyNoticeId,
         );
     }
 
@@ -4235,10 +4322,9 @@ final class SqlIntegrationTest extends TestCase
             'customerEmail' => 'cliente@example.test',
             'customerPhone' => null,
             'customerNote' => null,
-            // ESZ-142: the catalog's current consent notice id — what the
+            // ESZ-161: the catalog's current privacy notice id — what the
             // shipped frontend displays and therefore sends.
-            'consentNoticeId' => $this->bookingContract->currentConsentNoticeId,
-            'consentAccepted' => true,
+            'privacyNoticeId' => $this->bookingContract->currentPrivacyNoticeId,
         ];
     }
 
@@ -4297,7 +4383,7 @@ final class SqlIntegrationTest extends TestCase
             null,
             null,
             new \DateTimeImmutable(self::NOW),
-            $this->bookingContract->currentConsentNoticeId,
+            $this->bookingContract->currentPrivacyNoticeId,
         );
     }
 

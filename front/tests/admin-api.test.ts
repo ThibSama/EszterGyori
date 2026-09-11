@@ -199,6 +199,8 @@ test("booking contact update patches the admin route with the exact nullable bod
     customerPhone: null,
     customerNote: null,
     consentAtUtc: "2026-08-20T10:00:00.000Z",
+    privacyNoticeId: null,
+    privacyNoticePresentedAtUtc: null,
     cancelledAtUtc: "2026-08-21T10:00:00.000Z",
     cancellationReason: "Indisponible",
     createdAt: "2026-08-20T10:00:00.000Z",

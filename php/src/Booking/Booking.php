@@ -26,14 +26,28 @@ final class Booking
         public readonly string $customerEmail,
         public readonly ?string $customerPhone,
         public readonly ?string $customerNote,
-        public readonly string $consentAtUtc,
+        /**
+         * ESZ-142/ESZ-161 — the consent instant of a booking made under the
+         * consent framing. Null for every booking created since ESZ-161: a
+         * booking rests on the requested service, not on consent, and no
+         * instant is ever fabricated for it.
+         */
+        public readonly ?string $consentAtUtc,
         /**
          * ESZ-142 — the machine id of the immutable consent-notice catalog
          * entry whose text this booking's visitor accepted. Null means the
-         * booking predates the catalog: it carries a consent instant but no
-         * notice id, and nothing ever invents one for it.
+         * booking predates the catalog (it carries a consent instant but no
+         * notice id) or was created since ESZ-161; nothing ever invents one.
          */
         public readonly ?string $consentNoticeId,
+        /**
+         * ESZ-161 — the machine id of the immutable privacy-notice catalog
+         * entry the form displayed to this booking's customer, and the
+         * instant it was presented. Both null for a booking that predates
+         * ESZ-161; both set for every booking created since.
+         */
+        public readonly ?string $privacyNoticeId,
+        public readonly ?string $privacyNoticePresentedAtUtc,
         public readonly ?string $cancelledAtUtc,
         public readonly ?string $cancellationReason,
         /**
@@ -69,8 +83,10 @@ final class Booking
             self::requiredString($row, 'customer_email'),
             self::nullableString($row, 'customer_phone'),
             self::nullableString($row, 'customer_note'),
-            self::requiredString($row, 'consent_at_utc'),
+            self::nullableString($row, 'consent_at_utc'),
             self::nullableString($row, 'consent_notice_id'),
+            self::nullableString($row, 'privacy_notice_id'),
+            self::nullableString($row, 'privacy_notice_presented_at_utc'),
             self::nullableString($row, 'cancelled_at_utc'),
             self::nullableString($row, 'cancellation_reason'),
             self::nullableString($row, 'customer_data_erased_at'),

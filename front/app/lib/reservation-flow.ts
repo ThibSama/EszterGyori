@@ -1,4 +1,4 @@
-import { BOOKING_CONSENT_CURRENT_NOTICE_ID } from "@eszter/contracts";
+import { BOOKING_PRIVACY_CURRENT_NOTICE_ID } from "@eszter/contracts";
 import type { BookableServiceKey } from "@eszter/contracts";
 import type {
   BookingAvailability,
@@ -166,9 +166,15 @@ export interface CustomerDraft {
   firstName: string;
   lastName: string;
   email: string;
+  /** Optional; used only for transactional messages about the appointment. */
   phone: string;
+  /**
+   * ESZ-161 — "Précision sur le rendez-vous", optional. Free text about the
+   * appointment itself; the form warns against entering health, medical or
+   * other sensitive data. There is deliberately no consent field: a booking
+   * rests on the requested service, and the form shows information instead.
+   */
   note: string;
-  consentAccepted: boolean;
 }
 
 export type CustomerField = keyof CustomerDraft;
@@ -185,7 +191,7 @@ export type ReservationFlowAction =
   | { type: "navigate"; fromDate: string; untilDate: string }
   | { type: "select-date"; date: string }
   | { type: "select-slot"; slot: BookingSlot }
-  | { type: "update-customer"; field: CustomerField; value: string | boolean }
+  | { type: "update-customer"; field: CustomerField; value: string }
   | { type: "customer-invalid"; errors: CustomerErrors }
   | { type: "show-review" }
   | { type: "edit-details" }
@@ -223,7 +229,7 @@ export function initialReservationState(today: string): ReservationFlowState {
     error: null,
     notice: null,
     requestVersion: 0,
-    customer: { firstName: "", lastName: "", email: "", phone: "", note: "", consentAccepted: false },
+    customer: { firstName: "", lastName: "", email: "", phone: "", note: "" },
     customerErrors: {},
     phase: "selecting",
     submissionError: null,
@@ -264,10 +270,7 @@ export function validateCustomerDraft(customer: CustomerDraft): CustomerErrors {
     errors.email = "Indiquez une adresse email valide.";
   }
   if (phone.length > 32) errors.phone = "Le numéro doit contenir 32 caractères maximum.";
-  if (note.length > 2000) errors.note = "La note doit contenir 2 000 caractères maximum.";
-  if (!customer.consentAccepted) {
-    errors.consentAccepted = "Votre accord est nécessaire pour demander ce rendez-vous.";
-  }
+  if (note.length > 2000) errors.note = "La précision doit contenir 2 000 caractères maximum.";
   return errors;
 }
 
@@ -283,11 +286,11 @@ export function createBookingRequest(
     customerEmail: customer.email.trim(),
     customerPhone: customer.phone.trim() || null,
     customerNote: customer.note.trim() || null,
-    // ESZ-142: the id of the notice the checkbox displayed — the catalog's
-    // current entry — travels with the explicit consent, so the server can
-    // record exactly which wording was accepted. Notice text is never sent.
-    consentNoticeId: BOOKING_CONSENT_CURRENT_NOTICE_ID,
-    consentAccepted: true,
+    // ESZ-161: the id of the privacy-information notice the form displayed
+    // — the catalog's current entry — so the server can record exactly which
+    // information the customer was shown. Notice text is never sent, and no
+    // consent field exists: the booking rests on the requested service.
+    privacyNoticeId: BOOKING_PRIVACY_CURRENT_NOTICE_ID,
   };
 }
 

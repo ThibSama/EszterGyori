@@ -49,13 +49,23 @@ final class BookingPayloads
             'customerEmail' => $booking->customerEmail,
             'customerPhone' => $booking->customerPhone,
             'customerNote' => $booking->customerNote,
-            'consentAtUtc' => IsoTimestamp::format(BookingRequestFields::databaseInstant($booking->consentAtUtc)),
-            'cancelledAtUtc' => $booking->cancelledAtUtc === null
-                ? null
-                : IsoTimestamp::format(BookingRequestFields::databaseInstant($booking->cancelledAtUtc)),
+            // ESZ-161: the basis evidence, exposed as the nullable facts they
+            // are — a consent instant for bookings made under ESZ-142, the
+            // privacy notice and its presentation instant since.
+            'consentAtUtc' => self::optionalInstant($booking->consentAtUtc),
+            'privacyNoticeId' => $booking->privacyNoticeId,
+            'privacyNoticePresentedAtUtc' => self::optionalInstant($booking->privacyNoticePresentedAtUtc),
+            'cancelledAtUtc' => self::optionalInstant($booking->cancelledAtUtc),
             'cancellationReason' => $booking->cancellationReason,
             'createdAt' => $booking->createdAt,
             'updatedAt' => $booking->updatedAt,
         ];
+    }
+
+    private static function optionalInstant(?string $databaseInstant): ?string
+    {
+        return $databaseInstant === null
+            ? null
+            : IsoTimestamp::format(BookingRequestFields::databaseInstant($databaseInstant));
     }
 }

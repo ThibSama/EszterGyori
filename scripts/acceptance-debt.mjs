@@ -34,7 +34,8 @@ export const DEBT_FILE_MODE = 0o600;
 export const DEBT_DIR_MODE = 0o700;
 
 const MEDIA_ID_PATTERN = /^med_[0-9a-f]{32}$/;
-const BOOKING_REFERENCE_PATTERN = /^bk_[0-9a-f]{32}$/;
+// ESZ-161: a debt record may name a legacy bk_ reference or a current XXXX-XXXX one.
+const BOOKING_REFERENCE_PATTERN = /^(bk_[0-9a-f]{32}|[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})$/;
 
 export class DebtFormatError extends Error {
   constructor(message) {

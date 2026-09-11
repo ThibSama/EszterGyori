@@ -13,9 +13,10 @@
  *      availability endpoint answers deterministic slots for them;
  *   2. a valid booking completes entirely through the public browser UI —
  *      service, date, slot, details, review, confirmation with its
- *      `bk_…` reference;
+ *      `XXXX-XXXX` reference (ESZ-161);
  *   3. persistence is visible through the real API, the real MySQL rows
- *      (booking + history + consent), and the authenticated admin calendar;
+ *      (booking + history + privacy notice evidence), and the authenticated
+ *      admin calendar;
  *   4. the lifecycle notification jobs are enqueued exactly per the current
  *      contract: one pending `booking_confirmation` (due at creation) and
  *      one pending `booking_reminder` (due T−24 h), nothing sent, no SMTP
@@ -53,7 +54,6 @@ import {
   waitFor,
   evaluate,
   setReactInput,
-  clickCheckbox,
   clickButton,
   clickButtonWhere,
   pressTab,
@@ -75,7 +75,9 @@ const { fail, assert } = makeProof("browser:booking");
 const chromeBinary = process.env.ESZTER_BROWSER_BOOKING_CHROME ?? "google-chrome";
 const sessionCookieName = "eszter_session"; // non-Secure dev build drops __Host-
 const csrfHeader = "x-csrf-token";
-const consentNoticeId = "booking-consent-v1"; // the catalog's current id (ESZ-142)
+const privacyNoticeId = "booking-privacy-v1"; // the catalog's current id (ESZ-161)
+// ESZ-161: the current public reference shape (legacy bk_ references stay valid).
+const referencePattern = /[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}/;
 // ESZ-160: the public form asks for first and last name separately; the
 // backend/admin contract still stores the composed "firstName lastName".
 const customerA = {
@@ -280,8 +282,22 @@ async function main() {
   await setReactInput(cdp, "customer-email", customerA.email);
   await setReactInput(cdp, "customer-phone", customerA.phone);
   await setReactInput(cdp, "customer-note", customerA.note);
-  await clickCheckbox(cdp, "consent-accepted");
-  await waitFor(() => evaluate(cdp, `document.getElementById("consent-accepted")?.checked === true`), "consent checkbox");
+  // ESZ-161: no consent checkbox — the form shows the privacy-information
+  // notice of the current catalog entry, and the note warns against
+  // sensitive data.
+  const noticeState = await evaluate(cdp, `(() => {
+    const notice = document.querySelector("[data-privacy-notice-id]");
+    return {
+      id: notice?.getAttribute("data-privacy-notice-id") ?? null,
+      text: notice?.textContent ?? "",
+      checkbox: document.querySelector('input[type="checkbox"]') !== null,
+      noteHint: document.getElementById("note-hint")?.textContent?.trim() ?? null,
+    };
+  })()`);
+  assert(noticeState.id === privacyNoticeId, `the form does not display the current privacy notice: ${noticeState.id}`);
+  assert(noticeState.text.includes("Responsable du traitement") && noticeState.text.includes("Aucun consentement"), "the privacy notice is missing its statements");
+  assert(!noticeState.checkbox, "a consent checkbox is still rendered");
+  assert(noticeState.noteHint === "N’indiquez ici aucune information médicale, de santé ou autre donnée sensible.", `unexpected note hint: ${noticeState.noteHint}`);
   const creationPosts = [];
   cdp.on("Network.requestWillBeSent", ({ request }) => {
     if (request.method === "POST" && new URL(request.url).pathname === "/api/bookings") {
@@ -300,14 +316,12 @@ async function main() {
     const email = document.getElementById("customer-email");
     const phone = document.getElementById("customer-phone");
     const note = document.getElementById("customer-note");
-    const consent = document.getElementById("consent-accepted");
     return {
       nameValue: name?.value,
       lastNameValue: lastName?.value,
       emailValue: email?.value,
       phoneValue: phone?.value,
       noteValue: note?.value,
-      consentChecked: consent?.checked,
       nameInvalid: name?.getAttribute("aria-invalid"),
       nameDescribedBy: name?.getAttribute("aria-describedby"),
       lastNameInvalid: lastName?.getAttribute("aria-invalid"),
@@ -324,7 +338,6 @@ async function main() {
   assert(invalidState.lastNameInvalid === "false" && invalidState.lastNameDescribedBy === null && invalidState.lastNameErrorText === null, "the valid last-name field is not independent of the first-name error");
   assert(invalidState.lastNameValue === customerA.lastName, "the refused submit lost the entered last name");
   assert(invalidState.emailValue === customerA.email && invalidState.phoneValue === customerA.phone && invalidState.noteValue === customerA.note, "the refused submit lost entered values");
-  assert(invalidState.consentChecked === true, "the refused submit lost the consent state");
   assert(invalidState.fieldType === "email" && invalidState.autoComplete.email === "email" && invalidState.autoComplete.name === "given-name" && invalidState.autoComplete.lastName === "family-name" && invalidState.autoComplete.phone === "tel", "the customer fields lost their type/autoComplete");
   assert(invalidState.noValidate, "noValidate is not paired with the aria error wiring");
   await new Promise((resolveWait) => setTimeout(resolveWait, 800));
@@ -385,8 +398,6 @@ async function main() {
   await setReactInput(cdpB, "customer-email", customerB.email);
   await setReactInput(cdpB, "customer-phone", customerB.phone);
   await setReactInput(cdpB, "customer-note", customerB.note);
-  await clickCheckbox(cdpB, "consent-accepted");
-  await waitFor(() => evaluate(cdpB, `document.getElementById("consent-accepted")?.checked === true`), "tab B consent checkbox");
   await clickButton(cdpB, "Vérifier ma demande");
   await waitFor(
     () => evaluate(cdpB, `document.getElementById("review-heading") && document.activeElement?.id === "review-heading"`),
@@ -413,10 +424,12 @@ async function main() {
   const confirmation = await evaluate(cdp, `(() => ({
     activeId: document.activeElement?.id ?? null,
     heading: document.querySelector('[id="confirmation-heading"]')?.textContent?.trim() ?? null,
-    reference: (document.body?.innerText?.match(/bk_[0-9a-f]{32}/) ?? [null])[0],
+    reference: (document.body?.innerText?.match(${referencePattern.toString()}) ?? [null])[0],
+    retain: document.body?.innerText?.includes("Conservez précieusement cette référence") ?? false,
   }))()`);
   assert(confirmation.activeId === "confirmation-heading", `focus did not move to the confirmation heading: ${confirmation.activeId}`);
-  assert(confirmation.reference && /^bk_[0-9a-f]{32}$/.test(confirmation.reference), "no booking reference on the confirmation screen");
+  assert(confirmation.reference && referencePattern.test(confirmation.reference), "no booking reference on the confirmation screen");
+  assert(confirmation.retain, "the confirmation does not tell the visitor to keep the reference");
   const referenceA = confirmation.reference;
   const bookingsAfterA = mysqlExec("SELECT COUNT(*) FROM bookings");
   assert(bookingsAfterA === "1", `expected exactly one booking after the browser confirmation, got ${bookingsAfterA}`);
@@ -481,14 +494,12 @@ async function main() {
       email: value("customer-email"),
       phone: value("customer-phone"),
       note: value("customer-note"),
-      consent: document.getElementById("consent-accepted")?.checked ?? null,
     };
   })()`);
   for (const [field, expected] of Object.entries(customerB)) {
     if (field === "name") continue; // composed server-side value, not a form field
     assert(preservedB[field] === expected, `the recovery lost customer B's ${field}`);
   }
-  assert(preservedB.consent === true, "the recovery lost customer B's consent");
   const bookingsFinal = mysqlExec("SELECT COUNT(*) FROM bookings");
   assert(bookingsFinal === "1", `the recovery reselect created a booking: ${bookingsFinal} rows`);
 
@@ -594,11 +605,13 @@ async function main() {
   }
   assert(query.body.booking.state === "confirmed", "the admin query does not report the booking confirmed");
 
-  // Real DB: booking row, history, consent, notification jobs exactly per contract.
-  const bookingRow = mysqlJson(`SELECT JSON_OBJECT('state', state, 'service_key', service_key, 'customer_email', customer_email, 'consent_notice_id', consent_notice_id, 'starts_at_utc', DATE_FORMAT(starts_at_utc, '%Y-%m-%d %H:%i:%s.%f'), 'consent_at_utc', consent_at_utc) FROM bookings WHERE reference = '${referenceA}'`);
+  // Real DB: booking row, history, privacy notice evidence, notification jobs exactly per contract.
+  const bookingRow = mysqlJson(`SELECT JSON_OBJECT('state', state, 'service_key', service_key, 'customer_email', customer_email, 'privacy_notice_id', privacy_notice_id, 'privacy_notice_presented_at_utc', privacy_notice_presented_at_utc, 'consent_notice_id', consent_notice_id, 'starts_at_utc', DATE_FORMAT(starts_at_utc, '%Y-%m-%d %H:%i:%s.%f'), 'consent_at_utc', consent_at_utc) FROM bookings WHERE reference = '${referenceA}'`);
   assert(bookingRow?.state === "confirmed" && bookingRow.service_key === serviceKey, "the persisted booking row disagrees with the confirmation");
   assert(bookingRow.customer_email === customerA.email, "the persisted booking row lost the customer email");
-  assert(bookingRow.consent_notice_id === consentNoticeId, `the persisted booking lost the consent notice id: ${bookingRow.consent_notice_id}`);
+  assert(bookingRow.privacy_notice_id === privacyNoticeId, `the persisted booking lost the privacy notice id: ${bookingRow.privacy_notice_id}`);
+  assert(bookingRow.privacy_notice_presented_at_utc !== null, "the persisted booking has no privacy notice presentation instant");
+  assert(bookingRow.consent_at_utc === null && bookingRow.consent_notice_id === null, "a consent fact was fabricated for a booking made since ESZ-161");
   const historyEvents = mysqlExec(`SELECT COUNT(*) FROM booking_history WHERE booking_id = (SELECT id FROM bookings WHERE reference = '${referenceA}') AND event_type = 'created'`);
   assert(historyEvents === "1", `expected one created history event, got ${historyEvents}`);
   const jobs = mysqlJson(`SELECT JSON_ARRAYAGG(JSON_OBJECT('job_type', job_type, 'status', status, 'attempts', attempts, 'sent_at_utc', sent_at_utc, 'lease_owner', lease_owner, 'due_at_utc', DATE_FORMAT(due_at_utc, '%Y-%m-%d %H:%i:%s.%f'))) AS items FROM notification_jobs WHERE booking_id = (SELECT id FROM bookings WHERE reference = '${referenceA}') ORDER BY job_type`);

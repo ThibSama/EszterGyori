@@ -224,11 +224,20 @@ presented as stale data. No conflict path claims a cancelled or saved outcome, a
 client's `conflict` failure carries the frozen `errorCode` that makes the distinction
 possible without widening the HTTP envelope.
 
-Since ESZ-142 the consent wording is the contract's, not the component's: the checkbox
-renders the exact current-notice text of the immutable `consentNotices` catalog and the
-component holds no private duplicate of it, while the creation request carries that same
-notice's id (`consentNoticeId`) beside `consentAccepted: true` — never notice text — and
-a missing or unknown id is refused client-side before anything is posted.
+Since ESZ-142 the notice wording is the contract's, not the component's, and since
+ESZ-161 the notice is *information*, not consent: a booking rests on the execution of
+the requested service and the pre-contractual steps the visitor asks for, so the form
+shows no checkbox. It renders the statements of the current entry of the immutable
+`privacyNotices` catalog (controller, legal basis, retention, recipients, rights,
+contact, privacy-policy destination) and holds no private duplicate of them, while the
+creation request carries that same notice's id (`privacyNoticeId`) — never notice text
+and no acceptance boolean — and a missing or unknown id, or a historical consent notice
+id, is refused client-side before anything is posted. The phone stays optional and
+transactional-only, and the free field is "Précision sur le rendez-vous — facultatif"
+with a warning against health, medical or other sensitive data. The historical
+`consentNotices` catalog is frozen unchanged for the bookings made under it. New
+bookings are issued a `XXXX-XXXX` public reference; legacy `bk_` references stay valid
+everywhere a reference is read.
 
 Since ESZ-145 the admin booking surfaces are the split ones the server now serves: the
 calendar's range walk consumes current-state booking facts only and refuses a page whose

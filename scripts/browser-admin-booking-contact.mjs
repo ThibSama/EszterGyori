@@ -365,13 +365,12 @@ async function main() {
       serviceKey,
       startsAtUtc,
       ...initialContact,
-      // ESZ-142: the catalog's current consent notice id.
-      consentNoticeId: "booking-consent-v1",
-      consentAccepted: true,
+      // ESZ-161: the catalog's current privacy notice id; no consent field.
+      privacyNoticeId: "booking-privacy-v1",
     }),
   });
   const created = await creationResponse.json();
-  assert(creationResponse.status === 201 && /^bk_[0-9a-f]{32}$/.test(created.reference), "real public booking creation failed");
+  assert(creationResponse.status === 201 && /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/.test(created.reference), "real public booking creation failed");
 
   chrome = spawn(chromeBinary, [
     "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",

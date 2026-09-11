@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Eszter\Booking;
 
 use Eszter\Database\Database;
+use Eszter\Database\DatabaseException;
 use Eszter\Support\Clock;
 use Eszter\Support\IsoTimestamp;
 
@@ -13,7 +14,8 @@ final class BookingRepository
 {
     private const SELECT_COLUMNS = 'id, reference, service_key, combination_key, state, starts_at_utc, ends_at_utc,'
         . ' timezone_name, customer_name, customer_email, customer_phone, customer_note,'
-        . ' consent_at_utc, consent_notice_id, cancelled_at_utc, cancellation_reason, customer_data_erased_at,'
+        . ' consent_at_utc, consent_notice_id, privacy_notice_id, privacy_notice_presented_at_utc,'
+        . ' cancelled_at_utc, cancellation_reason, customer_data_erased_at,'
         . ' created_at, updated_at, state_changed_at';
 
     public function __construct(
@@ -33,7 +35,9 @@ final class BookingRepository
 
     public function find(string $reference): ?Booking
     {
-        if (preg_match('/^bk_[0-9a-f]{32}$/D', $reference) !== 1) {
+        // ESZ-161: either frozen shape — the current XXXX-XXXX token or a
+        // legacy bk_ reference — resolves; anything else is malformed.
+        if (!$this->contract->acceptsReference($reference)) {
             throw new BookingValidationException('reference', 'Booking reference is malformed.');
         }
 
@@ -47,7 +51,7 @@ final class BookingRepository
 
     public function findForUpdate(string $reference): ?Booking
     {
-        if (preg_match('/^bk_[0-9a-f]{32}$/D', $reference) !== 1) {
+        if (!$this->contract->acceptsReference($reference)) {
             throw new BookingValidationException('reference', 'Booking reference is malformed.');
         }
 
@@ -292,11 +296,14 @@ final class BookingRepository
     /**
      * Inserts the initial confirmed booking row.
      *
-     * @param \DateTimeImmutable $consentAt the instant the visitor accepted
-     * @param string $consentNoticeId ESZ-142 — the catalog id of the notice
-     *     the visitor accepted; the caller (PdoBookingApi) has already checked
-     *     membership against the booking-domain artifact, and every new
-     *     booking stores a non-null id beside consent_at_utc.
+     * @param \DateTimeImmutable $privacyNoticePresentedAt ESZ-161 — the
+     *     instant the privacy notice was presented to the customer (the
+     *     creation instant); stored beside the notice id. No consent instant
+     *     is ever written: the booking rests on the requested service.
+     * @param string $privacyNoticeId ESZ-161 — the catalog id of the privacy
+     *     notice the form displayed; the caller (BookingLifecycle) has already
+     *     checked membership against the booking-domain artifact, and every
+     *     new booking stores a non-null id.
      * @param ?string $combinationKey ESZ-150 — the validated combination the
      *     booking is for, whose first canonical member `$serviceKey` must be;
      *     null for a single-service booking. The interval must then equal the
@@ -317,8 +324,8 @@ final class BookingRepository
         string $customerEmail,
         ?string $customerPhone,
         ?string $customerNote,
-        \DateTimeImmutable $consentAt,
-        string $consentNoticeId,
+        \DateTimeImmutable $privacyNoticePresentedAt,
+        string $privacyNoticeId,
         ?string $combinationKey = null,
         ?BookableOffer $offer = null,
     ): Booking {
@@ -373,41 +380,43 @@ final class BookingRepository
         $customerPhone = self::optional($customerPhone);
         $customerNote = self::optional($customerNote);
         $this->validateCustomer($customerName, $customerEmail, $customerPhone, $customerNote);
-        // ESZ-142: the repository re-checks the notice id against the same
-        // artifact the API layer used, so no code path can persist an id the
-        // immutable catalog does not contain.
-        if (!$this->contract->acceptsConsentNoticeId($consentNoticeId)) {
-            throw new BookingValidationException('consentNoticeId', 'Unknown booking consent notice.');
+        // ESZ-161: the repository re-checks the notice id against the same
+        // artifact the lifecycle used, so no code path can persist an id the
+        // immutable privacy catalog does not contain — a historical consent
+        // notice id included.
+        if (!$this->contract->acceptsPrivacyNoticeId($privacyNoticeId)) {
+            throw new BookingValidationException('privacyNoticeId', 'Unknown booking privacy notice.');
         }
 
-        $reference = 'bk_' . bin2hex(random_bytes(16));
         $now = $this->clock->nowIso();
         $initial = $this->states->initial();
-
-        $this->database->run(
+        $parameters = [
+            'service' => $serviceKey,
+            'combination' => $combinationKey,
+            'state' => $initial->value,
+            'starts' => $this->time->databaseUtc($start),
+            'ends' => $this->time->databaseUtc($end),
+            'timezone' => $this->contract->timezone,
+            'name' => $customerName,
+            'email' => $customerEmail,
+            'phone' => $customerPhone,
+            'note' => $customerNote,
+            'privacy_notice' => $privacyNoticeId,
+            'privacy_presented' => $this->time->databaseUtc($privacyNoticePresentedAt),
+            'created' => $now,
+            'updated' => $now,
+            'state_changed' => $now,
+        ];
+        // ESZ-161: consent_at_utc and consent_notice_id are deliberately
+        // absent from the insert — they stay NULL for every booking made
+        // since; a consent instant is never fabricated.
+        $reference = $this->insertWithFreshReference(
             'INSERT INTO bookings (reference, service_key, combination_key, state, starts_at_utc, ends_at_utc,'
             . ' timezone_name, customer_name, customer_email, customer_phone, customer_note,'
-            . ' consent_at_utc, consent_notice_id, created_at, updated_at, state_changed_at)'
+            . ' privacy_notice_id, privacy_notice_presented_at_utc, created_at, updated_at, state_changed_at)'
             . ' VALUES (:reference, :service, :combination, :state, :starts, :ends, :timezone, :name, :email,'
-            . ' :phone, :note, :consent, :consent_notice, :created, :updated, :state_changed)',
-            [
-                'reference' => $reference,
-                'service' => $serviceKey,
-                'combination' => $combinationKey,
-                'state' => $initial->value,
-                'starts' => $this->time->databaseUtc($start),
-                'ends' => $this->time->databaseUtc($end),
-                'timezone' => $this->contract->timezone,
-                'name' => $customerName,
-                'email' => $customerEmail,
-                'phone' => $customerPhone,
-                'note' => $customerNote,
-                'consent' => $this->time->databaseUtc($consentAt),
-                'consent_notice' => $consentNoticeId,
-                'created' => $now,
-                'updated' => $now,
-                'state_changed' => $now,
-            ],
+            . ' :phone, :note, :privacy_notice, :privacy_presented, :created, :updated, :state_changed)',
+            $parameters,
         );
 
         $booking = $this->find($reference);
@@ -432,6 +441,82 @@ final class BookingRepository
         );
 
         return $booking;
+    }
+
+    /**
+     * ESZ-161 — inserts the booking row under a freshly drawn public
+     * reference and returns that reference.
+     *
+     * Uniqueness is the column's UNIQUE key, not the generator's luck: a
+     * candidate already stored is refused before the insert, and a duplicate
+     * key raised by a concurrent insert of the same candidate is retried
+     * with a fresh draw. Both are bounded by the contract's attempt ceiling,
+     * after which creation fails without having written anything — never a
+     * loop, never a silent reuse.
+     *
+     * @param array<string, scalar|null> $parameters every bind but `reference`
+     */
+    private function insertWithFreshReference(string $sql, array $parameters): string
+    {
+        for ($attempt = 1; $attempt <= $this->contract->referenceGenerationMaxAttempts; ++$attempt) {
+            $reference = $this->generateReference();
+            $taken = $this->database->fetchOne(
+                'SELECT 1 AS taken FROM bookings WHERE reference = :reference',
+                ['reference' => $reference],
+            );
+            if ($taken !== null) {
+                continue;
+            }
+
+            try {
+                $this->database->run($sql, [...$parameters, 'reference' => $reference]);
+
+                return $reference;
+            } catch (DatabaseException $exception) {
+                if (!self::isDuplicateKey($exception)) {
+                    throw $exception;
+                }
+            }
+        }
+
+        throw new \RuntimeException(
+            'Could not issue a unique booking reference within the contract\'s attempt ceiling.',
+        );
+    }
+
+    /**
+     * ESZ-161 — one candidate of the current shape: eight characters drawn
+     * with a cryptographically secure generator from the contract's
+     * unambiguous uppercase alphabet, grouped `XXXX-XXXX`. The draw is
+     * uniform: each character is an unbiased index into the alphabet.
+     */
+    private function generateReference(): string
+    {
+        $alphabet = $this->contract->referenceAlphabet;
+        $size = \strlen($alphabet);
+        $characters = '';
+        for ($i = 0; $i < $this->contract->referenceSignificantCharacters; ++$i) {
+            $characters .= $alphabet[random_int(0, $size - 1)];
+        }
+        $reference = substr($characters, 0, 4) . '-' . substr($characters, 4);
+        if (!$this->contract->isCurrentReference($reference)) {
+            throw new \RuntimeException('The generated booking reference does not match the frozen shape.');
+        }
+
+        return $reference;
+    }
+
+    private static function isDuplicateKey(DatabaseException $exception): bool
+    {
+        $previous = $exception->getPrevious();
+        if (!$previous instanceof \PDOException) {
+            return false;
+        }
+        /** @var mixed $driverCode */
+        $driverCode = $previous->errorInfo[1] ?? null;
+
+        // MySQL 1062: ER_DUP_ENTRY — the UNIQUE key on bookings.reference.
+        return \is_int($driverCode) && $driverCode === 1062;
     }
 
     /**
@@ -487,7 +572,7 @@ final class BookingRepository
         $target = BookingState::fromString($targetState, $this->contract);
 
         return $this->database->transactional(function () use ($reference, $target, $reason): Booking {
-            if (preg_match('/^bk_[0-9a-f]{32}$/D', $reference) !== 1) {
+            if (!$this->contract->acceptsReference($reference)) {
                 throw new BookingValidationException('reference', 'Booking reference is malformed.');
             }
 
@@ -605,7 +690,7 @@ final class BookingRepository
             'until_utc' => $this->time->databaseUtc($until->modify('+' . $ceiling . ' minutes')),
         ];
         if ($excludeReference !== null) {
-            if (preg_match('/^bk_[0-9a-f]{32}$/D', $excludeReference) !== 1) {
+            if (!$this->contract->acceptsReference($excludeReference)) {
                 throw new BookingValidationException('reference', 'Booking reference is malformed.');
             }
             $parameters['exclude_reference'] = $excludeReference;

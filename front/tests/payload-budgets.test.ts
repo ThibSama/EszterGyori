@@ -84,6 +84,8 @@ function booking(index: number) {
     customerNote:
       "Première séance. Merci de prévoir un quart d'heure supplémentaire, et de me prévenir en cas de retard.",
     consentAtUtc: "2026-08-01T09:00:00.000Z",
+    privacyNoticeId: null,
+    privacyNoticePresentedAtUtc: null,
     cancelledAtUtc: null,
     cancellationReason: null,
     createdAt: "2026-08-01T09:00:00.000Z",

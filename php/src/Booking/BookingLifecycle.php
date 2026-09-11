@@ -48,16 +48,23 @@ final class BookingLifecycle
         $email = BookingRequestFields::requiredString($request, 'customerEmail');
         $phone = BookingRequestFields::nullableString($request, 'customerPhone');
         $note = BookingRequestFields::nullableString($request, 'customerNote');
-        $consentNoticeId = BookingRequestFields::requiredString($request, 'consentNoticeId');
-        // ESZ-142: acceptance is membership of the immutable notice catalog —
-        // the same artifact the wire enum was generated from. An id the
-        // catalog does not contain (and no client-supplied text, which no
-        // field carries) is refused here, before the transaction opens.
-        if (!$this->contract->acceptsConsentNoticeId($consentNoticeId)) {
-            throw new BookingValidationException('consentNoticeId', 'Unknown booking consent notice.');
+        // ESZ-161: a booking rests on the requested service, not on consent.
+        // The domain refuses the pre-ESZ-161 consent fields outright — the
+        // strict wire schema already does, and a direct caller must not be
+        // able to make a new booking look like a consent one.
+        foreach (['consentAccepted', 'consentNoticeId'] as $consentField) {
+            if (\array_key_exists($consentField, $request)) {
+                throw new BookingValidationException($consentField, 'Booking no longer models consent.');
+            }
         }
-        if (($request['consentAccepted'] ?? null) !== true) {
-            throw new BookingValidationException('consentAccepted', 'Booking consent must be explicit.');
+        $privacyNoticeId = BookingRequestFields::requiredString($request, 'privacyNoticeId');
+        // ESZ-161: acceptance is membership of the immutable privacy-notice
+        // catalog — the same artifact the wire enum was generated from. An id
+        // the catalog does not contain (a historical consent notice id, or
+        // client-supplied text, which no field carries) is refused here,
+        // before the transaction opens.
+        if (!$this->contract->acceptsPrivacyNoticeId($privacyNoticeId)) {
+            throw new BookingValidationException('privacyNoticeId', 'Unknown booking privacy notice.');
         }
         $localDate = $requestedStart->setTimezone(new \DateTimeZone($this->contract->timezone))->format('Y-m-d');
         $this->availability->assertRange($localDate, $localDate);
@@ -70,7 +77,7 @@ final class BookingLifecycle
             $email,
             $phone,
             $note,
-            $consentNoticeId,
+            $privacyNoticeId,
         ): Booking {
             // ESZ-146 — the authoritative serialization boundary first (see
             // BookingSerializationLock for the single lock order).
@@ -91,8 +98,10 @@ final class BookingLifecycle
                 $email,
                 $phone,
                 $note,
+                // ESZ-161: the notice was presented for this very request;
+                // its presentation instant is the creation instant.
                 $this->clock->now(),
-                $consentNoticeId,
+                $privacyNoticeId,
                 $offer->combinationKey,
                 // ESZ-153: the buffers of this very offer become the
                 // booking's own snapshot.

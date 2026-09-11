@@ -10,7 +10,7 @@
   "properties": {
     "reference": {
       "type": "string",
-      "pattern": "^bk_[0-9a-f]{32}$"
+      "pattern": "^(bk_[0-9a-f]{32}|[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})$"
     },
     "fromDate": {
       "type": "string",

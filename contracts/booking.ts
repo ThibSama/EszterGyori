@@ -67,8 +67,19 @@
  * occupied interval does. They are additive rows beside the replacing date
  * exceptions, written under the availability revision and the serialization
  * boundary, and a strict blocker never alters a confirmed booking it overlaps.
+ *
+ * Version 12 (ESZ-161) aligns public booking with the GDPR V1 framing. A
+ * booking rests on the execution of the requested service and the
+ * pre-contractual steps the visitor asks for — not on consent — so the
+ * request no longer carries an acceptance boolean. What it carries instead is
+ * the id of the *privacy-information notice* the form displayed
+ * (`privacyNotices`, the same immutable append-only catalog discipline as the
+ * ESZ-142 consent notices, which stay frozen as history for the bookings that
+ * were made under them). The public reference becomes a short human-readable
+ * `XXXX-XXXX` token (`publicReferences`) while every stored `bk_` reference
+ * stays valid and resolvable unchanged.
  */
-export const BOOKING_DOMAIN_VERSION = 11;
+export const BOOKING_DOMAIN_VERSION = 12;
 
 /**
  * The business operates in metropolitan France. Rules are authored as local
@@ -127,6 +138,57 @@ export const BOOKING_SERVICE_COMBINATION_KEY_PATTERN =
  * response states whether the enumeration was complete.
  */
 export const BOOKING_SERVICE_COMBINATION_CANDIDATES_MAX = 300;
+/**
+ * ESZ-161 — the public booking reference.
+ *
+ * Before ESZ-161 a reference was `bk_` plus 128 bits of hex: unforgeable, but
+ * 35 characters that no customer can read back over the phone. The current
+ * format is eight significant characters from an unambiguous uppercase
+ * alphabet (no `0`/`O`, no `1`/`I`), displayed and stored as `XXXX-XXXX`
+ * (e.g. `XG73-UVK9`): 40 bits of randomness, a `UNIQUE KEY` on the column and
+ * a bounded collision retry make it unique, and it stays an opaque public
+ * handle that reveals nothing about the customer or the internal numeric id.
+ *
+ * Both formats are frozen. A legacy `bk_` reference stored before ESZ-161 is
+ * never rewritten and stays accepted everywhere a reference is read — the
+ * admin exact lookup, the history read, notification idempotency keys — so
+ * {@link BOOKING_REFERENCE_PATTERN}, the shape every wire field accepts, is
+ * the union of the two, and {@link BOOKING_REFERENCE_CURRENT_PATTERN} is what
+ * every *new* booking is issued.
+ */
+export const BOOKING_REFERENCE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+export const BOOKING_REFERENCE_SIGNIFICANT_CHARACTERS = 8;
+export const BOOKING_REFERENCE_CURRENT_PATTERN = "^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$";
+export const BOOKING_REFERENCE_LEGACY_PATTERN = "^bk_[0-9a-f]{32}$";
+export const BOOKING_REFERENCE_PATTERN = "^(bk_[0-9a-f]{32}|[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})$";
+/** How many fresh candidates creation may draw before it refuses instead of looping. */
+export const BOOKING_REFERENCE_GENERATION_MAX_ATTEMPTS = 8;
+
+export const bookingPublicReferencePolicy = {
+  accepted: BOOKING_REFERENCE_PATTERN,
+  current: {
+    pattern: BOOKING_REFERENCE_CURRENT_PATTERN,
+    alphabet: BOOKING_REFERENCE_ALPHABET,
+    significantCharacters: BOOKING_REFERENCE_SIGNIFICANT_CHARACTERS,
+    display: "XXXX-XXXX",
+    example: "XG73-UVK9",
+    generation:
+      "Eight characters drawn with a cryptographically secure generator from the 32-character unambiguous alphabet, grouped 4-4 with a hyphen. The hyphenated form is the stored value and the displayed value; there is no separate canonical form to normalise.",
+    uniqueness:
+      "bookings.reference stays UNIQUE. Creation draws a candidate, refuses one already stored and retries a duplicate-key insert with a fresh candidate, bounded by generationMaxAttempts; exhausting the bound fails the creation without writing anything rather than looping.",
+    generationMaxAttempts: BOOKING_REFERENCE_GENERATION_MAX_ATTEMPTS,
+  },
+  legacy: {
+    pattern: BOOKING_REFERENCE_LEGACY_PATTERN,
+    compatibility:
+      "Every bk_ reference issued before ESZ-161 is preserved byte for byte and remains resolvable by the admin exact lookup, the history read, the range keyset cursor and notification fact resolution. No migration rewrites a stored reference, and no new booking is ever issued the legacy shape.",
+  },
+  separation:
+    "The public reference is the only handle a customer ever sees. The internal numeric bookings.id stays a private row identity used by foreign keys and history; it never appears on the wire.",
+  customerGuidance:
+    "The confirmation e-mail tells the customer explicitly to keep the reference: it identifies the appointment in every later exchange without exposing any personal data.",
+} as const;
+
 export const BOOKING_SLOT_GRID_MINUTES = 15;
 export const BOOKING_SLOT_MAX_HORIZON_DAYS = 90;
 export const BOOKING_SLOT_MAX_RESULTS = 1000;
@@ -331,6 +393,8 @@ export const NOTIFICATION_LEASE_SECONDS = 120;
  * system that lost track of time rather than as a courtesy.
  */
 export const NOTIFICATION_REMINDER_GRACE_MINUTES = 60;
+/** ESZ-161 — the single customer reminder is due this many hours before the appointment starts. */
+export const NOTIFICATION_REMINDER_LEAD_HOURS = 24;
 
 /** One run's bounded appetite. A cron tick drains a batch, never the world. */
 export const NOTIFICATION_DEFAULT_BATCH_SIZE = 50;
@@ -499,6 +563,22 @@ export const notificationPolicy = {
     burstControl:
       "One run claims at most its batch size, so even a large recovered backlog is drained across ticks rather than in one burst.",
   },
+  /**
+   * ESZ-161 — the V1 reminder policy, frozen so the producer, the channel
+   * setting and the GDPR framing cannot drift apart. One reminder, e-mail
+   * first; SMS only ever rides on the existing `notifications.channels`
+   * setting and on a phone the customer chose to give.
+   */
+  reminders: {
+    count: 1,
+    leadHours: NOTIFICATION_REMINDER_LEAD_HOURS,
+    email:
+      "Every confirmed booking schedules exactly one e-mail reminder due leadHours before its start, under the catch-up rules (stale window, move rescheduling) above.",
+    sms:
+      "An SMS reminder is scheduled only when both hold at the transition that schedules it: the booking stores a customer phone, and the sms channel is enabled in the existing notifications.channels setting (off by default, never enabled by the application itself). Otherwise no SMS row is written at all — a booking without a phone has no SMS recipient, and a disabled channel means the notification was never intended. There is no parallel SMS setting and no SMS provider in V1: enabling the channel without a registered transport stops the runner before it claims anything.",
+    phone:
+      "The customer phone is optional and is used only for transactional messages about the appointment; it is never a prerequisite of booking and never used for anything else.",
+  },
   lifecycle: {
     marker:
       "Each lifecycle job stores lifecycle_event_id: the booking_history row id of the event that made it meaningful — `created` for a booking_confirmation, `moved` for a booking_moved, `cancelled` for a booking_cancellation. booking_history is append-only with monotonic ids and every transition appends its event in the same transaction as the job it schedules, so the marker is an internal ordering identity, never customer PII. Reminders carry no marker: they are time-windowed, not lifecycle-versioned.",
@@ -572,7 +652,7 @@ export const bookingSerializationPolicy = {
 } as const;
 
 /**
- * ESZ-142 — the immutable consent-notice catalog.
+ * ESZ-142 — the immutable consent-notice catalog (historical since ESZ-161).
  *
  * ## Why the notice is a contract value, not a component string
  *
@@ -583,24 +663,31 @@ export const bookingSerializationPolicy = {
  * say — a silent rewrite of history.
  *
  * The catalog below is the single authority for both. Each entry pairs a
- * stable machine id with the exact user-visible French text of one notice;
- * `BOOKING_CONSENT_CURRENT_NOTICE_ID` names the entry the shipped frontend
- * renders and must send. The React checkbox renders `entries` text and never
- * carries a private duplicate, and the booking request sends only the id —
- * never notice text, which the server refuses to trust by never accepting
- * it.
+ * stable machine id with the exact user-visible French text of one notice.
+ * The booking request sent only the id — never notice text, which the server
+ * refused to trust by never accepting it.
  *
  * ## Immutability policy
  *
  * Entries are append-only and never edited or removed: a stored id keeps
- * naming exactly the text the visitor accepted, forever. Changing the
- * wording is a new entry plus moving the current pointer; old stored ids are
- * untouched, and because acceptance is catalog membership, an id issued in
- * the past remains accepted unchanged — it is never silently remapped to the
- * new notice. The first entry exists from the introduction of the catalog
- * (ESZ-142) onward: bookings created before it carry no notice id at all and
- * are never retro-attributed one (their stored `consent_at_utc` is all the
- * provenance that exists).
+ * naming exactly the text the visitor accepted, forever. Bookings created
+ * before the catalog (ESZ-142) carry no notice id at all and are never
+ * retro-attributed one (their stored `consent_at_utc` is all the provenance
+ * that exists).
+ *
+ * ## ESZ-161 — consent is no longer the basis of a booking
+ *
+ * Since ESZ-161 the public form displays no consent checkbox and the request
+ * carries no `consentAccepted` / `consentNoticeId`: a booking rests on the
+ * execution of the requested service and the pre-contractual steps the
+ * visitor asks for, and the proof of information is the *privacy notice*
+ * catalog below ({@link bookingPrivacyNoticePolicy}). This consent catalog is
+ * kept exactly as it was so the bookings made under it keep meaning what they
+ * meant: `consent_at_utc` and `consent_notice_id` are preserved byte for byte,
+ * never rewritten, and no new booking is ever given a consent instant or a
+ * consent notice id. {@link BOOKING_CONSENT_CURRENT_NOTICE_ID} therefore
+ * names the last consent notice the frontend ever displayed, not one it
+ * displays today.
  *
  * The id is a machine token (bounded ASCII, `BOOKING_CONSENT_NOTICE_ID_PATTERN`)
  * and the notice text itself is not customer PII, so ESZ-140 anonymization
@@ -610,7 +697,8 @@ export const bookingSerializationPolicy = {
 /**
  * The ids ever issued, in issuance order. This tuple is the catalog's spine:
  * {@link bookingConsentNoticeTexts} is a `Record` over it, so adding an id
- * without its text (or vice versa) is a compile error.
+ * without its text (or vice versa) is a compile error. Frozen since ESZ-161:
+ * no consent notice is displayed or accepted for a new booking any more.
  */
 export const bookingConsentNoticeIds = ["booking-consent-v1"] as const;
 
@@ -628,10 +716,10 @@ export const bookingConsentNoticeTexts: Record<BookingConsentNoticeId, string> =
     "J’accepte que mes coordonnées soient utilisées pour traiter cette demande de rendez-vous.",
 };
 
-/** The one notice the shipped frontend displays and sends today. */
+/** The last consent notice the frontend displayed (ESZ-142 → ESZ-161); none is displayed today. */
 export const BOOKING_CONSENT_CURRENT_NOTICE_ID: BookingConsentNoticeId = "booking-consent-v1";
 
-/** The current notice's full entry: `id` for the request, `text` for the checkbox. */
+/** The last consent notice's full entry: `id` as it was stored, `text` as it was shown. */
 export const bookingConsentCurrentNotice: {
   id: BookingConsentNoticeId;
   text: string;
@@ -644,16 +732,157 @@ export const bookingConsentNoticePolicy = {
   entries: bookingConsentNoticeIds.map((id) => ({ id, text: bookingConsentNoticeTexts[id] })),
   idPattern: BOOKING_CONSENT_NOTICE_ID_PATTERN,
   currentId: BOOKING_CONSENT_CURRENT_NOTICE_ID,
+  status: "historical",
   requestShape:
-    "POST /api/bookings requires consentNoticeId (one of entries[].id, structurally bounded by the id pattern) plus consentAccepted: true. The request never carries notice text and the server never accepts any.",
+    "Historical (ESZ-142 → ESZ-161): POST /api/bookings used to require consentNoticeId (one of entries[].id) plus consentAccepted: true. Since ESZ-161 neither field exists on the wire — a request carrying one is refused by the strict schema — and new bookings carry a privacy notice id instead (privacyNotices).",
   acceptance:
-    "An id is accepted exactly when the catalog contains it. Entries are never removed, so a historical stored id remains accepted unchanged and is never silently remapped to the current notice; moving currentId changes what new clients send, not what old ids mean.",
+    "A stored id is evidence of the text that was accepted at the time. Entries are never removed, so a historical stored id keeps naming its exact wording and is never remapped; no new booking is issued a consent notice id.",
   legacy:
-    "Bookings created before the catalog (ESZ-142) have no consent_notice_id: their stored consent_at_utc is the only provenance that exists, and no migration or reader invents one for them. New bookings always store the non-null id of the notice they displayed.",
+    "Bookings created before the catalog (ESZ-142) have no consent_notice_id: their stored consent_at_utc is the only provenance that exists, and no migration or reader invents one for them. Bookings created between ESZ-142 and ESZ-161 store the non-null id of the notice they displayed beside their consent_at_utc. Bookings created since ESZ-161 store NULL for both — never a fabricated consent instant.",
   future:
-    "Changing the wording appends a new id and text to the catalog and moves currentId. Old entries and every stored id stay immutable; the database column and retention anonymization preserve the stored id byte for byte.",
+    "The catalog is closed: no entry is ever added, edited or removed, and the database column and retention anonymization preserve every stored id byte for byte.",
   retention:
     "The notice id is operational evidence of which text was accepted, not customer PII: ESZ-140 erasure replaces the customer fields and leaves consent_at_utc and consent_notice_id untouched.",
+} as const;
+
+/**
+ * ESZ-161 — the immutable privacy-information notice catalog.
+ *
+ * ## Legal basis
+ *
+ * A booking is the customer asking for an appointment: the personal data it
+ * carries is processed to execute that service and to take the
+ * pre-contractual steps the customer requests (GDPR art. 6(1)(b)), not under
+ * consent. A consent checkbox would therefore be the wrong instrument — it
+ * suggests a right to withdraw that does not exist for data the contract
+ * needs — so the form shows *information* instead: who the controller is, on
+ * what basis and for how long the data is kept, who receives it, which rights
+ * the customer has and where to exercise them.
+ *
+ * ## Why the notice is a contract value
+ *
+ * Exactly the ESZ-142 discipline: each entry pairs a stable machine id with
+ * the exact user-visible French text of one notice, the request carries only
+ * the id of the notice the form displayed (never notice text), and the
+ * server accepts only an id this catalog contains. A booking therefore proves
+ * *which* privacy information its customer was shown, and a wording change
+ * is a new entry plus a moved current pointer — never an edit of an old one.
+ *
+ * ## What the notice may and may not contain
+ *
+ * Only repository-owned facts: the trade name and contact address the public
+ * site already publishes, the ESZ-140 retention policy, the technical
+ * recipient categories the architecture already names. No registration
+ * number, no postal address, no data-protection officer and no production
+ * fact ESZ-165 owns is invented here; the full legal page is ESZ-165's, and
+ * the notice only points at its frozen destination.
+ */
+
+/**
+ * The ids ever issued, in issuance order — the catalog's spine, exactly as
+ * for the consent catalog.
+ */
+export const bookingPrivacyNoticeIds = ["booking-privacy-v1"] as const;
+
+export type BookingPrivacyNoticeId = (typeof bookingPrivacyNoticeIds)[number];
+
+/** Bounded-ASCII shape every privacy notice id must satisfy (mirrored by migration 0020's CHECK). */
+export const BOOKING_PRIVACY_NOTICE_ID_PATTERN = "^[a-z0-9][a-z0-9_-]{0,63}$";
+
+/**
+ * The frozen destination of the privacy policy the notice links to. ESZ-165
+ * owns the page itself; the path is frozen here so the notice text and the
+ * future page cannot drift apart.
+ */
+export const BOOKING_PRIVACY_POLICY_PATH = "/confidentialite";
+
+/**
+ * One notice, as the form renders it: short labelled statements rather than
+ * one paragraph, so a visitor can actually read them. `text` below is the
+ * exact concatenation and is what the catalog freezes.
+ */
+export interface BookingPrivacyNoticeContent {
+  readonly controller: string;
+  readonly legalBasis: string;
+  readonly retention: string;
+  readonly recipients: string;
+  readonly rights: string;
+  readonly contact: string;
+  readonly privacyPolicy: { readonly label: string; readonly href: string };
+}
+
+export const bookingPrivacyNoticeContents: Record<BookingPrivacyNoticeId, BookingPrivacyNoticeContent> = {
+  "booking-privacy-v1": {
+    controller: "Responsable du traitement : Eszter Gyori.",
+    legalBasis:
+      "Vos coordonnées servent uniquement à organiser le rendez-vous que vous demandez (exécution de la prestation et démarches précontractuelles). Aucun consentement n’est requis pour cela.",
+    retention:
+      "Elles sont conservées jusqu’à 90 jours après la fin ou l’annulation du rendez-vous, puis anonymisées.",
+    recipients:
+      "Elles ne sont transmises qu’aux prestataires techniques nécessaires (hébergement, envoi des e-mails).",
+    rights:
+      "Vous disposez d’un droit d’accès, de rectification, d’effacement, de limitation et d’opposition, et pouvez saisir la CNIL.",
+    contact: "Pour l’exercer : contact@esztergyori.com.",
+    privacyPolicy: { label: "Politique de confidentialité", href: BOOKING_PRIVACY_POLICY_PATH },
+  },
+};
+
+/** The exact user-visible text of each notice: its statements in display order, space-joined. */
+export const bookingPrivacyNoticeTexts: Record<BookingPrivacyNoticeId, string> = Object.fromEntries(
+  bookingPrivacyNoticeIds.map((id) => {
+    const content = bookingPrivacyNoticeContents[id];
+    return [
+      id,
+      [
+        content.controller,
+        content.legalBasis,
+        content.retention,
+        content.recipients,
+        content.rights,
+        content.contact,
+        `${content.privacyPolicy.label} : ${content.privacyPolicy.href}`,
+      ].join(" "),
+    ];
+  }),
+) as Record<BookingPrivacyNoticeId, string>;
+
+/** The one notice the shipped frontend displays and sends today. */
+export const BOOKING_PRIVACY_CURRENT_NOTICE_ID: BookingPrivacyNoticeId = "booking-privacy-v1";
+
+/** The current notice's full entry: `id` for the request, `content` for the form. */
+export const bookingPrivacyCurrentNotice: {
+  id: BookingPrivacyNoticeId;
+  content: BookingPrivacyNoticeContent;
+  text: string;
+} = {
+  id: BOOKING_PRIVACY_CURRENT_NOTICE_ID,
+  content: bookingPrivacyNoticeContents[BOOKING_PRIVACY_CURRENT_NOTICE_ID],
+  text: bookingPrivacyNoticeTexts[BOOKING_PRIVACY_CURRENT_NOTICE_ID],
+};
+
+export const bookingPrivacyNoticePolicy = {
+  entries: bookingPrivacyNoticeIds.map((id) => ({
+    id,
+    legalBasis: "contract",
+    text: bookingPrivacyNoticeTexts[id],
+  })),
+  idPattern: BOOKING_PRIVACY_NOTICE_ID_PATTERN,
+  currentId: BOOKING_PRIVACY_CURRENT_NOTICE_ID,
+  privacyPolicyPath: BOOKING_PRIVACY_POLICY_PATH,
+  legalBasis:
+    "Execution of the requested service and pre-contractual steps taken at the customer's request. A booking is never based on consent: the request carries no acceptance boolean, the form shows no checkbox, and no consent instant is ever fabricated for a booking made since ESZ-161.",
+  requestShape:
+    "POST /api/bookings requires privacyNoticeId (one of entries[].id, structurally bounded by the id pattern): the id of the notice the form displayed. The request never carries notice text and the server never accepts any; consentAccepted and consentNoticeId are not fields of the request and are refused by the strict schema.",
+  acceptance:
+    "An id is accepted exactly when this catalog contains it. Entries are never removed, so a stored id keeps naming its exact wording; moving currentId changes what new clients send, not what old ids mean.",
+  persistence:
+    "A new booking stores the non-null id of the notice it displayed (bookings.privacy_notice_id) and the instant it was presented (bookings.privacy_notice_presented_at_utc, the creation instant). Both are additive columns beside the ESZ-142 consent columns, which stay NULL for it. Every booking therefore carries exactly one basis evidence: a consent instant (before ESZ-161) or a privacy notice presentation (since).",
+  minimisation:
+    "The form collects a name, an e-mail, an optional phone used only for transactional messages about the appointment, and an optional free text about the appointment that explicitly warns against entering health, medical or other sensitive data.",
+  future:
+    "Changing the wording appends a new id and text and moves currentId. Old entries and every stored id stay immutable; the database column and retention anonymization preserve the stored id byte for byte.",
+  retention:
+    "The notice id and its presentation instant are operational evidence, not customer PII: ESZ-140 erasure replaces the customer fields and leaves them untouched.",
 } as const;
 
 /**
@@ -698,6 +927,7 @@ export const customerDataRetentionPolicy = {
     "service and appointment instants and timezone",
     "state and lifecycle timestamps (created, updated, state changed, consent, cancellation)",
     "consent notice id (ESZ-142: which accepted wording the consent instant refers to)",
+    "privacy notice id and presentation instant (ESZ-161: which privacy information the customer was shown)",
     "erasure timestamp",
     "non-PII booking history facts",
     "notification delivery metadata (terminal jobs)",
@@ -937,5 +1167,7 @@ export const bookingDomainContract = {
   notifications: notificationPolicy,
   serialization: bookingSerializationPolicy,
   consentNotices: bookingConsentNoticePolicy,
+  privacyNotices: bookingPrivacyNoticePolicy,
+  publicReferences: bookingPublicReferencePolicy,
   customerDataRetention: customerDataRetentionPolicy,
 } as const;

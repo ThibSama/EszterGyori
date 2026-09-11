@@ -40,6 +40,36 @@ final class BookingEmailTest extends TestCase
         self::assertStringContainsString('Contact &lt;salon&gt;', $message->html);
         self::assertStringNotContainsString('cliente@example.test', $message->text . $message->html);
         self::assertStringNotContainsString('booking_id', $message->text . $message->html);
+        // ESZ-161: the confirmation — and only it — tells the customer to
+        // keep the reference.
+        $retain = 'Conservez précieusement cette référence';
+        if ($type === 'booking_confirmation') {
+            self::assertStringContainsString($retain, $message->text);
+            self::assertStringContainsString($retain, $message->html);
+        } else {
+            self::assertStringNotContainsString($retain, $message->text . $message->html);
+        }
+    }
+
+    /** ESZ-161 — a current-shape reference renders exactly as issued. */
+    public function testTheConfirmationRendersACurrentReferenceAndTheRetainInstruction(): void
+    {
+        $message = (new BookingEmailRenderer($this->settings()))->render(new BookingNotificationFacts(
+            'cliente@example.test',
+            'Sourcils',
+            new \DateTimeImmutable('2026-06-15T07:00:00.000Z'),
+            'XG73-UVK9',
+            'booking_confirmation',
+        ));
+
+        self::assertStringContainsString(
+            "Référence : XG73-UVK9\nConservez précieusement cette référence",
+            $message->text,
+        );
+        self::assertStringContainsString(
+            '<dd>XG73-UVK9</dd></dl><p>Conservez précieusement cette référence',
+            $message->html,
+        );
     }
 
     /** @return iterable<string, array{string, string}> */

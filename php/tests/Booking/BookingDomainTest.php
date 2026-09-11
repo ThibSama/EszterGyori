@@ -256,4 +256,38 @@ final class BookingDomainTest extends TestCase
             TestEnvironment::removeDirectory($directory);
         }
     }
+
+    // --- ESZ-161: the privacy-notice catalog and the public reference ------
+
+    public function testThePrivacyNoticeCatalogIsParsedFromTheArtifactBesideTheFrozenConsentOne(): void
+    {
+        self::assertSame(['booking-privacy-v1'], $this->contract->privacyNoticeIds);
+        self::assertSame('booking-privacy-v1', $this->contract->currentPrivacyNoticeId);
+        self::assertSame('^[a-z0-9][a-z0-9_-]{0,63}$', $this->contract->privacyNoticeIdPattern);
+
+        self::assertTrue($this->contract->acceptsPrivacyNoticeId('booking-privacy-v1'));
+        self::assertFalse($this->contract->acceptsPrivacyNoticeId('booking-privacy-9999'));
+        self::assertFalse($this->contract->acceptsPrivacyNoticeId('Booking-Privacy-V1'));
+        // A historical consent notice id is not a privacy notice, and vice
+        // versa: the two catalogs never share an id.
+        self::assertFalse($this->contract->acceptsPrivacyNoticeId('booking-consent-v1'));
+        self::assertFalse($this->contract->acceptsConsentNoticeId('booking-privacy-v1'));
+        // The consent catalog is preserved unchanged as history.
+        self::assertSame(['booking-consent-v1'], $this->contract->consentNoticeIds);
+    }
+
+    public function testBothPublicReferenceShapesAreAcceptedAndOnlyTheCurrentOneIsIssued(): void
+    {
+        self::assertSame('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', $this->contract->referenceAlphabet);
+        self::assertSame(8, $this->contract->referenceSignificantCharacters);
+        self::assertSame(8, $this->contract->referenceGenerationMaxAttempts);
+
+        self::assertTrue($this->contract->acceptsReference('XG73-UVK9'));
+        self::assertTrue($this->contract->isCurrentReference('XG73-UVK9'));
+        self::assertTrue($this->contract->acceptsReference('bk_00000000000000000000000000000000'));
+        self::assertFalse($this->contract->isCurrentReference('bk_00000000000000000000000000000000'));
+        foreach (['XG70-UVK9', 'XG73-UVKI', 'xg73-uvk9', 'XG73UVK9', 'bk_0000', "XG73-UVK9\n"] as $malformed) {
+            self::assertFalse($this->contract->acceptsReference($malformed), $malformed);
+        }
+    }
 }

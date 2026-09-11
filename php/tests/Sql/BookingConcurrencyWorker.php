@@ -50,11 +50,10 @@ try {
         'customerEmail' => 'concurrent@example.test',
         'customerPhone' => null,
         'customerNote' => null,
-        // ESZ-142: the worker sends the catalog's current consent notice id,
+        // ESZ-161: the worker sends the catalog's current privacy notice id,
         // resolved from the same artifacts the kernel validates against.
-        'consentNoticeId' => BookingDomainContract::fromArtifacts(TestEnvironment::artifacts())
-            ->currentConsentNoticeId,
-        'consentAccepted' => true,
+        'privacyNoticeId' => BookingDomainContract::fromArtifacts(TestEnvironment::artifacts())
+            ->currentPrivacyNoticeId,
     ];
     $response = $kernel->handle(new Request(
         'POST',

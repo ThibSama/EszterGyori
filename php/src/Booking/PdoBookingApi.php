@@ -81,13 +81,10 @@ final class PdoBookingApi implements BookingApi
         );
 
         $jobs = new NotificationJobRepository($database, $clock, $notificationPolicy);
+        $channels = new NotificationChannelSettings($database, $clock, $notificationPolicy);
         $scheduler = new NotificationScheduler(
             $jobs,
-            new NotificationCatchUpPolicy(
-                new NotificationChannelSettings($database, $clock, $notificationPolicy),
-                $notificationPolicy,
-                $clock,
-            ),
+            new NotificationCatchUpPolicy($channels, $notificationPolicy, $clock),
         );
 
         $availabilityRepository = new AvailabilityRepository($database, $clock, $contract, $time, $serialization);
@@ -116,7 +113,7 @@ final class PdoBookingApi implements BookingApi
                 $availability,
                 $bookings,
                 $history,
-                $notificationProducer ?? new DurableBookingNotificationProducer($scheduler, $jobs, $clock),
+                $notificationProducer ?? new DurableBookingNotificationProducer($scheduler, $jobs, $clock, $channels),
             ),
             new BookingAdminReader($contract, $time, $clock, $availability, $bookings, $history),
             new AvailabilityAdministration($contract, $availabilityRepository, $time, $bookings),

@@ -22,12 +22,19 @@ use Eszter\Support\Clock;
  */
 final class DurableBookingNotificationProducer implements BookingNotificationProducer
 {
+    /** ESZ-161 — the single reminder is due this long before the appointment (booking-domain notifications.reminders). */
     private const REMINDER_LEAD_HOURS = 24;
 
     public function __construct(
         private readonly NotificationScheduler $scheduler,
         private readonly NotificationJobRepository $jobs,
         private readonly Clock $clock,
+        /**
+         * ESZ-161 — the existing `notifications.channels` setting decides
+         * whether an SMS reminder may be pending. Null (a caller that never
+         * enables SMS) schedules e-mail only.
+         */
+        private readonly ?EnabledChannels $channels = null,
     ) {
     }
 
@@ -90,15 +97,22 @@ final class DurableBookingNotificationProducer implements BookingNotificationPro
         );
     }
 
+    /**
+     * One reminder at T-24h. E-mail always; SMS only when the customer chose
+     * to give a phone *and* the sms channel is enabled in the existing
+     * `notifications.channels` setting (off by default, never enabled by the
+     * application). A booking without a phone has no SMS recipient, so no
+     * SMS row is written for it at all — this is not a declined notification
+     * but one that was never intended (ESZ-161, booking-domain
+     * notifications.reminders).
+     */
     private function scheduleReminder(Booking $booking): void
     {
-        $this->scheduler->schedule(
-            $booking->id,
-            $booking->reference,
-            'email',
-            'booking_reminder',
-            self::instant($booking->startsAtUtc)->modify('-' . self::REMINDER_LEAD_HOURS . ' hours'),
-        );
+        $dueAt = self::instant($booking->startsAtUtc)->modify('-' . self::REMINDER_LEAD_HOURS . ' hours');
+        $this->scheduler->schedule($booking->id, $booking->reference, 'email', 'booking_reminder', $dueAt);
+        if ($booking->customerPhone !== null && $this->channels?->isEnabled('sms') === true) {
+            $this->scheduler->schedule($booking->id, $booking->reference, 'sms', 'booking_reminder', $dueAt);
+        }
     }
 
     private static function instant(string $databaseInstant): \DateTimeImmutable

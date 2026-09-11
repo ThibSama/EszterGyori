@@ -328,7 +328,7 @@ const schemaTargets: SchemaTarget[] = [
     file: "public-booking-create-request.schema.json",
     title: "PublicBookingCreateRequest",
     description:
-      "Public booking facts, the explicit consent notice id (one of the immutable booking-domain catalog's entries) and explicit consent for one returned UTC slot.",
+      "Public booking facts and the id of the privacy-information notice the form displayed (one of the immutable booking-domain catalog's entries) for one returned UTC slot; no consent field exists (ESZ-161).",
     schema: publicBookingCreateRequestSchema,
     io: "input",
   },

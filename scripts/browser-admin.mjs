@@ -589,13 +589,12 @@ async function main() {
       customerEmail: "cliente.calendrier@example.test",
       customerPhone: "+33102030406",
       customerNote: "Rendez-vous de la preuve calendrier.",
-      // ESZ-142: the catalog's current consent notice id.
-      consentNoticeId: "booking-consent-v1",
-      consentAccepted: true,
+      // ESZ-161: the catalog's current privacy notice id; no consent field.
+      privacyNoticeId: "booking-privacy-v1",
     }),
   });
   assert(
-    seeded.status === 201 && /^bk_[0-9a-f]{32}$/.test(seeded.body.reference),
+    seeded.status === 201 && /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/.test(seeded.body.reference),
     `seeding a real appointment failed: ${JSON.stringify(seeded.body).slice(0, 200)}`,
   );
 

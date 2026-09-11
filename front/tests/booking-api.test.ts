@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   BOOKING_CONSENT_CURRENT_NOTICE_ID,
-  bookingConsentCurrentNotice,
+  BOOKING_PRIVACY_CURRENT_NOTICE_ID,
+  bookingPrivacyCurrentNotice,
   RATE_LIMIT_RETRY_AFTER_HEADER,
 } from "@eszter/contracts";
 import {
@@ -22,8 +23,7 @@ const bookingRequest: PublicBookingRequest = {
   customerEmail: "cliente@example.test",
   customerPhone: "+33 6 00 00 00 00",
   customerNote: null,
-  consentNoticeId: BOOKING_CONSENT_CURRENT_NOTICE_ID,
-  consentAccepted: true,
+  privacyNoticeId: BOOKING_PRIVACY_CURRENT_NOTICE_ID,
 };
 
 test("active services come only from the frozen discovery endpoint", async () => {
@@ -170,14 +170,14 @@ test("an availability 429 stays explicitly rate-limited without a usable Retry-A
   }
 });
 
-test("booking creation posts the exact validated customer, consent and returned instant", async () => {
+test("booking creation posts the exact validated customer, privacy notice and returned instant", async () => {
   let submitted: unknown;
   const result = await createBooking(bookingRequest, async (input, init) => {
     assert.equal(String(input), "/api/bookings");
     assert.equal(init?.method, "POST");
     submitted = JSON.parse(String(init?.body));
     return Response.json({
-      reference: "bk_00000000000000000000000000000000",
+      reference: "XG73-UVK9",
       serviceKey: "brows",
       serviceKeys: ["brows"],
       combinationKey: null,
@@ -189,12 +189,27 @@ test("booking creation posts the exact validated customer, consent and returned 
 
   assert.deepEqual(submitted, bookingRequest);
   assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.value.reference, "XG73-UVK9");
+});
+
+test("a legacy bk_ reference in a server response is still a valid confirmation", async () => {
+  // ESZ-161: both frozen shapes are accepted wherever a reference is read.
+  const result = await createBooking(bookingRequest, async () => Response.json({
+    reference: "bk_00000000000000000000000000000000",
+    serviceKey: "brows",
+    serviceKeys: ["brows"],
+    combinationKey: null,
+    state: "confirmed",
+    startsAtUtc: bookingRequest.startsAtUtc,
+    endsAtUtc: "2026-08-24T07:45:00.000Z",
+  }, { status: 201 }));
+  assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.value.reference, "bk_00000000000000000000000000000000");
 });
 
-test("the client refuses to post a request whose notice id is not the displayed one", async () => {
-  // ESZ-142: the request's id must be the very notice the checkbox renders.
-  assert.equal(bookingRequest.consentNoticeId, bookingConsentCurrentNotice.id);
+test("the client refuses to post a request whose notice id is not the displayed one, or that carries consent", async () => {
+  // ESZ-161: the request's id must be the very notice the form renders.
+  assert.equal(bookingRequest.privacyNoticeId, bookingPrivacyCurrentNotice.id);
 
   // Malformed wire payloads, deliberately smuggled past the literal types the
   // schema would otherwise enforce at compile time: the runtime safeParse is
@@ -203,7 +218,7 @@ test("the client refuses to post a request whose notice id is not the displayed 
 
   let calls = 0;
   const missing = await createBooking(
-    wire({ ...bookingRequest, consentNoticeId: undefined }),
+    wire({ ...bookingRequest, privacyNoticeId: undefined }),
     async () => { calls += 1; throw new Error("must not be sent"); },
   );
   assert.equal(calls, 0);
@@ -211,15 +226,25 @@ test("the client refuses to post a request whose notice id is not the displayed 
   if (!missing.ok) assert.equal(missing.failure.kind, "validation");
 
   const unknown = await createBooking(
-    wire({ ...bookingRequest, consentNoticeId: "booking-consent-9999" }),
+    wire({ ...bookingRequest, privacyNoticeId: "booking-privacy-9999" }),
     async () => { calls += 1; throw new Error("must not be sent"); },
   );
   assert.equal(calls, 0);
   assert.equal(unknown.ok, false);
   if (!unknown.ok) assert.equal(unknown.failure.kind, "validation");
 
+  // A historical consent notice id is not a privacy notice.
+  const consentNotice = await createBooking(
+    wire({ ...bookingRequest, privacyNoticeId: BOOKING_CONSENT_CURRENT_NOTICE_ID }),
+    async () => { calls += 1; throw new Error("must not be sent"); },
+  );
+  assert.equal(calls, 0);
+  assert.equal(consentNotice.ok, false);
+  if (!consentNotice.ok) assert.equal(consentNotice.failure.kind, "validation");
+
+  // Booking no longer models consent: the old boolean is an unknown field.
   const refused = await createBooking(
-    wire({ ...bookingRequest, consentAccepted: false }),
+    wire({ ...bookingRequest, consentAccepted: true }),
     async () => { calls += 1; throw new Error("must not be sent"); },
   );
   assert.equal(calls, 0);

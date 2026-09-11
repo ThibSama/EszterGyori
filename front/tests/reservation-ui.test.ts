@@ -51,7 +51,9 @@ test("customer form, review and confirmation expose accessible semantics and foc
   assert.match(details, /firstName: firstNameInput,\s*lastName: lastNameInput,/);
   assert.match(details, /type="email"/);
   assert.match(details, /type="tel"/);
-  assert.match(details, /name="consentAccepted" type="checkbox"/);
+  // ESZ-161: no consent checkbox exists any more.
+  assert.doesNotMatch(details, /type="checkbox"/);
+  assert.doesNotMatch(details, /consentAccepted/);
   assert.match(details, /aria-describedby=\{describedBy/);
   assert.match(details, /aria-invalid=\{Boolean/);
   assert.match(details, /role="alert"/);
@@ -129,23 +131,50 @@ test("a rate-limited creation keeps the review step and closes the confirm contr
   assert.doesNotMatch(details, /setInterval/);
 });
 
-// --- ESZ-142: the consent notice is the contract's, not the component's ----
+// --- ESZ-161: the privacy notice is the contract's, not the component's ----
 
-test("the checkbox renders the current catalog notice and carries no private duplicate", () => {
-  // The displayed sentence must come from the immutable booking-domain
+test("the form renders the current catalog privacy notice instead of a consent checkbox", () => {
+  // The displayed statements must come from the immutable booking-domain
   // catalog — the same artifact the server validates ids against — so a
   // wording change is one catalog edit, never a hunt through components.
   assert.match(
     details,
-    /import { bookingConsentCurrentNotice } from "@eszter\/contracts";/,
+    /import { bookingPrivacyCurrentNotice } from "@eszter\/contracts";/,
   );
-  assert.match(details, /\{bookingConsentCurrentNotice\.text\}/);
-  // The old hardcoded copy is gone from the component source entirely.
-  assert.doesNotMatch(details, /J’accepte que mes coordonnées/);
-  assert.doesNotMatch(details, /soient utilisées pour traiter/);
-  // The label keeps the required-field marker the checkbox still needs.
-  assert.match(
-    details,
-    /bookingConsentCurrentNotice\.text\} <span aria-hidden="true">\*<\/span>/,
-  );
+  assert.match(details, /data-privacy-notice-id=\{bookingPrivacyCurrentNotice\.id\}/);
+  for (const statement of ["controller", "legalBasis", "retention", "recipients", "rights", "contact"]) {
+    assert.match(
+      details,
+      new RegExp(`\\{bookingPrivacyCurrentNotice\\.content\\.${statement}\\}`),
+      `the ${statement} statement is not rendered from the catalog`,
+    );
+  }
+  assert.match(details, /href=\{bookingPrivacyCurrentNotice\.content\.privacyPolicy\.href\}/);
+  // Information is not consent: no checkbox, no acceptance, no required
+  // marker on the notice, and no consent wording anywhere in the component.
+  assert.doesNotMatch(details, /type="checkbox"/);
+  assert.doesNotMatch(details, /bookingConsentCurrentNotice/);
+  assert.doesNotMatch(details, /J’accepte/);
+  assert.doesNotMatch(details, /Consentement/);
+});
+
+test("the free field is the optional « précision » with a placeholder and a sensitive-data warning", () => {
+  assert.match(details, /Précision sur le rendez-vous <span className="font-normal text-warm-500">— facultatif<\/span>/);
+  assert.match(details, /id="customer-note" name="note"[^>]*placeholder="Ex\. : une question sur la prestation, une contrainte d’horaire…"/);
+  assert.match(details, /id="note-hint"[^>]*>N’indiquez ici aucune information médicale, de santé ou autre donnée sensible\.<\/p>/);
+  assert.match(details, /aria-describedby=\{describedBy\("note", "note-hint"\)\}/);
+  // The note is never `required`.
+  assert.doesNotMatch(details, /name="note"[^>]*required/);
+});
+
+test("the phone stays optional and is announced as transactional-only", () => {
+  assert.match(details, /Téléphone <span className="font-normal text-warm-500">\(facultatif\)<\/span>/);
+  assert.doesNotMatch(details, /name="phone"[^>]*required/);
+  assert.match(details, /id="phone-hint"[^>]*>Utilisé uniquement pour les échanges liés à votre rendez-vous\.<\/p>/);
+  assert.match(details, /aria-describedby=\{describedBy\("phone", "phone-hint"\)\}/);
+});
+
+test("the confirmation tells the visitor to keep the reference", () => {
+  assert.match(details, /\{state\.confirmation\.reference\}/);
+  assert.match(details, /Conservez précieusement cette référence/);
 });

@@ -1110,7 +1110,7 @@ final class BackupRestoreSqlTest extends TestCase
             self::CUSTOMER_PHONE,
             'Première séance — merci de prévoir 15 minutes.',
             new \DateTimeImmutable(self::NOW),
-            $contract->currentConsentNoticeId,
+            $contract->currentPrivacyNoticeId,
         );
 
         $bookingRow = $this->source->fetchOne(

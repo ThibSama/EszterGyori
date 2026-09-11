@@ -23,6 +23,7 @@ final class BookingDomainContract
      * @param list<string> $states
      * @param array<string, list<string>> $transitions
      * @param list<string> $consentNoticeIds
+     * @param list<string> $privacyNoticeIds
      * @param array<string, string> $constraintEnforcementByKind
      */
     private function __construct(
@@ -77,6 +78,24 @@ final class BookingDomainContract
         public readonly array $consentNoticeIds,
         public readonly string $currentConsentNoticeId,
         public readonly string $consentNoticeIdPattern,
+        /**
+         * ESZ-161 — the immutable privacy-information notice catalog: every
+         * machine id ever issued and the one the shipped frontend displays.
+         * The consent catalog above is frozen history since ESZ-161.
+         */
+        public readonly array $privacyNoticeIds,
+        public readonly string $currentPrivacyNoticeId,
+        public readonly string $privacyNoticeIdPattern,
+        /**
+         * ESZ-161 — the public reference shapes: what every reference field
+         * accepts (current or legacy), what a new booking is issued, and the
+         * alphabet and length that generation draws from.
+         */
+        public readonly string $referencePattern,
+        public readonly string $currentReferencePattern,
+        public readonly string $referenceAlphabet,
+        public readonly int $referenceSignificantCharacters,
+        public readonly int $referenceGenerationMaxAttempts,
     ) {
     }
 
@@ -101,13 +120,30 @@ final class BookingDomainContract
         $historyPage = self::block($adminViews, 'historyPage');
         $summary = self::block($adminViews, 'summary');
         $consentNotices = self::block($document, 'consentNotices');
-        $consentNoticeIds = self::consentNoticeIds($consentNotices);
+        $consentNoticeIds = self::noticeIds($consentNotices, 'consentNotices');
         $currentConsentNoticeId = self::string($consentNotices, 'currentId');
         if (!\in_array($currentConsentNoticeId, $consentNoticeIds, true)) {
             throw new ContractArtifactException(
                 'booking-domain.json consentNotices.currentId does not name a catalog entry.',
             );
         }
+        $privacyNotices = self::block($document, 'privacyNotices');
+        $privacyNoticeIds = self::noticeIds($privacyNotices, 'privacyNotices');
+        $currentPrivacyNoticeId = self::string($privacyNotices, 'currentId');
+        if (!\in_array($currentPrivacyNoticeId, $privacyNoticeIds, true)) {
+            throw new ContractArtifactException(
+                'booking-domain.json privacyNotices.currentId does not name a catalog entry.',
+            );
+        }
+        // The two catalogs must stay unmistakable: a stored id names exactly
+        // one kind of notice.
+        if (array_intersect($consentNoticeIds, $privacyNoticeIds) !== []) {
+            throw new ContractArtifactException(
+                'booking-domain.json consentNotices and privacyNotices share an id.',
+            );
+        }
+        $publicReferences = self::block($document, 'publicReferences');
+        $currentReference = self::block($publicReferences, 'current');
 
         return new self(
             self::positiveInt($document, 'version'),
@@ -142,6 +178,14 @@ final class BookingDomainContract
             $consentNoticeIds,
             $currentConsentNoticeId,
             self::string($consentNotices, 'idPattern'),
+            $privacyNoticeIds,
+            $currentPrivacyNoticeId,
+            self::string($privacyNotices, 'idPattern'),
+            self::string($publicReferences, 'accepted'),
+            self::string($currentReference, 'pattern'),
+            self::string($currentReference, 'alphabet'),
+            self::positiveInt($currentReference, 'significantCharacters'),
+            self::positiveInt($currentReference, 'generationMaxAttempts'),
         );
     }
 
@@ -182,6 +226,34 @@ final class BookingDomainContract
     {
         return \in_array($id, $this->consentNoticeIds, true)
             && preg_match('#' . $this->consentNoticeIdPattern . '#D', $id) === 1;
+    }
+
+    /**
+     * ESZ-161 — whether the wire may carry `id` as the privacy notice the form
+     * displayed. Acceptance is membership of the immutable privacy catalog
+     * (plus the bounded-ASCII shape the column CHECK mirrors). A historical
+     * consent notice id is not a privacy notice and is refused here.
+     */
+    public function acceptsPrivacyNoticeId(string $id): bool
+    {
+        return \in_array($id, $this->privacyNoticeIds, true)
+            && preg_match('#' . $this->privacyNoticeIdPattern . '#D', $id) === 1;
+    }
+
+    /**
+     * ESZ-161 — whether `$reference` has one of the two frozen public
+     * reference shapes: the current `XXXX-XXXX` token or a legacy `bk_` one.
+     * Shape only; whether it names a booking is the repository's answer.
+     */
+    public function acceptsReference(string $reference): bool
+    {
+        return preg_match('#' . $this->referencePattern . '#D', $reference) === 1;
+    }
+
+    /** ESZ-161 — whether `$reference` is of the shape every new booking is issued. */
+    public function isCurrentReference(string $reference): bool
+    {
+        return preg_match('#' . $this->currentReferencePattern . '#D', $reference) === 1;
     }
 
     /** @return list<string> */
@@ -265,16 +337,19 @@ final class BookingDomainContract
     }
 
     /**
-     * @param array<mixed> $consentNotices
+     * The ids of one immutable notice catalog block (`consentNotices` or
+     * `privacyNotices`), in issuance order.
+     *
+     * @param array<mixed> $catalog
      * @return list<string>
      */
-    private static function consentNoticeIds(array $consentNotices): array
+    private static function noticeIds(array $catalog, string $block): array
     {
-        $value = $consentNotices['entries'] ?? null;
+        $value = $catalog['entries'] ?? null;
 
         if (!\is_array($value) || $value === []) {
             throw new ContractArtifactException(
-                'booking-domain.json consentNotices has no non-empty `entries` list.',
+                "booking-domain.json {$block} has no non-empty `entries` list.",
             );
         }
 
@@ -282,7 +357,7 @@ final class BookingDomainContract
         foreach ($value as $entry) {
             if (!\is_array($entry) || !\is_string($entry['id'] ?? null) || $entry['id'] === '') {
                 throw new ContractArtifactException(
-                    'booking-domain.json consentNotices has a malformed entry.',
+                    "booking-domain.json {$block} has a malformed entry.",
                 );
             }
             $ids[] = $entry['id'];
@@ -290,7 +365,7 @@ final class BookingDomainContract
 
         if (\count(array_unique($ids)) !== \count($ids)) {
             throw new ContractArtifactException(
-                'booking-domain.json consentNotices entries must have unique ids.',
+                "booking-domain.json {$block} entries must have unique ids.",
             );
         }
 

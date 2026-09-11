@@ -647,8 +647,8 @@ Boundaries:
   `POST /api/admin/bookings/move-availability`. The server resolves the service from the
   opaque booking reference, delegates to `SlotEngine`, and excludes only that booking;
   the browser submits one exact returned UTC instant and never recreates availability.
-- Public creation stores explicit consent facts and returns an opaque reference without
-  customer data. Admin updates may change only name, email, phone and note; moves retain
+- Public creation stores the privacy-notice evidence (ESZ-161) and returns an opaque
+  `XXXX-XXXX` reference without customer data; legacy `bk_` references stay resolvable. Admin updates may change only name, email, phone and note; moves retain
   reference and service and are allowed only while confirmed; cancellation uses the
   central state transition and never deletes the booking.
 - Consent is historically traceable (ESZ-142): the notice wording the checkbox shows is
@@ -658,6 +658,15 @@ Boundaries:
   in `bookings.consent_notice_id` (migration 0014) beside `consent_at_utc`. Rows created
   before the catalog keep a NULL notice id — no provenance is invented for them — and
   retention anonymization preserves both consent fields when it erases customer data.
+- Since ESZ-161 booking is not based on consent: the request carries no
+  `consentAccepted` / `consentNoticeId` (the strict schema refuses them) but the id of the
+  privacy-information notice the form displayed (`privacyNoticeId`, immutable
+  `privacyNotices` catalog, same discipline). The server stores it with its presentation
+  instant in `bookings.privacy_notice_id` / `privacy_notice_presented_at_utc` (migration
+  0020, additive), leaves `consent_at_utc` / `consent_notice_id` NULL for those rows and
+  never fabricates a consent instant; the consent-era rows are untouched. The reference
+  column admits the current `XXXX-XXXX` shape beside the legacy `bk_` one, and creation
+  retries a duplicate draw under the column's UNIQUE key.
 - The booking's `updatedAt` is its V1 optimistic-concurrency token (ESZ-139): admin
   responses expose it in canonical UTC millisecond form, and every admin mutation —
   update, move or cancel — sends it back as `expectedUpdatedAt`. Inside the mutation
@@ -695,14 +704,14 @@ Boundaries:
 - Selection retains the complete returned slot, including its exact UTC start and fold
   offset. Refresh revalidates against returned UTC starts and clears a disappeared slot
   with a recoverable explanation.
-- Name, email, optional phone/note and explicit consent are reviewed with service/date/
-  slot before the browser sends the existing `POST /api/bookings` contract. The consent
-  checkbox renders the current notice text from the frozen catalog, and the request
-  carries that notice's id (`consentNoticeId`) beside `consentAccepted: true` — the
-  component holds no private copy of the wording (ESZ-142). The exact server-returned
-  UTC start is submitted; an immediate in-memory lock and disabled controls prevent
-  duplicate concurrent posts. Customer and consent facts are never written to browser
-  storage.
+- Name, email, optional transactional-only phone and the optional "précision" (with a
+  sensitive-data warning) are reviewed with service/date/slot before the browser sends
+  the existing `POST /api/bookings` contract. Since ESZ-161 there is no consent checkbox:
+  the form renders the current privacy-information notice from the frozen catalog and
+  the request carries that notice's id (`privacyNoticeId`) — the component holds no
+  private copy of the wording. The exact server-returned UTC start is submitted; an
+  immediate in-memory lock and disabled controls prevent duplicate concurrent posts.
+  Customer facts are never written to browser storage.
 - Only a validated successful response shows confirmation and its opaque reference. A
   last-second 409 clears the slot, retains customer input, refreshes availability and
   never retries or chooses a replacement. Network loss is described as uncertain

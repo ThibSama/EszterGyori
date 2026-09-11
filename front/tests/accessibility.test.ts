@@ -140,22 +140,27 @@ test("every reservation field is labelled, typed and described by its own error"
   // A field whose error lives in a paragraph somewhere below it is an error only
   // a sighted user has. `aria-describedby` is what attaches the message to the
   // input, and `aria-invalid` is what says the input is the one that is wrong.
-  for (const field of ["firstName", "lastName", "email", "phone", "note", "consentAccepted"]) {
+  for (const field of ["firstName", "lastName", "email", "phone", "note"]) {
     assert.match(
       reservationDetails,
       new RegExp(`aria-invalid=\\{Boolean\\(errorFor\\("${field}"\\)\\)\\}`),
       `${field} does not report its own validity`,
     );
+    // ESZ-161: the phone and the « précision » also carry a permanent hint
+    // (transactional-only use, no sensitive data), attached the same way.
     assert.match(
       reservationDetails,
-      new RegExp(`aria-describedby=\\{describedBy\\("${field}"\\)\\}`),
+      new RegExp(`aria-describedby=\\{describedBy\\("${field}"(, "${field}-hint")?\\)\\}`),
       `${field} is not described by its own error`,
     );
   }
+  assert.match(reservationDetails, /aria-describedby=\{describedBy\("phone", "phone-hint"\)\}/);
+  assert.match(reservationDetails, /aria-describedby=\{describedBy\("note", "note-hint"\)\}/);
 
   // Every visible control has a programmatic label. Placeholder text is not a
-  // label: it disappears on focus, which is the moment it is needed.
-  assert.equal((reservationDetails.match(/htmlFor=/g) ?? []).length, 6);
+  // label: it disappears on focus, which is the moment it is needed. Five
+  // controls since ESZ-161 removed the consent checkbox.
+  assert.equal((reservationDetails.match(/htmlFor=/g) ?? []).length, 5);
 
   // `type` and `autoComplete` are accessibility features, not conveniences. They
   // are what gives a phone the right keyboard and what lets someone with a motor

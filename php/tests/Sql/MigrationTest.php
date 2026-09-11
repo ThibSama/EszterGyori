@@ -69,7 +69,7 @@ final class MigrationTest extends TestCase
 
         self::assertSame(
             ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
-             '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016', '0017', '0018', '0019'],
+             '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016', '0017', '0018', '0019', '0020'],
             $applied,
         );
     }
@@ -391,6 +391,7 @@ final class MigrationTest extends TestCase
                     'id', 'reference', 'service_key', 'state', 'starts_at_utc',
                     'ends_at_utc', 'timezone_name', 'customer_name', 'customer_email',
                     'customer_phone', 'customer_note', 'consent_at_utc', 'consent_notice_id',
+                    'privacy_notice_id', 'privacy_notice_presented_at_utc',
                     'cancelled_at_utc', 'cancellation_reason', 'customer_data_erased_at',
                     'created_at', 'updated_at', 'state_changed_at',
                 ],
@@ -902,6 +903,147 @@ final class MigrationTest extends TestCase
         } finally {
             TestEnvironment::removeDirectory($directory);
         }
+    }
+
+    // --- ESZ-161: privacy notice evidence and the public reference shape ---
+
+    /**
+     * ESZ-161 — migration 0020 makes the consent instant nullable, adds the
+     * privacy notice id and its presentation instant (bounded exactly like
+     * the consent notice id), states the basis-evidence invariant, and lets
+     * `reference` carry the current `XXXX-XXXX` shape beside the legacy
+     * `bk_` one. Applied over a database that already holds consent-era
+     * bookings, it rewrites none of them.
+     */
+    public function testMigration0020AddsPrivacyNoticeEvidenceAndTheCurrentReferenceShape(): void
+    {
+        $directory = TestEnvironment::makeTempDirectory('eszter-migrations-esz161');
+
+        try {
+            $migrations = TestDatabase::migrationsDirectory();
+            foreach ((glob($migrations . '/000[1-9]_*.sql') ?: []) as $file) {
+                copy($file, $directory . '/' . basename($file));
+            }
+            foreach ((glob($migrations . '/001[0-9]_*.sql') ?: []) as $file) {
+                copy($file, $directory . '/' . basename($file));
+            }
+
+            // The pre-0020 world: schema 0001-0019 with a consent-era booking.
+            $applied = $this->migrator($directory)->migrate();
+            self::assertSame('0019', end($applied));
+            $this->seedBookingForNotifications();
+            $this->seedBookingWithNotice('bk_77777777777777777777777777777771', 'booking-consent-v1');
+            // The legacy shape is the only one admitted before the deploy.
+            $this->expectConstraintFailure(fn () => $this->seedBookingWithNotice('XG73-UVK9', 'booking-consent-v1'));
+
+            // The deploy: 0020 lands and applies alone.
+            copy(
+                $migrations . '/0020_booking_privacy_notice_and_public_reference.sql',
+                $directory . '/0020_booking_privacy_notice_and_public_reference.sql',
+            );
+            self::assertSame(['0020'], $this->migrator($directory)->migrate());
+            self::assertSame([], $this->migrator($directory)->pendingVersions());
+
+            // Nothing was rewritten: the consent-era rows keep their exact
+            // instant, notice id and reference, and gain NULL privacy facts.
+            foreach (['bk_33333333333333333333333333333333', 'bk_77777777777777777777777777777771'] as $reference) {
+                $legacy = $this->database->fetchOne(
+                    'SELECT reference, consent_at_utc, consent_notice_id, privacy_notice_id,'
+                    . ' privacy_notice_presented_at_utc FROM bookings WHERE reference = :reference',
+                    ['reference' => $reference],
+                );
+                self::assertSame($reference, $legacy['reference']);
+                self::assertSame('2026-06-13 09:00:00.000', $legacy['consent_at_utc']);
+                self::assertNull($legacy['privacy_notice_id']);
+                self::assertNull($legacy['privacy_notice_presented_at_utc']);
+            }
+            self::assertSame('booking-consent-v1', $this->database->fetchOne(
+                'SELECT consent_notice_id FROM bookings WHERE reference = :reference',
+                ['reference' => 'bk_77777777777777777777777777777771'],
+            )['consent_notice_id']);
+
+            // The columns: consent instant nullable, privacy id bounded ASCII,
+            // reference a VARCHAR admitting both shapes.
+            self::assertSame('YES', $this->column('bookings', 'consent_at_utc')['IS_NULLABLE']);
+            $notice = $this->column('bookings', 'privacy_notice_id');
+            self::assertSame('ascii', $notice['CHARACTER_SET_NAME']);
+            self::assertSame('ascii_bin', $notice['COLLATION_NAME']);
+            self::assertSame('YES', $notice['IS_NULLABLE']);
+            self::assertSame('datetime', $this->column('bookings', 'privacy_notice_presented_at_utc')['DATA_TYPE']);
+            self::assertSame('varchar', $this->column('bookings', 'reference')['DATA_TYPE']);
+            self::assertNull($this->checkClause('bookings', 'chk_bookings_reference'));
+            $shape = (string) $this->checkClause('bookings', 'chk_bookings_reference_shape');
+            self::assertStringContainsString('bk_[0-9a-f]{32}', $shape);
+            self::assertStringContainsString('[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}', $shape);
+            self::assertStringContainsString(
+                '^[a-z0-9][a-z0-9_-]{0,63}$',
+                (string) $this->checkClause('bookings', 'chk_bookings_privacy_notice_id'),
+            );
+            self::assertNotNull($this->checkClause('bookings', 'chk_bookings_basis_evidence'));
+
+            // A current-shape booking with privacy evidence and no consent
+            // instant is accepted…
+            $this->seedPrivacyBooking('XG73-UVK9', 'booking-privacy-v1');
+            $fresh = $this->database->fetchOne(
+                'SELECT reference, consent_at_utc, consent_notice_id, privacy_notice_id,'
+                . ' privacy_notice_presented_at_utc FROM bookings WHERE reference = :reference',
+                ['reference' => 'XG73-UVK9'],
+            );
+            self::assertSame('XG73-UVK9', $fresh['reference']);
+            self::assertNull($fresh['consent_at_utc']);
+            self::assertNull($fresh['consent_notice_id']);
+            self::assertSame('booking-privacy-v1', $fresh['privacy_notice_id']);
+            self::assertSame('2026-06-13 09:00:00.000', $fresh['privacy_notice_presented_at_utc']);
+            // …a legacy-shape insert still is (nothing narrows the old shape)…
+            $this->seedBookingWithNotice('bk_77777777777777777777777777777772', 'booking-consent-v1');
+            // …and the UNIQUE key still holds for the new shape.
+            $this->expectConstraintFailure(fn () => $this->seedPrivacyBooking('XG73-UVK9', 'booking-privacy-v1'));
+
+            // Refused: ambiguous characters, lowercase, a bare eight without
+            // the hyphen, a malformed notice id, a booking with no evidence
+            // at all, and a half-set privacy pair.
+            foreach (['XG70-UVK9', 'xg73-uvk9', 'XG73UVK9', 'XG73-UVKI'] as $malformed) {
+                $this->expectConstraintFailure(fn () => $this->seedPrivacyBooking($malformed, 'booking-privacy-v1'));
+            }
+            $this->expectConstraintFailure(fn () => $this->seedPrivacyBooking('ABCD-EFGH', 'Booking-Privacy-V1'));
+            $this->expectConstraintFailure(fn () => $this->seedPrivacyBooking('ABCD-EFGH', null));
+            $this->expectConstraintFailure(fn () => $this->seedPrivacyBooking('ABCD-EFGH', 'booking-privacy-v1', null));
+
+            // And 0020 itself stays repeat-safe on re-run.
+            self::assertSame([], $this->migrator($directory)->migrate());
+            self::assertSame('varchar', $this->column('bookings', 'reference')['DATA_TYPE']);
+        } finally {
+            TestEnvironment::removeDirectory($directory);
+        }
+    }
+
+    /**
+     * A booking row of the ESZ-161 shape: no consent instant, a privacy
+     * notice id and its presentation instant stated explicitly.
+     */
+    private function seedPrivacyBooking(
+        string $reference,
+        ?string $noticeId,
+        ?string $presentedAt = '2026-06-13 09:00:00.000',
+    ): void {
+        $this->database->run(
+            'INSERT INTO bookings'
+            . ' (reference, service_key, state, starts_at_utc, ends_at_utc, timezone_name,'
+            . ' customer_name, customer_email, privacy_notice_id, privacy_notice_presented_at_utc,'
+            . ' created_at, updated_at, state_changed_at)'
+            . " VALUES (:reference, 'lips', 'confirmed',"
+            . " '2026-06-15 10:00:00.000', '2026-06-15 11:00:00.000', 'Europe/Paris',"
+            . " 'Cliente', 'cliente@example.test', :notice, :presented,"
+            . ' :created, :updated, :changed)',
+            [
+                'reference' => $reference,
+                'notice' => $noticeId,
+                'presented' => $presentedAt,
+                'created' => self::NOW,
+                'updated' => self::NOW,
+                'changed' => self::NOW,
+            ],
+        );
     }
 
     // --- ESZ-131: the lifecycle marker column ------------------------------

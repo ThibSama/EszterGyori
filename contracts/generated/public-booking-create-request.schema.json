@@ -1,7 +1,7 @@
 {
   "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
   "title": "PublicBookingCreateRequest",
-  "description": "Public booking facts, the explicit consent notice id (one of the immutable booking-domain catalog's entries) and explicit consent for one returned UTC slot.",
+  "description": "Public booking facts and the id of the privacy-information notice the form displayed (one of the immutable booking-domain catalog's entries) for one returned UTC slot; no consent field exists (ESZ-161).",
   "x-eszter-io": "input",
   "x-eszter-contentSchemaVersion": 1,
   "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
@@ -57,15 +57,11 @@
         }
       ]
     },
-    "consentNoticeId": {
+    "privacyNoticeId": {
       "type": "string",
       "enum": [
-        "booking-consent-v1"
+        "booking-privacy-v1"
       ]
-    },
-    "consentAccepted": {
-      "type": "boolean",
-      "const": true
     }
   },
   "required": [
@@ -74,8 +70,7 @@
     "customerEmail",
     "customerPhone",
     "customerNote",
-    "consentNoticeId",
-    "consentAccepted"
+    "privacyNoticeId"
   ],
   "additionalProperties": false
 }

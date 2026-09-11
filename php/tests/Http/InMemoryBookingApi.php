@@ -677,7 +677,11 @@ final class InMemoryBookingApi implements BookingApi
             'customerEmail' => 'cliente@example.test',
             'customerPhone' => null,
             'customerNote' => null,
+            // ESZ-161: a consent-era fixture — consent instant, no privacy
+            // notice — exercising the nullable evidence fields.
             'consentAtUtc' => '2026-06-13T12:00:00.000Z',
+            'privacyNoticeId' => null,
+            'privacyNoticePresentedAtUtc' => null,
             'cancelledAtUtc' => $cancelled ? '2026-06-13T12:00:00.000Z' : null,
             'cancellationReason' => $cancelled ? 'Indisponible' : null,
             'createdAt' => '2026-06-13T12:00:00.000Z',

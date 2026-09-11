@@ -257,8 +257,7 @@ final class BookingSnapshotSqlTest extends TestCase
             'customerEmail' => 'cliente@example.test',
             'customerPhone' => null,
             'customerNote' => null,
-            'consentNoticeId' => $this->contract->currentConsentNoticeId,
-            'consentAccepted' => true,
+            'privacyNoticeId' => $this->contract->currentPrivacyNoticeId,
         ];
     }
 

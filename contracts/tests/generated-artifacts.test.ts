@@ -50,6 +50,8 @@ import {
   BOOKING_SLOT_MAX_RESULTS,
   BOOKING_TIME_ZONE,
   bookingConsentNoticePolicy,
+  bookingPrivacyNoticePolicy,
+  bookingPublicReferencePolicy,
   bookingDomainContract,
   bookingSerializationPolicy,
   bookingStateTransitions,
@@ -213,7 +215,7 @@ test("the generated booking domain freezes service identity, timezone and states
   );
   assert.match(booking.adminViews.rangeRead.hasMore, /pageSize\+1/);
   assert.match(booking.adminViews.summary.counts, /aggregation/);
-  assert.equal(booking.version, 11, "adding a policy block is a domain version bump");
+  assert.equal(booking.version, 12, "adding a policy block is a domain version bump");
 
   // ESZ-146: the serialization block freezes byte-for-byte, the way the SQL
   // layer enforces it — booking create/move/cancel, every availability
@@ -235,17 +237,25 @@ test("the generated booking domain freezes the Package 7.1 notification policy",
     notifications?: typeof notificationPolicy;
     customerDataRetention?: typeof customerDataRetentionPolicy;
     consentNotices?: typeof bookingConsentNoticePolicy;
+    privacyNotices?: typeof bookingPrivacyNoticePolicy;
+    publicReferences?: typeof bookingPublicReferencePolicy;
   };
 
   // The whole block, byte for byte. PHP reads this file rather than a second
   // copy of these constants, so anything that drifts here drifts everywhere.
   assert.deepEqual(document.notifications, notificationPolicy);
-  assert.equal(document.version, 11, "adding a policy block is a domain version bump");
+  assert.equal(document.version, 12, "adding a policy block is a domain version bump");
 
   // ESZ-142: the consent-notice catalog (immutable entries with their exact
   // French text, the bounded-ASCII id pattern and the current pointer) is
   // frozen in the same artifact the PHP booking domain reads.
   assert.deepEqual(document.consentNotices, bookingConsentNoticePolicy);
+  // ESZ-161: the privacy-information notice catalog and the public reference
+  // policy (current XXXX-XXXX shape, legacy bk_ shape, generation bound) are
+  // frozen in the same artifact the PHP booking domain reads.
+  assert.deepEqual(document.privacyNotices, bookingPrivacyNoticePolicy);
+  assert.deepEqual(document.publicReferences, bookingPublicReferencePolicy);
+  assert.deepEqual(document.notifications?.reminders.leadHours, 24);
 
   // ESZ-140: the customer-data retention policy (cutoffs, placeholders, code,
   // archive ceiling) is frozen in the same artifact the PHP sweep reads.

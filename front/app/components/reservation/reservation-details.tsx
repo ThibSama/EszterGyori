@@ -1,6 +1,6 @@
 "use client";
 
-import { bookingConsentCurrentNotice } from "@eszter/contracts";
+import { bookingPrivacyCurrentNotice } from "@eszter/contracts";
 import { useEffect, useRef, type Dispatch, type FormEvent } from "react";
 import type {
   CustomerField,
@@ -47,7 +47,6 @@ export function ReservationDetails({
   const emailInput = useRef<HTMLInputElement>(null);
   const phoneInput = useRef<HTMLInputElement>(null);
   const noteInput = useRef<HTMLTextAreaElement>(null);
-  const consentInput = useRef<HTMLInputElement>(null);
   const previousPhase = useRef<ReservationFlowState["phase"] | null>(null);
 
   useEffect(() => {
@@ -74,8 +73,8 @@ export function ReservationDetails({
           <div><span className="block text-sm text-warm-500">Date et heure</span><strong className="text-warm-800">{dateLabel(state.selectedSlot.localDate)} à {state.selectedSlot.localStart}</strong></div>
         </div>
         <p className="mt-6 text-warm-600">Référence de réservation</p>
-        <p className="mt-1 break-all font-mono text-lg font-semibold text-warm-800">{state.confirmation.reference}</p>
-        <p className="mt-5 text-sm leading-relaxed text-warm-600">Conservez cette référence. Elle identifie votre rendez-vous sans exposer vos coordonnées.</p>
+        <p className="mt-1 break-all font-mono text-2xl font-semibold tracking-[0.12em] text-warm-800">{state.confirmation.reference}</p>
+        <p className="mt-5 text-sm leading-relaxed text-warm-600">Conservez précieusement cette référence : elle identifie votre rendez-vous pour toute demande ultérieure, sans exposer vos coordonnées. Elle vous est aussi rappelée dans l’e-mail de confirmation.</p>
       </section>
     );
   }
@@ -96,7 +95,7 @@ export function ReservationDetails({
     nowEpochMs,
   );
 
-  function update(field: CustomerField, value: string | boolean) {
+  function update(field: CustomerField, value: string) {
     dispatch({ type: "update-customer", field, value });
   }
 
@@ -112,7 +111,6 @@ export function ReservationDetails({
         email: emailInput,
         phone: phoneInput,
         note: noteInput,
-        consentAccepted: consentInput,
       };
       queueMicrotask(() => refs[first].current?.focus());
       return;
@@ -121,7 +119,10 @@ export function ReservationDetails({
   }
 
   const errorFor = (field: keyof typeof customer) => errors[field];
-  const describedBy = (field: keyof typeof customer) => errorFor(field) ? `${field}-error` : undefined;
+  const describedBy = (field: keyof typeof customer, hint?: string) => {
+    const ids = [errorFor(field) ? `${field}-error` : null, hint ?? null].filter((id) => id !== null);
+    return ids.length === 0 ? undefined : ids.join(" ");
+  };
 
   return (
     <>
@@ -165,22 +166,38 @@ export function ReservationDetails({
               </div>
               <div>
                 <label htmlFor="customer-phone" className="mb-2 block text-sm font-medium text-warm-700">Téléphone <span className="font-normal text-warm-500">(facultatif)</span></label>
-                <input ref={phoneInput} id="customer-phone" name="phone" type="tel" inputMode="tel" autoComplete="tel" maxLength={32} value={customer.phone} onChange={(event) => update("phone", event.target.value)} aria-invalid={Boolean(errorFor("phone"))} aria-describedby={describedBy("phone")} className="w-full rounded-xl border border-warm-300 bg-white/70 px-4 py-3 text-warm-800" />
+                <input ref={phoneInput} id="customer-phone" name="phone" type="tel" inputMode="tel" autoComplete="tel" maxLength={32} value={customer.phone} onChange={(event) => update("phone", event.target.value)} aria-invalid={Boolean(errorFor("phone"))} aria-describedby={describedBy("phone", "phone-hint")} className="w-full rounded-xl border border-warm-300 bg-white/70 px-4 py-3 text-warm-800" />
+                <p id="phone-hint" className="mt-2 text-sm text-warm-500">Utilisé uniquement pour les échanges liés à votre rendez-vous.</p>
                 {errorFor("phone") && <p id="phone-error" className="mt-2 text-sm text-warm-700">{errorFor("phone")}</p>}
               </div>
             </div>
             <div>
-              <label htmlFor="customer-note" className="mb-2 block text-sm font-medium text-warm-700">Note <span className="font-normal text-warm-500">(facultatif)</span></label>
-              <textarea ref={noteInput} id="customer-note" name="note" rows={4} maxLength={2000} value={customer.note} onChange={(event) => update("note", event.target.value)} aria-invalid={Boolean(errorFor("note"))} aria-describedby={describedBy("note")} className="w-full resize-y rounded-xl border border-warm-300 bg-white/70 px-4 py-3 text-warm-800" />
+              <label htmlFor="customer-note" className="mb-2 block text-sm font-medium text-warm-700">Précision sur le rendez-vous <span className="font-normal text-warm-500">— facultatif</span></label>
+              <textarea ref={noteInput} id="customer-note" name="note" rows={4} maxLength={2000} placeholder="Ex. : une question sur la prestation, une contrainte d’horaire…" value={customer.note} onChange={(event) => update("note", event.target.value)} aria-invalid={Boolean(errorFor("note"))} aria-describedby={describedBy("note", "note-hint")} className="w-full resize-y rounded-xl border border-warm-300 bg-white/70 px-4 py-3 text-warm-800" />
+              <p id="note-hint" className="mt-2 text-sm text-warm-600">N’indiquez ici aucune information médicale, de santé ou autre donnée sensible.</p>
               {errorFor("note") && <p id="note-error" className="mt-2 text-sm text-warm-700">{errorFor("note")}</p>}
             </div>
-            <div>
-              <label className="flex cursor-pointer items-start gap-3 rounded-2xl bg-white/55 p-4" htmlFor="consent-accepted">
-                <input ref={consentInput} id="consent-accepted" name="consentAccepted" type="checkbox" checked={customer.consentAccepted} onChange={(event) => update("consentAccepted", event.target.checked)} aria-invalid={Boolean(errorFor("consentAccepted"))} aria-describedby={describedBy("consentAccepted")} className="mt-1 h-5 w-5 shrink-0 accent-sage-600" />
-                <span className="text-sm leading-relaxed text-warm-700">{bookingConsentCurrentNotice.text} <span aria-hidden="true">*</span></span>
-              </label>
-              {errorFor("consentAccepted") && <p id="consentAccepted-error" className="mt-2 text-sm text-warm-700">{errorFor("consentAccepted")}</p>}
-            </div>
+            {/*
+              ESZ-161 — information, not consent. A booking rests on the
+              execution of the requested service and the pre-contractual
+              steps the visitor asks for, so there is no checkbox to tick:
+              the form states who processes the data, on what basis, for how
+              long, who receives it and which rights apply. The statements
+              are the contract catalog's frozen text; the request sends only
+              its id, never the text.
+            */}
+            <section aria-labelledby="privacy-notice-heading" data-privacy-notice-id={bookingPrivacyCurrentNotice.id} className="rounded-2xl bg-white/55 p-4 text-sm leading-relaxed text-warm-700">
+              <h3 id="privacy-notice-heading" className="font-medium text-warm-800">Vos données personnelles</h3>
+              <ul className="mt-2 space-y-1.5">
+                <li>{bookingPrivacyCurrentNotice.content.controller}</li>
+                <li>{bookingPrivacyCurrentNotice.content.legalBasis}</li>
+                <li>{bookingPrivacyCurrentNotice.content.retention}</li>
+                <li>{bookingPrivacyCurrentNotice.content.recipients}</li>
+                <li>{bookingPrivacyCurrentNotice.content.rights}</li>
+                <li>{bookingPrivacyCurrentNotice.content.contact}</li>
+              </ul>
+              <p className="mt-2"><a href={bookingPrivacyCurrentNotice.content.privacyPolicy.href} className="underline decoration-warm-400 underline-offset-2 hover:text-warm-800">{bookingPrivacyCurrentNotice.content.privacyPolicy.label}</a></p>
+            </section>
             <button type="submit" disabled={state.availabilityStatus !== "ready"} className="w-full rounded-full bg-warm-800 px-6 py-3.5 font-medium text-porcelain transition-colors hover:bg-warm-700 disabled:cursor-wait disabled:opacity-60 sm:w-auto">Vérifier ma demande</button>
             {state.availabilityStatus !== "ready" && <p role="status" className="text-sm text-warm-600">Attendez la vérification des disponibilités avant de continuer.</p>}
           </form>
@@ -203,9 +220,9 @@ export function ReservationDetails({
             <div><dt className="text-sm text-warm-500">Nom</dt><dd className="font-medium text-warm-800">{customer.lastName.trim()}</dd></div>
             <div><dt className="text-sm text-warm-500">Email</dt><dd className="break-all font-medium text-warm-800">{customer.email.trim()}</dd></div>
             {customer.phone.trim() && <div><dt className="text-sm text-warm-500">Téléphone</dt><dd className="font-medium text-warm-800">{customer.phone.trim()}</dd></div>}
-            {customer.note.trim() && <div className="sm:col-span-2"><dt className="text-sm text-warm-500">Note</dt><dd className="whitespace-pre-wrap text-warm-800">{customer.note.trim()}</dd></div>}
+            {customer.note.trim() && <div className="sm:col-span-2"><dt className="text-sm text-warm-500">Précision sur le rendez-vous</dt><dd className="whitespace-pre-wrap text-warm-800">{customer.note.trim()}</dd></div>}
           </dl>
-          <p className="mt-5 text-sm text-warm-600">Consentement confirmé pour le traitement de cette demande.</p>
+          <p className="mt-5 text-sm text-warm-600">Vos coordonnées servent uniquement à organiser ce rendez-vous (voir « Vos données personnelles » ci-dessus).</p>
           <div className="mt-7 flex flex-col gap-3 sm:flex-row">
             <button type="button" disabled={state.phase === "submitting"} onClick={() => dispatch({ type: "edit-details" })} className="rounded-full border border-warm-300 bg-white/60 px-6 py-3 font-medium text-warm-700 disabled:opacity-50">Modifier mes coordonnées</button>
             <button type="button" disabled={state.phase === "submitting" || submissionRetryBlocked || state.availabilityStatus !== "ready"} onClick={() => { if (submissionRetryBlocked) return; void onSubmit(); }} className="rounded-full bg-warm-800 px-6 py-3 font-medium text-porcelain transition-colors hover:bg-warm-700 disabled:cursor-wait disabled:opacity-60">

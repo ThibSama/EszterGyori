@@ -66,8 +66,9 @@ import {
 } from "./acceptance-debt.mjs";
 
 const MEDIA_ID_PATTERN = /^med_[0-9a-f]{32}$/;
-const BOOKING_REFERENCE_PATTERN = /^bk_[0-9a-f]{32}$/;
-const CONSENT_NOTICE_ID = "booking-consent-v1";
+// ESZ-161: the current XXXX-XXXX shape or a legacy bk_ reference.
+const BOOKING_REFERENCE_PATTERN = /^(bk_[0-9a-f]{32}|[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})$/;
+const PRIVACY_NOTICE_ID = "booking-privacy-v1";
 const ADMIN_MEDIA_PATH = "/api/admin/media";
 
 export class DebtBlockedError extends Error {
@@ -576,9 +577,8 @@ export async function runAuthorizedAcceptance({
         customerEmail,
         customerPhone: null,
         customerNote: `${marker} isolated production acceptance; cancel after verification`,
-        // ESZ-142: the catalog's current consent notice id.
-        consentNoticeId: CONSENT_NOTICE_ID,
-        consentAccepted: true,
+        // ESZ-161: the catalog's current privacy notice id; no consent field.
+        privacyNoticeId: PRIVACY_NOTICE_ID,
       },
     });
     if (created.status !== 201) throw new Error(`Booking creation expected 201, got ${created.status}.`);
