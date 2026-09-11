@@ -12,6 +12,9 @@ import {
   ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
   ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
   ADMIN_SERVICES_PATH,
+  ADMIN_PRIVACY_REQUESTS_PATH,
+  ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
+  ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
   AUTH_LOGIN_PATH,
   AUTH_LOGOUT_PATH,
   AUTH_SESSION_PATH,
@@ -37,6 +40,9 @@ import {
   adminAvailabilityConstraintResponseSchema,
   adminServiceResponseSchema,
   adminServicesResponseSchema,
+  adminPrivacyRequestResponseSchema,
+  adminPrivacyRequestsResponseSchema,
+  adminPrivacyRequestSearchResponseSchema,
   publishedContentEnvelopeV1Schema,
   serverDraftEnvelopeV1Schema,
   type ApiErrorCode,
@@ -203,6 +209,32 @@ export type AdminServiceMutation =
     }
   | { action: "disableCombination"; key: string; expectedUpdatedAt: string }
   | { action: "enableCombination"; key: string; expectedUpdatedAt: string };
+
+/**
+ * ESZ-163 — one record of the GDPR request register, exactly as the server
+ * stores it: no requester e-mail, message or copied customer field exists on
+ * this type, so none can be rendered or re-sent.
+ */
+export type AdminPrivacyRequest = z.infer<typeof adminPrivacyRequestResponseSchema>["request"];
+export type AdminPrivacyRequestType = AdminPrivacyRequest["type"];
+export type AdminPrivacyRequestStatus = AdminPrivacyRequest["status"];
+export type AdminPrivacyRequestsPage = z.infer<typeof adminPrivacyRequestsResponseSchema>;
+/** ESZ-163 — one booking a scope search matched; shown to select from, never stored. */
+export type AdminPrivacyRequestMatch = z.infer<
+  typeof adminPrivacyRequestSearchResponseSchema
+>["matches"][number];
+export type AdminPrivacyRequestSearchPage = z.infer<typeof adminPrivacyRequestSearchResponseSchema>;
+export type AdminPrivacyRequestSearch =
+  | { mode: "reference"; reference: string }
+  | { mode: "email"; email: string; cursor?: AdminBookingsCursor };
+export type AdminPrivacyRequestsQuery =
+  | { mode: "history"; cursor?: { id: number } }
+  | { mode: "detail"; id: number };
+export type AdminPrivacyRequestCreate = {
+  type: AdminPrivacyRequestType;
+  receivedDate: string;
+  bookingReferences: string[];
+};
 
 export type AdminAvailabilityExceptionMutation =
   | { action: "close"; expectedRevision: number; localDate: string; note: string | null }
@@ -395,6 +427,29 @@ export interface AdminApiClient {
     input: AdminServiceMutation,
     csrfToken: string,
   ): Promise<AdminApiResult<AdminServiceMutationResult>>;
+  /**
+   * ESZ-163 — resolves a GDPR requester's scope: one booking by current or
+   * legacy reference, or one page of an e-mail's live bookings with its
+   * completeness. An authenticated read, no CSRF; it stores nothing.
+   */
+  searchPrivacyRequestScope(
+    input: AdminPrivacyRequestSearch,
+  ): Promise<AdminApiResult<AdminPrivacyRequestSearchPage>>;
+  /** ESZ-163 — one page of the register, newest first. An authenticated read, no CSRF. */
+  listPrivacyRequests(
+    input: Extract<AdminPrivacyRequestsQuery, { mode: "history" }>,
+  ): Promise<AdminApiResult<AdminPrivacyRequestsPage>>;
+  /** ESZ-163 — one register record by its internal id. */
+  readPrivacyRequest(id: number): Promise<AdminApiResult<AdminPrivacyRequest>>;
+  /**
+   * ESZ-163 — records one reviewed request: the frozen type, the reception
+   * date and exactly the selected references. Resolved with what the server
+   * stored (status received, derived deadline), never with what was sent.
+   */
+  recordPrivacyRequest(
+    input: AdminPrivacyRequestCreate,
+    csrfToken: string,
+  ): Promise<AdminApiResult<AdminPrivacyRequest>>;
 }
 
 /** The only reset source the contract defines. Stated once, sent from here. */
@@ -873,6 +928,47 @@ export function createAdminApiClient(
       });
       if (!response.ok) return response;
       return parsed(adminServiceResponseSchema, response.body);
+    },
+
+    async searchPrivacyRequestScope(input) {
+      const response = await send(ADMIN_PRIVACY_REQUEST_SEARCH_PATH, {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      return parsed(adminPrivacyRequestSearchResponseSchema, response.body);
+    },
+
+    async listPrivacyRequests(input) {
+      const response = await send(ADMIN_PRIVACY_REQUESTS_QUERY_PATH, {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      return parsed(adminPrivacyRequestsResponseSchema, response.body);
+    },
+
+    async readPrivacyRequest(id) {
+      const response = await send(ADMIN_PRIVACY_REQUESTS_QUERY_PATH, {
+        method: "POST",
+        body: JSON.stringify({ mode: "detail", id }),
+      });
+      if (!response.ok) return response;
+      const record = parsed(adminPrivacyRequestResponseSchema, response.body);
+      if (!record.ok) return record;
+      return { ok: true, value: record.value.request };
+    },
+
+    async recordPrivacyRequest(input, csrfToken) {
+      const response = await send(ADMIN_PRIVACY_REQUESTS_PATH, {
+        method: "POST",
+        csrfToken,
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      const record = parsed(adminPrivacyRequestResponseSchema, response.body);
+      if (!record.ok) return record;
+      return { ok: true, value: record.value.request };
     },
   };
 }

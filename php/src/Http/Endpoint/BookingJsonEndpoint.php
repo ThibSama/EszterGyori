@@ -18,6 +18,8 @@ use Eszter\Contract\StructuralValidator;
 use Eszter\Http\HttpException;
 use Eszter\Http\Request;
 use Eszter\Http\Response;
+use Eszter\Privacy\InvalidPrivacyRequestTransitionException;
+use Eszter\Privacy\PrivacyRequestNotFoundException;
 use Eszter\Support\Logger;
 
 /** Shared strict JSON and opaque-error boundary for every booking route. */
@@ -97,7 +99,8 @@ abstract class BookingJsonEndpoint
         } catch (
             BookingNotFoundException
             | BookableServiceNotFoundException
-            | PlanningConstraintNotFoundException $exception
+            | PlanningConstraintNotFoundException
+            | PrivacyRequestNotFoundException $exception
         ) {
             throw new HttpException(
                 404,
@@ -105,7 +108,11 @@ abstract class BookingJsonEndpoint
                 $this->headers(),
                 $exception->getMessage(),
             );
-        } catch (BookingValidationException | InvalidBookingTransitionException $exception) {
+        } catch (
+            BookingValidationException
+            | InvalidBookingTransitionException
+            | InvalidPrivacyRequestTransitionException $exception
+        ) {
             throw new HttpException(
                 400,
                 \Eszter\Http\ErrorCatalog::VALIDATION_FAILED,

@@ -1250,6 +1250,9 @@ final class HttpContractConformanceTest extends TestCase
             case 'adminAvailabilityConstraintResponse':
             case 'adminServicesResponse':
             case 'adminServiceResponse':
+            case 'adminPrivacyRequestResponse':
+            case 'adminPrivacyRequestsResponse':
+            case 'adminPrivacyRequestSearchResponse':
                 self::assertIsArray($body);
                 $schema = match ($expected['body']) {
                     'publicBookableServicesResponse' => 'public-bookable-services-response.schema.json',
@@ -1267,6 +1270,9 @@ final class HttpContractConformanceTest extends TestCase
                         'admin-availability-constraint-response.schema.json',
                     'adminServicesResponse' => 'admin-services-response.schema.json',
                     'adminServiceResponse' => 'admin-service-response.schema.json',
+                    'adminPrivacyRequestResponse' => 'admin-privacy-request-response.schema.json',
+                    'adminPrivacyRequestsResponse' => 'admin-privacy-requests-response.schema.json',
+                    'adminPrivacyRequestSearchResponse' => 'admin-privacy-request-search-response.schema.json',
                     default => throw new \LogicException('Unknown booking response matcher.'),
                 };
                 self::assertSame([], $structural->validate($body, $schema));

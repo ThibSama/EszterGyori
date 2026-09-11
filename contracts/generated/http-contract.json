@@ -665,7 +665,10 @@
       "adminAvailabilityWeekly": "/api/admin/availability/weekly",
       "adminAvailabilityExceptions": "/api/admin/availability/exceptions",
       "adminAvailabilityConstraints": "/api/admin/availability/constraints",
-      "adminServices": "/api/admin/services"
+      "adminServices": "/api/admin/services",
+      "adminPrivacyRequests": "/api/admin/privacy-requests",
+      "adminPrivacyRequestsQuery": "/api/admin/privacy-requests/query",
+      "adminPrivacyRequestSearch": "/api/admin/privacy-requests/search"
     },
     "publicErrors": "The frozen error envelope only; no booking, customer, SQL, lock or validation detail.",
     "adminMutationSecurity": "authenticated session followed by CSRF, before body parsing",
@@ -697,7 +700,8 @@
       "move": "Authenticated move availability resolves the booking server-side and delegates to SlotEngine while excluding only itself. Mutation retains reference and service, requires confirmed state, and transactionally recomputes the submitted returned instant.",
       "history": "Append-only created, moved, cancelled and customer_updated events; the bookings row remains authoritative current state. ESZ-145: history is served only by mode=reference, one fixed page of at most 50 chronological events with explicit hasMore and a strictly advancing typed cursor; range reads and mutation responses carry current-state booking facts only and never a history array.",
       "adminQuery": "An authenticated read, no CSRF. mode=reference is an exact lookup returning the booking's current facts beside one bounded page of its history (adminViews.historyPage: at most 50 events, chronological, hasMore from a pageSize+1 probe, typed eventId continuation). mode=range returns the bookings whose start falls in the requested Paris-civil window, deterministically ordered and paginated per adminViews.rangeRead: pageSize rows at most, a typed cursor for the next page, hasMore detected with a pageSize+1 probe — no row is silently clipped. Range rows carry current-state facts only: a range page costs a constant number of queries whatever its row count, and never one history read per booking.",
-      "adminSummary": "An authenticated read, no CSRF. Counts and nextConfirmedStartsAtUtc are exact SQL aggregations over the whole window; the today/upcoming entry lists are confirmed-only and bounded at adminViews.summary.listedEntriesMax with listings.todayComplete/upcomingComplete stating whether each list is complete."
+      "adminSummary": "An authenticated read, no CSRF. Counts and nextConfirmedStartsAtUtc are exact SQL aggregations over the whole window; the today/upcoming entry lists are confirmed-only and bounded at adminViews.summary.listedEntriesMax with listings.todayComplete/upcomingComplete stating whether each list is complete.",
+      "privacyRequests": "ESZ-163 — the admin GDPR request register (booking-domain privacyRequests). search is an authenticated read, no CSRF: mode=reference resolves exactly one stored booking (current or legacy shape; 404 NOT_FOUND when none, 404 as well for an erased booking, which has no customer left to identify), mode=email lists the non-erased bookings whose stored e-mail matches case-insensitively, one page of searchPageSize on the (startsAtUtc, reference) keyset with hasMore and a typed cursor — never a silent clip, and never a match through the frozen erased placeholder. query is an authenticated read: mode=history pages the register newest first, mode=detail serves one record. POST records one request behind session and CSRF: the frozen type, the reception date, and exactly the references the administrator selected (each must resolve to a non-erased booking, no duplicates, bounded at maxBookingReferences; an empty list is a confirmed empty scope). Status is received on creation and is never accepted from the wire. Recording writes the register only: no booking or customer row changes, nothing is exported."
     },
     "availabilityAdministration": {
       "maxQueryRangeDays": 400,
@@ -1139,6 +1143,55 @@
       ],
       "requestBodySchema": "admin-service-mutation-request.schema.json",
       "successBodySchema": "admin-service-response.schema.json"
+    },
+    {
+      "path": "/api/admin/privacy-requests",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        405,
+        500
+      ],
+      "requestBodySchema": "admin-privacy-request-create-request.schema.json",
+      "successBodySchema": "admin-privacy-request-response.schema.json"
+    },
+    {
+      "path": "/api/admin/privacy-requests/query",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        404,
+        405,
+        500
+      ],
+      "requestBodySchema": "admin-privacy-requests-query-request.schema.json",
+      "successBodySchema": "admin-privacy-requests-response.schema.json"
+    },
+    {
+      "path": "/api/admin/privacy-requests/search",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        404,
+        405,
+        500
+      ],
+      "requestBodySchema": "admin-privacy-request-search-request.schema.json",
+      "successBodySchema": "admin-privacy-request-search-response.schema.json"
     }
   ],
   "unknownRouteStatus": 404,
@@ -4903,6 +4956,446 @@
         "errorCode": "METHOD_NOT_ALLOWED",
         "headers": {
           "allow": "GET, PATCH"
+        }
+      }
+    },
+    {
+      "id": "admin.privacyRequests.search.post.referenceOk",
+      "endpoint": "/api/admin/privacy-requests/search",
+      "description": "ESZ-163 — a reference identifies exactly one booking; the match carries what the scope review needs and nothing the register stores.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/search",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"reference\",\"reference\":\"bk_00000000000000000000000000000000\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestSearchResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.search.post.currentReferenceShapeOk",
+      "endpoint": "/api/admin/privacy-requests/search",
+      "description": "The current XXXX-XXXX reference shape is accepted by the scope search exactly like the legacy one.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/search",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"reference\",\"reference\":\"XG73-UVK9\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestSearchResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.search.post.unknownReference",
+      "endpoint": "/api/admin/privacy-requests/search",
+      "description": "A well-formed reference that names no booking is 404 NOT_FOUND, never an empty match list.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/search",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"reference\",\"reference\":\"bk_ffffffffffffffffffffffffffffffff\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.search.post.emailOk",
+      "endpoint": "/api/admin/privacy-requests/search",
+      "description": "An e-mail search is one bounded page of the address's live bookings with its completeness on the wire.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/search",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"email\",\"email\":\"cliente@example.test\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestSearchResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.search.post.erasedPlaceholderNeverMatches",
+      "endpoint": "/api/admin/privacy-requests/search",
+      "description": "The frozen erased placeholder address matches nothing: an anonymised booking has no requester left to reconnect.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/search",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"email\",\"email\":\"erased@example.invalid\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestSearchResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.search.post.malformedEmail",
+      "endpoint": "/api/admin/privacy-requests/search",
+      "description": "A value that is not an e-mail address is refused structurally.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/search",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"email\",\"email\":\"not-an-address\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.search.post.unauthenticated",
+      "endpoint": "/api/admin/privacy-requests/search",
+      "description": "The scope search is authenticated: an anonymous caller is refused before the body is read.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/search",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"email\",\"email\":\"cliente@example.test\"}"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.query.post.historyOk",
+      "endpoint": "/api/admin/privacy-requests/query",
+      "description": "The register's history: one page, newest first, with its completeness and continuation.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"history\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestsResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.query.post.detailOk",
+      "endpoint": "/api/admin/privacy-requests/query",
+      "description": "One record by its internal id, with the deadline derived from its reception date.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"detail\",\"id\":1}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.query.post.unknownId",
+      "endpoint": "/api/admin/privacy-requests/query",
+      "description": "An id the register does not hold is 404 NOT_FOUND.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"detail\",\"id\":404}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.query.post.unauthenticated",
+      "endpoint": "/api/admin/privacy-requests/query",
+      "description": "The register is authenticated: an anonymous caller is refused.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"history\"}"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.post.ok",
+      "endpoint": "/api/admin/privacy-requests",
+      "description": "Recording a reviewed request stores the type, the reception date and exactly the selected references; the response is the stored record with status received and its deadline.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"type\":\"access\",\"receivedDate\":\"2026-06-13\",\"bookingReferences\":[\"bk_00000000000000000000000000000000\"]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.post.emptyScopeOk",
+      "endpoint": "/api/admin/privacy-requests",
+      "description": "A confirmed empty scope is a valid record: the obligation to answer exists even when no booking is concerned.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"type\":\"portability\",\"receivedDate\":\"2026-06-13\",\"bookingReferences\":[]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.post.unknownReference",
+      "endpoint": "/api/admin/privacy-requests",
+      "description": "A selected reference must name a stored booking: an unknown one is 404 NOT_FOUND and nothing is recorded.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"type\":\"erasure\",\"receivedDate\":\"2026-06-13\",\"bookingReferences\":[\"bk_ffffffffffffffffffffffffffffffff\"]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.post.oppositionIsNotAType",
+      "endpoint": "/api/admin/privacy-requests",
+      "description": "The five V1 types are closed: opposition is refused structurally.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"type\":\"opposition\",\"receivedDate\":\"2026-06-13\",\"bookingReferences\":[]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.post.statusIsNeverAccepted",
+      "endpoint": "/api/admin/privacy-requests",
+      "description": "The lifecycle is automatic: a status in the body is an unknown field and is refused.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"type\":\"access\",\"receivedDate\":\"2026-06-13\",\"bookingReferences\":[],\"status\":\"closed\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.post.requesterEmailIsNeverAccepted",
+      "endpoint": "/api/admin/privacy-requests",
+      "description": "The register never stores the requester's e-mail or message: neither is a field of the request, so both are refused before anything is read.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"type\":\"access\",\"receivedDate\":\"2026-06-13\",\"bookingReferences\":[],\"email\":\"cliente@example.test\",\"message\":\"Bonjour\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.post.unauthenticated",
+      "endpoint": "/api/admin/privacy-requests",
+      "description": "An anonymous record attempt is refused before its body is inspected.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"type\":\"access\",\"receivedDate\":\"2026-06-13\",\"bookingReferences\":[]}"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.post.csrfOmitted",
+      "endpoint": "/api/admin/privacy-requests",
+      "description": "Recording a request is a state change: without CSRF it is rejected before parsing.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.delete.methodNotAllowed",
+      "endpoint": "/api/admin/privacy-requests",
+      "description": "No route deletes or edits a record by hand; the register admits POST only and the purge is the sweep's.",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/admin/privacy-requests"
+      },
+      "expect": {
+        "status": 405,
+        "body": "errorEnvelope",
+        "errorCode": "METHOD_NOT_ALLOWED",
+        "headers": {
+          "allow": "POST"
         }
       }
     }

@@ -70,7 +70,7 @@ final class MigrationTest extends TestCase
         self::assertSame(
             ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
              '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016', '0017', '0018', '0019', '0020',
-             '0021'],
+             '0021', '0022'],
             $applied,
         );
     }
@@ -446,6 +446,10 @@ final class MigrationTest extends TestCase
                 'booking_buffer_snapshots' => ['PRIMARY'],
                 'booking_history' => ['PRIMARY', 'ix_booking_history_booking_order'],
                 'system_settings' => ['PRIMARY'],
+                // ESZ-163: the register is read newest-first by id and purged
+                // by (status, closed_at_utc); the references by request.
+                'privacy_requests' => ['PRIMARY', 'ix_privacy_requests_purge'],
+                'privacy_request_bookings' => ['PRIMARY', 'uq_privacy_request_bookings_position'],
                 'notification_jobs' => [
                     'PRIMARY', 'uq_notification_jobs_idempotency',
                     'ix_notification_jobs_claim', 'ix_notification_jobs_lease',

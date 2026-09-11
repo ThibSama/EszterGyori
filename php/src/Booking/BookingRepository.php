@@ -138,6 +138,71 @@ final class BookingRepository
     }
 
     /**
+     * ESZ-163 — one page of the live bookings a customer e-mail names.
+     *
+     * The scope search of the GDPR request centre. Two rules are enforced
+     * here, at the persistence layer, so no caller can relax them:
+     *
+     *  - erased bookings are excluded by their marker *before* the e-mail
+     *    is compared, so the frozen erasure placeholder — the same string
+     *    on every anonymised row — can never reconnect anonymised bookings
+     *    to one another or to a requester;
+     *  - the match is case-insensitive on the stored address (which the
+     *    public form stores as typed), because a requester who writes their
+     *    address with a capital must still find their own bookings.
+     *
+     * Pagination is the ESZ-144 keyset on `(starts_at_utc, reference)` with
+     * the same `pageSize + 1` probe, so a shared address with many bookings
+     * is walked completely and never silently clipped.
+     *
+     * @param string|null $afterStartsAtUtc Continuation keys in database form
+     *     (`Y-m-d H:i:s.v`), both or neither.
+     * @return array{rows: list<Booking>, hasMore: bool}
+     */
+    public function pageLiveByEmail(
+        string $email,
+        ?string $afterStartsAtUtc,
+        ?string $afterReference,
+        int $pageSize,
+    ): array {
+        if ($pageSize < 1 || $pageSize > $this->contract->adminRangePageSize) {
+            throw new BookingValidationException('pageSize', 'Booking page size is outside the contract bounds.');
+        }
+        if (($afterStartsAtUtc === null) !== ($afterReference === null)) {
+            throw new BookingValidationException('cursor', 'Booking cursor keys must be provided together.');
+        }
+
+        $after = $afterStartsAtUtc !== null
+            ? ' AND (starts_at_utc > :anchor_gt'
+                . ' OR (starts_at_utc = :anchor_eq AND reference > :anchor_reference))'
+            : '';
+        $parameters = ['email' => mb_strtolower(trim($email))];
+        if ($afterStartsAtUtc !== null && $afterReference !== null) {
+            $parameters['anchor_gt'] = $afterStartsAtUtc;
+            $parameters['anchor_eq'] = $afterStartsAtUtc;
+            $parameters['anchor_reference'] = $afterReference;
+        }
+
+        $rows = $this->database->fetchAll(
+            'SELECT ' . self::SELECT_COLUMNS . ' FROM bookings'
+            . ' WHERE customer_data_erased_at IS NULL'
+            . ' AND LOWER(customer_email) = :email'
+            . $after
+            . ' ORDER BY starts_at_utc, reference'
+            . ' LIMIT ' . ($pageSize + 1),
+            $parameters,
+        );
+
+        return [
+            'rows' => array_map(
+                fn (array $row): Booking => Booking::fromRow($row, $this->contract),
+                \array_slice($rows, 0, $pageSize),
+            ),
+            'hasMore' => \count($rows) > $pageSize,
+        ];
+    }
+
+    /**
      * ESZ-144 — exact operational counts for the summary window.
      *
      * A dedicated aggregation, partitioned the same way the entries are: a

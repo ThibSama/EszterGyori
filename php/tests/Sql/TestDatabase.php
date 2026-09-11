@@ -230,6 +230,8 @@ final class TestDatabase
             [
                 'rate_limit_buckets',
                 'notification_jobs',
+                'privacy_request_bookings',
+                'privacy_requests',
                 'bookings',
                 'booking_buffer_snapshots',
                 'booking_history',

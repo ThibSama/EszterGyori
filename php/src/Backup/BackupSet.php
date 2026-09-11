@@ -99,6 +99,11 @@ final class BackupSet
         'booking_buffer_snapshots',
         'booking_history',
         'notification_jobs',
+        // ESZ-163: the GDPR request register and its selected references. No
+        // customer data, but a record of obligations that must survive a
+        // restore; the references table is a child of the requests table.
+        'privacy_requests',
+        'privacy_request_bookings',
     ];
 
     /**

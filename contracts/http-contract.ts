@@ -22,10 +22,15 @@ import {
   PLANNING_CONSTRAINT_MAX_DAYS,
   BOOKING_PRIVACY_NOTICE_ID_PATTERN,
   BOOKING_REFERENCE_PATTERN,
+  PRIVACY_REQUEST_HISTORY_PAGE_SIZE,
+  PRIVACY_REQUEST_MAX_BOOKING_REFERENCES,
+  PRIVACY_REQUEST_SEARCH_PAGE_SIZE,
   bookingPrivacyNoticeIds,
   bookingStates,
   planningConstraintEnforcements,
   planningConstraintKinds,
+  privacyRequestStatuses,
+  privacyRequestTypes,
 } from "./booking.js";
 
 /**
@@ -134,6 +139,20 @@ export const ADMIN_AVAILABILITY_CONSTRAINTS_PATH =
  * removed, only archived.
  */
 export const ADMIN_SERVICES_PATH = "/api/admin/services";
+
+/**
+ * ESZ-163 — the admin GDPR request register. Three authenticated routes on
+ * one resource: `POST /api/admin/privacy-requests` records one reviewed
+ * request (session + CSRF); `POST /api/admin/privacy-requests/query` reads
+ * the register (a history page or one record); and
+ * `POST /api/admin/privacy-requests/search` resolves the requester's scope —
+ * one booking by reference, or the live bookings of an e-mail, paginated.
+ * Nothing here exports, rectifies, anonymises or restricts anything: the
+ * register records what was reviewed, and ESZ-164 owns the execution.
+ */
+export const ADMIN_PRIVACY_REQUESTS_PATH = "/api/admin/privacy-requests";
+export const ADMIN_PRIVACY_REQUESTS_QUERY_PATH = "/api/admin/privacy-requests/query";
+export const ADMIN_PRIVACY_REQUEST_SEARCH_PATH = "/api/admin/privacy-requests/search";
 
 /**
  * Header reporting the current head of the content revision sequence.
@@ -1491,6 +1510,150 @@ export const adminServiceResponseSchema = z.union([
   z.object({ maxServicesPerAppointment: maxServicesPerAppointmentSchema }).strict(),
 ]);
 
+// --- ESZ-163: the admin GDPR request register ------------------------------
+
+export const privacyRequestTypeSchema = z.enum(privacyRequestTypes);
+export const privacyRequestStatusSchema = z.enum(privacyRequestStatuses);
+
+/** The register's own monotonic key; opaque to the client. */
+const privacyRequestIdSchema = z.number().int().positive();
+
+/**
+ * One record of the register — and the whole of what the register holds. No
+ * requester e-mail, no message, no identity document and no copied booking
+ * customer field is a member of this shape, so none can be served.
+ */
+export const adminPrivacyRequestSchema = z
+  .object({
+    id: privacyRequestIdSchema,
+    type: privacyRequestTypeSchema,
+    status: privacyRequestStatusSchema,
+    /** The reception date the administrator entered (Paris-civil, YYYY-MM-DD). */
+    receivedDate: bookingLocalDateSchema,
+    /** One calendar month after receivedDate, clamped to the month's end. */
+    deadlineDate: bookingLocalDateSchema,
+    /** Set exactly when status is closed, by the same write. */
+    closedAtUtc: isoTimestampSchema.nullable(),
+    /** The references the administrator selected, in selection order. */
+    bookingReferences: z
+      .array(bookingReferenceSchema)
+      .max(PRIVACY_REQUEST_MAX_BOOKING_REFERENCES),
+    createdAt: isoTimestampSchema,
+    updatedAt: isoTimestampSchema,
+  })
+  .strict();
+
+/**
+ * Records one reviewed request. `bookingReferences` is exactly the set the
+ * administrator ticked in the scope review — never "everything the search
+ * returned" — and may be empty only when the administrator confirmed that no
+ * booking is concerned. Nothing else is accepted: the strict shape is what
+ * keeps a requester's e-mail or message out of the register.
+ */
+export const adminPrivacyRequestCreateRequestSchema = z
+  .object({
+    type: privacyRequestTypeSchema,
+    receivedDate: bookingLocalDateSchema,
+    bookingReferences: z
+      .array(bookingReferenceSchema)
+      .max(PRIVACY_REQUEST_MAX_BOOKING_REFERENCES),
+  })
+  .strict();
+
+export const adminPrivacyRequestResponseSchema = z
+  .object({ request: adminPrivacyRequestSchema })
+  .strict();
+
+/** The history continuation: the id of the last record the previous page exposed. */
+const adminPrivacyRequestsCursorSchema = z
+  .object({ id: privacyRequestIdSchema })
+  .strict();
+
+/**
+ * Reads the register: `history` is one page of records, newest first, with
+ * an optional typed continuation; `detail` is one record by id.
+ */
+export const adminPrivacyRequestsQueryRequestSchema = z.discriminatedUnion("mode", [
+  z
+    .object({
+      mode: z.literal("history"),
+      cursor: adminPrivacyRequestsCursorSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("detail"),
+      id: privacyRequestIdSchema,
+    })
+    .strict(),
+]);
+
+export const adminPrivacyRequestsResponseSchema = z
+  .object({
+    requests: z.array(adminPrivacyRequestSchema).max(PRIVACY_REQUEST_HISTORY_PAGE_SIZE),
+    page: z
+      .object({
+        pageSize: z.literal(PRIVACY_REQUEST_HISTORY_PAGE_SIZE),
+        hasMore: z.boolean(),
+        nextCursor: adminPrivacyRequestsCursorSchema.nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+
+/**
+ * Resolves the requester's scope. By reference: exactly the booking the
+ * reference names (404 when none). By e-mail: the live (non-erased) bookings
+ * whose stored e-mail matches, one page at a time on the same keyset the
+ * range read uses, so a shared address with many bookings is listed
+ * completely rather than clipped.
+ */
+export const adminPrivacyRequestSearchRequestSchema = z.discriminatedUnion("mode", [
+  z
+    .object({
+      mode: z.literal("reference"),
+      reference: bookingReferenceSchema,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("email"),
+      email: z.string().trim().email().max(254),
+      cursor: adminBookingsCursorSchema.optional(),
+    })
+    .strict(),
+]);
+
+/**
+ * One matched booking, as much as the scope review needs to tell bookings
+ * apart and no more: the reference to select, the appointment facts, the
+ * name the administrator already sees on the calendar. It is shown, never
+ * stored by the register.
+ */
+export const adminPrivacyRequestMatchSchema = z
+  .object({
+    reference: bookingReferenceSchema,
+    serviceKeys: bookableServiceKeysSchema,
+    state: bookingStateSchema,
+    startsAtUtc: isoTimestampSchema,
+    endsAtUtc: isoTimestampSchema,
+    customerName: z.string().min(1).max(160),
+  })
+  .strict();
+
+export const adminPrivacyRequestSearchResponseSchema = z
+  .object({
+    matches: z.array(adminPrivacyRequestMatchSchema).max(PRIVACY_REQUEST_SEARCH_PAGE_SIZE),
+    page: z
+      .object({
+        pageSize: z.literal(PRIVACY_REQUEST_SEARCH_PAGE_SIZE),
+        hasMore: z.boolean(),
+        nextCursor: adminBookingsCursorSchema.nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const adminBookingSummaryEntrySchema = z
   .object({
     reference: bookingReferenceSchema,
@@ -1655,6 +1818,8 @@ export const bookingApiPolicy = {
     "An authenticated read, no CSRF. mode=reference is an exact lookup returning the booking's current facts beside one bounded page of its history (adminViews.historyPage: at most 50 events, chronological, hasMore from a pageSize+1 probe, typed eventId continuation). mode=range returns the bookings whose start falls in the requested Paris-civil window, deterministically ordered and paginated per adminViews.rangeRead: pageSize rows at most, a typed cursor for the next page, hasMore detected with a pageSize+1 probe — no row is silently clipped. Range rows carry current-state facts only: a range page costs a constant number of queries whatever its row count, and never one history read per booking.",
   adminSummary:
     "An authenticated read, no CSRF. Counts and nextConfirmedStartsAtUtc are exact SQL aggregations over the whole window; the today/upcoming entry lists are confirmed-only and bounded at adminViews.summary.listedEntriesMax with listings.todayComplete/upcomingComplete stating whether each list is complete.",
+  privacyRequests:
+    "ESZ-163 — the admin GDPR request register (booking-domain privacyRequests). search is an authenticated read, no CSRF: mode=reference resolves exactly one stored booking (current or legacy shape; 404 NOT_FOUND when none, 404 as well for an erased booking, which has no customer left to identify), mode=email lists the non-erased bookings whose stored e-mail matches case-insensitively, one page of searchPageSize on the (startsAtUtc, reference) keyset with hasMore and a typed cursor — never a silent clip, and never a match through the frozen erased placeholder. query is an authenticated read: mode=history pages the register newest first, mode=detail serves one record. POST records one request behind session and CSRF: the frozen type, the reception date, and exactly the references the administrator selected (each must resolve to a non-erased booking, no duplicates, bounded at maxBookingReferences; an empty list is a confirmed empty scope). Status is received on creation and is never accepted from the wire. Recording writes the register only: no booking or customer row changes, nothing is exported.",
 } as const;
 
 /**
@@ -2723,6 +2888,9 @@ export const contractBodyMatchers = [
   "adminAvailabilityConstraintResponse",
   "adminServicesResponse",
   "adminServiceResponse",
+  "adminPrivacyRequestResponse",
+  "adminPrivacyRequestsResponse",
+  "adminPrivacyRequestSearchResponse",
   "empty",
 ] as const;
 
@@ -2854,6 +3022,9 @@ export interface HttpContractCase {
     | "/api/admin/availability/exceptions"
     | "/api/admin/availability/constraints"
     | "/api/admin/services"
+    | "/api/admin/privacy-requests"
+    | "/api/admin/privacy-requests/query"
+    | "/api/admin/privacy-requests/search"
     | "unknown";
   description: string;
   request: {
@@ -5493,6 +5664,265 @@ export const httpContractCases: HttpContractCase[] = [
       body: "errorEnvelope",
       errorCode: "METHOD_NOT_ALLOWED",
       headers: { allow: "GET, PATCH" },
+    },
+  },
+  {
+    id: "admin.privacyRequests.search.post.referenceOk",
+    endpoint: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+    description:
+      "ESZ-163 — a reference identifies exactly one booking; the match carries what the scope review needs and nothing the register stores.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"reference","reference":"bk_00000000000000000000000000000000"}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestSearchResponse" },
+  },
+  {
+    id: "admin.privacyRequests.search.post.currentReferenceShapeOk",
+    endpoint: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+    description: "The current XXXX-XXXX reference shape is accepted by the scope search exactly like the legacy one.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"reference","reference":"XG73-UVK9"}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestSearchResponse" },
+  },
+  {
+    id: "admin.privacyRequests.search.post.unknownReference",
+    endpoint: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+    description: "A well-formed reference that names no booking is 404 NOT_FOUND, never an empty match list.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"reference","reference":"bk_ffffffffffffffffffffffffffffffff"}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 404, body: "errorEnvelope", errorCode: "NOT_FOUND" },
+  },
+  {
+    id: "admin.privacyRequests.search.post.emailOk",
+    endpoint: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+    description:
+      "An e-mail search is one bounded page of the address's live bookings with its completeness on the wire.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"email","email":"cliente@example.test"}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestSearchResponse" },
+  },
+  {
+    id: "admin.privacyRequests.search.post.erasedPlaceholderNeverMatches",
+    endpoint: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+    description:
+      "The frozen erased placeholder address matches nothing: an anonymised booking has no requester left to reconnect.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"email","email":"erased@example.invalid"}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestSearchResponse" },
+  },
+  {
+    id: "admin.privacyRequests.search.post.malformedEmail",
+    endpoint: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+    description: "A value that is not an e-mail address is refused structurally.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"email","email":"not-an-address"}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.privacyRequests.search.post.unauthenticated",
+    endpoint: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+    description: "The scope search is authenticated: an anonymous caller is refused before the body is read.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"email","email":"cliente@example.test"}',
+    },
+    auth: { session: "none", csrf: "omitted" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.privacyRequests.query.post.historyOk",
+    endpoint: ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
+    description: "The register's history: one page, newest first, with its completeness and continuation.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"history"}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestsResponse" },
+  },
+  {
+    id: "admin.privacyRequests.query.post.detailOk",
+    endpoint: ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
+    description: "One record by its internal id, with the deadline derived from its reception date.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"detail","id":1}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestResponse" },
+  },
+  {
+    id: "admin.privacyRequests.query.post.unknownId",
+    endpoint: ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
+    description: "An id the register does not hold is 404 NOT_FOUND.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"detail","id":404}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 404, body: "errorEnvelope", errorCode: "NOT_FOUND" },
+  },
+  {
+    id: "admin.privacyRequests.query.post.unauthenticated",
+    endpoint: ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
+    description: "The register is authenticated: an anonymous caller is refused.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"history"}',
+    },
+    auth: { session: "none", csrf: "omitted" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.privacyRequests.post.ok",
+    endpoint: ADMIN_PRIVACY_REQUESTS_PATH,
+    description:
+      "Recording a reviewed request stores the type, the reception date and exactly the selected references; the response is the stored record with status received and its deadline.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUESTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"type":"access","receivedDate":"2026-06-13","bookingReferences":["bk_00000000000000000000000000000000"]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestResponse" },
+  },
+  {
+    id: "admin.privacyRequests.post.emptyScopeOk",
+    endpoint: ADMIN_PRIVACY_REQUESTS_PATH,
+    description: "A confirmed empty scope is a valid record: the obligation to answer exists even when no booking is concerned.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUESTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"type":"portability","receivedDate":"2026-06-13","bookingReferences":[]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestResponse" },
+  },
+  {
+    id: "admin.privacyRequests.post.unknownReference",
+    endpoint: ADMIN_PRIVACY_REQUESTS_PATH,
+    description: "A selected reference must name a stored booking: an unknown one is 404 NOT_FOUND and nothing is recorded.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUESTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"type":"erasure","receivedDate":"2026-06-13","bookingReferences":["bk_ffffffffffffffffffffffffffffffff"]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 404, body: "errorEnvelope", errorCode: "NOT_FOUND" },
+  },
+  {
+    id: "admin.privacyRequests.post.oppositionIsNotAType",
+    endpoint: ADMIN_PRIVACY_REQUESTS_PATH,
+    description: "The five V1 types are closed: opposition is refused structurally.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUESTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"type":"opposition","receivedDate":"2026-06-13","bookingReferences":[]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.privacyRequests.post.statusIsNeverAccepted",
+    endpoint: ADMIN_PRIVACY_REQUESTS_PATH,
+    description: "The lifecycle is automatic: a status in the body is an unknown field and is refused.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUESTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"type":"access","receivedDate":"2026-06-13","bookingReferences":[],"status":"closed"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.privacyRequests.post.requesterEmailIsNeverAccepted",
+    endpoint: ADMIN_PRIVACY_REQUESTS_PATH,
+    description:
+      "The register never stores the requester's e-mail or message: neither is a field of the request, so both are refused before anything is read.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUESTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"type":"access","receivedDate":"2026-06-13","bookingReferences":[],"email":"cliente@example.test","message":"Bonjour"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.privacyRequests.post.unauthenticated",
+    endpoint: ADMIN_PRIVACY_REQUESTS_PATH,
+    description: "An anonymous record attempt is refused before its body is inspected.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUESTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"type":"access","receivedDate":"2026-06-13","bookingReferences":[]}',
+    },
+    auth: { session: "none", csrf: "omitted" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.privacyRequests.post.csrfOmitted",
+    endpoint: ADMIN_PRIVACY_REQUESTS_PATH,
+    description: "Recording a request is a state change: without CSRF it is rejected before parsing.",
+    request: { method: "POST", path: ADMIN_PRIVACY_REQUESTS_PATH, rawBody: "{invalid" },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 403, body: "errorEnvelope", errorCode: "CSRF_TOKEN_INVALID" },
+  },
+  {
+    id: "admin.privacyRequests.delete.methodNotAllowed",
+    endpoint: ADMIN_PRIVACY_REQUESTS_PATH,
+    description: "No route deletes or edits a record by hand; the register admits POST only and the purge is the sweep's.",
+    request: { method: "DELETE", path: ADMIN_PRIVACY_REQUESTS_PATH },
+    expect: {
+      status: 405,
+      body: "errorEnvelope",
+      errorCode: "METHOD_NOT_ALLOWED",
+      headers: { allow: "POST" },
     },
   },
 ];

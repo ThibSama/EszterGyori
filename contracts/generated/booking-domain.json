@@ -1,5 +1,5 @@
 {
-  "version": 12,
+  "version": 13,
   "scope": "Package 4.1/4.2 booking domain and dynamic slot computation; no booking HTTP API.",
   "services": {
     "keyAuthority": "booking_services.service_key",
@@ -417,5 +417,71 @@
     "neverDelete": "Retention never deletes a booking, a history row or a notification job: evidence of the appointment, its history and what was sent survives anonymized.",
     "backupArchiveRetentionDays": 30,
     "scope": "V1 product policy. Non-expired bookings are untouched; erased rows keep their identity and appointment facts; no booking, history or notification evidence is deleted."
+  },
+  "privacyRequests": {
+    "types": [
+      "access",
+      "rectification",
+      "erasure",
+      "restriction",
+      "portability"
+    ],
+    "statuses": {
+      "values": [
+        "received",
+        "in_progress",
+        "closed"
+      ],
+      "initial": "received",
+      "transitions": {
+        "received": [
+          "in_progress"
+        ],
+        "in_progress": [
+          "closed"
+        ],
+        "closed": []
+      },
+      "rule": "Statuses are automatic, never chosen. Creation stores received; ESZ-164 moves a record to in_progress when the execution of the right starts and to closed only when the action completes, writing closed_at_utc atomically in the same statement. A record never goes backwards and closed is terminal."
+    },
+    "deadline": {
+      "months": 1,
+      "rule": "deadlineDate is derived from receivedDate: the same day of the month one calendar month later, clamped to the last day of that month when the day does not exist (2026-01-31 → 2026-02-28). It is stored beside the reception date so the register can be read without recomputing it, and it never moves after creation."
+    },
+    "register": {
+      "stored": [
+        "internal id (never shown to a requester)",
+        "request type (one of types)",
+        "reception date (editable before creation, defaulting to today)",
+        "status and closure instant",
+        "the explicitly selected booking references, in the order they were selected",
+        "creation and update instants"
+      ],
+      "neverStored": [
+        "the requester's e-mail address",
+        "the free-form message of the request",
+        "any identity document",
+        "any copy of booking customer data (name, e-mail, phone, note)"
+      ],
+      "minimisation": "The register names bookings by reference only. Everything about the customer stays in the booking rows it already lives in, under ESZ-140 retention; a purge of the register never touches a booking and an erasure of a booking never touches the register."
+    },
+    "scope": {
+      "identification": "The requester is identified by a public booking reference (current XXXX-XXXX or legacy bk_ shape, exactly one booking) or by an e-mail address (every live booking whose stored e-mail matches, case-insensitively, one bounded page at a time with hasMore and a typed continuation cursor so a match is never silently dropped).",
+      "erasedBookings": "An e-mail search never matches an erased booking: rows carrying customer_data_erased_at are excluded before the e-mail is compared, so the frozen placeholder address can never reconnect anonymised bookings to one another or to a requester.",
+      "explicitSelection": "Recording a request stores exactly the references the administrator ticked in the scope review. A shared e-mail never implies every booking: the search lists matches, the administrator selects, and an empty selection is recorded only after an explicit confirmation that no booking is concerned.",
+      "validation": "Every selected reference must resolve to a stored, non-erased booking at record time (404 NOT_FOUND otherwise); duplicates are refused and the list is bounded at maxBookingReferences.",
+      "searchPageSize": 20,
+      "maxBookingReferences": 50
+    },
+    "history": {
+      "pageSize": 50,
+      "ordering": "Newest first by internal id, the register's own monotonic key; the continuation cursor {id} names the last exposed record and the next page begins strictly before it."
+    },
+    "retention": {
+      "closedRetentionYears": 3,
+      "rule": "A closed record is purged, with its selected references, once closed_at_utc is at least closedRetentionYears years in the past. received and in_progress records are never age-purged: an open request is evidence of an obligation, whatever its age.",
+      "path": "The purge runs inside the existing daily retention sweep (php bin/apply-booking-retention.php), after the booking erasure, and reports a count only."
+    },
+    "recordingIsNotExecution": "ESZ-163 records the reviewed scope and nothing else: no export, no rectification, no anonymisation, no restriction and no notification change happens when a request is recorded. Those actions are ESZ-164's, and they are what move a record through in_progress to closed."
   }
 }

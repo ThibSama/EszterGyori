@@ -12,6 +12,8 @@ use Eszter\Notification\NotificationChannelSettings;
 use Eszter\Notification\NotificationJobRepository;
 use Eszter\Notification\NotificationPolicy;
 use Eszter\Notification\NotificationScheduler;
+use Eszter\Privacy\PrivacyRequestAdministration;
+use Eszter\Privacy\PrivacyRequestRepository;
 use Eszter\Support\Clock;
 
 /**
@@ -32,7 +34,9 @@ use Eszter\Support\Clock;
  * - {@see AvailabilityAdministration} — availability editor reads and
  *   revision-protected schedule writes;
  * - {@see BookingServiceAdministration} — the back-office catalog reads and
- *   token-protected service mutations (ESZ-149).
+ *   token-protected service mutations (ESZ-149);
+ * - {@see PrivacyRequestAdministration} — the GDPR request centre's scope
+ *   search, register reads and request recording (ESZ-163).
  *
  * The class owns no domain rule of its own; it only routes. MySQL-owned
  * concurrency control stays in {@see BookingSerializationLock} and the
@@ -47,6 +51,7 @@ final class PdoBookingApi implements BookingApi
         private readonly BookingAdminReader $adminReader,
         private readonly AvailabilityAdministration $availabilityAdministration,
         private readonly BookingServiceAdministration $serviceAdministration,
+        private readonly PrivacyRequestAdministration $privacyRequests,
     ) {
     }
 
@@ -118,6 +123,13 @@ final class PdoBookingApi implements BookingApi
             new BookingAdminReader($contract, $time, $clock, $availability, $bookings, $history),
             new AvailabilityAdministration($contract, $availabilityRepository, $time, $bookings),
             new BookingServiceAdministration($services, $combinations, $contract),
+            // ESZ-163: the register reads the same domain artifact.
+            new PrivacyRequestAdministration(
+                $contract->privacyRequests,
+                new PrivacyRequestRepository($database, $clock, $contract->privacyRequests),
+                $bookings,
+                $time,
+            ),
         );
     }
 
@@ -197,5 +209,23 @@ final class PdoBookingApi implements BookingApi
     public function adminMutateService(array $request): array
     {
         return $this->serviceAdministration->adminMutateService($request);
+    }
+
+    /** @inheritDoc */
+    public function adminPrivacyRequestSearch(array $request): array
+    {
+        return $this->privacyRequests->adminPrivacyRequestSearch($request);
+    }
+
+    /** @inheritDoc */
+    public function adminPrivacyRequests(array $request): array
+    {
+        return $this->privacyRequests->adminPrivacyRequests($request);
+    }
+
+    /** @inheritDoc */
+    public function adminRecordPrivacyRequest(array $request): array
+    {
+        return $this->privacyRequests->adminRecordPrivacyRequest($request);
     }
 }

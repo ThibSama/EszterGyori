@@ -10,6 +10,7 @@ use Eszter\Booking\BookableServiceNotFoundException;
 use Eszter\Booking\BookableServiceRevisionConflictException;
 use Eszter\Booking\BookingApi;
 use Eszter\Booking\BookingDomainContract;
+use Eszter\Booking\BookingNotFoundException;
 use Eszter\Booking\BookingRequestFields;
 use Eszter\Booking\BookingTimePolicy;
 use Eszter\Booking\BookingValidationException;
@@ -17,6 +18,8 @@ use Eszter\Booking\PlanningConstraint;
 use Eszter\Booking\PlanningConstraintNotFoundException;
 use Eszter\Booking\SlotUnavailableException;
 use Eszter\Booking\WeeklyAvailabilityRule;
+use Eszter\Privacy\PrivacyRequestDeadline;
+use Eszter\Privacy\PrivacyRequestNotFoundException;
 use Eszter\Tests\TestEnvironment;
 
 /** Deterministic transport fixture; MySQL behavior is proved by the SQL suite. */
@@ -655,6 +658,126 @@ final class InMemoryBookingApi implements BookingApi
         $value = $row[$field] ?? null;
 
         return \is_string($value) ? $value : null;
+    }
+
+    /**
+     * ESZ-163 — the fixture register: the legacy-reference booking and the
+     * current-shape one from the contract cases are the two stored bookings;
+     * every other well-formed reference is unknown. The e-mail read answers
+     * the fixture customer's one booking and nothing for any other address —
+     * the frozen erased placeholder included, which is what the
+     * `erasedPlaceholderNeverMatches` case replays.
+     *
+     * @return array<string, mixed>
+     */
+    public function adminPrivacyRequestSearch(array $request): array
+    {
+        $page = [
+            'pageSize' => $this->contract->privacyRequests->searchPageSize,
+            'hasMore' => false,
+            'nextCursor' => null,
+        ];
+
+        if (($request['mode'] ?? null) === 'reference') {
+            $reference = \is_string($request['reference'] ?? null) ? $request['reference'] : '';
+            if (!\in_array($reference, [self::REFERENCE, 'XG73-UVK9'], true)) {
+                throw new BookingNotFoundException($reference);
+            }
+
+            return ['matches' => [$this->privacyMatch($reference)], 'page' => $page];
+        }
+
+        $email = \is_string($request['email'] ?? null) ? mb_strtolower($request['email']) : '';
+
+        return [
+            'matches' => $email === 'cliente@example.test' ? [$this->privacyMatch(self::REFERENCE)] : [],
+            'page' => $page,
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public function adminPrivacyRequests(array $request): array
+    {
+        if (($request['mode'] ?? null) === 'detail') {
+            $id = \is_int($request['id'] ?? null) ? $request['id'] : 0;
+            if ($id !== 1) {
+                throw new PrivacyRequestNotFoundException($id);
+            }
+
+            return ['request' => $this->privacyRequest(1, 'access', '2026-06-13', [self::REFERENCE])];
+        }
+
+        return [
+            'requests' => [
+                $this->privacyRequest(2, 'erasure', '2026-06-01', [], 'closed'),
+                $this->privacyRequest(1, 'access', '2026-06-13', [self::REFERENCE]),
+            ],
+            'page' => [
+                'pageSize' => $this->contract->privacyRequests->historyPageSize,
+                'hasMore' => false,
+                'nextCursor' => null,
+            ],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public function adminRecordPrivacyRequest(array $request): array
+    {
+        $type = \is_string($request['type'] ?? null) ? $request['type'] : '';
+        if (!$this->contract->privacyRequests->acceptsType($type)) {
+            throw new BookingValidationException('type', 'Privacy request type is not one of the frozen V1 types.');
+        }
+        $references = \is_array($request['bookingReferences'] ?? null) ? $request['bookingReferences'] : [];
+        foreach ($references as $reference) {
+            if (!\is_string($reference) || !\in_array($reference, [self::REFERENCE, 'XG73-UVK9'], true)) {
+                throw new BookingNotFoundException(\is_string($reference) ? $reference : '');
+            }
+        }
+        $received = \is_string($request['receivedDate'] ?? null) ? $request['receivedDate'] : '2026-06-13';
+
+        return ['request' => $this->privacyRequest(3, $type, $received, array_values($references))];
+    }
+
+    /** @return array<string, mixed> */
+    private function privacyMatch(string $reference): array
+    {
+        return [
+            'reference' => $reference,
+            'serviceKeys' => ['brows'],
+            'state' => 'confirmed',
+            'startsAtUtc' => '2026-06-15T07:00:00.000Z',
+            'endsAtUtc' => '2026-06-15T07:30:00.000Z',
+            'customerName' => 'Cliente Exemple',
+        ];
+    }
+
+    /**
+     * @param list<string> $references
+     * @return array<string, mixed>
+     */
+    private function privacyRequest(
+        int $id,
+        string $type,
+        string $received,
+        array $references,
+        string $status = 'received',
+    ): array {
+        $deadline = PrivacyRequestDeadline::from(
+            BookingRequestFields::date($received, 'receivedDate'),
+            $this->contract->privacyRequests->deadlineMonths,
+        );
+
+        return [
+            'id' => $id,
+            'type' => $type,
+            'status' => $status,
+            'receivedDate' => $received,
+            'deadlineDate' => $deadline->format('Y-m-d'),
+            'closedAtUtc' => $status === 'closed' ? '2026-06-10T09:00:00.000Z' : null,
+            'bookingReferences' => $references,
+            'createdAt' => '2026-06-13T12:00:00.000Z',
+            'updatedAt' => '2026-06-13T12:00:00.000Z',
+        ];
     }
 
     /** @return array<string, mixed> */

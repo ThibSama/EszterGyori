@@ -6,6 +6,7 @@ namespace Eszter\Booking;
 
 use Eszter\Contract\ContractArtifactException;
 use Eszter\Contract\ContractArtifacts;
+use Eszter\Privacy\PrivacyRequestPolicy;
 
 /**
  * The generated Package 4.1/4.2 booking contract, consumed rather than restated.
@@ -96,6 +97,12 @@ final class BookingDomainContract
         public readonly string $referenceAlphabet,
         public readonly int $referenceSignificantCharacters,
         public readonly int $referenceGenerationMaxAttempts,
+        /**
+         * ESZ-163 — the GDPR request register policy, read from the same
+         * document so the register and the booking domain can never be
+         * built from two generations of the artifact.
+         */
+        public readonly PrivacyRequestPolicy $privacyRequests,
     ) {
     }
 
@@ -186,6 +193,7 @@ final class BookingDomainContract
             self::string($currentReference, 'alphabet'),
             self::positiveInt($currentReference, 'significantCharacters'),
             self::positiveInt($currentReference, 'generationMaxAttempts'),
+            PrivacyRequestPolicy::fromDocument($document),
         );
     }
 

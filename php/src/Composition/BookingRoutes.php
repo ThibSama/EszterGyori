@@ -13,6 +13,9 @@ use Eszter\Http\Endpoint\AdminBookingMoveAvailabilityEndpoint;
 use Eszter\Http\Endpoint\AdminBookingsMutationEndpoint;
 use Eszter\Http\Endpoint\AdminBookingsQueryEndpoint;
 use Eszter\Http\Endpoint\AdminBookingsSummaryEndpoint;
+use Eszter\Http\Endpoint\AdminPrivacyRequestSearchEndpoint;
+use Eszter\Http\Endpoint\AdminPrivacyRequestsMutationEndpoint;
+use Eszter\Http\Endpoint\AdminPrivacyRequestsQueryEndpoint;
 use Eszter\Http\Endpoint\AdminServicesMutationEndpoint;
 use Eszter\Http\Endpoint\AdminServicesQueryEndpoint;
 use Eszter\Http\Endpoint\PublicBookableServicesEndpoint;
@@ -30,8 +33,8 @@ use Eszter\Http\Router;
  * only ever answer 500, so they are not routed at all.
  *
  * The admin half — query, mutation, move-availability, summary, the
- * availability editor (ESZ-063/064/065, ESZ-152 constraints) and the service
- * catalog (ESZ-149) — is gated on the same condition as
+ * availability editor (ESZ-063/064/065, ESZ-152 constraints), the service
+ * catalog (ESZ-149) and the GDPR request register (ESZ-163) — is gated on the same condition as
  * every other admin surface: an authenticated session must exist. This
  * composer therefore receives the {@see AuthenticatedServices} bundle when the
  * root wired an authenticated surface and `null` otherwise, and registers the
@@ -128,6 +131,21 @@ final class BookingRoutes
             'PATCH',
             AdminServicesMutationEndpoint::PATH,
             new AdminServicesMutationEndpoint(...$admin),
+        );
+        $router->register(
+            'POST',
+            AdminPrivacyRequestSearchEndpoint::PATH,
+            new AdminPrivacyRequestSearchEndpoint(...$admin),
+        );
+        $router->register(
+            'POST',
+            AdminPrivacyRequestsQueryEndpoint::PATH,
+            new AdminPrivacyRequestsQueryEndpoint(...$admin),
+        );
+        $router->register(
+            'POST',
+            AdminPrivacyRequestsMutationEndpoint::PATH,
+            new AdminPrivacyRequestsMutationEndpoint(...$admin),
         );
     }
 }

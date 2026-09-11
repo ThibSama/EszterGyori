@@ -1,0 +1,108 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "title": "AdminPrivacyRequestSearchResponse",
+  "description": "The matched bookings the administrator selects from, bounded, with hasMore and a typed cursor.",
+  "x-eszter-io": "output",
+  "x-eszter-contentSchemaVersion": 1,
+  "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "matches": {
+      "maxItems": 20,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "reference": {
+            "type": "string",
+            "pattern": "^(bk_[0-9a-f]{32}|[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})$"
+          },
+          "serviceKeys": {
+            "minItems": 1,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{1,63}$"
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "confirmed",
+              "cancelled"
+            ]
+          },
+          "startsAtUtc": {
+            "type": "string"
+          },
+          "endsAtUtc": {
+            "type": "string"
+          },
+          "customerName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "required": [
+          "reference",
+          "serviceKeys",
+          "state",
+          "startsAtUtc",
+          "endsAtUtc",
+          "customerName"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "page": {
+      "type": "object",
+      "properties": {
+        "pageSize": {
+          "type": "number",
+          "const": 20
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "startsAtUtc": {
+                  "type": "string"
+                },
+                "reference": {
+                  "type": "string",
+                  "pattern": "^(bk_[0-9a-f]{32}|[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})$"
+                }
+              },
+              "required": [
+                "startsAtUtc",
+                "reference"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "pageSize",
+        "hasMore",
+        "nextCursor"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "matches",
+    "page"
+  ],
+  "additionalProperties": false
+}

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAdminSession } from "./admin-session-provider";
 import { AdminOperationsSummary } from "./admin-operations-summary";
+import { AdminPrivacyCentre } from "./admin-privacy-centre";
 import { adminNavItem, type AdminNavItem } from "../../lib/admin-navigation";
 import { describeDate, toDrafts } from "../../lib/admin-availability";
 import {
@@ -43,6 +44,12 @@ import type { AdminApiFailure } from "../../lib/admin-api";
  * today" and "the request failed" are different facts about the business, and an
  * overview that blurs them is worse than one that admits it does not know.
  *
+ * The `Traitement RGPD` block (ESZ-163) is the one exception to "this page
+ * only reports": it opens two modals — a new data-subject request and the
+ * register's history — and lives in {@link AdminPrivacyCentre}, its own
+ * section beside `Accès rapides`, never a navigation entry. The overview
+ * itself still mutates nothing.
+ *
  * No price, revenue, accounting or commercial metric appears here, and none can:
  * the admin API serves no such data, so any number of that kind would be
  * invented. There is no decorative copy either — every line answers an
@@ -73,6 +80,10 @@ export function AdminOverview() {
         <div className="mx-auto grid max-w-[1500px] gap-5 lg:grid-cols-2">
           <TodayHoursPanel today={today} />
           <SiteStatePanel />
+        </div>
+
+        <div className="mx-auto mt-5 max-w-[1500px]">
+          <AdminPrivacyCentre />
         </div>
 
         <div className="mx-auto mt-5 max-w-[1500px]">

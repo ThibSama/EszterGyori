@@ -103,4 +103,31 @@ interface BookingApi
      * @return array<string, mixed>
      */
     public function adminMutateService(array $request): array;
+
+    /**
+     * ESZ-163 — resolves a GDPR requester's scope: one booking by reference,
+     * or one page of the live bookings a customer e-mail names.
+     *
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function adminPrivacyRequestSearch(array $request): array;
+
+    /**
+     * ESZ-163 — reads the GDPR request register: one history page or one
+     * record by id.
+     *
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function adminPrivacyRequests(array $request): array;
+
+    /**
+     * ESZ-163 — records one reviewed GDPR request. Writes the register only:
+     * no booking or customer row changes and nothing is exported.
+     *
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function adminRecordPrivacyRequest(array $request): array;
 }

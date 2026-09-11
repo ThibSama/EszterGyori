@@ -18,6 +18,7 @@ use Eszter\Config\DatabaseSettings;
 use Eszter\Database\Database;
 use Eszter\Notification\NotificationPolicy;
 use Eszter\Booking\BookingDomainContract;
+use Eszter\Privacy\PrivacyRequestAdministration;
 use Eszter\Support\FrozenClock;
 use Eszter\Tests\TestEnvironment;
 use PHPUnit\Framework\TestCase;
@@ -33,8 +34,9 @@ final class BookingApiCompositionTest extends TestCase
 {
     /**
      * The frozen booking surface (ESZ-105/ESZ-106): ten methods, plus the two
-     * catalog-administration methods ESZ-149 adds and the planning-constraint
-     * mutation ESZ-152 adds to availability administration.
+     * catalog-administration methods ESZ-149 adds, the planning-constraint
+     * mutation ESZ-152 adds to availability administration and the three
+     * GDPR request-register methods ESZ-163 adds.
      */
     private const API_METHODS = [
         'services',
@@ -50,6 +52,9 @@ final class BookingApiCompositionTest extends TestCase
         'adminMutateAvailabilityConstraint',
         'adminServices',
         'adminMutateService',
+        'adminPrivacyRequestSearch',
+        'adminPrivacyRequests',
+        'adminRecordPrivacyRequest',
     ];
 
     /**
@@ -72,6 +77,9 @@ final class BookingApiCompositionTest extends TestCase
         'adminMutateAvailabilityConstraint' => [AvailabilityAdministration::class, 'availabilityAdministration'],
         'adminServices' => [BookingServiceAdministration::class, 'serviceAdministration'],
         'adminMutateService' => [BookingServiceAdministration::class, 'serviceAdministration'],
+        'adminPrivacyRequestSearch' => [PrivacyRequestAdministration::class, 'privacyRequests'],
+        'adminPrivacyRequests' => [PrivacyRequestAdministration::class, 'privacyRequests'],
+        'adminRecordPrivacyRequest' => [PrivacyRequestAdministration::class, 'privacyRequests'],
     ];
 
     /**
@@ -181,6 +189,11 @@ final class BookingApiCompositionTest extends TestCase
                 'adminMutateAvailabilityException',
                 'adminMutateAvailabilityConstraint',
             ],
+            PrivacyRequestAdministration::class => [
+                'adminPrivacyRequestSearch',
+                'adminPrivacyRequests',
+                'adminRecordPrivacyRequest',
+            ],
         ];
 
         foreach ($expectedSurfaces as $class => $publicMethods) {
@@ -206,6 +219,7 @@ final class BookingApiCompositionTest extends TestCase
             BookingLifecycle::class,
             BookingAdminReader::class,
             AvailabilityAdministration::class,
+            PrivacyRequestAdministration::class,
             BookingPayloads::class,
             BookingRequestFields::class,
             PdoBookingApi::class,

@@ -11,6 +11,10 @@
  * nothing can deliver from an erased row. Booking, history and notification
  * evidence are never deleted.
  *
+ * Since ESZ-163 the same run also purges the GDPR request register: closed
+ * requests whose closure is three years old or older are deleted with their
+ * selected references. Open requests are never age-purged.
+ *
  * Designed to be run from cron on a schedule the operator chooses (daily is
  * fine) and to be safe when two runs overlap: each booking is erased in its
  * own transaction under its row lock, with the eligibility and the erasure
@@ -46,6 +50,8 @@ use Eszter\Contract\ContractArtifacts;
 use Eszter\Database\Database;
 use Eszter\Notification\NotificationJobRepository;
 use Eszter\Notification\NotificationPolicy;
+use Eszter\Privacy\PrivacyRequestRepository;
+use Eszter\Privacy\PrivacyRequestRetention;
 use Eszter\Retention\BookingRetentionService;
 use Eszter\Retention\RetentionPolicy;
 use Eszter\Support\Logger;
@@ -83,11 +89,11 @@ function retentionMain(array $arguments): int
         $artifacts->verifyAll();
 
         $retentionPolicy = RetentionPolicy::fromArtifacts($artifacts);
-        // Loaded but unused directly: it proves the artifacts this run reads
-        // are the same generation the booking domain and notification policy
-        // were built from, and it fails loudly here rather than at the first
-        // row.
-        BookingDomainContract::fromArtifacts($artifacts);
+        // Loaded up front: it proves the artifacts this run reads are the
+        // same generation the booking domain and notification policy were
+        // built from, and it fails loudly here rather than at the first row.
+        // ESZ-163: the register's policy is part of the same document.
+        $bookingContract = BookingDomainContract::fromArtifacts($artifacts);
         NotificationPolicy::fromArtifacts($artifacts);
 
         $batch = retentionBatch($options, BookingRetentionService::DEFAULT_BATCH_SIZE);
@@ -113,8 +119,16 @@ function retentionMain(array $arguments): int
             new NotificationJobRepository($database, $clock, NotificationPolicy::fromArtifacts($artifacts)),
         );
 
+        // ESZ-163: the register's three-year purge, in the same daily run.
+        $privacyRetention = new PrivacyRequestRetention(
+            new PrivacyRequestRepository($database, $clock, $bookingContract->privacyRequests),
+            $clock,
+            $bookingContract->privacyRequests,
+        );
+
         $started = hrtime(true);
         $result = $service->applyEligible($batch);
+        $purge = $privacyRetention->purgeExpired($batch);
         $durationMs = (int) round((hrtime(true) - $started) / 1_000_000);
 
         // Stdout is the operator's record and cron's mail: counts and the
@@ -124,6 +138,7 @@ function retentionMain(array $arguments): int
         fwrite(STDOUT, "scanned: " . $result['eligible'] . "\n");
         fwrite(STDOUT, "erased:  " . $result['erased'] . "\n");
         fwrite(STDOUT, "retired: " . $result['retired'] . "\n");
+        fwrite(STDOUT, "privacy requests purged: " . $purge['purged'] . "\n");
 
         $logger->log('info', 'retention.run.completed', [
             'status' => 'completed',
@@ -131,6 +146,8 @@ function retentionMain(array $arguments): int
             'eligible' => $result['eligible'],
             'erased' => $result['erased'],
             'retired' => $result['retired'],
+            'privacyRequestsPurged' => $purge['purged'],
+            'privacyRequestsCutoffUtc' => $purge['cutoffUtc'],
             'durationMs' => $durationMs,
         ]);
 

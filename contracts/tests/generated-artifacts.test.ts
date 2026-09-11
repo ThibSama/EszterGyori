@@ -13,6 +13,9 @@ import {
   ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
   ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
   ADMIN_SERVICES_PATH,
+  ADMIN_PRIVACY_REQUESTS_PATH,
+  ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
+  ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
   ADMIN_AVAILABILITY_WEEKLY_PATH,
   ADMIN_BOOKINGS_SUMMARY_PATH,
   BOOKING_LOCAL_TIME_PATTERN,
@@ -56,6 +59,12 @@ import {
   bookingSerializationPolicy,
   bookingStateTransitions,
   bookingStates,
+  PRIVACY_REQUEST_CLOSED_RETENTION_YEARS,
+  PRIVACY_REQUEST_DEADLINE_MONTHS,
+  privacyRequestPolicy,
+  privacyRequestStatusTransitions,
+  privacyRequestStatuses,
+  privacyRequestTypes,
 } from "../booking.js";
 
 /**
@@ -215,7 +224,7 @@ test("the generated booking domain freezes service identity, timezone and states
   );
   assert.match(booking.adminViews.rangeRead.hasMore, /pageSize\+1/);
   assert.match(booking.adminViews.summary.counts, /aggregation/);
-  assert.equal(booking.version, 12, "adding a policy block is a domain version bump");
+  assert.equal(booking.version, 13, "adding a policy block is a domain version bump");
 
   // ESZ-146: the serialization block freezes byte-for-byte, the way the SQL
   // layer enforces it — booking create/move/cancel, every availability
@@ -244,7 +253,7 @@ test("the generated booking domain freezes the Package 7.1 notification policy",
   // The whole block, byte for byte. PHP reads this file rather than a second
   // copy of these constants, so anything that drifts here drifts everywhere.
   assert.deepEqual(document.notifications, notificationPolicy);
-  assert.equal(document.version, 12, "adding a policy block is a domain version bump");
+  assert.equal(document.version, 13, "adding a policy block is a domain version bump");
 
   // ESZ-142: the consent-notice catalog (immutable entries with their exact
   // French text, the bounded-ASCII id pattern and the current pointer) is
@@ -411,6 +420,9 @@ test("the generated HTTP contract carries every frozen case", async () => {
       "/api/admin/content/publish",
       "/api/admin/content/reset",
       "/api/admin/media",
+      "/api/admin/privacy-requests",
+      "/api/admin/privacy-requests/query",
+      "/api/admin/privacy-requests/search",
       "/api/admin/services",
       "/api/auth/login",
       "/api/auth/logout",
@@ -521,6 +533,10 @@ test("the generated HTTP contract freezes availability administration and the su
   assert.equal(contract.booking?.paths?.adminSummary, ADMIN_BOOKINGS_SUMMARY_PATH);
   // ESZ-149: the catalog administration surface is frozen beside availability.
   assert.equal(contract.booking?.paths?.adminServices, ADMIN_SERVICES_PATH);
+  // ESZ-163: the GDPR request register is three authenticated routes.
+  assert.equal(contract.booking?.paths?.adminPrivacyRequests, ADMIN_PRIVACY_REQUESTS_PATH);
+  assert.equal(contract.booking?.paths?.adminPrivacyRequestsQuery, ADMIN_PRIVACY_REQUESTS_QUERY_PATH);
+  assert.equal(contract.booking?.paths?.adminPrivacyRequestSearch, ADMIN_PRIVACY_REQUEST_SEARCH_PATH);
 
   // The whole point of the PUT shape: say so in the artifact, not only in a
   // comment the server can drift away from.
@@ -1132,4 +1148,118 @@ test("ESZ-084: the rate-limit policy is frozen, deterministic and store-backed",
     contract.rateLimit.buckets["auth.login.identity"].limit >
       contract.rateLimit.buckets["auth.login.address"].limit,
   );
+});
+
+test("ESZ-163: the generated booking domain freezes the GDPR request register", async () => {
+  const document = JSON.parse(await readGenerated("booking-domain.json")) as {
+    version: number;
+    privacyRequests?: typeof privacyRequestPolicy;
+  };
+
+  // The whole block, byte for byte: PHP reads this file for the types, the
+  // lifecycle, the deadline and the retention it enforces.
+  assert.deepEqual(document.privacyRequests, privacyRequestPolicy);
+
+  // The five frozen V1 types, and opposition is not one of them.
+  assert.deepEqual(
+    [...privacyRequestTypes],
+    ["access", "rectification", "erasure", "restriction", "portability"],
+  );
+  assert.equal((privacyRequestTypes as readonly string[]).includes("opposition"), false);
+
+  // The lifecycle is a straight line: received → in_progress → closed, and
+  // closed is terminal. No status is ever chosen from a selector.
+  assert.deepEqual([...privacyRequestStatuses], ["received", "in_progress", "closed"]);
+  assert.equal(document.privacyRequests?.statuses.initial, "received");
+  assert.deepEqual(privacyRequestStatusTransitions, {
+    received: ["in_progress"],
+    in_progress: ["closed"],
+    closed: [],
+  });
+  assert.match(document.privacyRequests?.statuses.rule ?? "", /never chosen/);
+  assert.match(document.privacyRequests?.statuses.rule ?? "", /closed_at_utc atomically/);
+
+  // One month to answer, three years of retention after closure, and open
+  // requests are never age-purged.
+  assert.equal(PRIVACY_REQUEST_DEADLINE_MONTHS, 1);
+  assert.equal(document.privacyRequests?.deadline.months, 1);
+  assert.match(document.privacyRequests?.deadline.rule ?? "", /clamped to the last day/);
+  assert.equal(PRIVACY_REQUEST_CLOSED_RETENTION_YEARS, 3);
+  assert.equal(document.privacyRequests?.retention.closedRetentionYears, 3);
+  assert.match(document.privacyRequests?.retention.rule ?? "", /never age-purged/);
+  assert.match(document.privacyRequests?.retention.path ?? "", /apply-booking-retention/);
+
+  // Data minimisation is a contract fact, not a habit.
+  const neverStored = document.privacyRequests?.register.neverStored ?? [];
+  assert.ok(neverStored.some((item) => /e-mail/.test(item)));
+  assert.ok(neverStored.some((item) => /message/.test(item)));
+  assert.ok(neverStored.some((item) => /identity document/.test(item)));
+  assert.match(document.privacyRequests?.scope.erasedBookings ?? "", /placeholder/);
+  assert.match(document.privacyRequests?.scope.explicitSelection ?? "", /never implies every booking/);
+  assert.match(document.privacyRequests?.recordingIsNotExecution ?? "", /no export/);
+});
+
+test("ESZ-163: the register's wire schemas store nothing about the requester", async () => {
+  const create = JSON.parse(
+    await readGenerated("admin-privacy-request-create-request.schema.json"),
+  ) as {
+    properties: Record<string, { enum?: string[] }>;
+    required: string[];
+    additionalProperties: boolean;
+  };
+  assert.deepEqual(Object.keys(create.properties).sort(), ["bookingReferences", "receivedDate", "type"]);
+  assert.deepEqual(create.required.sort(), ["bookingReferences", "receivedDate", "type"]);
+  assert.equal(create.additionalProperties, false, "a requester e-mail or message must be refused");
+  assert.deepEqual(create.properties.type?.enum, [...privacyRequestTypes]);
+
+  const record = JSON.parse(await readGenerated("admin-privacy-request-response.schema.json")) as {
+    properties: { request: { properties: Record<string, unknown>; additionalProperties: boolean } };
+  };
+  const stored = Object.keys(record.properties.request.properties).sort();
+  assert.deepEqual(stored, [
+    "bookingReferences",
+    "closedAtUtc",
+    "createdAt",
+    "deadlineDate",
+    "id",
+    "receivedDate",
+    "status",
+    "type",
+    "updatedAt",
+  ]);
+  assert.equal(record.properties.request.additionalProperties, false);
+
+  // The search request accepts both frozen reference shapes and an e-mail,
+  // and the cursor is the typed keyset continuation.
+  const search = JSON.parse(
+    await readGenerated("admin-privacy-request-search-request.schema.json"),
+  ) as { oneOf: Array<{ properties: Record<string, { pattern?: string; format?: string }> }> };
+  assert.match(search.oneOf[0]?.properties.reference?.pattern ?? "", /bk_\[0-9a-f\]\{32\}/);
+  assert.match(search.oneOf[0]?.properties.reference?.pattern ?? "", /\[A-HJ-NP-Z2-9\]\{4\}-/);
+  assert.equal(search.oneOf[1]?.properties.email?.format, "email");
+  assert.ok("cursor" in (search.oneOf[1]?.properties ?? {}));
+
+  // Every case of the three routes is present, and the create route is the
+  // only state change — the only one that carries CSRF.
+  const ids = httpContractCases.map((c) => c.id);
+  for (const id of [
+    "admin.privacyRequests.search.post.referenceOk",
+    "admin.privacyRequests.search.post.currentReferenceShapeOk",
+    "admin.privacyRequests.search.post.unknownReference",
+    "admin.privacyRequests.search.post.emailOk",
+    "admin.privacyRequests.search.post.erasedPlaceholderNeverMatches",
+    "admin.privacyRequests.query.post.historyOk",
+    "admin.privacyRequests.query.post.detailOk",
+    "admin.privacyRequests.post.ok",
+    "admin.privacyRequests.post.emptyScopeOk",
+    "admin.privacyRequests.post.oppositionIsNotAType",
+    "admin.privacyRequests.post.statusIsNeverAccepted",
+    "admin.privacyRequests.post.requesterEmailIsNeverAccepted",
+    "admin.privacyRequests.post.csrfOmitted",
+  ]) {
+    assert.ok(ids.includes(id), `${id} is missing from the contract cases`);
+  }
+  const csrfCase = httpContractCases.find((c) => c.id === "admin.privacyRequests.post.csrfOmitted");
+  assert.equal(csrfCase?.expect.status, 403);
+  assert.match(bookingApiPolicy.privacyRequests, /never accepted from the wire/);
 });

@@ -78,8 +78,16 @@
  * were made under them). The public reference becomes a short human-readable
  * `XXXX-XXXX` token (`publicReferences`) while every stored `bk_` reference
  * stays valid and resolvable unchanged.
+ *
+ * Version 13 (ESZ-163) adds the admin GDPR request register
+ * (`privacyRequests`): the five frozen V1 request types, the automatic
+ * three-state lifecycle, the one-month deadline derived from the reception
+ * date, the register's data-minimisation rule (no requester e-mail, message
+ * or identity document is ever stored — only selected booking references)
+ * and the three-year retention of closed records. Executing the rights
+ * themselves is ESZ-164's; this version freezes only the register.
  */
-export const BOOKING_DOMAIN_VERSION = 12;
+export const BOOKING_DOMAIN_VERSION = 13;
 
 /**
  * The business operates in metropolitan France. Rules are authored as local
@@ -946,6 +954,110 @@ export const customerDataRetentionPolicy = {
     "V1 product policy. Non-expired bookings are untouched; erased rows keep their identity and appointment facts; no booking, history or notification evidence is deleted.",
 } as const;
 
+
+/**
+ * ESZ-163 — the admin GDPR request register.
+ *
+ * The five V1 request types are frozen here and nowhere else: the wire enum,
+ * the database CHECK and the back-office labels all derive from this list.
+ * Opposition is deliberately absent — V1 does not offer it — and adding a
+ * type is a domain version bump, not an edit.
+ */
+export const privacyRequestTypes = [
+  "access",
+  "rectification",
+  "erasure",
+  "restriction",
+  "portability",
+] as const;
+export type PrivacyRequestType = (typeof privacyRequestTypes)[number];
+
+/**
+ * The automatic lifecycle. There is no free status selector anywhere: a
+ * record is `received` when it is created, becomes `in_progress` when the
+ * execution of the right starts (ESZ-164) and `closed` only when that action
+ * completes, which sets the closure instant in the same write.
+ */
+export const privacyRequestStatuses = ["received", "in_progress", "closed"] as const;
+export type PrivacyRequestStatus = (typeof privacyRequestStatuses)[number];
+export const PRIVACY_REQUEST_INITIAL_STATUS: PrivacyRequestStatus = "received";
+export const privacyRequestStatusTransitions = {
+  received: ["in_progress"],
+  in_progress: ["closed"],
+  closed: [],
+} as const satisfies Record<PrivacyRequestStatus, readonly PrivacyRequestStatus[]>;
+
+/** The answer is due one calendar month after the reception date. */
+export const PRIVACY_REQUEST_DEADLINE_MONTHS = 1;
+/** A closed record is kept three years after its closure, then purged. */
+export const PRIVACY_REQUEST_CLOSED_RETENTION_YEARS = 3;
+/** One page of an e-mail scope search; completeness is always on the wire. */
+export const PRIVACY_REQUEST_SEARCH_PAGE_SIZE = 20;
+/** One page of the register's history. */
+export const PRIVACY_REQUEST_HISTORY_PAGE_SIZE = 50;
+/** The most booking references one recorded request may name. */
+export const PRIVACY_REQUEST_MAX_BOOKING_REFERENCES = 50;
+
+export const privacyRequestPolicy = {
+  types: privacyRequestTypes,
+  statuses: {
+    values: privacyRequestStatuses,
+    initial: PRIVACY_REQUEST_INITIAL_STATUS,
+    transitions: privacyRequestStatusTransitions,
+    rule:
+      "Statuses are automatic, never chosen. Creation stores received; ESZ-164 moves a record to in_progress when the execution of the right starts and to closed only when the action completes, writing closed_at_utc atomically in the same statement. A record never goes backwards and closed is terminal.",
+  },
+  deadline: {
+    months: PRIVACY_REQUEST_DEADLINE_MONTHS,
+    rule:
+      "deadlineDate is derived from receivedDate: the same day of the month one calendar month later, clamped to the last day of that month when the day does not exist (2026-01-31 → 2026-02-28). It is stored beside the reception date so the register can be read without recomputing it, and it never moves after creation.",
+  },
+  register: {
+    stored: [
+      "internal id (never shown to a requester)",
+      "request type (one of types)",
+      "reception date (editable before creation, defaulting to today)",
+      "status and closure instant",
+      "the explicitly selected booking references, in the order they were selected",
+      "creation and update instants",
+    ],
+    neverStored: [
+      "the requester's e-mail address",
+      "the free-form message of the request",
+      "any identity document",
+      "any copy of booking customer data (name, e-mail, phone, note)",
+    ],
+    minimisation:
+      "The register names bookings by reference only. Everything about the customer stays in the booking rows it already lives in, under ESZ-140 retention; a purge of the register never touches a booking and an erasure of a booking never touches the register.",
+  },
+  scope: {
+    identification:
+      "The requester is identified by a public booking reference (current XXXX-XXXX or legacy bk_ shape, exactly one booking) or by an e-mail address (every live booking whose stored e-mail matches, case-insensitively, one bounded page at a time with hasMore and a typed continuation cursor so a match is never silently dropped).",
+    erasedBookings:
+      "An e-mail search never matches an erased booking: rows carrying customer_data_erased_at are excluded before the e-mail is compared, so the frozen placeholder address can never reconnect anonymised bookings to one another or to a requester.",
+    explicitSelection:
+      "Recording a request stores exactly the references the administrator ticked in the scope review. A shared e-mail never implies every booking: the search lists matches, the administrator selects, and an empty selection is recorded only after an explicit confirmation that no booking is concerned.",
+    validation:
+      "Every selected reference must resolve to a stored, non-erased booking at record time (404 NOT_FOUND otherwise); duplicates are refused and the list is bounded at maxBookingReferences.",
+    searchPageSize: PRIVACY_REQUEST_SEARCH_PAGE_SIZE,
+    maxBookingReferences: PRIVACY_REQUEST_MAX_BOOKING_REFERENCES,
+  },
+  history: {
+    pageSize: PRIVACY_REQUEST_HISTORY_PAGE_SIZE,
+    ordering:
+      "Newest first by internal id, the register's own monotonic key; the continuation cursor {id} names the last exposed record and the next page begins strictly before it.",
+  },
+  retention: {
+    closedRetentionYears: PRIVACY_REQUEST_CLOSED_RETENTION_YEARS,
+    rule:
+      "A closed record is purged, with its selected references, once closed_at_utc is at least closedRetentionYears years in the past. received and in_progress records are never age-purged: an open request is evidence of an obligation, whatever its age.",
+    path:
+      "The purge runs inside the existing daily retention sweep (php bin/apply-booking-retention.php), after the booking erasure, and reports a count only.",
+  },
+  recordingIsNotExecution:
+    "ESZ-163 records the reviewed scope and nothing else: no export, no rectification, no anonymisation, no restriction and no notification change happens when a request is recorded. Those actions are ESZ-164's, and they are what move a record through in_progress to closed.",
+} as const;
+
 export const bookingDomainContract = {
   version: BOOKING_DOMAIN_VERSION,
   scope: "Package 4.1/4.2 booking domain and dynamic slot computation; no booking HTTP API.",
@@ -1170,4 +1282,5 @@ export const bookingDomainContract = {
   privacyNotices: bookingPrivacyNoticePolicy,
   publicReferences: bookingPublicReferencePolicy,
   customerDataRetention: customerDataRetentionPolicy,
+  privacyRequests: privacyRequestPolicy,
 } as const;
