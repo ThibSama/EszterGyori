@@ -18,8 +18,11 @@ import {
   BOOKING_MINIMUM_LEAD_MAX_MINUTES,
   BOOKING_TIME_RULES_SETTING_KEY,
   BOOKING_TIME_ZONE,
+  PLANNING_CONSTRAINT_MAX_DAYS,
   bookingConsentNoticeIds,
   bookingStates,
+  planningConstraintEnforcements,
+  planningConstraintKinds,
 } from "./booking.js";
 
 /**
@@ -106,6 +109,16 @@ export const ADMIN_AVAILABILITY_QUERY_PATH = "/api/admin/availability/query";
 export const ADMIN_AVAILABILITY_WEEKLY_PATH = "/api/admin/availability/weekly";
 export const ADMIN_AVAILABILITY_EXCEPTIONS_PATH =
   "/api/admin/availability/exceptions";
+/**
+ * ESZ-152 — pauses, unavailability, closures and leave. The same shape as
+ * `/exceptions`: a PATCH carrying its action (create, update, remove) on the
+ * availability administration surface, under the same revision. It is a
+ * fourth route of that surface rather than more actions on `/exceptions`,
+ * because a constraint is addressed by its id and may span several dates,
+ * while an exception is addressed by — and is the whole of — one date.
+ */
+export const ADMIN_AVAILABILITY_CONSTRAINTS_PATH =
+  "/api/admin/availability/constraints";
 
 /**
  * The service catalog administration surface (ESZ-149).
@@ -1132,6 +1145,33 @@ export const adminAvailabilityExceptionSchema = z
   })
   .strict();
 
+/**
+ * ESZ-152 — one planning constraint as stored and returned. `enforcement` is
+ * a property of `kind` (a pause is flexible, everything else strict) and is
+ * carried explicitly so no reader has to know the kinds to tell a preference
+ * from a blocker. Timed kinds (pause, unavailability) have `startDate ===
+ * endDate` and a wall-time window; all-day kinds (closure, leave) have null
+ * times and an inclusive date range.
+ */
+const planningConstraintFields = {
+  kind: z.enum(planningConstraintKinds),
+  startDate: bookingLocalDateSchema,
+  endDate: bookingLocalDateSchema,
+  startLocal: bookingLocalTimeSchema.nullable(),
+  endLocal: bookingLocalTimeSchema.nullable(),
+  foldUtcOffset: bookingFoldOffsetSchema,
+  reason: z.string().trim().max(ADMIN_AVAILABILITY_NOTE_MAX_LENGTH).nullable(),
+};
+
+export const adminPlanningConstraintSchema = z
+  .object({
+    id: z.number().int().positive(),
+    enforcement: z.enum(planningConstraintEnforcements),
+    ...planningConstraintFields,
+    reason: z.string().max(ADMIN_AVAILABILITY_NOTE_MAX_LENGTH).nullable(),
+  })
+  .strict();
+
 export const adminAvailabilityQueryRequestSchema = z
   .object({
     fromDate: bookingLocalDateSchema,
@@ -1148,6 +1188,8 @@ export const adminAvailabilityResponseSchema = z
     weeklyRules: z.array(adminAvailabilityWeeklyRuleSchema),
     exceptions: z.array(adminAvailabilityExceptionSchema),
     bookingTimeRules: bookingTimeRulesSchema,
+    /** ESZ-152 — every constraint whose date range touches the requested window. */
+    constraints: z.array(adminPlanningConstraintSchema),
   })
   .strict();
 
@@ -1192,6 +1234,65 @@ export const adminAvailabilityExceptionResponseSchema = z
   .object({
     revision: availabilityRevisionSchema,
     exception: adminAvailabilityExceptionSchema.nullable(),
+  })
+  .strict();
+
+const adminPlanningConstraintCreateSchema = z
+  .object({
+    action: z.literal("create"),
+    expectedRevision: availabilityRevisionSchema,
+    ...planningConstraintFields,
+  })
+  .strict();
+
+const adminPlanningConstraintUpdateSchema = z
+  .object({
+    action: z.literal("update"),
+    expectedRevision: availabilityRevisionSchema,
+    id: z.number().int().positive(),
+    ...planningConstraintFields,
+  })
+  .strict();
+
+const adminPlanningConstraintRemoveSchema = z
+  .object({
+    action: z.literal("remove"),
+    expectedRevision: availabilityRevisionSchema,
+    id: z.number().int().positive(),
+  })
+  .strict();
+
+export const adminAvailabilityConstraintMutationRequestSchema = z.discriminatedUnion("action", [
+  adminPlanningConstraintCreateSchema,
+  adminPlanningConstraintUpdateSchema,
+  adminPlanningConstraintRemoveSchema,
+]);
+
+/**
+ * One confirmed appointment a strict constraint overlaps. Enough to name it
+ * on a warning — reference, customer, interval — and nothing that would make
+ * the warning a second booking read.
+ */
+export const adminPlanningConstraintConflictSchema = z
+  .object({
+    reference: bookingReferenceSchema,
+    customerName: z.string().min(1).max(160),
+    startsAtUtc: isoTimestampSchema,
+    endsAtUtc: isoTimestampSchema,
+  })
+  .strict();
+
+/**
+ * `constraint` is null after a removal, and only after a removal. `conflicts`
+ * lists the confirmed appointments a *strict* constraint overlaps as stored;
+ * it is empty for a flexible pause and after a removal. The appointments
+ * listed are warned about, never altered.
+ */
+export const adminAvailabilityConstraintResponseSchema = z
+  .object({
+    revision: availabilityRevisionSchema,
+    constraint: adminPlanningConstraintSchema.nullable(),
+    conflicts: z.array(adminPlanningConstraintConflictSchema),
   })
   .strict();
 
@@ -1457,6 +1558,25 @@ export const availabilityAdminPolicy = {
       "A minimum lead outside 0 to the public horizon in minutes.",
       "A preferred finish that is not a local HH:MM wall time or null.",
       "A maximum overrun outside 0 to the longest service duration in minutes.",
+    ],
+  },
+  planningConstraints: {
+    path: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+    maxDays: PLANNING_CONSTRAINT_MAX_DAYS,
+    rule:
+      "ESZ-152 — PATCH carries create, update or remove with the same expectedRevision the weekly and exception writes contend on; every write takes the ESZ-146 serialization boundary first and advances the revision exactly once. Both availability reads return every stored constraint whose inclusive date range touches the requested window beside the schedule. The server alone decides what a strict constraint blocks; the week grid may label and style constraints but never decides slot bookability from them.",
+    flexible:
+      "A pause is stored, returned and drawn, and removes no public slot: the public availability read, the move-availability read and transactional revalidation ignore it.",
+    strict:
+      "unavailability, closure and leave block overlapping new slots in the public read, the move read and transactional revalidation alike — as blocking intervals beside the occupied ones, in the one slot engine.",
+    conflicts:
+      "A strict create or update whose interval overlaps confirmed appointments succeeds and lists them in conflicts (reference, customer name, UTC interval) so the operator is warned. Those appointments keep their times, state and history unchanged; nothing is moved or cancelled by a constraint write, and a later edit or removal changes future bookability only.",
+    refusals: [
+      "A timed kind (pause, unavailability) without both times, with an end not strictly after its start, or with startDate different from endDate.",
+      "An all-day kind (closure, leave) carrying a time or a fold offset.",
+      "An endDate earlier than startDate, or a range longer than maxDays.",
+      "A timed boundary inside the spring-forward gap, or an ambiguous autumn wall time without its fold offset.",
+      "An update or removal naming an id that does not exist: 404 NOT_FOUND.",
     ],
   },
   weeklyRefusals: [
@@ -2575,6 +2695,7 @@ export const contractBodyMatchers = [
   "adminAvailabilityResponse",
   "adminAvailabilityWeeklyResponse",
   "adminAvailabilityExceptionResponse",
+  "adminAvailabilityConstraintResponse",
   "adminServicesResponse",
   "adminServiceResponse",
   "empty",
@@ -2706,6 +2827,7 @@ export interface HttpContractCase {
     | "/api/admin/availability/query"
     | "/api/admin/availability/weekly"
     | "/api/admin/availability/exceptions"
+    | "/api/admin/availability/constraints"
     | "/api/admin/services"
     | "unknown";
   description: string;
@@ -4964,6 +5086,146 @@ export const httpContractCases: HttpContractCase[] = [
     endpoint: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
     description: "An authenticated exception mutation without CSRF is rejected before parsing.",
     request: { method: "PATCH", path: ADMIN_AVAILABILITY_EXCEPTIONS_PATH, rawBody: "{invalid" },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 403, body: "errorEnvelope", errorCode: "CSRF_TOKEN_INVALID" },
+  },
+  {
+    id: "admin.availability.constraints.patch.createPauseOk",
+    endpoint: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+    description:
+      "ESZ-152 — a pause is a flexible planning preference: stored and returned with enforcement flexible, it lists no conflicts and blocks nothing.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"create","expectedRevision":0,"kind":"pause","startDate":"2026-08-18","endDate":"2026-08-18","startLocal":"12:30","endLocal":"13:30","foldUtcOffset":null,"reason":"Déjeuner"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminAvailabilityConstraintResponse" },
+  },
+  {
+    id: "admin.availability.constraints.patch.createUnavailabilityOk",
+    endpoint: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+    description:
+      "ESZ-152 — a timed unavailability is strict: it is stored with enforcement strict and the response lists the confirmed appointments it overlaps, which stay unchanged.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"create","expectedRevision":0,"kind":"unavailability","startDate":"2026-06-17","endDate":"2026-06-17","startLocal":"09:00","endLocal":"11:00","foldUtcOffset":null,"reason":null}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminAvailabilityConstraintResponse" },
+  },
+  {
+    id: "admin.availability.constraints.patch.createLeaveOk",
+    endpoint: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+    description:
+      "ESZ-152 — leave spans an inclusive date range with no times and blocks every day of it.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"create","expectedRevision":0,"kind":"leave","startDate":"2026-08-03","endDate":"2026-08-16","startLocal":null,"endLocal":null,"foldUtcOffset":null,"reason":"Vacances"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminAvailabilityConstraintResponse" },
+  },
+  {
+    id: "admin.availability.constraints.patch.updateOk",
+    endpoint: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+    description:
+      "ESZ-152 — an update replaces every field of one constraint by id, under the same revision; the reason is optional.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"update","expectedRevision":0,"id":1,"kind":"closure","startDate":"2026-08-24","endDate":"2026-08-25","startLocal":null,"endLocal":null,"foldUtcOffset":null,"reason":null}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminAvailabilityConstraintResponse" },
+  },
+  {
+    id: "admin.availability.constraints.patch.removeOk",
+    endpoint: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+    description:
+      "ESZ-152 — removal returns a null constraint and no conflicts; it deletes no booking and changes future bookability only.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"remove","expectedRevision":0,"id":1}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminAvailabilityConstraintResponse" },
+  },
+  {
+    id: "admin.availability.constraints.patch.staleRevision",
+    endpoint: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+    description:
+      "ESZ-152 — a stale constraint write is 409 REVISION_CONFLICT against the same revision the weekly and exception writes use.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"remove","expectedRevision":1,"id":1}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 409, body: "errorEnvelope", errorCode: "REVISION_CONFLICT" },
+  },
+  {
+    id: "admin.availability.constraints.patch.unknownId",
+    endpoint: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+    description: "ESZ-152 — removing a constraint that does not exist is 404 NOT_FOUND, and the revision does not advance.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"remove","expectedRevision":0,"id":404}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 404, body: "errorEnvelope", errorCode: "NOT_FOUND" },
+  },
+  {
+    id: "admin.availability.constraints.patch.invertedRange",
+    endpoint: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+    description: "ESZ-152 — leave whose end precedes its start is refused; nothing is written.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"create","expectedRevision":0,"kind":"leave","startDate":"2026-08-16","endDate":"2026-08-03","startLocal":null,"endLocal":null,"foldUtcOffset":null,"reason":null}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.availability.constraints.patch.timedKindWithoutTimes",
+    endpoint: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+    description:
+      "ESZ-152 — a partial unavailability without its window is refused rather than silently stored as a whole-day closure; a closure is its own explicit kind.",
+    request: {
+      method: "PATCH",
+      path: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"create","expectedRevision":0,"kind":"unavailability","startDate":"2026-08-18","endDate":"2026-08-18","startLocal":null,"endLocal":null,"foldUtcOffset":null,"reason":null}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.availability.constraints.patch.unauthenticated",
+    endpoint: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+    description: "Anonymous callers cannot block the calendar, and are refused before the body is read.",
+    request: { method: "PATCH", path: ADMIN_AVAILABILITY_CONSTRAINTS_PATH, rawBody: "{invalid" },
+    auth: { session: "none", csrf: "omitted" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.availability.constraints.patch.csrfOmitted",
+    endpoint: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+    description: "An authenticated constraint mutation without CSRF is rejected before parsing.",
+    request: { method: "PATCH", path: ADMIN_AVAILABILITY_CONSTRAINTS_PATH, rawBody: "{invalid" },
     auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
     expect: { status: 403, body: "errorEnvelope", errorCode: "CSRF_TOKEN_INVALID" },
   },

@@ -435,7 +435,7 @@ test("a day column announces its availability in the words the editor uses", () 
     { kind: "closed" as const, windows: [] },
     { kind: "weekly" as const, windows: [{ startLocal: "09:00", endLocal: "12:00" }] },
     { kind: "exception" as const, windows: [{ startLocal: "14:00", endLocal: "16:00" }] },
-  ].map((availability) => ({ date: "2026-06-15", isToday: false, appointments: [], ...availability }));
+  ].map((availability) => ({ date: "2026-06-15", isToday: false, appointments: [], constraints: [], ...availability }));
 
   assert.equal(dayAvailabilityLabel(closed), "Fermé");
   assert.equal(dayAvailabilityLabel(weekly), "09:00 – 12:00");
@@ -470,10 +470,11 @@ test("the calendar opens on the week and owns availability without duplicating i
   assert.match(source, /useAvailabilityWorkspace\(visibleSpan\)/);
   assert.equal(source.match(/useAvailabilityWorkspace\(/g)?.length, 1, "one availability state, not two");
   assert.match(source, /fromDate: dates\[0\], untilDate: dates\[dates\.length - 1\]/);
-  assert.match(source, /weekPlan\(weekDates, availability\.rules, availability\.exceptions, bookings, today\)/);
+  // ESZ-152: constraints ride along as the sixth input — projected, never decided.
+  assert.match(source, /weekPlan\(weekDates, availability\.rules, availability\.exceptions, bookings, today, availability\.constraints\)/);
   assert.match(source, /isHourOpen\(hour, plan\.windows\)/);
   assert.doesNotMatch(source, /weekdayIso|validFrom|validUntil|isActive/, "no availability rule may be re-derived in the grid");
-  assert.doesNotMatch(source, /readAvailability|replaceWeeklyAvailability|mutateAvailabilityException/, "availability I/O belongs to the workspace");
+  assert.doesNotMatch(source, /readAvailability|replaceWeeklyAvailability|mutateAvailabilityException|mutateAvailabilityConstraint/, "availability I/O belongs to the workspace");
 
   // Availability is editable from the grid itself, and the editor is the one
   // that already exists rather than a second copy.

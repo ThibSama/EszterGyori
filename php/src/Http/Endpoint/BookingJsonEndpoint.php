@@ -8,6 +8,7 @@ use Eszter\Booking\BookableServiceNotFoundException;
 use Eszter\Booking\BookableServiceRevisionConflictException;
 use Eszter\Booking\BookingApi;
 use Eszter\Booking\BookingNotFoundException;
+use Eszter\Booking\PlanningConstraintNotFoundException;
 use Eszter\Booking\BookingRevisionConflictException;
 use Eszter\Booking\BookingValidationException;
 use Eszter\Booking\AvailabilityRevisionConflictException;
@@ -93,7 +94,11 @@ abstract class BookingJsonEndpoint
             );
         } catch (SlotUnavailableException $exception) {
             throw HttpException::slotUnavailable($this->headers(), $exception->getMessage());
-        } catch (BookingNotFoundException | BookableServiceNotFoundException $exception) {
+        } catch (
+            BookingNotFoundException
+            | BookableServiceNotFoundException
+            | PlanningConstraintNotFoundException $exception
+        ) {
             throw new HttpException(
                 404,
                 \Eszter\Http\ErrorCatalog::NOT_FOUND,

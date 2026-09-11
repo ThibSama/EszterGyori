@@ -1,5 +1,5 @@
 {
-  "version": 10,
+  "version": 11,
   "scope": "Package 4.1/4.2 booking domain and dynamic slot computation; no booking HTTP API.",
   "services": {
     "keyAuthority": "booking_services.service_key",
@@ -88,6 +88,31 @@
       "windowsAuthoritative": "Weekly rules and date exceptions stay authoritative. The rules only narrow an effective window; a shorter exceptional window is never widened by the general finish or overrun setting, and the resource interval [start-bufferBefore, start+duration+bufferAfter) must still fit inside the window.",
       "offerDuration": "The end an appointment is judged by is start + the real offer duration: the service's duration or the persisted validated duration of an ESZ-150 combination.",
       "persistence": "One system_settings row under the availability revision: it is replaced through the weekly availability PUT, under the ESZ-146 serialization boundary, and slot reads and transactional revalidation read the same stored row. Changing it never moves, shortens or recomputes an existing booking."
+    },
+    "planningConstraints": {
+      "kinds": [
+        "pause",
+        "unavailability",
+        "closure",
+        "leave"
+      ],
+      "enforcements": [
+        "flexible",
+        "strict"
+      ],
+      "enforcementByKind": {
+        "pause": "flexible",
+        "unavailability": "strict",
+        "closure": "strict",
+        "leave": "strict"
+      },
+      "maxDays": 400,
+      "shape": "pause and unavailability are one local date with a start/end wall-time window (foldUtcOffset only on the autumn fall-back date); closure and leave are an inclusive local date range with no times. startDate equals endDate for timed kinds; endDate is never before startDate; a range longer than maxDays is refused.",
+      "flexible": "A pause is a planning preference. It is persisted and shown on the calendar but it never removes a public slot, never fails transactional revalidation and never warns about the appointments it overlaps.",
+      "strict": "unavailability, closure and leave block new reservations. Their UTC intervals — the timed window, or local midnight to local midnight of the day after endDate — feed the same slot computation and the same transactional revalidation booking create and move run, as blocking intervals beside the occupied ones: no resource interval [start-bufferBefore, start+duration+bufferAfter) may overlap them.",
+      "existingBookings": "A strict constraint may overlap confirmed appointments. The write is allowed, the response lists those appointments as conflicts so the operator is warned, and none of them is moved, shortened, cancelled or otherwise altered. Editing or removing a constraint changes future bookability only.",
+      "persistence": "Additive availability_constraints rows beside availability_exceptions, which keep their one-replacing-exception-per-date meaning. Every write takes the ESZ-146 serialization boundary and the availability revision; reads are bounded to the requested local date window.",
+      "dst": "Timed boundaries are converted with the Europe/Paris IANA rules at store time: a spring-forward gap is refused and an autumn fall-back overlap requires the explicit fold offset."
     }
   },
   "states": {
@@ -296,6 +321,7 @@
       "booking create, move and cancel",
       "weekly availability replacement, including the ESZ-151 booking-time rules it may carry",
       "date exception open, close and remove",
+      "planning constraint create, update and remove (ESZ-152)",
       "service provisioning or an admin service mutation (create, update, archive, restore) that changes is_active, duration, buffer-before or buffer-after"
     ],
     "lockOrder": "booking_resource_locks.primary, acquired inside the owning transaction and before any other mutable row lock, then the availability revision / service / booking rows, then writes.",

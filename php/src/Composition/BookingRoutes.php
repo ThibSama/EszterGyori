@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Eszter\Composition;
 
 use Eszter\Booking\BookingApi;
+use Eszter\Http\Endpoint\AdminAvailabilityConstraintsEndpoint;
 use Eszter\Http\Endpoint\AdminAvailabilityExceptionsEndpoint;
 use Eszter\Http\Endpoint\AdminAvailabilityQueryEndpoint;
 use Eszter\Http\Endpoint\AdminAvailabilityWeeklyEndpoint;
@@ -29,7 +30,7 @@ use Eszter\Http\Router;
  * only ever answer 500, so they are not routed at all.
  *
  * The admin half — query, mutation, move-availability, summary, the
- * availability editor (ESZ-063/064/065) and the service catalog (ESZ-149) — is gated on the same condition as
+ * availability editor (ESZ-063/064/065, ESZ-152 constraints) and the service catalog (ESZ-149) — is gated on the same condition as
  * every other admin surface: an authenticated session must exist. This
  * composer therefore receives the {@see AuthenticatedServices} bundle when the
  * root wired an authenticated surface and `null` otherwise, and registers the
@@ -111,6 +112,11 @@ final class BookingRoutes
             'PATCH',
             AdminAvailabilityExceptionsEndpoint::PATH,
             new AdminAvailabilityExceptionsEndpoint(...$admin),
+        );
+        $router->register(
+            'PATCH',
+            AdminAvailabilityConstraintsEndpoint::PATH,
+            new AdminAvailabilityConstraintsEndpoint(...$admin),
         );
         $router->register(
             'GET',

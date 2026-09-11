@@ -69,7 +69,7 @@ final class MigrationTest extends TestCase
 
         self::assertSame(
             ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
-             '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016', '0017'],
+             '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016', '0017', '0018'],
             $applied,
         );
     }
@@ -427,6 +427,8 @@ final class MigrationTest extends TestCase
                     'PRIMARY', 'uq_availability_rules_window', 'ix_availability_rules_lookup',
                 ],
                 'availability_exceptions' => ['PRIMARY', 'uq_availability_exceptions_date'],
+                // ESZ-152: constraints are read by date-range overlap only.
+                'availability_constraints' => ['PRIMARY', 'ix_availability_constraints_range'],
                 'availability_exception_windows' => [
                     'PRIMARY', 'uq_availability_exception_windows_position',
                     'ix_availability_exception_windows_order',
@@ -1010,6 +1012,59 @@ final class MigrationTest extends TestCase
     }
 
     // --- ESZ-150: validated combinations, additive on bookings ------------
+
+    /**
+     * ESZ-152 — migration 0018 adds the additive `availability_constraints`
+     * table: MySQL itself ties the enforcement to the kind, requires a window
+     * on the timed kinds and refuses one on the all-day kinds, and refuses an
+     * inverted date range. `availability_exceptions` is untouched.
+     */
+    public function testMigration0018AddsPlanningConstraintsWithTheirShapeChecks(): void
+    {
+        $this->migrator()->migrate();
+
+        self::assertSame('ascii_bin', $this->column('availability_constraints', 'enforcement')['COLLATION_NAME']);
+        self::assertSame('YES', $this->column('availability_constraints', 'start_local')['IS_NULLABLE']);
+        self::assertSame('uq_availability_exceptions_date', $this->database->fetchOne(
+            'SELECT constraint_name AS n FROM information_schema.table_constraints'
+            . " WHERE table_schema = DATABASE() AND table_name = 'availability_exceptions'"
+            . " AND constraint_type = 'UNIQUE'",
+        )['n'] ?? null);
+
+        $insert = fn (string $kind, string $enforcement, string $from, string $until, ?string $start, ?string $end) =>
+            $this->database->run(
+                'INSERT INTO availability_constraints (constraint_kind, enforcement, start_date, end_date,'
+                . ' start_local, end_local, created_at, updated_at)'
+                . ' VALUES (:kind, :enforcement, :from, :until, :start, :end, :created, :updated)',
+                [
+                    'kind' => $kind, 'enforcement' => $enforcement, 'from' => $from, 'until' => $until,
+                    'start' => $start, 'end' => $end, 'created' => self::NOW, 'updated' => self::NOW,
+                ],
+            );
+
+        $insert('pause', 'flexible', '2026-08-18', '2026-08-18', '12:30:00', '13:30:00');
+        $insert('unavailability', 'strict', '2026-08-18', '2026-08-18', '09:00:00', '11:00:00');
+        $insert('closure', 'strict', '2026-08-24', '2026-08-25', null, null);
+        $insert('leave', 'strict', '2026-08-03', '2026-08-16', null, null);
+        self::assertSame(4, (int) ($this->database->fetchOne('SELECT COUNT(*) AS n FROM availability_constraints')['n'] ?? 0));
+
+        // A pause can only be flexible and a blocker only strict; a timed kind
+        // needs its window on one date and an all-day kind refuses one; an
+        // inverted range is refused.
+        foreach (
+            [
+                ['pause', 'strict', '2026-08-18', '2026-08-18', '12:30:00', '13:30:00'],
+                ['leave', 'flexible', '2026-08-03', '2026-08-16', null, null],
+                ['unavailability', 'strict', '2026-08-18', '2026-08-18', null, null],
+                ['unavailability', 'strict', '2026-08-18', '2026-08-19', '09:00:00', '11:00:00'],
+                ['pause', 'flexible', '2026-08-18', '2026-08-18', '13:30:00', '12:30:00'],
+                ['closure', 'strict', '2026-08-24', '2026-08-24', '09:00:00', '11:00:00'],
+                ['leave', 'strict', '2026-08-16', '2026-08-03', null, null],
+            ] as $refused
+        ) {
+            $this->expectConstraintFailure(fn () => $insert(...$refused));
+        }
+    }
 
     /**
      * Migration 0017 adds the combination table and a nullable

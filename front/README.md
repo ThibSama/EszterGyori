@@ -141,6 +141,13 @@ Cote contenu, `/admin` n'est plus local-only :
   ajoute jamais ; supprimer l'exception restaure le comportement hebdomadaire et
   n'annule aucun rendez-vous. Les fermetures et les suppressions sont confirmees
   explicitement ;
+- **pauses, indisponibilites, fermetures et conges** (ESZ-152) via
+  `PATCH /api/admin/availability/constraints` (`create`, `update`, `remove`), sous la meme
+  revision. Une pause est souple (affichee, ne retire aucun creneau) ; les trois autres
+  sont strictes et bloquent les nouveaux creneaux. Une contrainte stricte posee sur des
+  rendez-vous confirmes est acceptee et la reponse les liste en avertissement, sans les
+  modifier. La grille hebdomadaire les dessine avec un style par nature mais ne decide
+  jamais de la reservabilite ;
 - apres chaque succes, l'editeur affiche **l'etat renvoye par le serveur** (identifiants,
   ordre, normalisations comprises) et jamais ce qu'il vient d'envoyer.
 

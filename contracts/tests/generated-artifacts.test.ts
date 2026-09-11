@@ -10,6 +10,7 @@ import {
 } from "../scripts/generate-contract-artifacts.js";
 import { parityCases, semanticRules } from "../semantic-rules.js";
 import {
+  ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
   ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
   ADMIN_SERVICES_PATH,
   ADMIN_AVAILABILITY_WEEKLY_PATH,
@@ -134,6 +135,7 @@ test("the generated booking domain freezes service identity, timezone and states
       grid: { minutes: number; alignment: string };
       limits: { maxHorizonDays: number; maxResults: number };
       bookingTimeRules: typeof bookingDomainContract.availability.bookingTimeRules;
+      planningConstraints: typeof bookingDomainContract.availability.planningConstraints;
     };
     states: {
       values: string[];
@@ -185,6 +187,16 @@ test("the generated booking domain freezes service identity, timezone and states
     preferredFinishLocal: null,
     maxOverrunMinutes: 0,
   });
+  // ESZ-152: the planning-constraint block freezes byte-for-byte — PHP reads
+  // the kinds, the enforcement map and the span bound from it, and a pause is
+  // the one flexible kind.
+  assert.deepEqual(booking.availability.planningConstraints, bookingDomainContract.availability.planningConstraints);
+  assert.deepEqual(booking.availability.planningConstraints.enforcementByKind, {
+    pause: "flexible",
+    unavailability: "strict",
+    closure: "strict",
+    leave: "strict",
+  });
   assert.deepEqual(booking.states.values, [...bookingStates]);
   assert.equal(booking.states.initial, "confirmed");
   assert.deepEqual(booking.states.transitions, bookingStateTransitions);
@@ -201,7 +213,7 @@ test("the generated booking domain freezes service identity, timezone and states
   );
   assert.match(booking.adminViews.rangeRead.hasMore, /pageSize\+1/);
   assert.match(booking.adminViews.summary.counts, /aggregation/);
-  assert.equal(booking.version, 10, "adding a policy block is a domain version bump");
+  assert.equal(booking.version, 11, "adding a policy block is a domain version bump");
 
   // ESZ-146: the serialization block freezes byte-for-byte, the way the SQL
   // layer enforces it — booking create/move/cancel, every availability
@@ -228,7 +240,7 @@ test("the generated booking domain freezes the Package 7.1 notification policy",
   // The whole block, byte for byte. PHP reads this file rather than a second
   // copy of these constants, so anything that drifts here drifts everywhere.
   assert.deepEqual(document.notifications, notificationPolicy);
-  assert.equal(document.version, 10, "adding a policy block is a domain version bump");
+  assert.equal(document.version, 11, "adding a policy block is a domain version bump");
 
   // ESZ-142: the consent-notice catalog (immutable entries with their exact
   // French text, the bounded-ASCII id pattern and the current pointer) is
@@ -377,6 +389,7 @@ test("the generated HTTP contract carries every frozen case", async () => {
     contract.endpoints.map((endpoint) => endpoint.path).sort(),
     [
       "/",
+      "/api/admin/availability/constraints",
       "/api/admin/availability/exceptions",
       "/api/admin/availability/query",
       "/api/admin/availability/weekly",
@@ -448,6 +461,9 @@ test("the generated HTTP contract carries every frozen case", async () => {
   assert.deepEqual(methodsByPath["/api/admin/availability/query"], ["POST"]);
   assert.deepEqual(methodsByPath["/api/admin/availability/weekly"], ["PUT"]);
   assert.deepEqual(methodsByPath["/api/admin/availability/exceptions"], ["PATCH"]);
+  // ESZ-152: constraints are addressed by id and may span dates, so they are
+  // a fourth PATCH route of the availability surface, not more exception actions.
+  assert.deepEqual(methodsByPath["/api/admin/availability/constraints"], ["PATCH"]);
 
   assert.ok(contract.errorCodes.includes("STORAGE_FAILURE"));
   assert.ok(contract.errorCodes.includes("PAYLOAD_TOO_LARGE"));
@@ -486,6 +502,11 @@ test("the generated HTTP contract freezes availability administration and the su
   assert.equal(
     contract.booking?.paths?.adminAvailabilityExceptions,
     ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+  );
+  // ESZ-152: constraints are the fourth route of the same surface.
+  assert.equal(
+    contract.booking?.paths?.adminAvailabilityConstraints,
+    ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
   );
   assert.equal(contract.booking?.paths?.adminSummary, ADMIN_BOOKINGS_SUMMARY_PATH);
   // ESZ-149: the catalog administration surface is frozen beside availability.

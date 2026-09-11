@@ -10,6 +10,14 @@
   ],
   "artifacts": [
     {
+      "file": "admin-availability-constraint-mutation-request.schema.json",
+      "sha256": "8e4c4203280a3e1ff48152f4df3632b7c432caf10d1f389dc31f5b915fb3fe97"
+    },
+    {
+      "file": "admin-availability-constraint-response.schema.json",
+      "sha256": "bf26ec3adce26249b6066413847917a8b599211ca09cf404419b46e48b250e8c"
+    },
+    {
       "file": "admin-availability-exception-mutation-request.schema.json",
       "sha256": "5e1b12f2b303f015fb96dc0a4182919ab778939d7622511d292b410e9eb5a6ef"
     },
@@ -23,7 +31,7 @@
     },
     {
       "file": "admin-availability-response.schema.json",
-      "sha256": "d2a4f5b2f048251a88867821aba87aef44cbd7606c21911f652039e9d9e85589"
+      "sha256": "bdb2fb1a7fc789c3e42633ee3d7d90b9aefe024dc04301cf6ca1354771dfe5ba"
     },
     {
       "file": "admin-availability-weekly-replace-request.schema.json",
@@ -103,7 +111,7 @@
     },
     {
       "file": "booking-domain.json",
-      "sha256": "8f494e27fa59d32c17316c5fbc85bca3808446bc54bb210c2d503eaffa761542"
+      "sha256": "ed3920fa137ef0db319af7dc48484448553506791d74cc06f9ad4661cfa6cc61"
     },
     {
       "file": "error-envelope.schema.json",
@@ -115,7 +123,7 @@
     },
     {
       "file": "http-contract.json",
-      "sha256": "fbdb9249e088ca5bced54548cad214dfc99dc7f47ef81ee4f605969f56ebd801"
+      "sha256": "e3e415dfa7a28023ebc83145403bb18655cd3cf365f06abfee24771db0515475"
     },
     {
       "file": "login-request.schema.json",

@@ -119,7 +119,7 @@ final class PdoBookingApi implements BookingApi
                 $notificationProducer ?? new DurableBookingNotificationProducer($scheduler, $jobs, $clock),
             ),
             new BookingAdminReader($contract, $time, $clock, $availability, $bookings, $history),
-            new AvailabilityAdministration($contract, $availabilityRepository),
+            new AvailabilityAdministration($contract, $availabilityRepository, $time, $bookings),
             new BookingServiceAdministration($services, $combinations, $contract),
         );
     }
@@ -182,6 +182,12 @@ final class PdoBookingApi implements BookingApi
     public function adminMutateAvailabilityException(array $request): array
     {
         return $this->availabilityAdministration->adminMutateAvailabilityException($request);
+    }
+
+    /** @inheritDoc */
+    public function adminMutateAvailabilityConstraint(array $request): array
+    {
+        return $this->availabilityAdministration->adminMutateAvailabilityConstraint($request);
     }
 
     /** @inheritDoc */

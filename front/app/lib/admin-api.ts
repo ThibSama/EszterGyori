@@ -10,6 +10,7 @@ import {
   ADMIN_AVAILABILITY_QUERY_PATH,
   ADMIN_AVAILABILITY_WEEKLY_PATH,
   ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+  ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
   ADMIN_SERVICES_PATH,
   AUTH_LOGIN_PATH,
   AUTH_LOGOUT_PATH,
@@ -33,6 +34,7 @@ import {
   adminAvailabilityResponseSchema,
   adminAvailabilityWeeklyResponseSchema,
   adminAvailabilityExceptionResponseSchema,
+  adminAvailabilityConstraintResponseSchema,
   adminServiceResponseSchema,
   adminServicesResponseSchema,
   publishedContentEnvelopeV1Schema,
@@ -140,6 +142,21 @@ export type AdminAvailabilityWindow = AdminAvailabilityException["windows"][numb
 export type AdminWeeklyRuleInput = Omit<AdminWeeklyRule, "id">;
 /** ESZ-151 — the stored booking-time rules, as every availability response returns them. */
 export type AdminBookingTimeRules = AdminAvailability["bookingTimeRules"];
+/**
+ * ESZ-152 — one planning constraint as the server returns it: a flexible
+ * pause, or a strict unavailability, closure or leave. `enforcement` is the
+ * server's word on whether it blocks anything; the calendar draws it and never
+ * decides bookability from it.
+ */
+export type AdminPlanningConstraint = AdminAvailability["constraints"][number];
+export type AdminPlanningConstraintKind = AdminPlanningConstraint["kind"];
+export type AdminAvailabilityConstraintResult = z.infer<
+  typeof adminAvailabilityConstraintResponseSchema
+>;
+/** A confirmed appointment a strict constraint overlaps — warned about, never altered. */
+export type AdminPlanningConstraintConflict = AdminAvailabilityConstraintResult["conflicts"][number];
+/** The submitted shape of one constraint: everything but the server-assigned id and enforcement. */
+export type AdminPlanningConstraintInput = Omit<AdminPlanningConstraint, "id" | "enforcement">;
 
 /**
  * ESZ-149 — one catalog row as the back-office sees it. `updatedAt` is the
@@ -197,6 +214,11 @@ export type AdminAvailabilityExceptionMutation =
       note: string | null;
     }
   | { action: "remove"; expectedRevision: number; localDate: string };
+
+export type AdminAvailabilityConstraintMutation =
+  | ({ action: "create"; expectedRevision: number } & AdminPlanningConstraintInput)
+  | ({ action: "update"; expectedRevision: number; id: number } & AdminPlanningConstraintInput)
+  | { action: "remove"; expectedRevision: number; id: number };
 
 /**
  * The browser half of the admin API (ESZ-034).
@@ -349,6 +371,15 @@ export interface AdminApiClient {
     input: AdminAvailabilityExceptionMutation,
     csrfToken: string,
   ): Promise<AdminApiResult<AdminAvailabilityExceptionResult>>;
+  /**
+   * ESZ-152 — creates, updates or removes one planning constraint under the
+   * same revision. Resolves with the stored constraint (`null` after a
+   * removal) and the confirmed appointments a strict one overlaps.
+   */
+  mutateAvailabilityConstraint(
+    input: AdminAvailabilityConstraintMutation,
+    csrfToken: string,
+  ): Promise<AdminApiResult<AdminAvailabilityConstraintResult>>;
   /**
    * ESZ-149 — the whole service catalog, archived rows included, in catalog
    * order, with (ESZ-150) the configured maximum and every combination —
@@ -816,6 +847,16 @@ export function createAdminApiClient(
       });
       if (!response.ok) return response;
       return parsed(adminAvailabilityExceptionResponseSchema, response.body);
+    },
+
+    async mutateAvailabilityConstraint(input, csrfToken) {
+      const response = await send(ADMIN_AVAILABILITY_CONSTRAINTS_PATH, {
+        method: "PATCH",
+        csrfToken,
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      return parsed(adminAvailabilityConstraintResponseSchema, response.body);
     },
 
     async listServices() {

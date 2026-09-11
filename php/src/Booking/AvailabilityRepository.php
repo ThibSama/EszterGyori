@@ -7,7 +7,10 @@ namespace Eszter\Booking;
 use Eszter\Database\Database;
 use Eszter\Support\Clock;
 
-/** Canonical persistence for weekly rules and replacing date exceptions. */
+/**
+ * Canonical persistence for weekly rules, replacing date exceptions and
+ * (ESZ-152) the additive planning constraints beside them.
+ */
 final class AvailabilityRepository
 {
     private const REVISION_SETTING_KEY = 'availability.revision';
@@ -120,6 +123,7 @@ final class AvailabilityRepository
      *     weeklyRules: list<WeeklyAvailabilityRule>,
      *     exceptions: list<AvailabilityException>,
      *     timeRules: BookingTimeRules,
+     *     constraints: list<PlanningConstraint>,
      * }
      */
     public function stateBetween(string $fromDate, string $untilDate): array
@@ -130,6 +134,7 @@ final class AvailabilityRepository
             'weeklyRules' => $this->weeklyRules(),
             'exceptions' => $this->exceptionsBetween($fromDate, $untilDate),
             'timeRules' => $this->bookingTimeRules(),
+            'constraints' => $this->constraintsBetween($fromDate, $untilDate),
         ];
 
         return $this->database->inTransaction()
@@ -296,6 +301,131 @@ final class AvailabilityRepository
         }
 
         return $exceptions;
+    }
+
+    /**
+     * ESZ-152 — every constraint whose inclusive date range touches the
+     * requested local window, in date order. Bounded by the caller's window,
+     * exactly like the exceptions read beside it.
+     *
+     * @return list<PlanningConstraint>
+     */
+    public function constraintsBetween(string $fromDate, string $untilDate): array
+    {
+        self::dateRange($fromDate, $untilDate);
+
+        return array_map(
+            $this->constraintFromRow(...),
+            $this->database->fetchAll(
+                'SELECT id, constraint_kind, start_date, end_date, start_local, end_local, fold_utc_offset, reason'
+                . ' FROM availability_constraints'
+                . ' WHERE start_date <= :until_date AND end_date >= :from_date'
+                . ' ORDER BY start_date, start_local, id',
+                ['from_date' => $fromDate, 'until_date' => $untilDate],
+            ),
+        );
+    }
+
+    public function findConstraint(int $id): ?PlanningConstraint
+    {
+        $row = $this->database->fetchOne(
+            'SELECT id, constraint_kind, start_date, end_date, start_local, end_local, fold_utc_offset, reason'
+            . ' FROM availability_constraints WHERE id = :id',
+            ['id' => $id],
+        );
+
+        return $row === null ? null : $this->constraintFromRow($row);
+    }
+
+    /**
+     * ESZ-152 — stores one constraint: an insert when `$constraint->id` is 0,
+     * otherwise a full replacement of the row with that id (404 when there is
+     * none). The timed boundaries are converted with the Europe/Paris rules
+     * before anything is written, exactly as for a date exception. Under the
+     * serialization boundary and the availability revision like every other
+     * bookability write; no booking row is read or touched.
+     *
+     * @return array{revision: int, value: PlanningConstraint}
+     */
+    public function putConstraintWithRevision(PlanningConstraint $constraint, int $expectedRevision): array
+    {
+        // Refuse a spring gap or an unresolved autumn fold before the
+        // transaction — for a pause too, so what is drawn is a real interval.
+        if ($constraint->window !== null) {
+            foreach ([$constraint->window->startLocal, $constraint->window->endLocal] as $boundary) {
+                $this->time->localToUtcWithFoldOffset(
+                    $constraint->startDate . ' ' . $boundary,
+                    $constraint->window->foldUtcOffset,
+                );
+            }
+        }
+
+        return $this->mutate($expectedRevision, function () use ($constraint): PlanningConstraint {
+            $now = $this->clock->nowIso();
+            $values = [
+                'kind' => $constraint->kind,
+                'enforcement' => $constraint->enforcement,
+                'start_date' => $constraint->startDate,
+                'end_date' => $constraint->endDate,
+                'start' => $constraint->window?->startLocal,
+                'end' => $constraint->window?->endLocal,
+                'fold' => $constraint->window?->foldUtcOffset,
+                'reason' => $constraint->reason,
+                'updated' => $now,
+            ];
+
+            if ($constraint->id === 0) {
+                $this->database->run(
+                    'INSERT INTO availability_constraints'
+                    . ' (constraint_kind, enforcement, start_date, end_date, start_local, end_local,'
+                    . ' fold_utc_offset, reason, created_at, updated_at)'
+                    . ' VALUES (:kind, :enforcement, :start_date, :end_date, :start, :end, :fold, :reason,'
+                    . ' :created, :updated)',
+                    $values + ['created' => $now],
+                );
+                $id = (int) $this->database->pdo()->lastInsertId();
+            } else {
+                $updated = $this->database->run(
+                    'UPDATE availability_constraints SET constraint_kind = :kind, enforcement = :enforcement,'
+                    . ' start_date = :start_date, end_date = :end_date, start_local = :start, end_local = :end,'
+                    . ' fold_utc_offset = :fold, reason = :reason, updated_at = :updated WHERE id = :id',
+                    $values + ['id' => $constraint->id],
+                )->rowCount();
+                if ($updated === 0 && $this->findConstraint($constraint->id) === null) {
+                    throw new PlanningConstraintNotFoundException($constraint->id);
+                }
+                $id = $constraint->id;
+            }
+
+            $stored = $this->findConstraint($id);
+            if ($stored === null) {
+                throw new \RuntimeException('Planning constraint disappeared after being stored.');
+            }
+
+            return $stored;
+        });
+    }
+
+    /**
+     * ESZ-152 — removes one constraint. Deleting the row is the whole
+     * operation: nothing was merged into the schedule, and no booking is
+     * touched. 404 when there is no such row.
+     *
+     * @return array{revision: int, value: bool}
+     */
+    public function deleteConstraintWithRevision(int $id, int $expectedRevision): array
+    {
+        return $this->mutate($expectedRevision, function () use ($id): bool {
+            $deleted = $this->database->run(
+                'DELETE FROM availability_constraints WHERE id = :id',
+                ['id' => $id],
+            )->rowCount() > 0;
+            if (!$deleted) {
+                throw new PlanningConstraintNotFoundException($id);
+            }
+
+            return true;
+        });
     }
 
     /**
@@ -574,6 +704,25 @@ final class AvailabilityRepository
             $kind,
             $windows,
             self::nullableString($row, 'note'),
+        );
+    }
+
+    /** @param array<string, mixed> $row */
+    private function constraintFromRow(array $row): PlanningConstraint
+    {
+        $start = self::nullableString($row, 'start_local');
+        $end = self::nullableString($row, 'end_local');
+
+        return PlanningConstraint::create(
+            self::integer($row, 'id'),
+            self::string($row, 'constraint_kind'),
+            self::string($row, 'start_date'),
+            self::string($row, 'end_date'),
+            $start === null ? null : substr($start, 0, 5),
+            $end === null ? null : substr($end, 0, 5),
+            self::nullableString($row, 'fold_utc_offset'),
+            self::nullableString($row, 'reason'),
+            $this->contract,
         );
     }
 

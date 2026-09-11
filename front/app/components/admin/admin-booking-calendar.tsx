@@ -17,6 +17,7 @@ import {
 } from "./admin-availability-editor";
 import {
   WEEK_DAY_HEADS,
+  allDayConstraints,
   dayAvailabilityLabel,
   isHourOpen,
   shiftWeek,
@@ -27,6 +28,12 @@ import {
   type WeekAppointment,
   type WeekDayPlan,
 } from "../../lib/admin-calendar-week";
+import {
+  CONSTRAINT_KIND_LABELS,
+  constraintsForDate,
+  describeConstraint,
+} from "../../lib/admin-availability";
+import type { AdminPlanningConstraint, AdminPlanningConstraintKind } from "../../lib/admin-api";
 import {
   addCivilDays,
   bookingsForDate,
@@ -55,6 +62,25 @@ const CONTACT_ERROR_MESSAGES: Record<ContactField, string> = {
   customerNote: "Saisissez une note valide.",
 };
 
+/**
+ * ESZ-152 — one look per constraint kind, so a pause, an unavailability, a
+ * closure and leave are told apart at a glance and never mistaken for an
+ * appointment (sage) or a plain closed hour (warm). Style only: whether any
+ * of them blocks a slot is the server's word, carried in `enforcement`.
+ */
+const CONSTRAINT_STYLES: Record<AdminPlanningConstraintKind, string> = {
+  pause: "border-sky-300 bg-sky-50 text-sky-900 border-dashed",
+  unavailability: "border-rose-300 bg-rose-50 text-rose-900",
+  closure: "border-warm-400 bg-warm-200 text-warm-900",
+  leave: "border-violet-300 bg-violet-50 text-violet-900",
+};
+
+/** The accessible name of one constraint block on the grid. */
+function constraintLabel(constraint: AdminPlanningConstraint): string {
+  const enforcement = constraint.enforcement === "flexible" ? "souple" : "stricte";
+  return `${describeConstraint(constraint)} (${enforcement})`;
+}
+
 
 function failureMessage(failure: AdminApiFailure): string {
   if (failure.kind === "conflict") return "Les données ont changé sur le serveur. Elles ont été actualisées.";
@@ -72,13 +98,18 @@ function failureMessage(failure: AdminApiFailure): string {
  * question the month view exists to answer, and it is the one thing the visual
  * layout conveys instantly and the text conveyed not at all.
  */
-function dayCellLabel(date: string, bookingCount: number): string {
+function dayCellLabel(
+  date: string,
+  bookingCount: number,
+  constraints: AdminPlanningConstraint[] = [],
+): string {
   const appointments =
     bookingCount === 0
       ? "aucun rendez-vous"
       : `${bookingCount} rendez-vous`;
+  const planning = constraints.map(constraintLabel).join(", ");
 
-  return `${formatParisDate(date)}, ${appointments}`;
+  return `${formatParisDate(date)}, ${appointments}${planning ? `, ${planning}` : ""}`;
 }
 
 /**
@@ -95,8 +126,11 @@ function weekDayHeadLabel(plan: WeekDayPlan, ready: boolean): string {
     plan.appointments.length === 0
       ? "aucun rendez-vous"
       : `${plan.appointments.length} rendez-vous`;
+  const allDay = allDayConstraints(plan)
+    .map((item) => CONSTRAINT_KIND_LABELS[item.constraint.kind].toLowerCase())
+    .join(", ");
 
-  return `${formatParisDate(plan.date)}, ${appointments}, ${availabilityPhrase(plan, ready)}`;
+  return `${formatParisDate(plan.date)}, ${appointments}, ${availabilityPhrase(plan, ready)}${allDay ? `, ${allDay}` : ""}`;
 }
 
 /**
@@ -456,13 +490,16 @@ export function AdminBookingCalendar({
     !availability.loading &&
     availability.covers(weekDates[0]) &&
     availability.covers(weekDates[weekDates.length - 1]);
+  // ESZ-152: constraints ride along as labels and styles — the projection
+  // places them, the server's `enforcement` names them, and no cell decides
+  // bookability from them.
   const week = useMemo(
-    () => weekPlan(weekDates, availability.rules, availability.exceptions, bookings, today),
-    [availability.exceptions, availability.rules, bookings, today, weekDates],
+    () => weekPlan(weekDates, availability.rules, availability.exceptions, bookings, today, availability.constraints),
+    [availability.constraints, availability.exceptions, availability.rules, bookings, today, weekDates],
   );
   const hourSpan = useMemo(
-    () => weekHourSpan(weekDates, availability.rules, availability.exceptions, bookings),
-    [availability.exceptions, availability.rules, bookings, weekDates],
+    () => weekHourSpan(weekDates, availability.rules, availability.exceptions, bookings, availability.constraints),
+    [availability.constraints, availability.exceptions, availability.rules, bookings, weekDates],
   );
   const hours = useMemo(
     () =>
@@ -540,6 +577,14 @@ export function AdminBookingCalendar({
                 <p className="text-xs text-warm-500 lg:hidden">
                   Faites défiler la grille horizontalement pour parcourir toute la semaine.
                 </p>
+                <ul aria-label="Légende" className="mt-2 flex flex-wrap gap-2 text-[11px] text-warm-700">
+                  <li className="rounded-md border border-sage-200 bg-sage-100 px-2 py-0.5 text-sage-900">Rendez-vous</li>
+                  {(["pause", "unavailability", "closure", "leave"] as const).map((kind) => (
+                    <li key={kind} className={`rounded-md border px-2 py-0.5 ${CONSTRAINT_STYLES[kind]}`}>
+                      {CONSTRAINT_KIND_LABELS[kind]}{kind === "pause" ? " (souple)" : ""}
+                    </li>
+                  ))}
+                </ul>
                 <div className="mt-2 overflow-x-auto">
                   <div className="grid min-w-[860px] grid-cols-[4.5rem_repeat(7,minmax(0,1fr))] gap-1">
                     <div aria-hidden="true" />
@@ -562,6 +607,16 @@ export function AdminBookingCalendar({
                           className={`w-full rounded-lg border px-2 py-1 text-[11px] leading-tight focus:outline-none focus:ring-2 focus:ring-sage-300 disabled:cursor-progress ${!availabilityReady ? "border-warm-200 bg-warm-50 text-warm-500" : plan.windows.length === 0 ? "border-warm-200 bg-warm-100 text-warm-600" : plan.kind === "exception" ? "border-amber-300 bg-amber-50 text-amber-900" : "border-sage-200 bg-sage-50 text-sage-900"}`}>
                           <span aria-hidden="true">{availabilityReady ? dayAvailabilityLabel(plan) : availability.loading ? "Chargement…" : "Indisponible"}</span>
                         </button>
+                        {allDayConstraints(plan).map((item) => (
+                          <button
+                            key={item.constraint.id}
+                            type="button"
+                            aria-label={`${constraintLabel(item.constraint)}. Modifier.`}
+                            onClick={() => { setShowAvailability(true); availability.openConstraintDraft(item.constraint); }}
+                            className={`w-full rounded-lg border px-2 py-1 text-[11px] leading-tight focus:outline-none focus:ring-2 focus:ring-sage-300 ${CONSTRAINT_STYLES[item.constraint.kind]}`}>
+                            <span aria-hidden="true">{CONSTRAINT_KIND_LABELS[item.constraint.kind]}</span>
+                          </button>
+                        ))}
                       </div>
                     ))}
                     {hours.map((hour) => (
@@ -570,10 +625,23 @@ export function AdminBookingCalendar({
                         {week.map((plan) => {
                           const openHour = availabilityReady && isHourOpen(hour, plan.windows);
                           const items = plan.appointments.filter((item) => item.hour === hour);
+                          const blocks = plan.constraints.filter((item) => item.hour === hour);
+                          const allDay = allDayConstraints(plan);
                           return (
                             <div
                               key={`${plan.date}-${hour}`}
-                              className={`min-h-12 rounded-lg border p-1 ${openHour ? "border-sage-100 bg-white" : "border-warm-100 bg-warm-50"} ${plan.isToday ? "ring-1 ring-sage-200" : ""}`}>
+                              className={`min-h-12 rounded-lg border p-1 ${openHour ? "border-sage-100 bg-white" : "border-warm-100 bg-warm-50"} ${plan.isToday ? "ring-1 ring-sage-200" : ""} ${allDay.length > 0 ? "bg-[repeating-linear-gradient(135deg,transparent,transparent_6px,rgba(120,113,108,0.12)_6px,rgba(120,113,108,0.12)_8px)]" : ""}`}>
+                              {blocks.map((item) => (
+                                <button
+                                  key={`constraint-${item.constraint.id}`}
+                                  type="button"
+                                  aria-label={`${constraintLabel(item.constraint)}. Modifier.`}
+                                  onClick={() => { setShowAvailability(true); availability.openConstraintDraft(item.constraint); }}
+                                  className={`mb-1 block w-full rounded-md border px-2 py-1 text-left text-xs focus:outline-none focus:ring-2 focus:ring-sage-300 ${CONSTRAINT_STYLES[item.constraint.kind]}`}>
+                                  <span aria-hidden="true" className="block font-medium">{CONSTRAINT_KIND_LABELS[item.constraint.kind]}</span>
+                                  <span aria-hidden="true" className="block text-[10px]">{item.constraint.startLocal} → {item.constraint.endLocal}</span>
+                                </button>
+                              ))}
                               {items.map((item) => (
                                 <button
                                   key={item.booking.reference}
@@ -622,13 +690,15 @@ export function AdminBookingCalendar({
                   {["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map((day) => <div key={day} aria-hidden="true" className="px-2 py-2 text-center text-xs font-semibold uppercase text-warm-500">{day}</div>)}
                   {dates.map((date) => {
                     const items = bookingsForDate(bookings, date);
-                    return <div key={date} role="listitem" className="contents"><button type="button" aria-label={dayCellLabel(date, items.length)} aria-current={selectedDate === date ? "date" : undefined} onClick={() => { setSelectedDate(date); setView("day"); }} className={`min-h-28 rounded-xl border p-2 text-left align-top focus:outline-none focus:ring-2 focus:ring-sage-300 ${date.startsWith(month) ? "bg-white" : "bg-warm-50 text-warm-400"} ${selectedDate === date ? "border-sage-500" : "border-warm-200"}`}><span aria-hidden="true" className="text-sm font-medium">{Number(date.slice(-2))}</span><span aria-hidden="true" className="mt-2 block space-y-1">{items.slice(0, 3).map((booking) => <span key={booking.reference} className={`block truncate rounded-md px-2 py-1 text-xs ${booking.state === "cancelled" ? "bg-warm-100 text-warm-500 line-through" : "bg-sage-100 text-sage-900"}`}>{formatParisTime(booking.startsAtUtc)} · {booking.customerName}</span>)}{items.length > 3 && <span className="block text-xs text-warm-500">+ {items.length - 3}</span>}</span></button></div>;
+                    const dayConstraints = constraintsForDate(date, availability.constraints);
+                    return <div key={date} role="listitem" className="contents"><button type="button" aria-label={dayCellLabel(date, items.length, dayConstraints)} aria-current={selectedDate === date ? "date" : undefined} onClick={() => { setSelectedDate(date); setView("day"); }} className={`min-h-28 rounded-xl border p-2 text-left align-top focus:outline-none focus:ring-2 focus:ring-sage-300 ${date.startsWith(month) ? "bg-white" : "bg-warm-50 text-warm-400"} ${selectedDate === date ? "border-sage-500" : "border-warm-200"}`}><span aria-hidden="true" className="text-sm font-medium">{Number(date.slice(-2))}</span><span aria-hidden="true" className="mt-2 block space-y-1">{dayConstraints.map((constraint) => <span key={`c-${constraint.id}`} className={`block truncate rounded-md border px-2 py-0.5 text-[11px] ${CONSTRAINT_STYLES[constraint.kind]}`}>{CONSTRAINT_KIND_LABELS[constraint.kind]}{constraint.startLocal ? ` ${constraint.startLocal}` : ""}</span>)}{items.slice(0, 3).map((booking) => <span key={booking.reference} className={`block truncate rounded-md px-2 py-1 text-xs ${booking.state === "cancelled" ? "bg-warm-100 text-warm-500 line-through" : "bg-sage-100 text-sage-900"}`}>{formatParisTime(booking.startsAtUtc)} · {booking.customerName}</span>)}{items.length > 3 && <span className="block text-xs text-warm-500">+ {items.length - 3}</span>}</span></button></div>;
                   })}
                 </div>
               </div>
             ) : (
               <div className="mt-6">
                 <div className="flex items-center justify-between gap-3"><button type="button" onClick={() => navigateDay(addCivilDays(selectedDate, -1))} className="rounded-full border border-warm-300 px-3 py-2" aria-label="Jour précédent">←</button><h3 className="font-medium capitalize">{formatParisDate(selectedDate)}</h3><button type="button" onClick={() => navigateDay(addCivilDays(selectedDate, 1))} className="rounded-full border border-warm-300 px-3 py-2" aria-label="Jour suivant">→</button></div>
+                {constraintsForDate(selectedDate, availability.constraints).length > 0 && <ul aria-label="Contraintes du jour" className="mt-4 space-y-2">{constraintsForDate(selectedDate, availability.constraints).map((constraint) => <li key={constraint.id}><button type="button" onClick={() => { setShowAvailability(true); availability.openConstraintDraft(constraint); }} className={`w-full rounded-2xl border p-3 text-left text-sm focus:outline-none focus:ring-2 focus:ring-sage-300 ${CONSTRAINT_STYLES[constraint.kind]}`}>{constraintLabel(constraint)}</button></li>)}</ul>}
                 {dayBookings.length === 0 ? <p className="py-16 text-center text-warm-600">Aucun rendez-vous ce jour.</p> : <ul className="mt-5 space-y-3">{dayBookings.map((booking) => <li key={booking.reference}><button type="button" onClick={() => chooseBooking(booking)} className={`flex w-full items-center justify-between gap-4 rounded-2xl border p-4 text-left focus:outline-none focus:ring-2 focus:ring-sage-300 ${booking.state === "cancelled" ? "border-warm-200 bg-warm-50 text-warm-500" : "border-sage-200 bg-sage-50/50"}`}><span><span className="block text-lg font-medium">{formatParisTime(booking.startsAtUtc)} · {booking.customerName}</span><span className="mt-1 block text-sm">{serviceLabel(booking.serviceKeys)}</span></span><span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase ${booking.state === "cancelled" ? "bg-warm-200" : "bg-sage-200 text-sage-900"}`}>{booking.state === "cancelled" ? "Annulé" : "Confirmé"}</span></button></li>)}</ul>}
               </div>
             )}

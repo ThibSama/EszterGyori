@@ -185,6 +185,8 @@ final class SlotAvailability
         // ESZ-151: the stored booking-time rules and the current instant go
         // in beside the schedule, for the public read, the move read and the
         // revalidation alike — one persisted policy, one engine, no React copy.
+        // ESZ-152: the stored planning constraints of the same window go in
+        // beside them; the engine blocks on the strict ones and ignores pauses.
         return $this->engine->generate(
             $offer,
             $fromDate,
@@ -194,6 +196,7 @@ final class SlotAvailability
             $this->bookings->occupiedBetween($fromUtc, $untilUtc, $excludeReference),
             $this->clock->now(),
             $this->availabilityRepository->bookingTimeRules(),
+            $this->availabilityRepository->constraintsBetween($fromDate, $untilDate),
         );
     }
 

@@ -78,6 +78,17 @@ interface BookingApi
     public function adminMutateAvailabilityException(array $request): array;
 
     /**
+     * ESZ-152 — creates, updates or removes one planning constraint (a
+     * flexible pause, or a strict unavailability, closure or leave), warning
+     * about the confirmed appointments a strict one overlaps without
+     * altering them.
+     *
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function adminMutateAvailabilityConstraint(array $request): array;
+
+    /**
      * The whole service catalog, archived rows included (ESZ-149).
      *
      * @return array<string, mixed>

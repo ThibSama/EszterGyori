@@ -86,6 +86,24 @@ Ces règles ne font que restreindre les plages ; une combinaison de prestations 
 jugée sur sa durée validée. Les modifier ne déplace, ne raccourcit et ne recalcule
 aucun rendez-vous déjà confirmé.
 
+## Pauses, indisponibilités, fermetures et congés
+
+Le bloc **Pauses, indisponibilités et congés** du Calendrier ajoute des contraintes
+à côté des exceptions de date, sans les remplacer :
+
+- **pause** (souple) : une préférence de planning sur une date, avec heure de début
+  et de fin. Elle est affichée sur le calendrier mais ne retire aucun créneau public ;
+- **indisponibilité** (stricte) : une date avec heure de début et de fin ; aucun
+  nouveau rendez-vous ne peut chevaucher cette plage ;
+- **fermeture** (stricte) : une ou plusieurs journées complètes ;
+- **congés** (stricts) : une période de dates incluses, avec un motif facultatif.
+
+Une contrainte stricte posée sur des rendez-vous déjà confirmés est acceptée : le
+serveur les liste dans un avertissement, et aucun d’eux n’est déplacé ni annulé —
+c’est à l’opératrice de les traiter. Modifier ou supprimer une contrainte ne change
+que la réservabilité future. Le calendrier distingue visuellement rendez-vous,
+pauses, indisponibilités, fermetures et congés.
+
 ## E-mails et SMS
 
 En production, `notifications.email.encryption` doit être `starttls` (TLS

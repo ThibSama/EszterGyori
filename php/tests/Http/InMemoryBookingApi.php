@@ -13,6 +13,8 @@ use Eszter\Booking\BookingDomainContract;
 use Eszter\Booking\BookingRequestFields;
 use Eszter\Booking\BookingTimePolicy;
 use Eszter\Booking\BookingValidationException;
+use Eszter\Booking\PlanningConstraint;
+use Eszter\Booking\PlanningConstraintNotFoundException;
 use Eszter\Booking\SlotUnavailableException;
 use Eszter\Booking\WeeklyAvailabilityRule;
 use Eszter\Tests\TestEnvironment;
@@ -362,6 +364,95 @@ final class InMemoryBookingApi implements BookingApi
                 'note' => 'Jour férié',
             ]],
             'bookingTimeRules' => $this->bookingTimeRules,
+            // ESZ-152: one strict blocker and one flexible pause in the window.
+            'constraints' => [
+                [
+                    'id' => 1,
+                    'kind' => 'leave',
+                    'enforcement' => 'strict',
+                    'startDate' => '2026-06-22',
+                    'endDate' => '2026-06-26',
+                    'startLocal' => null,
+                    'endLocal' => null,
+                    'foldUtcOffset' => null,
+                    'reason' => 'Congés',
+                ],
+                [
+                    'id' => 2,
+                    'kind' => 'pause',
+                    'enforcement' => 'flexible',
+                    'startDate' => '2026-06-16',
+                    'endDate' => '2026-06-16',
+                    'startLocal' => '12:30',
+                    'endLocal' => '13:30',
+                    'foldUtcOffset' => null,
+                    'reason' => null,
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * ESZ-152 — the constraint mutation as the conformance runner sees it:
+     * the request is validated through the real value object, a strict
+     * constraint overlapping the fixture appointment (2026-06-17 10:00–10:30
+     * Paris) reports it as a conflict, and id 404 is the one that never exists.
+     *
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function adminMutateAvailabilityConstraint(array $request): array
+    {
+        $this->assertAvailabilityRevision($request);
+        $action = $request['action'] ?? null;
+        $id = \is_int($request['id'] ?? null) ? $request['id'] : 0;
+        if (($action === 'remove' || $action === 'update') && $id === 404) {
+            throw new PlanningConstraintNotFoundException($id);
+        }
+        if ($action === 'remove') {
+            return ['revision' => ++$this->availabilityRevision, 'constraint' => null, 'conflicts' => []];
+        }
+        if ($action !== 'create' && $action !== 'update') {
+            throw new BookingValidationException('action', 'Unknown planning constraint action.');
+        }
+
+        $constraint = PlanningConstraint::create(
+            $action === 'create' ? 1 : $id,
+            \is_string($request['kind'] ?? null) ? $request['kind'] : '',
+            \is_string($request['startDate'] ?? null) ? $request['startDate'] : '',
+            \is_string($request['endDate'] ?? null) ? $request['endDate'] : '',
+            self::optionalString($request, 'startLocal'),
+            self::optionalString($request, 'endLocal'),
+            self::optionalString($request, 'foldUtcOffset'),
+            self::optionalString($request, 'reason'),
+            $this->contract,
+        );
+        $blocked = $constraint->blockingInterval($this->time);
+        $fixtureStart = new \DateTimeImmutable('2026-06-17T08:00:00Z');
+        $fixtureEnd = new \DateTimeImmutable('2026-06-17T08:30:00Z');
+        $conflicts = $blocked !== null && $blocked->startsAtUtc < $fixtureEnd && $fixtureStart < $blocked->endsAtUtc
+            ? [[
+                'reference' => self::REFERENCE,
+                'customerName' => 'Cliente Suivante',
+                'startsAtUtc' => '2026-06-17T08:00:00.000Z',
+                'endsAtUtc' => '2026-06-17T08:30:00.000Z',
+            ]]
+            : [];
+
+        return [
+            'revision' => ++$this->availabilityRevision,
+            'constraint' => [
+                'id' => $constraint->id,
+                'kind' => $constraint->kind,
+                'enforcement' => $constraint->enforcement,
+                'startDate' => $constraint->startDate,
+                'endDate' => $constraint->endDate,
+                'startLocal' => $constraint->window === null ? null : substr($constraint->window->startLocal, 0, 5),
+                'endLocal' => $constraint->window === null ? null : substr($constraint->window->endLocal, 0, 5),
+                'foldUtcOffset' => $constraint->window?->foldUtcOffset,
+                'reason' => $constraint->reason,
+            ],
+            'conflicts' => $conflicts,
         ];
     }
 

@@ -57,13 +57,14 @@ contract artifacts), `docs/hetzner-target-architecture.md` (the target topology)
 | Booking e-mail producers and production SMTP | Package 7.2 (ESZ-073/074), done — Symfony Mailer SMTP, typed escaped text/HTML templates, atomic create/move/cancel jobs and T−24h reminders. SMS is not implemented |
 | Deterministic production artifact, DB procedure and SMTP cron wiring | Package 8.1 (ESZ-080/081/082), done locally — see `docs/deployment-runbook.md`; live-host acceptance remains NOT RUN |
 
-Twenty routes are registered: `/api/health`, `/api/content`, `/`, the three
+Twenty-one routes are registered: `/api/health`, `/api/content`, `/`, the three
 `/api/auth/*`, the three admin content paths (`/api/admin/content/draft` under both
 `GET` and `PUT`, plus `…/publish` and `…/reset`), and `/api/admin/media` under `GET`,
 `POST` and `DELETE`, plus `/api/booking/services`, `/api/booking/availability`, `/api/bookings`,
 `/api/admin/bookings/query`, `/api/admin/bookings/move-availability`, `/api/admin/bookings` and —
 since Package 6.2 — `/api/admin/bookings/summary`, `/api/admin/availability/query`,
-`/api/admin/availability/weekly` and `/api/admin/availability/exceptions`. No `/api` path is
+`/api/admin/availability/weekly`, `/api/admin/availability/exceptions` and — since ESZ-152 —
+`/api/admin/availability/constraints`. No `/api` path is
 frozen at 404 any more; an unknown one still
 answers the frozen structured JSON 404, asserted against `http-contract.json` by
 `tests/Http/HttpFoundationTest.php`.

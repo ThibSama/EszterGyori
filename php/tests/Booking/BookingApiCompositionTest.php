@@ -33,7 +33,8 @@ final class BookingApiCompositionTest extends TestCase
 {
     /**
      * The frozen booking surface (ESZ-105/ESZ-106): ten methods, plus the two
-     * catalog-administration methods ESZ-149 adds.
+     * catalog-administration methods ESZ-149 adds and the planning-constraint
+     * mutation ESZ-152 adds to availability administration.
      */
     private const API_METHODS = [
         'services',
@@ -46,6 +47,7 @@ final class BookingApiCompositionTest extends TestCase
         'adminAvailability',
         'adminReplaceWeeklyAvailability',
         'adminMutateAvailabilityException',
+        'adminMutateAvailabilityConstraint',
         'adminServices',
         'adminMutateService',
     ];
@@ -67,6 +69,7 @@ final class BookingApiCompositionTest extends TestCase
         'adminAvailability' => [AvailabilityAdministration::class, 'availabilityAdministration'],
         'adminReplaceWeeklyAvailability' => [AvailabilityAdministration::class, 'availabilityAdministration'],
         'adminMutateAvailabilityException' => [AvailabilityAdministration::class, 'availabilityAdministration'],
+        'adminMutateAvailabilityConstraint' => [AvailabilityAdministration::class, 'availabilityAdministration'],
         'adminServices' => [BookingServiceAdministration::class, 'serviceAdministration'],
         'adminMutateService' => [BookingServiceAdministration::class, 'serviceAdministration'],
     ];
@@ -174,6 +177,7 @@ final class BookingApiCompositionTest extends TestCase
                 'adminAvailability',
                 'adminReplaceWeeklyAvailability',
                 'adminMutateAvailabilityException',
+                'adminMutateAvailabilityConstraint',
             ],
         ];
 

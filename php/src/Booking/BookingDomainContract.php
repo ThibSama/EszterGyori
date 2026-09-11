@@ -23,6 +23,7 @@ final class BookingDomainContract
      * @param list<string> $states
      * @param array<string, list<string>> $transitions
      * @param list<string> $consentNoticeIds
+     * @param array<string, string> $constraintEnforcementByKind
      */
     private function __construct(
         public readonly int $version,
@@ -55,6 +56,13 @@ final class BookingDomainContract
         public readonly string $timeRulesSettingKey,
         public readonly int $minimumLeadMaxMinutes,
         public readonly int $maxOverrunMaxMinutes,
+        /**
+         * ESZ-152 — planning constraints: which enforcement each kind
+         * resolves to (a pause is the one flexible kind) and the longest
+         * inclusive date range a closure or leave may span.
+         */
+        public readonly array $constraintEnforcementByKind,
+        public readonly int $constraintMaxDays,
         public readonly int $adminRangePageSize,
         public readonly int $adminRangeMaxPages,
         public readonly int $adminHistoryPageSize,
@@ -82,6 +90,7 @@ final class BookingDomainContract
         $grid = self::block($availability, 'grid');
         $limits = self::block($availability, 'limits');
         $timeRules = self::block($availability, 'bookingTimeRules');
+        $constraints = self::block($availability, 'planningConstraints');
         $dst = self::block($timezone, 'dst');
         $duration = self::block($services, 'durationMinutes');
         $buffer = self::block($services, 'bufferMinutes');
@@ -121,6 +130,8 @@ final class BookingDomainContract
             self::string($timeRules, 'settingKey'),
             self::positiveInt(self::block($timeRules, 'minimumLeadMinutes'), 'max'),
             self::positiveInt(self::block($timeRules, 'maxOverrunMinutes'), 'max'),
+            self::enforcementMap($constraints),
+            self::positiveInt($constraints, 'maxDays'),
             self::positiveInt($rangeRead, 'pageSize'),
             self::positiveInt($rangeRead, 'maxPages'),
             self::positiveInt($historyPage, 'pageSize'),
@@ -284,6 +295,28 @@ final class BookingDomainContract
         }
 
         return $ids;
+    }
+
+    /**
+     * @param array<mixed> $constraints
+     * @return array<string, string>
+     */
+    private static function enforcementMap(array $constraints): array
+    {
+        $value = $constraints['enforcementByKind'] ?? null;
+        if (!\is_array($value) || $value === []) {
+            throw new ContractArtifactException('booking-domain.json has no planning-constraint enforcement map.');
+        }
+
+        $map = [];
+        foreach ($value as $kind => $enforcement) {
+            if (!\is_string($kind) || !\in_array($enforcement, ['flexible', 'strict'], true)) {
+                throw new ContractArtifactException('booking-domain.json has a malformed enforcement entry.');
+            }
+            $map[$kind] = $enforcement;
+        }
+
+        return $map;
     }
 
     /**

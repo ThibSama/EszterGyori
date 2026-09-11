@@ -24,6 +24,7 @@ import {
   ADMIN_AVAILABILITY_QUERY_PATH,
   ADMIN_AVAILABILITY_WEEKLY_PATH,
   ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+  ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
   ADMIN_SERVICES_PATH,
   ADMIN_EMAIL_MAX_LENGTH,
   ADMIN_EMAIL_PATTERN,
@@ -78,6 +79,8 @@ import {
   adminAvailabilityWeeklyResponseSchema,
   adminAvailabilityExceptionMutationRequestSchema,
   adminAvailabilityExceptionResponseSchema,
+  adminAvailabilityConstraintMutationRequestSchema,
+  adminAvailabilityConstraintResponseSchema,
   adminServiceMutationRequestSchema,
   adminServiceResponseSchema,
   adminServicesResponseSchema,
@@ -439,6 +442,22 @@ const schemaTargets: SchemaTarget[] = [
     io: "output",
   },
   {
+    file: "admin-availability-constraint-mutation-request.schema.json",
+    title: "AdminAvailabilityConstraintMutationRequest",
+    description:
+      "ESZ-152 — create, update or remove one planning constraint: a flexible pause, or a strict unavailability, closure or leave.",
+    schema: adminAvailabilityConstraintMutationRequestSchema,
+    io: "input",
+  },
+  {
+    file: "admin-availability-constraint-response.schema.json",
+    title: "AdminAvailabilityConstraintResponse",
+    description:
+      "The stored constraint (null after a removal) beside the confirmed appointments a strict one overlaps, which are warned about and never altered.",
+    schema: adminAvailabilityConstraintResponseSchema,
+    io: "output",
+  },
+  {
     file: "admin-services-response.schema.json",
     title: "AdminServicesResponse",
     description: "Every catalog row, active and archived, in catalog order (ESZ-149).",
@@ -651,6 +670,7 @@ function buildHttpContractDocument(): unknown {
         adminAvailabilityQuery: ADMIN_AVAILABILITY_QUERY_PATH,
         adminAvailabilityWeekly: ADMIN_AVAILABILITY_WEEKLY_PATH,
         adminAvailabilityExceptions: ADMIN_AVAILABILITY_EXCEPTIONS_PATH,
+        adminAvailabilityConstraints: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
         adminServices: ADMIN_SERVICES_PATH,
       },
       publicErrors:
@@ -809,6 +829,13 @@ function buildHttpContractDocument(): unknown {
         statuses: [200, 400, 401, 403, 405, 409, 500],
         requestBodySchema: "admin-availability-exception-mutation-request.schema.json",
         successBodySchema: "admin-availability-exception-response.schema.json",
+      },
+      {
+        path: ADMIN_AVAILABILITY_CONSTRAINTS_PATH,
+        methods: ["PATCH"],
+        statuses: [200, 400, 401, 403, 404, 405, 409, 500],
+        requestBodySchema: "admin-availability-constraint-mutation-request.schema.json",
+        successBodySchema: "admin-availability-constraint-response.schema.json",
       },
       {
         path: ADMIN_SERVICES_PATH,

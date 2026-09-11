@@ -3225,6 +3225,98 @@ final class SqlIntegrationTest extends TestCase
         ])['exception']);
     }
 
+    /**
+     * ESZ-152 — the persisted path of the constraint model: a strict
+     * unavailability removes the public slots it overlaps and a flexible
+     * pause over the same wall time removes none; a blocker laid over a
+     * confirmed appointment is stored, reports that appointment as a
+     * conflict and leaves its row byte-for-byte unchanged; removal restores
+     * bookability and deletes no booking; an unknown id is not found.
+     */
+    public function testStrictConstraintsBlockSlotsWarnAboutBookingsAndNeverAlterThem(): void
+    {
+        $this->bookingServices->provision('brows', 'Sourcils', 30, 0, 0, true);
+        $this->replaceWeekly([$this->weeklyRulePayload(1, '09:00', '12:00')]);
+        self::assertCount(11, $this->localStarts('2026-06-15'));
+
+        // A flexible pause 10:00–11:00 on the Monday: stored, read back beside
+        // the schedule, and no slot goes.
+        $pause = $this->mutateConstraint([
+            'action' => 'create',
+            'kind' => 'pause',
+            'startDate' => '2026-06-15',
+            'endDate' => '2026-06-15',
+            'startLocal' => '10:00',
+            'endLocal' => '11:00',
+            'foldUtcOffset' => null,
+            'reason' => 'Déjeuner',
+        ]);
+        self::assertSame('flexible', $pause['constraint']['enforcement']);
+        self::assertSame([], $pause['conflicts']);
+        self::assertCount(11, $this->localStarts('2026-06-15'));
+        $read = $this->bookingApi->adminAvailability(['fromDate' => '2026-06-15', 'untilDate' => '2026-06-15']);
+        self::assertSame(['pause'], array_column($read['constraints'], 'kind'));
+
+        // A confirmed 10:00–10:30 appointment, then a strict unavailability
+        // 10:00–11:00 over it: allowed, warned about, and the booking stays.
+        $booking = $this->confirmedAt('2026-06-15T08:00:00.000Z');
+        $rowOf = fn (): ?array => $this->database->fetchOne(
+            'SELECT * FROM bookings WHERE reference = :r',
+            ['r' => $booking->reference],
+        );
+        $before = $rowOf();
+        $blocker = $this->mutateConstraint([
+            'action' => 'create',
+            'kind' => 'unavailability',
+            'startDate' => '2026-06-15',
+            'endDate' => '2026-06-15',
+            'startLocal' => '10:00',
+            'endLocal' => '11:00',
+            'foldUtcOffset' => null,
+            'reason' => null,
+        ]);
+        self::assertSame('strict', $blocker['constraint']['enforcement']);
+        self::assertSame([$booking->reference], array_column($blocker['conflicts'], 'reference'));
+        self::assertSame('2026-06-15T08:00:00.000Z', $blocker['conflicts'][0]['startsAtUtc']);
+        self::assertSame($before, $rowOf(), 'a strict constraint never alters the booking it overlaps');
+        // 09:45 (ending 10:15) through 10:45 are gone; 09:30 touches and stays.
+        self::assertSame(
+            ['09:00', '09:15', '09:30', '11:00', '11:15', '11:30'],
+            $this->localStarts('2026-06-15'),
+        );
+
+        // Leave over the following week blocks every day of it.
+        $leave = $this->mutateConstraint([
+            'action' => 'create',
+            'kind' => 'leave',
+            'startDate' => '2026-06-22',
+            'endDate' => '2026-06-23',
+            'startLocal' => null,
+            'endLocal' => null,
+            'foldUtcOffset' => null,
+            'reason' => 'Congés',
+        ]);
+        self::assertSame([], $leave['conflicts']);
+        self::assertSame([], $this->localStarts('2026-06-22'));
+        self::assertCount(11, $this->localStarts('2026-06-29'));
+
+        // Removing the blocker restores bookability around the booking only.
+        $removed = $this->mutateConstraint(['action' => 'remove', 'id' => $blocker['constraint']['id']]);
+        self::assertNull($removed['constraint']);
+        self::assertSame(
+            ['09:00', '09:15', '09:30', '10:30', '10:45', '11:00', '11:15', '11:30'],
+            $this->localStarts('2026-06-15'),
+        );
+        self::assertNotNull($this->bookings->find($booking->reference));
+
+        try {
+            $this->mutateConstraint(['action' => 'remove', 'id' => $blocker['constraint']['id']]);
+            self::fail('Removing a constraint twice must not be found.');
+        } catch (\Eszter\Booking\PlanningConstraintNotFoundException) {
+            self::addToAssertionCount(1);
+        }
+    }
+
     public function testExceptionMutationsRefuseEmptyInvertedOverlappingAndImpossibleWindows(): void
     {
         $refusals = [
@@ -3985,6 +4077,18 @@ final class SqlIntegrationTest extends TestCase
     private function mutateException(array $mutation): array
     {
         return $this->bookingApi->adminMutateAvailabilityException([
+            'expectedRevision' => $this->availabilityHead(),
+            ...$mutation,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $mutation
+     * @return array<string, mixed>
+     */
+    private function mutateConstraint(array $mutation): array
+    {
+        return $this->bookingApi->adminMutateAvailabilityConstraint([
             'expectedRevision' => $this->availabilityHead(),
             ...$mutation,
         ]);

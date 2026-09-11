@@ -664,6 +664,7 @@
       "adminAvailabilityQuery": "/api/admin/availability/query",
       "adminAvailabilityWeekly": "/api/admin/availability/weekly",
       "adminAvailabilityExceptions": "/api/admin/availability/exceptions",
+      "adminAvailabilityConstraints": "/api/admin/availability/constraints",
       "adminServices": "/api/admin/services"
     },
     "publicErrors": "The frozen error envelope only; no booking, customer, SQL, lock or validation detail.",
@@ -718,6 +719,21 @@
           "A minimum lead outside 0 to the public horizon in minutes.",
           "A preferred finish that is not a local HH:MM wall time or null.",
           "A maximum overrun outside 0 to the longest service duration in minutes."
+        ]
+      },
+      "planningConstraints": {
+        "path": "/api/admin/availability/constraints",
+        "maxDays": 400,
+        "rule": "ESZ-152 — PATCH carries create, update or remove with the same expectedRevision the weekly and exception writes contend on; every write takes the ESZ-146 serialization boundary first and advances the revision exactly once. Both availability reads return every stored constraint whose inclusive date range touches the requested window beside the schedule. The server alone decides what a strict constraint blocks; the week grid may label and style constraints but never decides slot bookability from them.",
+        "flexible": "A pause is stored, returned and drawn, and removes no public slot: the public availability read, the move-availability read and transactional revalidation ignore it.",
+        "strict": "unavailability, closure and leave block overlapping new slots in the public read, the move read and transactional revalidation alike — as blocking intervals beside the occupied ones, in the one slot engine.",
+        "conflicts": "A strict create or update whose interval overlaps confirmed appointments succeeds and lists them in conflicts (reference, customer name, UTC interval) so the operator is warned. Those appointments keep their times, state and history unchanged; nothing is moved or cancelled by a constraint write, and a later edit or removal changes future bookability only.",
+        "refusals": [
+          "A timed kind (pause, unavailability) without both times, with an end not strictly after its start, or with startDate different from endDate.",
+          "An all-day kind (closure, leave) carrying a time or a fold offset.",
+          "An endDate earlier than startDate, or a range longer than maxDays.",
+          "A timed boundary inside the spring-forward gap, or an ambiguous autumn wall time without its fold offset.",
+          "An update or removal naming an id that does not exist: 404 NOT_FOUND."
         ]
       },
       "weeklyRefusals": [
@@ -1085,6 +1101,24 @@
       ],
       "requestBodySchema": "admin-availability-exception-mutation-request.schema.json",
       "successBodySchema": "admin-availability-exception-response.schema.json"
+    },
+    {
+      "path": "/api/admin/availability/constraints",
+      "methods": [
+        "PATCH"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        405,
+        409,
+        500
+      ],
+      "requestBodySchema": "admin-availability-constraint-mutation-request.schema.json",
+      "successBodySchema": "admin-availability-constraint-response.schema.json"
     },
     {
       "path": "/api/admin/services",
@@ -4192,6 +4226,247 @@
       "request": {
         "method": "PATCH",
         "path": "/api/admin/availability/exceptions",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID"
+      }
+    },
+    {
+      "id": "admin.availability.constraints.patch.createPauseOk",
+      "endpoint": "/api/admin/availability/constraints",
+      "description": "ESZ-152 — a pause is a flexible planning preference: stored and returned with enforcement flexible, it lists no conflicts and blocks nothing.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/constraints",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"create\",\"expectedRevision\":0,\"kind\":\"pause\",\"startDate\":\"2026-08-18\",\"endDate\":\"2026-08-18\",\"startLocal\":\"12:30\",\"endLocal\":\"13:30\",\"foldUtcOffset\":null,\"reason\":\"Déjeuner\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminAvailabilityConstraintResponse"
+      }
+    },
+    {
+      "id": "admin.availability.constraints.patch.createUnavailabilityOk",
+      "endpoint": "/api/admin/availability/constraints",
+      "description": "ESZ-152 — a timed unavailability is strict: it is stored with enforcement strict and the response lists the confirmed appointments it overlaps, which stay unchanged.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/constraints",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"create\",\"expectedRevision\":0,\"kind\":\"unavailability\",\"startDate\":\"2026-06-17\",\"endDate\":\"2026-06-17\",\"startLocal\":\"09:00\",\"endLocal\":\"11:00\",\"foldUtcOffset\":null,\"reason\":null}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminAvailabilityConstraintResponse"
+      }
+    },
+    {
+      "id": "admin.availability.constraints.patch.createLeaveOk",
+      "endpoint": "/api/admin/availability/constraints",
+      "description": "ESZ-152 — leave spans an inclusive date range with no times and blocks every day of it.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/constraints",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"create\",\"expectedRevision\":0,\"kind\":\"leave\",\"startDate\":\"2026-08-03\",\"endDate\":\"2026-08-16\",\"startLocal\":null,\"endLocal\":null,\"foldUtcOffset\":null,\"reason\":\"Vacances\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminAvailabilityConstraintResponse"
+      }
+    },
+    {
+      "id": "admin.availability.constraints.patch.updateOk",
+      "endpoint": "/api/admin/availability/constraints",
+      "description": "ESZ-152 — an update replaces every field of one constraint by id, under the same revision; the reason is optional.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/constraints",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"update\",\"expectedRevision\":0,\"id\":1,\"kind\":\"closure\",\"startDate\":\"2026-08-24\",\"endDate\":\"2026-08-25\",\"startLocal\":null,\"endLocal\":null,\"foldUtcOffset\":null,\"reason\":null}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminAvailabilityConstraintResponse"
+      }
+    },
+    {
+      "id": "admin.availability.constraints.patch.removeOk",
+      "endpoint": "/api/admin/availability/constraints",
+      "description": "ESZ-152 — removal returns a null constraint and no conflicts; it deletes no booking and changes future bookability only.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/constraints",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"remove\",\"expectedRevision\":0,\"id\":1}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminAvailabilityConstraintResponse"
+      }
+    },
+    {
+      "id": "admin.availability.constraints.patch.staleRevision",
+      "endpoint": "/api/admin/availability/constraints",
+      "description": "ESZ-152 — a stale constraint write is 409 REVISION_CONFLICT against the same revision the weekly and exception writes use.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/constraints",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"remove\",\"expectedRevision\":1,\"id\":1}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 409,
+        "body": "errorEnvelope",
+        "errorCode": "REVISION_CONFLICT"
+      }
+    },
+    {
+      "id": "admin.availability.constraints.patch.unknownId",
+      "endpoint": "/api/admin/availability/constraints",
+      "description": "ESZ-152 — removing a constraint that does not exist is 404 NOT_FOUND, and the revision does not advance.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/constraints",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"remove\",\"expectedRevision\":0,\"id\":404}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND"
+      }
+    },
+    {
+      "id": "admin.availability.constraints.patch.invertedRange",
+      "endpoint": "/api/admin/availability/constraints",
+      "description": "ESZ-152 — leave whose end precedes its start is refused; nothing is written.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/constraints",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"create\",\"expectedRevision\":0,\"kind\":\"leave\",\"startDate\":\"2026-08-16\",\"endDate\":\"2026-08-03\",\"startLocal\":null,\"endLocal\":null,\"foldUtcOffset\":null,\"reason\":null}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.availability.constraints.patch.timedKindWithoutTimes",
+      "endpoint": "/api/admin/availability/constraints",
+      "description": "ESZ-152 — a partial unavailability without its window is refused rather than silently stored as a whole-day closure; a closure is its own explicit kind.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/constraints",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"create\",\"expectedRevision\":0,\"kind\":\"unavailability\",\"startDate\":\"2026-08-18\",\"endDate\":\"2026-08-18\",\"startLocal\":null,\"endLocal\":null,\"foldUtcOffset\":null,\"reason\":null}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.availability.constraints.patch.unauthenticated",
+      "endpoint": "/api/admin/availability/constraints",
+      "description": "Anonymous callers cannot block the calendar, and are refused before the body is read.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/constraints",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
+      }
+    },
+    {
+      "id": "admin.availability.constraints.patch.csrfOmitted",
+      "endpoint": "/api/admin/availability/constraints",
+      "description": "An authenticated constraint mutation without CSRF is rejected before parsing.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/admin/availability/constraints",
         "rawBody": "{invalid"
       },
       "auth": {

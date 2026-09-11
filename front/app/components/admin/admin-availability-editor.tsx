@@ -8,21 +8,35 @@ import type {
   AdminAvailabilityException,
   AdminAvailabilityWindow,
   AdminBookingTimeRules,
+  AdminPlanningConstraint,
+  AdminPlanningConstraintConflict,
+  AdminPlanningConstraintInput,
 } from "../../lib/admin-api";
 import {
+  CONSTRAINT_KINDS,
+  CONSTRAINT_KIND_LABELS,
   FOLD_OFFSETS,
   ISO_WEEKDAYS,
   WEEKDAY_LABELS,
+  type ConstraintDraft,
+  type ConstraintIssue,
   type FoldOffset,
   type RuleIssue,
   type TimeRulesDraft,
   type TimeRulesIssue,
   type WeeklyRuleDraft,
+  constraintIssues,
+  constraintToDraft,
+  constraintToRequest,
+  describeConstraint,
   describeDate,
+  emptyConstraintDraft,
   emptyDraft,
   exceptionForDate,
   exceptionWindowIssues,
+  isTimedConstraintKind,
   issuesFor,
+  replaceConstraint,
   replaceException,
   sortDrafts,
   timeRulesIssues,
@@ -38,7 +52,7 @@ import {
   planAvailabilityRange,
   rangeCoversDate,
 } from "../../lib/admin-availability-range";
-import { formatParisDate, parisLocalDate } from "../../lib/admin-booking-calendar";
+import { formatParisDate, formatParisTime, parisLocalDate } from "../../lib/admin-booking-calendar";
 
 type ExceptionDraft = {
   localDate: string;
@@ -51,6 +65,7 @@ type ExceptionDraft = {
 type Confirmation =
   | { kind: "close"; localDate: string }
   | { kind: "remove"; localDate: string }
+  | { kind: "remove-constraint"; id: number }
   | { kind: "clear-weekly" };
 
 function failureMessage(failure: AdminApiFailure): string {
@@ -118,10 +133,16 @@ export interface AvailabilityWorkspace {
   readonly timeRules: TimeRulesDraft;
   readonly savedTimeRules: TimeRulesDraft;
   readonly timeRulesIssues: TimeRulesIssue[];
+  /** ESZ-152 — the planning constraints of the loaded window, the one being edited and the last warning. */
+  readonly constraints: AdminPlanningConstraint[];
+  readonly constraintDraft: ConstraintDraft | null;
+  readonly constraintDraftIssues: ConstraintIssue[];
+  readonly conflicts: AdminPlanningConstraintConflict[];
   readonly dirty: boolean;
   readonly noticeRef: RefObject<HTMLDivElement | null>;
   readonly draftHeadingRef: RefObject<HTMLHeadingElement | null>;
   readonly confirmHeadingRef: RefObject<HTMLHeadingElement | null>;
+  readonly constraintHeadingRef: RefObject<HTMLHeadingElement | null>;
   readonly setRules: Dispatch<SetStateAction<WeeklyRuleDraft[]>>;
   readonly setMessage: Dispatch<SetStateAction<string | null>>;
   readonly setDraft: Dispatch<SetStateAction<ExceptionDraft | null>>;
@@ -134,6 +155,11 @@ export interface AvailabilityWorkspace {
   readonly openDraft: (localDate: string) => void;
   readonly submitDraft: () => void;
   readonly confirmed: () => void;
+  /** ESZ-152 — a blank constraint on one date, or an existing one to edit. */
+  readonly openConstraintDraft: (target: string | AdminPlanningConstraint) => void;
+  readonly setConstraintDraft: Dispatch<SetStateAction<ConstraintDraft | null>>;
+  readonly submitConstraintDraft: () => void;
+  readonly removeConstraint: (id: number) => void;
 }
 
 export function useAvailabilityWorkspace(visible: AvailabilityRange): AvailabilityWorkspace {
@@ -155,10 +181,14 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
   const [previewDate, setPreviewDate] = useState(today);
   const [coverage, setCoverage] = useState<AvailabilityRange | null>(null);
   const [fetchedSpan, setFetchedSpan] = useState<AvailabilityRange | null>(null);
+  const [constraints, setConstraints] = useState<AdminPlanningConstraint[]>([]);
+  const [constraintDraft, setConstraintDraft] = useState<ConstraintDraft | null>(null);
+  const [conflicts, setConflicts] = useState<AdminPlanningConstraintConflict[]>([]);
 
   const noticeRef = useRef<HTMLDivElement>(null);
   const draftHeadingRef = useRef<HTMLHeadingElement>(null);
   const confirmHeadingRef = useRef<HTMLHeadingElement>(null);
+  const constraintHeadingRef = useRef<HTMLHeadingElement>(null);
 
   /**
    * Busy is *derived*, exactly as it is for the appointments half.
@@ -180,6 +210,10 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
   const draftIssues = useMemo(
     () => (draft === null || draft.kind === "closed" ? [] : exceptionWindowIssues(draft.windows)),
     [draft],
+  );
+  const constraintDraftIssues = useMemo(
+    () => (constraintDraft === null ? [] : constraintIssues(constraintDraft)),
+    [constraintDraft],
   );
 
   // The saved set is the one the server returned. Comparing against it — rather
@@ -239,6 +273,7 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
       if (!result.ok) return void handleFailure(result.failure);
       adopt(toDrafts(result.value.weeklyRules), result.value.bookingTimeRules);
       setExceptions(result.value.exceptions);
+      setConstraints(result.value.constraints);
       setRevision(result.value.revision);
       setCoverage(requested);
     });
@@ -259,10 +294,12 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
     // after the operator makes a new explicit edit against this server head.
     adopt(toDrafts(fresh.value.weeklyRules), fresh.value.bookingTimeRules);
     setExceptions(fresh.value.exceptions);
+    setConstraints(fresh.value.constraints);
     setRevision(fresh.value.revision);
     setCoverage(range);
     setFetchedSpan(range);
     setDraft(null);
+    setConstraintDraft(null);
     setConfirmation(null);
     notify(
       "Les disponibilités ont été modifiées ailleurs. Vos changements n’ont pas été enregistrés ; les horaires à jour ont été rechargés.",
@@ -427,11 +464,107 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
     );
   };
 
+  const openConstraintDraft = (target: string | AdminPlanningConstraint) => {
+    if (typeof target === "string" && !rangeCoversDate(coverage, target)) {
+      notify(
+        "Les disponibilités de cette date ne sont pas encore chargées. Réessayez dans un instant.",
+        true,
+      );
+      return;
+    }
+    setConstraintDraft(
+      typeof target === "string" ? emptyConstraintDraft(target) : constraintToDraft(target),
+    );
+    setConflicts([]);
+    setConfirmation(null);
+    setMessage(null);
+    requestAnimationFrame(() => constraintHeadingRef.current?.focus());
+  };
+
+  /**
+   * One write, the server's answer adopted. A strict constraint over
+   * confirmed appointments is stored and *warned about*: the conflicts come
+   * back beside it and are announced as an alert, and the appointments
+   * themselves are untouched — the warning is the whole of what happens to
+   * them here.
+   */
+  const applyConstraint = useCallback(
+    async (
+      body:
+        | ({ action: "create" } & AdminPlanningConstraintInput)
+        | ({ action: "update"; id: number } & AdminPlanningConstraintInput)
+        | { action: "remove"; id: number },
+    ) => {
+      if (saving || revision === null) return;
+      setSaving(true);
+      const result = await api.mutateAvailabilityConstraint(
+        { ...body, expectedRevision: revision },
+        csrfToken,
+      );
+      if (!result.ok) {
+        if (result.failure.kind === "conflict") {
+          await recoverAvailabilityConflict();
+          setSaving(false);
+          return;
+        }
+        setSaving(false);
+        return void handleFailure(result.failure);
+      }
+      setSaving(false);
+
+      const stored = result.value.constraint;
+      const id = body.action === "create" ? (stored?.id ?? -1) : body.id;
+      setConstraints((current) => replaceConstraint(current, id, stored));
+      setRevision(result.value.revision);
+      setConflicts(result.value.conflicts);
+      setConstraintDraft(null);
+      setConfirmation(null);
+      if (stored === null) {
+        notify("La contrainte est supprimée. Aucun rendez-vous n’est modifié.");
+        return;
+      }
+      const saved = `Contrainte enregistrée (${CONSTRAINT_KIND_LABELS[stored.kind].toLowerCase()}).`;
+      if (result.value.conflicts.length > 0) {
+        const count = result.value.conflicts.length;
+        notify(
+          `${saved} Attention : ${count} rendez-vous confirmé${count > 1 ? "s" : ""} se trouve${count > 1 ? "nt" : ""} sur cette période et n’${count > 1 ? "ont" : "a"} pas été modifié${count > 1 ? "s" : ""}.`,
+          true,
+        );
+        return;
+      }
+      notify(
+        stored.enforcement === "flexible"
+          ? `${saved} Elle est affichée sur le calendrier et ne retire aucun créneau.`
+          : `${saved} Aucun nouveau rendez-vous ne pourra être pris sur cette période.`,
+      );
+    },
+    [api, csrfToken, handleFailure, notify, recoverAvailabilityConflict, revision, saving],
+  );
+
+  const submitConstraintDraft = () => {
+    if (constraintDraft === null || constraintDraftIssues.length > 0) return;
+    const request = constraintToRequest(constraintDraft);
+    void applyConstraint(
+      constraintDraft.id === null
+        ? { action: "create", ...request }
+        : { action: "update", id: constraintDraft.id, ...request },
+    );
+  };
+
+  const removeConstraint = (id: number) => {
+    setConfirmation({ kind: "remove-constraint", id });
+    requestAnimationFrame(() => confirmHeadingRef.current?.focus());
+  };
+
   const confirmed = () => {
     if (confirmation === null) return;
     if (confirmation.kind === "clear-weekly") {
       setConfirmation(null);
       void saveWeekly();
+      return;
+    }
+    if (confirmation.kind === "remove-constraint") {
+      void applyConstraint({ action: "remove", id: confirmation.id });
       return;
     }
     if (confirmation.kind === "close") {
@@ -471,10 +604,15 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
     timeRules,
     savedTimeRules,
     timeRulesIssues: ruleIssues,
+    constraints,
+    constraintDraft,
+    constraintDraftIssues,
+    conflicts,
     dirty,
     noticeRef,
     draftHeadingRef,
     confirmHeadingRef,
+    constraintHeadingRef,
     setRules,
     setMessage,
     setDraft,
@@ -486,6 +624,10 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
     openDraft,
     submitDraft,
     confirmed,
+    openConstraintDraft,
+    setConstraintDraft,
+    submitConstraintDraft,
+    removeConstraint,
   };
 }
 
@@ -510,10 +652,15 @@ export function AdminAvailabilityEditor({
     timeRules,
     savedTimeRules,
     timeRulesIssues: ruleIssues,
+    constraints,
+    constraintDraft,
+    constraintDraftIssues,
+    conflicts,
     dirty,
     noticeRef,
     draftHeadingRef,
     confirmHeadingRef,
+    constraintHeadingRef,
     setRules,
     setMessage,
     setDraft,
@@ -525,6 +672,10 @@ export function AdminAvailabilityEditor({
     openDraft,
     submitDraft,
     confirmed,
+    openConstraintDraft,
+    setConstraintDraft,
+    submitConstraintDraft,
+    removeConstraint,
   } = workspace;
 
   // Only inside the loaded window is this an answer. Outside it, "no exception"
@@ -541,12 +692,12 @@ export function AdminAvailabilityEditor({
         <h2
           id="availability-heading"
           className="font-display text-2xl font-light text-warm-950 sm:text-3xl">
-          Horaires et fermetures
+          Horaires, fermetures et congés
         </h2>
         <p className="mt-2 max-w-2xl text-sm text-warm-600">
           Les horaires hebdomadaires définissent les créneaux récurrents. Une exception remplace
-          entièrement les horaires d’une date : elle ne s’y ajoute pas. Toutes les heures sont en
-          Europe/Paris.
+          entièrement les horaires d’une date : elle ne s’y ajoute pas. Les pauses, indisponibilités,
+          fermetures et congés s’ajoutent par-dessus. Toutes les heures sont en Europe/Paris.
         </p>
 
         <div
@@ -561,6 +712,18 @@ export function AdminAvailabilityEditor({
           }>
           {message}
         </div>
+        {conflicts.length > 0 && (
+          <ul
+            aria-label="Rendez-vous confirmés sur la période bloquée"
+            className="mt-3 space-y-1 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+            {conflicts.map((conflict) => (
+              <li key={conflict.reference}>
+                {formatParisDate(parisLocalDate(conflict.startsAtUtc))}, {formatParisTime(conflict.startsAtUtc)} –{" "}
+                {formatParisTime(conflict.endsAtUtc)} · {conflict.customerName}
+              </li>
+            ))}
+          </ul>
+        )}
 
         {loading ? (
           <p role="status" className="py-20 text-center text-warm-600">
@@ -931,8 +1094,215 @@ export function AdminAvailabilityEditor({
                   </ul>
                 )}
               </section>
+
+              <section
+                className="rounded-3xl border border-warm-200 bg-white p-5 shadow-sm"
+                aria-labelledby="constraints-heading">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h2 id="constraints-heading" className="font-display text-xl text-warm-900">
+                    Pauses, indisponibilités et congés
+                  </h2>
+                  <button
+                    type="button"
+                    disabled={!previewCovered}
+                    onClick={() => openConstraintDraft(previewDate)}
+                    className="rounded-full border border-warm-300 px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-sage-300 disabled:cursor-not-allowed disabled:opacity-50">
+                    Ajouter
+                  </button>
+                </div>
+                <p className="mt-2 text-xs text-warm-500">
+                  Une pause est une préférence : elle est affichée et ne retire aucun créneau. Une
+                  indisponibilité, une fermeture ou des congés bloquent les nouveaux rendez-vous ;
+                  les rendez-vous déjà pris ne sont jamais modifiés.
+                </p>
+                {constraints.length === 0 ? (
+                  <p className="mt-3 text-sm text-warm-600">Aucune contrainte sur la période chargée.</p>
+                ) : (
+                  <ul className="mt-4 space-y-2">
+                    {constraints.map((constraint) => (
+                      <li
+                        key={constraint.id}
+                        className={`rounded-2xl border p-3 text-sm ${constraint.enforcement === "flexible" ? "border-sky-200 bg-sky-50/60" : "border-rose-200 bg-rose-50/40"}`}>
+                        <p className="font-medium capitalize">
+                          {formatParisDate(constraint.startDate)}
+                          {constraint.endDate !== constraint.startDate && ` – ${formatParisDate(constraint.endDate)}`}
+                        </p>
+                        <p className="mt-1 text-warm-700">{describeConstraint(constraint)}</p>
+                        <p className="mt-1 text-xs text-warm-500">
+                          {constraint.enforcement === "flexible"
+                            ? "Souple : ne bloque aucun créneau."
+                            : "Stricte : bloque les nouveaux rendez-vous."}
+                        </p>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openConstraintDraft(constraint)}
+                            className="rounded-full border border-warm-300 px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-sage-300">
+                            Modifier
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeConstraint(constraint.id)}
+                            className="rounded-full border border-rose-300 px-3 py-1.5 text-xs text-rose-800 focus:outline-none focus:ring-2 focus:ring-rose-300">
+                            Supprimer
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
             </aside>
           </div>
+        )}
+
+        {constraintDraft !== null && (
+          <section
+            className="mt-6 rounded-3xl border border-sage-200 bg-white p-5 shadow-sm sm:p-6"
+            aria-labelledby="constraint-heading">
+            <h2
+              id="constraint-heading"
+              ref={constraintHeadingRef}
+              tabIndex={-1}
+              className="font-display text-2xl text-warm-900 focus:outline-none">
+              {constraintDraft.id === null ? "Nouvelle contrainte" : "Modifier la contrainte"}
+            </h2>
+            <p className="mt-2 text-sm text-warm-600">
+              {isTimedConstraintKind(constraintDraft.kind)
+                ? constraintDraft.kind === "pause"
+                  ? "Une pause est une préférence de planning : affichée sur le calendrier, elle ne retire aucun créneau."
+                  : "Une indisponibilité bloque les nouveaux rendez-vous sur cette plage. Les rendez-vous déjà pris ne sont pas modifiés."
+                : "Chaque journée de la période est bloquée pour les nouveaux rendez-vous. Les rendez-vous déjà pris ne sont pas modifiés."}
+            </p>
+
+            <fieldset className="mt-5">
+              <legend className="text-sm text-warm-600">Nature</legend>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {CONSTRAINT_KINDS.map((kind) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    aria-pressed={constraintDraft.kind === kind}
+                    onClick={() => setConstraintDraft({ ...constraintDraft, kind })}
+                    className={`rounded-full px-4 py-2 text-sm ${constraintDraft.kind === kind ? "bg-warm-900 text-white" : "border border-warm-300"}`}>
+                    {CONSTRAINT_KIND_LABELS[kind]}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+
+            <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <label className="block text-sm">
+                <span className="text-warm-600">{isTimedConstraintKind(constraintDraft.kind) ? "Date" : "Du"}</span>
+                <input
+                  type="date"
+                  value={constraintDraft.startDate}
+                  onChange={(event) => setConstraintDraft({ ...constraintDraft, startDate: event.target.value })}
+                  aria-invalid={constraintDraftIssues.some((issue) => issue.field === "startDate")}
+                  aria-describedby={constraintDraftIssues.length > 0 ? "constraint-error" : undefined}
+                  className={`mt-1 w-full ${inputClass}`}
+                />
+              </label>
+              {isTimedConstraintKind(constraintDraft.kind) ? (
+                <>
+                  <label className="block text-sm">
+                    <span className="text-warm-600">Début</span>
+                    <input
+                      type="time"
+                      value={constraintDraft.startLocal}
+                      onChange={(event) => setConstraintDraft({ ...constraintDraft, startLocal: event.target.value })}
+                      aria-invalid={constraintDraftIssues.some((issue) => issue.field === "window")}
+                      aria-describedby={constraintDraftIssues.length > 0 ? "constraint-error" : undefined}
+                      className={`mt-1 w-full ${inputClass}`}
+                    />
+                  </label>
+                  <label className="block text-sm">
+                    <span className="text-warm-600">Fin</span>
+                    <input
+                      type="time"
+                      value={constraintDraft.endLocal}
+                      onChange={(event) => setConstraintDraft({ ...constraintDraft, endLocal: event.target.value })}
+                      aria-invalid={constraintDraftIssues.some((issue) => issue.field === "window")}
+                      aria-describedby={constraintDraftIssues.length > 0 ? "constraint-error" : undefined}
+                      className={`mt-1 w-full ${inputClass}`}
+                    />
+                  </label>
+                  <label className="block text-sm">
+                    <span className="text-warm-600">Décalage (nuit d’automne)</span>
+                    <select
+                      value={constraintDraft.foldUtcOffset ?? ""}
+                      onChange={(event) =>
+                        setConstraintDraft({
+                          ...constraintDraft,
+                          foldUtcOffset: (event.target.value || null) as FoldOffset | null,
+                        })
+                      }
+                      className={`mt-1 w-full ${inputClass}`}>
+                      <option value="">Automatique</option>
+                      {FOLD_OFFSETS.map((offset) => (
+                        <option key={offset} value={offset}>
+                          {offset}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </>
+              ) : (
+                <label className="block text-sm">
+                  <span className="text-warm-600">Au (inclus)</span>
+                  <input
+                    type="date"
+                    value={constraintDraft.endDate}
+                    onChange={(event) => setConstraintDraft({ ...constraintDraft, endDate: event.target.value })}
+                    aria-invalid={constraintDraftIssues.some((issue) => issue.field === "endDate")}
+                    aria-describedby={constraintDraftIssues.length > 0 ? "constraint-error" : undefined}
+                    className={`mt-1 w-full ${inputClass}`}
+                  />
+                </label>
+              )}
+            </div>
+            {constraintDraftIssues.length > 0 && (
+              <p id="constraint-error" role="alert" className="mt-3 text-sm text-rose-800">
+                {constraintDraftIssues.map((issue) => issue.message).join(" ")}
+              </p>
+            )}
+
+            <label className="mt-5 block text-sm" htmlFor="constraint-reason">
+              Motif (facultatif)
+            </label>
+            <input
+              id="constraint-reason"
+              type="text"
+              maxLength={255}
+              value={constraintDraft.reason}
+              onChange={(event) => setConstraintDraft({ ...constraintDraft, reason: event.target.value })}
+              className={`mt-1 w-full ${inputClass}`}
+            />
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={saving || constraintDraftIssues.length > 0}
+                onClick={submitConstraintDraft}
+                className="rounded-full bg-warm-900 px-4 py-2 text-sm text-white disabled:opacity-40">
+                {saving ? "Enregistrement…" : "Enregistrer la contrainte"}
+              </button>
+              {constraintDraft.id !== null && (
+                <button
+                  type="button"
+                  onClick={() => removeConstraint(constraintDraft.id as number)}
+                  className="rounded-full border border-rose-300 px-4 py-2 text-sm text-rose-800">
+                  Supprimer la contrainte
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setConstraintDraft(null)}
+                className="rounded-full border border-warm-300 px-4 py-2 text-sm">
+                Fermer sans enregistrer
+              </button>
+            </div>
+          </section>
         )}
 
         {draft !== null && (
@@ -1124,14 +1494,18 @@ export function AdminAvailabilityEditor({
                 ? "Supprimer tous les horaires hebdomadaires ?"
                 : confirmation.kind === "close"
                   ? "Confirmer la fermeture ?"
-                  : "Supprimer cette exception ?"}
+                  : confirmation.kind === "remove-constraint"
+                    ? "Supprimer cette contrainte ?"
+                    : "Supprimer cette exception ?"}
             </h2>
             <p className="mt-2 text-sm text-rose-900">
               {confirmation.kind === "clear-weekly"
                 ? "Plus aucun créneau récurrent ne sera proposé. Les rendez-vous déjà pris ne sont pas annulés."
                 : confirmation.kind === "close"
                   ? "Aucun nouveau rendez-vous ne pourra être pris ce jour-là. Les rendez-vous déjà pris ne sont pas annulés."
-                  : "Cette date suivra de nouveau les horaires hebdomadaires. Aucun rendez-vous n’est supprimé."}
+                  : confirmation.kind === "remove-constraint"
+                    ? "La période redevient réservable selon les horaires en place. Aucun rendez-vous n’est supprimé."
+                    : "Cette date suivra de nouveau les horaires hebdomadaires. Aucun rendez-vous n’est supprimé."}
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
               <button

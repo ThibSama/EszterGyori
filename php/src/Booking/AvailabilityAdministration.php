@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Eszter\Booking;
 
+use Eszter\Support\IsoTimestamp;
+
 /**
  * Availability administration: the stored-schedule reads and the replacing
  * weekly/date-exception writes of the editor surface (ESZ-106).
@@ -30,6 +32,8 @@ final class AvailabilityAdministration
     public function __construct(
         private readonly BookingDomainContract $contract,
         private readonly AvailabilityRepository $availabilityRepository,
+        private readonly BookingTimePolicy $time,
+        private readonly BookingRepository $bookings,
     ) {
     }
 
@@ -66,6 +70,106 @@ final class AvailabilityAdministration
                 $state['exceptions'],
             ),
             'bookingTimeRules' => $state['timeRules']->payload(),
+            'constraints' => array_map($this->constraintPayload(...), $state['constraints']),
+        ];
+    }
+
+    /**
+     * ESZ-152 — pauses, unavailability, closures and leave.
+     *
+     * `create` and `update` construct (validate) the whole submitted shape
+     * first, then the repository stores it under the availability revision
+     * and the serialization boundary. A strict constraint is *allowed* to
+     * overlap confirmed appointments: after the write, those appointments
+     * are read back as `conflicts` so the operator is warned, and none of
+     * them is touched — no move, no cancellation, no history event. A
+     * flexible pause reports no conflicts because it prohibits nothing.
+     *
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function adminMutateAvailabilityConstraint(array $request): array
+    {
+        $action = BookingRequestFields::requiredString($request, 'action');
+        $expectedRevision = BookingRequestFields::requiredInt($request, 'expectedRevision');
+
+        if ($action === 'remove') {
+            $stored = $this->availabilityRepository->deleteConstraintWithRevision(
+                BookingRequestFields::requiredInt($request, 'id'),
+                $expectedRevision,
+            );
+
+            return ['revision' => $stored['revision'], 'constraint' => null, 'conflicts' => []];
+        }
+
+        $id = match ($action) {
+            'create' => 0,
+            'update' => BookingRequestFields::requiredInt($request, 'id'),
+            default => throw new BookingValidationException('action', 'Unknown planning constraint action.'),
+        };
+        if ($action === 'update' && $id < 1) {
+            throw new BookingValidationException('id', 'Planning constraint id must be positive.');
+        }
+
+        $constraint = PlanningConstraint::create(
+            $id,
+            BookingRequestFields::requiredString($request, 'kind'),
+            BookingRequestFields::requiredString($request, 'startDate'),
+            BookingRequestFields::requiredString($request, 'endDate'),
+            BookingRequestFields::nullableString($request, 'startLocal'),
+            BookingRequestFields::nullableString($request, 'endLocal'),
+            BookingRequestFields::nullableString($request, 'foldUtcOffset'),
+            BookingRequestFields::nullableString($request, 'reason'),
+            $this->contract,
+        );
+        $stored = $this->availabilityRepository->putConstraintWithRevision($constraint, $expectedRevision);
+
+        return [
+            'revision' => $stored['revision'],
+            'constraint' => $this->constraintPayload($stored['value']),
+            'conflicts' => $this->conflicts($stored['value']),
+        ];
+    }
+
+    /**
+     * The confirmed appointments a strict constraint overlaps, as stored now.
+     * Informational: a warning, never a precondition and never a write.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function conflicts(PlanningConstraint $constraint): array
+    {
+        $blocked = $constraint->blockingInterval($this->time);
+        if ($blocked === null) {
+            return [];
+        }
+
+        return array_map(
+            static fn (Booking $booking): array => [
+                'reference' => $booking->reference,
+                'customerName' => $booking->customerName,
+                'startsAtUtc' => IsoTimestamp::format(BookingRequestFields::databaseInstant($booking->startsAtUtc)),
+                'endsAtUtc' => IsoTimestamp::format(BookingRequestFields::databaseInstant($booking->endsAtUtc)),
+            ],
+            $this->bookings->confirmedOverlapping($blocked->startsAtUtc, $blocked->endsAtUtc),
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private function constraintPayload(PlanningConstraint $constraint): array
+    {
+        return [
+            'id' => $constraint->id,
+            'kind' => $constraint->kind,
+            'enforcement' => $constraint->enforcement,
+            'startDate' => $constraint->startDate,
+            'endDate' => $constraint->endDate,
+            'startLocal' => $constraint->window === null
+                ? null
+                : self::minutePrecision($constraint->window->startLocal),
+            'endLocal' => $constraint->window === null ? null : self::minutePrecision($constraint->window->endLocal),
+            'foldUtcOffset' => $constraint->window?->foldUtcOffset,
+            'reason' => $constraint->reason,
         ];
     }
 

@@ -12,6 +12,7 @@ use Eszter\Booking\BookingDomainContract;
 use Eszter\Booking\BookingTimeRules;
 use Eszter\Booking\BookingValidationException;
 use Eszter\Booking\OccupiedInterval;
+use Eszter\Booking\PlanningConstraint;
 use Eszter\Booking\SlotEngine;
 use Eszter\Booking\SlotLimitExceededException;
 use Eszter\Booking\WeeklyAvailabilityRule;
@@ -270,6 +271,100 @@ final class AvailabilitySlotEngineTest extends TestCase
         self::assertSame('17:00', end($default));
     }
 
+    /**
+     * ESZ-152 — on a 09:00–18:00 Monday (2026-07-06, UTC+2) with a 30-minute
+     * service: a strict unavailability blocks the slots it overlaps, a
+     * flexible pause over the same wall time removes none, closures and
+     * leave block whole civil days, and a strict constraint laid over an
+     * existing booking leaves that booking's own interval exactly where it
+     * was — the engine only ever reads occupancy, so nothing about it moves.
+     */
+    public function testStrictConstraintsBlockOverlappingSlotsAndFlexiblePausesDoNot(): void
+    {
+        $weekly = [$this->rule(1, '09:00', '18:00')];
+        $service = $this->service(30);
+        $starts = fn (array $constraints, array $occupied = []): array => array_column(
+            $this->engine->generate($service, '2026-07-06', '2026-07-06', $weekly, [], $occupied, null, null, $constraints),
+            'localStart',
+        );
+
+        $baseline = $starts([]);
+        self::assertContains('10:00', $baseline);
+        self::assertContains('11:45', $baseline);
+
+        // Strict partial unavailability 10:00–12:00: a 30-minute appointment
+        // may not overlap it, so 09:45 (ending 10:15) through 11:45 go and
+        // 09:30 (ending 10:00, touching) and 12:00 (starting at its end) stay.
+        $unavailability = $this->constraint('unavailability', '2026-07-06', '2026-07-06', '10:00', '12:00');
+        $blocked = $starts([$unavailability]);
+        self::assertContains('09:30', $blocked);
+        self::assertNotContains('09:45', $blocked);
+        self::assertNotContains('10:00', $blocked);
+        self::assertNotContains('11:45', $blocked);
+        self::assertContains('12:00', $blocked);
+
+        // The same wall time as a flexible pause removes nothing at all.
+        $pause = $this->constraint('pause', '2026-07-06', '2026-07-06', '10:00', '12:00');
+        self::assertSame($baseline, $starts([$pause]));
+        self::assertNull($pause->blockingInterval(new BookingTimePolicy($this->contract)));
+
+        // A closure of that day yields no slot; leave over Mon–Tue blocks
+        // both days and leaves Wednesday (an open weekday) untouched.
+        self::assertSame([], $starts([$this->constraint('closure', '2026-07-06', '2026-07-06')]));
+        $wednesday = [$this->rule(1, '09:00', '18:00'), $this->rule(3, '09:00', '10:00')];
+        $week = array_column(
+            $this->engine->generate(
+                $service,
+                '2026-07-06',
+                '2026-07-08',
+                $wednesday,
+                [],
+                [],
+                null,
+                null,
+                [$this->constraint('leave', '2026-07-06', '2026-07-07')],
+            ),
+            'localDate',
+        );
+        self::assertSame(['2026-07-08', '2026-07-08', '2026-07-08'], $week);
+
+        // A strict blocker over an existing 10:00–10:30 booking: the booking's
+        // interval is an input the engine never rewrites, and the slots it
+        // computes around both are the same slots the blocker alone yields.
+        $existing = new OccupiedInterval(
+            new \DateTimeImmutable('2026-07-06T08:00:00Z'),
+            new \DateTimeImmutable('2026-07-06T08:30:00Z'),
+        );
+        self::assertSame($blocked, $starts([$unavailability], [$existing]));
+        self::assertSame('2026-07-06T08:00:00+00:00', $existing->startsAtUtc->format(DATE_ATOM));
+        self::assertSame('2026-07-06T08:30:00+00:00', $existing->endsAtUtc->format(DATE_ATOM));
+    }
+
+    public function testPlanningConstraintShapeIsValidatedByKind(): void
+    {
+        foreach (
+            [
+                fn () => $this->constraint('unavailability', '2026-07-06', '2026-07-06'),
+                fn () => $this->constraint('pause', '2026-07-06', '2026-07-07', '10:00', '12:00'),
+                fn () => $this->constraint('closure', '2026-07-06', '2026-07-06', '10:00', '12:00'),
+                fn () => $this->constraint('leave', '2026-07-07', '2026-07-06'),
+                fn () => $this->constraint('leave', '2026-07-06', '2027-09-06'),
+                fn () => $this->constraint('siesta', '2026-07-06', '2026-07-06', '10:00', '12:00'),
+            ] as $invalid
+        ) {
+            try {
+                $invalid();
+                self::fail('Malformed planning constraint was accepted.');
+            } catch (BookingValidationException) {
+                self::addToAssertionCount(1);
+            }
+        }
+
+        self::assertSame('strict', $this->constraint('closure', '2026-07-06', '2026-07-07')->enforcement);
+        $pause = $this->constraint('pause', '2026-07-06', '2026-07-06', '12:30', '13:30');
+        self::assertSame('flexible', $pause->enforcement);
+    }
+
     public function testWindowAndRuleValidationRejectsMalformedCombinations(): void
     {
         foreach (
@@ -305,6 +400,16 @@ final class AvailabilitySlotEngineTest extends TestCase
         ?string $fold = null,
     ): WeeklyAvailabilityRule {
         return new WeeklyAvailabilityRule(0, $weekday, $this->window($start, $end, $fold), $from, $until, true);
+    }
+
+    private function constraint(
+        string $kind,
+        string $from,
+        string $until,
+        ?string $start = null,
+        ?string $end = null,
+    ): PlanningConstraint {
+        return PlanningConstraint::create(0, $kind, $from, $until, $start, $end, null, null, $this->contract);
     }
 
     private function service(int $duration, int $before = 0, int $after = 0): BookableService

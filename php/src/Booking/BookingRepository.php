@@ -477,6 +477,36 @@ final class BookingRepository
     }
 
     /**
+     * ESZ-152 — the confirmed appointments whose own interval (no buffers)
+     * overlaps a half-open UTC interval, in start order: what a strict
+     * planning constraint is warned about. A read only; nothing here changes
+     * a booking.
+     *
+     * @return list<Booking>
+     */
+    public function confirmedOverlapping(\DateTimeImmutable $fromUtc, \DateTimeImmutable $untilUtc): array
+    {
+        $from = $fromUtc->setTimezone(new \DateTimeZone('UTC'));
+        $until = $untilUtc->setTimezone(new \DateTimeZone('UTC'));
+        if ($until <= $from) {
+            throw new BookingValidationException('untilUtc', 'Overlap range must be increasing.');
+        }
+
+        return array_map(
+            fn (array $row): Booking => Booking::fromRow($row, $this->contract),
+            $this->database->fetchAll(
+                'SELECT ' . self::SELECT_COLUMNS . ' FROM bookings'
+                . " WHERE state = 'confirmed' AND starts_at_utc < :until_utc AND ends_at_utc > :from_utc"
+                . ' ORDER BY starts_at_utc, reference',
+                [
+                    'from_utc' => $this->time->databaseUtc($from),
+                    'until_utc' => $this->time->databaseUtc($until),
+                ],
+            ),
+        );
+    }
+
+    /**
      * Returns only blocking appointments, expanded by the booked service's own
      * buffers. Cancelled rows remain stored but never occupy time.
      *

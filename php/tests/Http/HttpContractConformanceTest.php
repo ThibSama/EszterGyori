@@ -1247,6 +1247,7 @@ final class HttpContractConformanceTest extends TestCase
             case 'adminAvailabilityResponse':
             case 'adminAvailabilityWeeklyResponse':
             case 'adminAvailabilityExceptionResponse':
+            case 'adminAvailabilityConstraintResponse':
             case 'adminServicesResponse':
             case 'adminServiceResponse':
                 self::assertIsArray($body);
@@ -1262,6 +1263,8 @@ final class HttpContractConformanceTest extends TestCase
                     'adminAvailabilityWeeklyResponse' => 'admin-availability-weekly-response.schema.json',
                     'adminAvailabilityExceptionResponse' =>
                         'admin-availability-exception-response.schema.json',
+                    'adminAvailabilityConstraintResponse' =>
+                        'admin-availability-constraint-response.schema.json',
                     'adminServicesResponse' => 'admin-services-response.schema.json',
                     'adminServiceResponse' => 'admin-service-response.schema.json',
                     default => throw new \LogicException('Unknown booking response matcher.'),

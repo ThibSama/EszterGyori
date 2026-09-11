@@ -16,6 +16,14 @@ namespace Eszter\Booking;
  * transactional revalidation cannot disagree about the lead time, the
  * preferred finish or the overrun — they all call this one method with the
  * same stored rules.
+ *
+ * ESZ-152: planning constraints are an input too. A strict one
+ * (unavailability, closure, leave) is converted here to a blocking UTC
+ * interval and combined with the occupied intervals, so it blocks a new slot
+ * exactly the way an existing appointment does — in the public read, the
+ * move read and the transactional revalidation alike. A flexible pause is
+ * accepted and ignored: it is a planning preference, and the one place that
+ * could turn it into a prohibition deliberately does not.
  */
 final class SlotEngine
 {
@@ -33,6 +41,7 @@ final class SlotEngine
      * @param list<WeeklyAvailabilityRule> $weeklyRules
      * @param list<AvailabilityException> $exceptions
      * @param list<OccupiedInterval> $occupied
+     * @param list<PlanningConstraint> $constraints
      * @return list<Slot>
      */
     public function generate(
@@ -44,6 +53,7 @@ final class SlotEngine
         array $occupied,
         ?\DateTimeImmutable $now = null,
         ?BookingTimeRules $timeRules = null,
+        array $constraints = [],
     ): array {
         $timeRules ??= BookingTimeRules::defaults();
         // ESZ-151 rule 1: nothing starts in the past or inside the lead.
@@ -71,6 +81,17 @@ final class SlotEngine
         foreach ($occupied as $interval) {
             if (!$interval instanceof OccupiedInterval) {
                 throw new BookingValidationException('occupied', 'Occupied interval list is malformed.');
+            }
+        }
+        // ESZ-152: strict constraints block like occupancy; flexible ones
+        // contribute nothing, by design rather than by omission.
+        foreach ($constraints as $constraint) {
+            if (!$constraint instanceof PlanningConstraint) {
+                throw new BookingValidationException('constraints', 'Planning constraint list is malformed.');
+            }
+            $blocked = $constraint->blockingInterval($this->time);
+            if ($blocked !== null) {
+                $occupied[] = $blocked;
             }
         }
 

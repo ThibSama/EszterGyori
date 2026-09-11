@@ -62,7 +62,7 @@ const TIME_RULES = { minimumLeadMinutes: 0, preferredFinishLocal: null, maxOverr
 test("availability reads carry no CSRF and mutations carry it on the frozen paths", async () => {
   const calls: Array<{ path: string; init?: RequestInit }> = [];
   const responses = [
-    { timezone: "Europe/Paris", fromDate: "2026-06-01", untilDate: "2026-06-30", revision: 4, weeklyRules: [rule()], exceptions: [], bookingTimeRules: TIME_RULES },
+    { timezone: "Europe/Paris", fromDate: "2026-06-01", untilDate: "2026-06-30", revision: 4, weeklyRules: [rule()], exceptions: [], bookingTimeRules: TIME_RULES, constraints: [] },
     { timezone: "Europe/Paris", revision: 5, weeklyRules: [rule({ id: 7 })], bookingTimeRules: TIME_RULES },
     { revision: 6, exception: { id: 3, localDate: "2026-06-15", kind: "closed", windows: [], note: null } },
     {

@@ -1,8 +1,9 @@
 import type { AdminBooking } from "./admin-api";
-import type { AdminAvailabilityException } from "./admin-api";
+import type { AdminAvailabilityException, AdminPlanningConstraint } from "./admin-api";
 import {
   type DateWindow,
   type WeeklyRuleDraft,
+  constraintsForDate,
   dateWindows,
   isoWeekday,
 } from "./admin-availability";
@@ -19,6 +20,11 @@ import { addCivilDays, bookingsForDate, formatParisTime } from "./admin-booking-
  * without a second opinion about what a constraint is: there is no slot maths,
  * no business rule and no new temporal domain type below this line. The server
  * remains the authority on both halves; this is a projection of what it said.
+ *
+ * ESZ-152: planning constraints are projected the same way. A constraint is
+ * laid on the days it touches and given an hour row when it has a window;
+ * whether it blocks anything is the server's `enforcement` word, carried
+ * through for styling and never re-derived here.
  */
 
 /** Monday of the week containing `date`, as a civil Paris date. */
@@ -85,6 +91,7 @@ export function weekHourSpan(
   rules: WeeklyRuleDraft[],
   exceptions: AdminAvailabilityException[],
   bookings: AdminBooking[],
+  constraints: AdminPlanningConstraint[] = [],
 ): { firstHour: number; lastHour: number } {
   const starts: number[] = [];
   const ends: number[] = [];
@@ -93,6 +100,13 @@ export function weekHourSpan(
     for (const window of dateWindows(date, rules, exceptions).windows) {
       starts.push(minutesOfLocalTime(window.startLocal));
       ends.push(minutesOfLocalTime(window.endLocal));
+    }
+    // A timed constraint outside the usual hours must be visible too.
+    for (const constraint of constraintsForDate(date, constraints)) {
+      if (constraint.startLocal !== null && constraint.endLocal !== null) {
+        starts.push(minutesOfLocalTime(constraint.startLocal));
+        ends.push(minutesOfLocalTime(constraint.endLocal));
+      }
     }
     for (const booking of bookingsForDate(bookings, date)) {
       starts.push(parisMinutes(booking.startsAtUtc));
@@ -132,13 +146,25 @@ export interface WeekAppointment {
   span: number;
 }
 
-/** One day column: its availability, and the appointments standing in it. */
+/**
+ * One planning constraint as the grid places it (ESZ-152). A timed one has an
+ * hour row and a span like an appointment; an all-day one has neither and is
+ * drawn on the day head instead.
+ */
+export interface WeekConstraint {
+  constraint: AdminPlanningConstraint;
+  hour: number | null;
+  span: number;
+}
+
+/** One day column: its availability, its constraints, and the appointments standing in it. */
 export interface WeekDayPlan {
   date: string;
   isToday: boolean;
   kind: "closed" | "exception" | "weekly";
   windows: DateWindow[];
   appointments: WeekAppointment[];
+  constraints: WeekConstraint[];
 }
 
 /**
@@ -154,6 +180,7 @@ export function weekPlan(
   exceptions: AdminAvailabilityException[],
   bookings: AdminBooking[],
   today: string,
+  constraints: AdminPlanningConstraint[] = [],
 ): WeekDayPlan[] {
   return days.map((date) => {
     const availability = dateWindows(date, rules, exceptions);
@@ -162,6 +189,18 @@ export function weekPlan(
       isToday: date === today,
       kind: availability.kind,
       windows: availability.windows,
+      constraints: constraintsForDate(date, constraints).map((constraint) => {
+        if (constraint.startLocal === null || constraint.endLocal === null) {
+          return { constraint, hour: null, span: 0 };
+        }
+        const startMinutes = minutesOfLocalTime(constraint.startLocal);
+        const hour = Math.floor(startMinutes / 60);
+        return {
+          constraint,
+          hour,
+          span: Math.max(1, Math.ceil(minutesOfLocalTime(constraint.endLocal) / 60) - hour),
+        };
+      }),
       appointments: bookingsForDate(bookings, date).map((booking) => {
         const startMinutes = parisMinutes(booking.startsAtUtc);
         const rawEnd = parisMinutes(booking.endsAtUtc);
@@ -189,4 +228,9 @@ export function dayAvailabilityLabel(plan: WeekDayPlan): string {
     .map((window) => `${window.startLocal} – ${window.endLocal}`)
     .join(", ");
   return plan.kind === "exception" ? `Exceptionnel : ${windows}` : windows;
+}
+
+/** The all-day constraints of a column (closures and leave), for its head. */
+export function allDayConstraints(plan: WeekDayPlan): WeekConstraint[] {
+  return plan.constraints.filter((item) => item.hour === null);
 }

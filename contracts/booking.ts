@@ -58,8 +58,17 @@
  * *narrow* what the weekly and date-exception windows already allow. The
  * defaults (no lead, no finish cap, no overrun) leave every existing
  * deployment offering exactly the slots it offered before.
+ *
+ * Version 11 (ESZ-152) adds planning constraints
+ * (`availability.planningConstraints`): flexible pauses, which are planning
+ * preferences and never remove a slot, and strict blockers — a timed
+ * unavailability, a closure of one or several whole days, leave over an
+ * inclusive date range — which block new reservations exactly the way an
+ * occupied interval does. They are additive rows beside the replacing date
+ * exceptions, written under the availability revision and the serialization
+ * boundary, and a strict blocker never alters a confirmed booking it overlaps.
  */
-export const BOOKING_DOMAIN_VERSION = 10;
+export const BOOKING_DOMAIN_VERSION = 11;
 
 /**
  * The business operates in metropolitan France. Rules are authored as local
@@ -143,6 +152,24 @@ export const BOOKING_TIME_RULES_DEFAULTS = {
   preferredFinishLocal: null,
   maxOverrunMinutes: 0,
 } as const;
+
+/**
+ * ESZ-152 — planning constraints: the four kinds Esther can place on the
+ * calendar and the two enforcements they resolve to. The enforcement is a
+ * property of the kind — a pause is the only flexible one — and is stored and
+ * exposed explicitly so a flexible preference and a strict blocker can never
+ * be confused by a reader that does not know the kinds.
+ */
+export const planningConstraintKinds = ["pause", "unavailability", "closure", "leave"] as const;
+export const planningConstraintEnforcements = ["flexible", "strict"] as const;
+export const PLANNING_CONSTRAINT_ENFORCEMENT_BY_KIND = {
+  pause: "flexible",
+  unavailability: "strict",
+  closure: "strict",
+  leave: "strict",
+} as const;
+/** The longest inclusive date range one closure or leave may span. */
+export const PLANNING_CONSTRAINT_MAX_DAYS = 400;
 
 /**
  * ESZ-144 — the fixed page capacity of one admin booking range read.
@@ -529,6 +556,7 @@ export const bookingSerializationPolicy = {
     "booking create, move and cancel",
     "weekly availability replacement, including the ESZ-151 booking-time rules it may carry",
     "date exception open, close and remove",
+    "planning constraint create, update and remove (ESZ-152)",
     "service provisioning or an admin service mutation (create, update, archive, restore) that changes is_active, duration, buffer-before or buffer-after",
   ],
   lockOrder:
@@ -817,6 +845,28 @@ export const bookingDomainContract = {
         "The end an appointment is judged by is start + the real offer duration: the service's duration or the persisted validated duration of an ESZ-150 combination.",
       persistence:
         "One system_settings row under the availability revision: it is replaced through the weekly availability PUT, under the ESZ-146 serialization boundary, and slot reads and transactional revalidation read the same stored row. Changing it never moves, shortens or recomputes an existing booking.",
+    },
+    /**
+     * ESZ-152 — planning constraints. Stated once here; PHP reads the kinds,
+     * the enforcement map and the span bound from the artifact, and React
+     * reproduces none of the blocking semantics.
+     */
+    planningConstraints: {
+      kinds: planningConstraintKinds,
+      enforcements: planningConstraintEnforcements,
+      enforcementByKind: PLANNING_CONSTRAINT_ENFORCEMENT_BY_KIND,
+      maxDays: PLANNING_CONSTRAINT_MAX_DAYS,
+      shape:
+        "pause and unavailability are one local date with a start/end wall-time window (foldUtcOffset only on the autumn fall-back date); closure and leave are an inclusive local date range with no times. startDate equals endDate for timed kinds; endDate is never before startDate; a range longer than maxDays is refused.",
+      flexible:
+        "A pause is a planning preference. It is persisted and shown on the calendar but it never removes a public slot, never fails transactional revalidation and never warns about the appointments it overlaps.",
+      strict:
+        "unavailability, closure and leave block new reservations. Their UTC intervals — the timed window, or local midnight to local midnight of the day after endDate — feed the same slot computation and the same transactional revalidation booking create and move run, as blocking intervals beside the occupied ones: no resource interval [start-bufferBefore, start+duration+bufferAfter) may overlap them.",
+      existingBookings:
+        "A strict constraint may overlap confirmed appointments. The write is allowed, the response lists those appointments as conflicts so the operator is warned, and none of them is moved, shortened, cancelled or otherwise altered. Editing or removing a constraint changes future bookability only.",
+      persistence:
+        "Additive availability_constraints rows beside availability_exceptions, which keep their one-replacing-exception-per-date meaning. Every write takes the ESZ-146 serialization boundary and the availability revision; reads are bounded to the requested local date window.",
+      dst: "Timed boundaries are converted with the Europe/Paris IANA rules at store time: a spring-forward gap is refused and an autumn fall-back overlap requires the explicit fold offset.",
     },
   },
   states: {

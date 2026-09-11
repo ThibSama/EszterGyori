@@ -7,6 +7,9 @@ import type {
   AdminAvailabilityException,
   AdminAvailabilityWindow,
   AdminBookingTimeRules,
+  AdminPlanningConstraint,
+  AdminPlanningConstraintInput,
+  AdminPlanningConstraintKind,
   AdminWeeklyRule,
   AdminWeeklyRuleInput,
 } from "./admin-api";
@@ -449,4 +452,155 @@ export function describeDate(
 /** ISO weekday (Monday = 1) of a local calendar date, read as a civil date. */
 export function isoWeekday(localDate: string): number {
   return new Date(`${localDate}T12:00:00Z`).getUTCDay() || 7;
+}
+
+/**
+ * ESZ-152 — planning constraints on the browser side.
+ *
+ * The same rule as everything above: prevalidation and projection only. What
+ * a constraint *blocks* is the server's — the slot engine treats a strict one
+ * as a blocking interval and a pause as nothing — and nothing here reproduces
+ * that. The functions below tell the operator which field is wrong before a
+ * round trip, and lay a stored constraint on the day it belongs to so the
+ * week grid can draw it beside the appointments.
+ */
+export const CONSTRAINT_KINDS = ["pause", "unavailability", "closure", "leave"] as const;
+
+export const CONSTRAINT_KIND_LABELS: Record<AdminPlanningConstraintKind, string> = {
+  pause: "Pause",
+  unavailability: "Indisponibilité",
+  closure: "Fermeture",
+  leave: "Congés",
+};
+
+/** Timed kinds carry one date and a window; all-day kinds carry a date range. */
+export function isTimedConstraintKind(kind: AdminPlanningConstraintKind): boolean {
+  return kind === "pause" || kind === "unavailability";
+}
+
+/**
+ * One constraint while it is being edited. `id` is null for a new one. The
+ * times are kept for every kind so switching between a timed and an all-day
+ * kind does not lose what was typed; only the request drops them.
+ */
+export interface ConstraintDraft {
+  id: number | null;
+  kind: AdminPlanningConstraintKind;
+  startDate: string;
+  endDate: string;
+  startLocal: string;
+  endLocal: string;
+  foldUtcOffset: FoldOffset | null;
+  reason: string;
+}
+
+export interface ConstraintIssue {
+  field: "startDate" | "endDate" | "window";
+  message: string;
+}
+
+export function emptyConstraintDraft(localDate: string): ConstraintDraft {
+  return {
+    id: null,
+    kind: "unavailability",
+    startDate: localDate,
+    endDate: localDate,
+    startLocal: "12:00",
+    endLocal: "14:00",
+    foldUtcOffset: null,
+    reason: "",
+  };
+}
+
+export function constraintToDraft(constraint: AdminPlanningConstraint): ConstraintDraft {
+  return {
+    id: constraint.id,
+    kind: constraint.kind,
+    startDate: constraint.startDate,
+    endDate: constraint.endDate,
+    startLocal: constraint.startLocal ?? "12:00",
+    endLocal: constraint.endLocal ?? "14:00",
+    foldUtcOffset: constraint.foldUtcOffset,
+    reason: constraint.reason ?? "",
+  };
+}
+
+/** The wire shape; only meaningful once `constraintIssues` is empty. */
+export function constraintToRequest(draft: ConstraintDraft): AdminPlanningConstraintInput {
+  const timed = isTimedConstraintKind(draft.kind);
+  return {
+    kind: draft.kind,
+    startDate: draft.startDate,
+    endDate: timed ? draft.startDate : draft.endDate,
+    startLocal: timed ? draft.startLocal : null,
+    endLocal: timed ? draft.endLocal : null,
+    foldUtcOffset: timed ? draft.foldUtcOffset : null,
+    reason: draft.reason.trim() === "" ? null : draft.reason.trim(),
+  };
+}
+
+export function constraintIssues(draft: ConstraintDraft): ConstraintIssue[] {
+  const issues: ConstraintIssue[] = [];
+  if (!isLocalDate(draft.startDate)) {
+    issues.push({ field: "startDate", message: "Indiquez une date valide." });
+  }
+  if (isTimedConstraintKind(draft.kind)) {
+    if (!isLocalTime(draft.startLocal) || !isLocalTime(draft.endLocal)) {
+      issues.push({ field: "window", message: "Indiquez des heures valides au format HH:MM." });
+    } else if (draft.endLocal <= draft.startLocal) {
+      issues.push({
+        field: "window",
+        message: "L’heure de fin doit être postérieure à l’heure de début.",
+      });
+    }
+    return issues;
+  }
+  if (!isLocalDate(draft.endDate)) {
+    issues.push({ field: "endDate", message: "Indiquez une date de fin valide." });
+  } else if (isLocalDate(draft.startDate) && draft.endDate < draft.startDate) {
+    issues.push({ field: "endDate", message: "La date de fin ne peut pas précéder la date de début." });
+  }
+  return issues;
+}
+
+/**
+ * Applies one server-returned constraint to the list held on screen; `null`
+ * is a removal. Sorted the way the server returns them, so a list that came
+ * from a read and one that was patched after a write read the same.
+ */
+export function replaceConstraint(
+  constraints: AdminPlanningConstraint[],
+  id: number,
+  next: AdminPlanningConstraint | null,
+): AdminPlanningConstraint[] {
+  const without = constraints.filter((constraint) => constraint.id !== id);
+  const merged = next === null ? without : [...without, next];
+  return merged.sort(
+    (left, right) =>
+      left.startDate.localeCompare(right.startDate) ||
+      (left.startLocal ?? "").localeCompare(right.startLocal ?? "") ||
+      left.id - right.id,
+  );
+}
+
+/** The constraints that touch one civil date, in the list's order. */
+export function constraintsForDate(
+  localDate: string,
+  constraints: AdminPlanningConstraint[],
+): AdminPlanningConstraint[] {
+  return constraints.filter(
+    (constraint) => constraint.startDate <= localDate && localDate <= constraint.endDate,
+  );
+}
+
+/** One line for a constraint: its kind, its span and its reason. */
+export function describeConstraint(constraint: AdminPlanningConstraint): string {
+  const label = CONSTRAINT_KIND_LABELS[constraint.kind];
+  const span =
+    constraint.startLocal !== null && constraint.endLocal !== null
+      ? `${constraint.startLocal} – ${constraint.endLocal}`
+      : constraint.startDate === constraint.endDate
+        ? "journée entière"
+        : `du ${constraint.startDate} au ${constraint.endDate}`;
+  return constraint.reason ? `${label}, ${span} — ${constraint.reason}` : `${label}, ${span}`;
 }
