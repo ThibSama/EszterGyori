@@ -437,7 +437,8 @@ final class SqlIntegrationTest extends TestCase
         self::assertTrue($first['created']);
         self::assertFalse($second['created']);
         self::assertSame('brows', $second['service']->key);
-        self::assertSame('Sourcils premium', $second['service']->label);
+        // ESZ-149: the stored name is admin-owned; re-provisioning never renames.
+        self::assertSame('Sourcils', $second['service']->label);
         self::assertSame(135, $second['service']->durationMinutes);
         self::assertSame(10, $second['service']->bufferBeforeMinutes);
         self::assertSame(25, $second['service']->bufferAfterMinutes);
@@ -6630,7 +6631,8 @@ final class SqlIntegrationTest extends TestCase
      * from the published SiteContent item of its key (title, description
      * seeded together), and re-provisioning after a published title change
      * leaves the stored name alone — the catalog row is the authority now —
-     * while `--label` is the one explicit way to rename it.
+     * while `--label` against the existing key is refused outright: renaming
+     * belongs to the back-office, and the CLI never claims otherwise.
      */
     public function testProvisioningCliSeedsANewRowFromPublishedContentAndKeepsAnExistingName(): void
     {
@@ -6689,17 +6691,21 @@ final class SqlIntegrationTest extends TestCase
         );
         self::assertSame(45, (int) $row['duration_minutes']);
 
-        // --label is the explicit rename; description and image stay as stored.
+        // --label on an existing key is a refusal, not a rename: nothing —
+        // name, operational facts, description or image — changes.
         [$thirdExit, $thirdOut, $thirdErr] = $this->runProvisioningCli(
             $config,
             '--key=brows',
             '--label=Sourcils signature',
-            '--duration=45',
-            '--buffer-before=10',
-            '--buffer-after=15',
+            '--duration=60',
+            '--buffer-before=0',
+            '--buffer-after=0',
         );
-        self::assertSame(0, $thirdExit, $thirdErr);
-        self::assertStringContainsString('booking label: Sourcils signature.', $thirdOut);
+        self::assertSame(2, $thirdExit, $thirdOut);
+        self::assertSame('', $thirdOut);
+        self::assertStringContainsString('--label cannot rename an existing service', $thirdErr);
+        self::assertStringContainsString('/admin/services', $thirdErr);
+        self::assertSame($row, $this->bookingServiceRow('brows'), 'a refused --label writes nothing');
         self::assertSame(
             $editorial,
             $this->database->fetchOne(

@@ -11,15 +11,16 @@
  *   --duration=120 --buffer-before=15 --buffer-after=15 [--label=NAME] [--disable]
  *
  * Since ESZ-149 the catalog row is the authority for a service's name,
- * description and image, and the administrator edits them in the back-office.
- * This command therefore never re-mirrors editorial facts over an existing
- * row: re-provisioning rewrites duration, buffers and activity only, and the
- * stored name survives unless `--label` says otherwise. When the command
- * *creates* a row it needs a name from somewhere — `--label` when given,
- * otherwise the title of the matching item of the validated *published*
- * SiteContent document, whose description and managed visual seed the new
- * row's description and image in the same pass. A new key with neither is
- * refused before any row appears; nothing is ever invented.
+ * description and image, and the administrator edits them in the back-office
+ * (`/admin/services`). This command therefore never rewrites editorial facts
+ * over an existing row: re-provisioning refreshes duration, buffers and
+ * activity only, and `--label` against an existing key is refused rather
+ * than silently claiming a rename. When the command *creates* a row it needs
+ * a name from somewhere — `--label` when given, otherwise the title of the
+ * matching item of the validated *published* SiteContent document, whose
+ * description and managed visual seed the new row's description and image in
+ * the same pass. A new key with neither is refused before any row appears;
+ * nothing is ever invented.
  */
 
 declare(strict_types=1);
@@ -141,10 +142,18 @@ function bookingServiceMain(array $arguments): int
         $imageSrc = null;
 
         if ($existing !== null) {
-            // ESZ-149: the row is the authority for its editorial facts. Only
-            // an explicit --label replaces the stored name; description and
-            // image are never touched by re-provisioning.
-            $label = $operatorLabel ?? $existing->label;
+            // ESZ-149: the row is the authority for its editorial facts.
+            // Re-provisioning never renames; the back-office does.
+            if ($operatorLabel !== null) {
+                fwrite(STDERR, \sprintf(
+                    "provision-booking-service: %s already exists; --label cannot rename an existing service."
+                    . " Its name, description and image are edited in the back-office (/admin/services).\n",
+                    $key,
+                ));
+
+                return 2;
+            }
+            $label = $existing->label;
         } elseif ($operatorLabel !== null) {
             $label = $operatorLabel;
         } else {
@@ -255,8 +264,8 @@ function bookingServiceUsage(): void
     fwrite(STDOUT, "Usage: php bin/provision-booking-service.php --config=PATH --key=KEY \\\n");
     fwrite(STDOUT, "  --duration=MIN --buffer-before=MIN --buffer-after=MIN [--label=NAME] [--disable]\n");
     fwrite(STDOUT, "A new row is named by --label, or by the published SiteContent item for KEY (whose description\n");
-    fwrite(STDOUT, "and image seed it). An existing row keeps its admin-owned name, description and image unless\n");
-    fwrite(STDOUT, "--label replaces the name.\n");
+    fwrite(STDOUT, "and image seed it). An existing row keeps its admin-owned name, description and image;\n");
+    fwrite(STDOUT, "--label with an existing KEY is refused — rename in the back-office (/admin/services).\n");
 }
 
 /** @var list<string> $argv */

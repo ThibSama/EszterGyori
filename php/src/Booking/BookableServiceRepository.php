@@ -214,15 +214,16 @@ final class BookableServiceRepository
     }
 
     /**
-     * Creates or replaces the operator-provisioned facts of one stable key:
-     * label, duration, both buffers and activity (ESZ-041).
+     * Creates or refreshes the operator-provisioned facts of one stable key
+     * (ESZ-041): duration, both buffers and activity.
      *
-     * Since ESZ-149 the catalog row is the authority for its editorial facts,
-     * so the two optional parameters mean "leave as stored" when null: the
-     * CLI seeds a *new* row's description and image from the published
-     * SiteContent item of the same key, and never rewrites what the
-     * administrator has since edited. A fresh row with nothing to seed gets
-     * an empty description and no image — never a fabricated value.
+     * Since ESZ-149 the catalog row is the authority for its editorial facts.
+     * The label, description and image are therefore *creation* inputs only:
+     * they name and seed a new row (the CLI takes them from `--label` or the
+     * published SiteContent item of the same key; a fresh row with nothing
+     * to seed gets an empty description and no image — never a fabricated
+     * value). An existing row keeps its stored name, description and image
+     * whatever the caller passes; renaming is the admin mutation's business.
      *
      * Provisioning rewrites exactly the facts a slot validation reads —
      * `is_active`, duration and both buffers — so it takes the booking
@@ -276,19 +277,17 @@ final class BookableServiceRepository
                         $now,
                     );
                 } else {
+                    // Operational facts only: booking_label, description and
+                    // image_src are admin-owned and never touched here.
                     $this->database->run(
-                        'UPDATE booking_services SET booking_label = :label, duration_minutes = :duration,'
+                        'UPDATE booking_services SET duration_minutes = :duration,'
                         . ' buffer_before_minutes = :before, buffer_after_minutes = :after,'
-                        . ' is_active = :active, description = :description, image_src = :image,'
-                        . ' updated_at = :updated WHERE service_key = :service_key',
+                        . ' is_active = :active, updated_at = :updated WHERE service_key = :service_key',
                         [
-                            'label' => $label,
                             'duration' => $durationMinutes,
                             'before' => $bufferBeforeMinutes,
                             'after' => $bufferAfterMinutes,
                             'active' => $active ? 1 : 0,
-                            'description' => $description === null ? $existing->description : trim($description),
-                            'image' => $imageSrc ?? $existing->imageSrc,
                             'updated' => $now,
                             'service_key' => $key,
                         ],

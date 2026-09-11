@@ -200,8 +200,9 @@ Since ESZ-149 the `booking_services` table is the administrable service catalog:
 back-office `Prestations` page adds, edits and archives services (name, description,
 duration, image) and the reservation page reads that catalog. The CLI therefore never
 overwrites an existing row's admin-owned name, description or image — re-provisioning
-rewrites duration, buffers and activity only, and `--label=NAME` is the one explicit
-way to rename from the command line. When the CLI *creates* a row it names it from
+rewrites duration, buffers and activity only, and `--label=NAME` against an existing
+key is refused (exit 2, no write): renaming happens in `/admin/services`. When the CLI
+*creates* a row it names it from
 `--label` or, absent that, from the matching item of the *published* SiteContent
 document (whose description seeds the new row); a new key with neither is refused,
 and nothing is invented. Malformed keys exit 2 and change no row; a missing or

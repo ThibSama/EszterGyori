@@ -417,8 +417,9 @@ final class ServiceCatalogSqlTest extends TestCase
         );
         self::assertCount(4, $this->api->services()['services']);
 
-        // Re-provisioning refreshes the operational facts and, with null
-        // editorial arguments, leaves the admin-owned facts as stored.
+        // Re-provisioning refreshes the operational facts and leaves every
+        // admin-owned fact — name, description, image — exactly as stored,
+        // whatever label the operator passes.
         $this->api->adminMutateService([
             'action' => 'update',
             'key' => 'lips',
@@ -428,9 +429,11 @@ final class ServiceCatalogSqlTest extends TestCase
             'durationMinutes' => 90,
             'imageSrc' => null,
         ]);
-        $again = $this->services->provision('lips', 'Lèvres', 120, 10, 10, true);
+        $again = $this->services->provision('lips', 'Lèvres premium', 120, 10, 10, true, 'Autre texte.');
         self::assertFalse($again['created']);
+        self::assertSame('Lèvres', $again['service']->label, 'the admin-owned name survives re-provisioning');
         self::assertSame('Contour et remplissage.', $again['service']->description);
+        self::assertNull($again['service']->imageSrc);
         self::assertSame(120, $again['service']->durationMinutes);
         self::assertSame(10, $again['service']->bufferBeforeMinutes);
 
