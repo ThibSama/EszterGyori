@@ -148,8 +148,11 @@ at rest wherever it is copied to, and deleted from anywhere it does not need to 
 
 Two retention clocks apply to the archives this command produces, and both are
 frozen product policy — `contracts/generated/booking-domain.json` under
-`customerDataRetention` — not statutory claims. The repo does not enforce
-either by itself; the schedules below are the operator side of that policy.
+`customerDataRetention` — not statutory claims. The repo enforces both on the
+host: the customer-data clock through the retention sweep and every restore,
+the archive clock through the backup command itself (ESZ-162). The daily
+schedules in `docs/deployment-runbook.md` §4 are the operator side of that
+policy.
 
 **Booking customer data.** Confirmed bookings keep their customer data for 90
 days after `ends_at_utc`; cancelled bookings for 90 days after
@@ -163,10 +166,20 @@ restore, before the restore reports success.
 
 **Application archives.** An archive carries every booking's customer data by
 design, so an archive is itself a personal-data store with a bounded life: at
-**most 30 days**. Delete archives older than that from the host and from
-anywhere they were copied to. The previous suggestion of a monthly archive kept
-for a year is withdrawn: it contradicts the 30-day ceiling. A reasonable
-starting point is a daily backup deleted after 30 days. Provider-side
+**most `backupArchiveRetentionDays`** (30 days). On the host, `backup.php`
+enforces it (`Eszter\Backup\BackupRotation`): once the new archive has been
+renamed into place, canonical `eszter-backup-YYYYMMDD-HHMMSS.tar.gz` archives
+in the same directory whose timestamp is strictly older than
+`now - backupArchiveRetentionDays` are deleted; one exactly on the boundary is
+kept. Rotation never runs for a failed backup, considers no other name
+(`.partial`, renamed copies, anything unrelated), and refuses before deleting
+anything if a canonical name is a symlink or not a regular file. The previous
+suggestion of a monthly archive kept for a year is withdrawn: it contradicts
+the ceiling. The schedule is a daily backup, taken after the customer-data
+sweep so the archive already reflects every erasure that was due.
+
+Anything outside that directory is outside that enforcement: copies made
+elsewhere must be deleted by the operator on the same clock, and provider-side
 snapshots are an external policy check, not governed here and not enforced by
 this repository.
 

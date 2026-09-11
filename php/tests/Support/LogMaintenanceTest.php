@@ -35,7 +35,7 @@ final class LogMaintenanceTest extends TestCase
         $inside = $this->file('app.log.20260515', 'inside', null, 0o644);
         $boundary = $this->file('notifications.log.20260514', 'boundary', null, 0o640);
         $expired = $this->file('retention.log.20260513', 'expired', null, 0o644);
-        $unrelated = $this->file('notification-cron.log', 'unrelated', null, 0o644);
+        $unrelated = $this->file('custom.log', 'unrelated', null, 0o644);
 
         $result = (new LogMaintenance($this->root, $this->clock))->run();
         $archive = $this->root . '/app.log.20260613';
@@ -67,6 +67,36 @@ final class LogMaintenanceTest extends TestCase
         self::assertSame(['rotated' => [], 'deleted' => []], $second);
         self::assertFileExists($active);
         self::assertStringContainsString('after maintenance', (string) file_get_contents($active));
+    }
+
+    public function testCronRedirectionLogsAreManagedUnderTheSameThirtyDayBoundary(): void
+    {
+        $notification = $this->file('notification-cron.log', "tick\n", '2026-06-13', 0o644);
+        $retention = $this->file('retention-cron.log', "status:  completed\n", '2026-06-12', 0o644);
+        $backup = $this->file('backup-cron.log', "archive: x\n", '2026-06-13', 0o664);
+        $boundary = $this->file('notification-cron.log.20260514', 'boundary', null, 0o644);
+        $expired = $this->file('retention-cron.log.20260513', 'expired', null, 0o644);
+        $expiredBackup = $this->file('backup-cron.log.20260101', 'expired', null, 0o644);
+        $partialLookalike = $this->file('backup-cron.log.2026051', 'unrelated', null, 0o644);
+
+        $result = (new LogMaintenance($this->root, $this->clock))->run();
+
+        self::assertSame([
+            $this->root . '/backup-cron.log.20260613',
+            $this->root . '/notification-cron.log.20260613',
+            $this->root . '/retention-cron.log.20260612',
+        ], $result['rotated']);
+        self::assertSame([$expiredBackup, $expired], $result['deleted']);
+        self::assertFileDoesNotExist($notification);
+        self::assertFileDoesNotExist($retention);
+        self::assertFileDoesNotExist($backup);
+        self::assertFileExists($boundary);
+        self::assertSame(0o600, fileperms($boundary) & 0o777);
+        foreach ($result['rotated'] as $archive) {
+            self::assertSame(0o600, fileperms($archive) & 0o777);
+        }
+        self::assertSame('unrelated', file_get_contents($partialLookalike));
+        self::assertSame(0o644, fileperms($partialLookalike) & 0o777);
     }
 
     public function testMissingDirectoryAndNoLogsAreIdempotentNoOps(): void

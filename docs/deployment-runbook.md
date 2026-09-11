@@ -281,8 +281,29 @@ no booking reference and no customer value ever reaches its stdout or
 A non-zero exit requires attention, and a failure changes nothing: each booking is
 erased in its own transaction.
 
-A third job runs the repository-owned **log maintenance** once daily, after the
-customer-data sweep:
+A third job takes the **daily production backup** (ESZ-162), after the
+customer-data sweep so that the fresh archive already reflects every erasure that
+was due, into the private `backups/` directory of §2:
+
+- cadence: daily (e.g. `30 3 * * *`);
+- mode: no exclusivity requirement applies at this cadence;
+- working directory: `/usr/home/<FTP_LOGIN>/eszter/app`;
+- PHP version: the domain's configured PHP, at least 8.2;
+- command:
+
+```sh
+cd /usr/home/<FTP_LOGIN>/eszter/app && /usr/bin/php bin/backup.php --config=/usr/home/<FTP_LOGIN>/eszter/config/config.php --to=/usr/home/<FTP_LOGIN>/eszter/backups >> /usr/home/<FTP_LOGIN>/eszter/var/log/backup-cron.log 2>&1
+```
+
+Once the new archive is in place, the same command deletes the canonical
+`eszter-backup-YYYYMMDD-HHMMSS.tar.gz` archives in `backups/` that are strictly
+older than the frozen `backupArchiveRetentionDays` (§5). It prints the archive
+path, byte and row counts and the deleted archive paths only — no customer value
+reaches its stdout — so the cron log is safe to keep. A non-zero exit requires
+attention and deletes nothing: a failed backup leaves every existing archive.
+
+A fourth job runs the repository-owned **log maintenance** once daily, after the
+customer-data sweep and the backup:
 
 - cadence: daily (e.g. `45 3 * * *`);
 - mode: no exclusivity requirement applies at this cadence;
@@ -294,11 +315,16 @@ cd /usr/home/<FTP_LOGIN>/eszter/app && /usr/bin/php bin/maintain-logs.php --conf
 ```
 
 The single policy is 30 calendar days (`LogMaintenance::RETENTION_DAYS`). The
-command rotates only `app.log`, `notifications.log` and `retention.log` to
-`<name>.YYYYMMDD`, keeps an archive dated exactly 30 days ago, and deletes it only
-once its date is strictly older. Every active file and managed archive is corrected
-and verified as `0600`; unrelated files, including the two `*-cron.log` redirection
-files, are untouched. There is no compression, daemon or system `logrotate`.
+command rotates only the repository-owned names — `app.log`, `notifications.log`,
+`retention.log` and the three cron redirection files `notification-cron.log`,
+`retention-cron.log` and `backup-cron.log` (`LogMaintenance::MANAGED_LOG_FILES`,
+ESZ-162) — to `<name>.YYYYMMDD`, keeps an archive dated exactly 30 days ago, and
+deletes it only once its date is strictly older. Every active file and managed
+archive is corrected and verified as `0600`; unrelated files are untouched. There
+is no compression, daemon or system `logrotate`. The cron redirection files carry
+command stdout/stderr only (status, counts, cutoffs, paths, never a customer
+value); a `>>` redirection recreates one with the cron account's umask, and the
+next maintenance run restricts it.
 
 No active file is recreated during rotation. PHP and these commands do not hold a
 logger across requests; the next application write creates a new private `0600`
@@ -347,6 +373,14 @@ period had already expired at restore time are anonymized — and their
 pending/processing notification jobs retired — inside the restore, before it
 reports success (ESZ-140); the remaining notification queue should be inspected
 before the next cron tick.
+
+`backup.php` also owns the archive ceiling (ESZ-162): after the new archive is in
+place it deletes the canonical archives in the same directory that are strictly
+older than `backupArchiveRetentionDays` (`customerDataRetention`, 30 days), and
+it refuses — before deleting anything — a canonical name that is a symlink or not
+a regular file. It never touches other names, other directories, copies made
+elsewhere or provider snapshots; those remain operator and provider
+responsibility. The daily schedule is in §4.
 
 The full procedure, the exclusion rationale, retention policy (a 30-day ceiling
 for application archives, 90-day booking customer-data erasure) and the split

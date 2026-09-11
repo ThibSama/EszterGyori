@@ -123,10 +123,13 @@ SMS n’est disponible et leur absence n’est pas une panne de la V1.
 
 ## Sauvegarde et restauration
 
-L’opérateur d’hébergement exécute `app/bin/backup.php` vers le dossier privé
-`backups/`, jamais sous `public_html/`. Conserver une copie chiffrée hors du serveur,
-appliquer la rétention décidée et répéter régulièrement une restauration dans une
-base et un dossier de test vides. Le détail et les commandes sont dans
+L’opérateur d’hébergement exécute `app/bin/backup.php` chaque jour (cron, après la
+purge de rétention) vers le dossier privé `backups/`, jamais sous `public_html/`.
+La commande supprime elle-même, une fois la nouvelle archive écrite, les archives
+canoniques de ce dossier plus anciennes que 30 jours ; rien n’est supprimé si la
+sauvegarde échoue. Conserver une copie chiffrée hors du serveur, y appliquer la
+même rétention et répéter régulièrement une restauration dans une base et un
+dossier de test vides. Le détail et les commandes sont dans
 [`backup-and-restore.md`](backup-and-restore.md).
 
 Une restauration de production exige `--overwrite` si la cible contient des données
@@ -204,10 +207,11 @@ Configurer aussi un cron quotidien depuis `app/` :
 ```
 
 La durée unique est de 30 jours calendaires. La commande fait tourner uniquement
-`app.log`, `notifications.log` et `retention.log`, conserve l’archive ayant exactement
-30 jours et supprime seulement les archives plus anciennes. Les fichiers actifs et
-archives restent en mode `0600`; les journaux de sortie des cron et tout autre
-fichier sont laissés intacts. Un dossier absent est sans erreur. En cas de refus
+`app.log`, `notifications.log`, `retention.log` et les journaux de sortie des cron
+`notification-cron.log`, `retention-cron.log` et `backup-cron.log`, conserve
+l’archive ayant exactement 30 jours et supprime seulement les archives plus
+anciennes. Les fichiers actifs et archives restent en mode `0600`; tout autre
+fichier est laissé intact. Un dossier absent est sans erreur. En cas de refus
 (lien symbolique, cible non régulière, permissions ou lecture), corriger le
 propriétaire et la topologie, préserver à part le fichier suspect, relancer la
 commande, puis provoquer une écriture applicative et vérifier que le nouveau

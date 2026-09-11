@@ -1,14 +1,17 @@
 <?php
 
 /**
- * Writes one backup archive (ESZ-083).
+ * Writes one backup archive (ESZ-083) and expires the old ones (ESZ-162).
  *
  *   php bin/backup.php --config=config/config.php --to=../backups
  *
  * Read-only with respect to durable application state: it opens the database,
  * reads content and media, and writes one archive into the destination. Its only
  * deployment-side write is the excluded advisory snapshot lock; no data is
- * created, seeded or repaired.
+ * created, seeded or repaired. Once the new archive is in place, canonical
+ * archives in the destination older than the frozen
+ * `backupArchiveRetentionDays` are deleted — never before, so a failed backup
+ * leaves every existing archive where it was.
  *
  * What it carries and what it deliberately leaves out is declared in
  * `Eszter\Backup\BackupSet` and repeated in `docs/backup-and-restore.md`. The
@@ -28,12 +31,14 @@ declare(strict_types=1);
 namespace Eszter\Bin;
 
 use Eszter\Backup\BackupException;
+use Eszter\Backup\BackupRotation;
 use Eszter\Backup\BackupWriter;
 use Eszter\Config\Configuration;
 use Eszter\Contract\ContractArtifacts;
 use Eszter\Database\Database;
 use Eszter\Database\DatabaseException;
 use Eszter\Database\Migrator;
+use Eszter\Retention\RetentionPolicy;
 use Eszter\Support\CommandOptions;
 use Eszter\Support\SystemClock;
 
@@ -103,6 +108,20 @@ function main(array $argv): int
             fwrite(STDOUT, \sprintf("  %-32s excluded — %s\n", $table, $reason));
         }
 
+        // Only reached once the archive above is in place: the writer throws on
+        // every failure path, and the rotation re-checks the published file itself.
+        $rotation = (new BackupRotation(RetentionPolicy::fromArtifacts($artifacts), $clock))
+            ->run($destination, $result['path']);
+
+        foreach ($rotation['deleted'] as $expired) {
+            fwrite(STDOUT, \sprintf("expired: %s\n", $expired));
+        }
+        fwrite(STDOUT, \sprintf(
+            "rotation: %d archive(s) deleted; retention %d days\n",
+            \count($rotation['deleted']),
+            $rotation['retentionDays'],
+        ));
+
         return 0;
     } catch (BackupException | DatabaseException $exception) {
         fwrite(STDERR, 'backup: ' . $exception->getMessage() . "\n");
@@ -130,6 +149,11 @@ function usage(): void
         The archive is `eszter-backup-<YYYYMMDD-HHMMSS>.tar.gz`, mode 0600. It
         holds the database rows, the content JSON, and the media originals and
         derivatives, with a manifest carrying a sha256 for every entry.
+
+        After the archive is in place, canonical archives in DIRECTORY strictly
+        older than the frozen `backupArchiveRetentionDays` are deleted. Nothing
+        is deleted when the backup fails, and nothing outside this directory —
+        copies or provider snapshots — is touched.
 
         It never holds configuration, secrets, logs, locks, temporary files,
         in-flight uploads, sessions, rate-limit counters or application code.

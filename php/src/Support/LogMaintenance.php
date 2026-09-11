@@ -15,8 +15,20 @@ final class LogMaintenance
 {
     public const RETENTION_DAYS = 30;
 
-    /** Extend this list whenever a new command adds a Logger target. */
-    public const MANAGED_LOG_FILES = ['app.log', 'notifications.log', 'retention.log'];
+    /**
+     * Extend this list whenever a new command adds a Logger target or the
+     * runbook adds a cron `>>` redirection file. The `*-cron.log` files hold
+     * command stdout/stderr only — status lines, counts, cutoffs and paths —
+     * so the same 30-day bound is the only policy they need (ESZ-162).
+     */
+    public const MANAGED_LOG_FILES = [
+        'app.log',
+        'notifications.log',
+        'retention.log',
+        'notification-cron.log',
+        'retention-cron.log',
+        'backup-cron.log',
+    ];
 
     /**
      * @param string $logDir Configured private log directory.
