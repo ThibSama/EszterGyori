@@ -67,10 +67,10 @@ final class SlotAvailability
         if ($booking->state->value !== 'confirmed') {
             throw new InvalidBookingTransitionException($booking->state->value, 'moved');
         }
-        // ESZ-150: a combination booking moves as its stored combination —
-        // with the validated duration — and fails closed if that combination
-        // or one of its members is no longer bookable.
-        $offer = $this->catalog->requireOffer($booking->serviceKeys());
+        // ESZ-150/153: a booking moves as its stored services — frozen to
+        // its own duration and buffer snapshot — and fails closed if that
+        // service or combination is no longer bookable.
+        $offer = $this->movableOffer($booking);
 
         return $this->availabilityEnvelope(
             $offer,
@@ -81,8 +81,8 @@ final class SlotAvailability
     }
 
     /**
-     * Revalidates one requested start instant against the schedule as it is
-     * now, excluding the caller's own booking when one is being moved.
+     * Revalidates one requested start instant for a *new* booking against
+     * the schedule as it is now.
      *
      * The caller (a booking command) holds the serialization boundary and is
      * inside its transaction: this runs after any committed availability or
@@ -90,7 +90,9 @@ final class SlotAvailability
      * The offer is re-resolved through the catalogue's single bookability
      * rule before any slot is generated, and returned beside the slot so the
      * caller stores exactly what was revalidated (ESZ-150: the combination's
-     * validated duration, its key and its first member).
+     * validated duration, its key and its first member; ESZ-153: the buffers
+     * the booking snapshots as its own). A move of an existing booking goes
+     * through {@see requestedMoveSlot()} instead.
      *
      * @param list<string> $serviceKeys
      * @return array{offer: BookableOffer, slot: Slot}
@@ -101,16 +103,57 @@ final class SlotAvailability
         array $serviceKeys,
         string $localDate,
         \DateTimeImmutable $requestedStart,
-        ?string $excludeReference = null,
     ): array {
         $offer = $this->catalog->requireOffer($serviceKeys);
-        foreach ($this->compute($offer, $localDate, $localDate, $excludeReference) as $slot) {
+        foreach ($this->compute($offer, $localDate, $localDate) as $slot) {
             if (IsoTimestamp::format($slot->startsAtUtc) === IsoTimestamp::format($requestedStart)) {
                 return ['offer' => $offer, 'slot' => $slot];
             }
         }
 
         throw new SlotUnavailableException('Requested slot failed transactional revalidation.');
+    }
+
+    /**
+     * ESZ-153 — the move-side revalidation: the same schedule, rules,
+     * constraints and occupancy as {@see requestedSlot()}, computed for the
+     * booking's own frozen shape rather than for the catalog's current one.
+     * The caller holds the serialization boundary and the row lock.
+     *
+     * @throws SlotUnavailableException when the schedule no longer offers the
+     *     requested instant for this booking
+     */
+    public function requestedMoveSlot(
+        Booking $booking,
+        string $localDate,
+        \DateTimeImmutable $requestedStart,
+    ): Slot {
+        $offer = $this->movableOffer($booking);
+        foreach ($this->compute($offer, $localDate, $localDate, $booking->reference) as $slot) {
+            if (IsoTimestamp::format($slot->startsAtUtc) === IsoTimestamp::format($requestedStart)) {
+                return $slot;
+            }
+        }
+
+        throw new SlotUnavailableException('Requested slot failed transactional revalidation.');
+    }
+
+    /**
+     * ESZ-153 — what an existing booking moves as.
+     *
+     * Bookability is the current catalog policy's (ESZ-150: the stored
+     * service or combination and every member must still be active), but the
+     * shape is the booking's own: its stored start→end duration and its
+     * buffer snapshot. A duration or buffer configured after the confirmation
+     * therefore reshapes new bookings and never this one — through the same
+     * engine, since a frozen offer is just another offer to it.
+     */
+    private function movableOffer(Booking $booking): BookableOffer
+    {
+        return $this->catalog->requireOffer($booking->serviceKeys())->frozenAs(
+            $booking->durationMinutes(),
+            $this->bookings->bufferSnapshot($booking),
+        );
     }
 
     /**

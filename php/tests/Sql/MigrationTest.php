@@ -69,7 +69,7 @@ final class MigrationTest extends TestCase
 
         self::assertSame(
             ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
-             '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016', '0017', '0018'],
+             '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016', '0017', '0018', '0019'],
             $applied,
         );
     }
@@ -440,6 +440,8 @@ final class MigrationTest extends TestCase
                     'fk_bookings_combination',
                 ],
                 'booking_resource_locks' => ['PRIMARY'],
+                // ESZ-153: keyed by the booking id, which also serves its FK.
+                'booking_buffer_snapshots' => ['PRIMARY'],
                 'booking_history' => ['PRIMARY', 'ix_booking_history_booking_order'],
                 'system_settings' => ['PRIMARY'],
                 'notification_jobs' => [
@@ -1162,6 +1164,118 @@ final class MigrationTest extends TestCase
                 'changed' => self::NOW,
             ],
         );
+    }
+
+    // --- ESZ-153: booking-owned buffer snapshots ---------------------------
+
+    /**
+     * ESZ-153 — migration 0019 adds `booking_buffer_snapshots` and freezes
+     * every pre-existing booking, once, to the buffers authoritative for it
+     * at that instant: its combination's when it names one, its service's
+     * otherwise. Nothing on `bookings` is rewritten, a later catalog edit
+     * leaves the frozen row alone, and a re-run inserts nothing.
+     */
+    public function testMigration0019FreezesLegacyBookingsToTheirCurrentEffectiveBuffers(): void
+    {
+        $directory = TestEnvironment::makeTempDirectory('eszter-migrations-esz153');
+
+        try {
+            $migrations = TestDatabase::migrationsDirectory();
+            foreach ((glob($migrations . '/000[1-9]_*.sql') ?: []) as $file) {
+                copy($file, $directory . '/' . basename($file));
+            }
+            foreach ((glob($migrations . '/001[0-8]_*.sql') ?: []) as $file) {
+                copy($file, $directory . '/' . basename($file));
+            }
+
+            // The pre-0019 world: a single-service booking with the service's
+            // buffers and a combination booking with the combination's.
+            self::assertCount(18, $this->migrator($directory)->migrate());
+            foreach ([['brows', 30, 5, 0], ['lips', 60, 0, 10]] as [$key, $duration, $before, $after]) {
+                $this->database->run(
+                    'INSERT INTO booking_services'
+                    . ' (service_key, booking_label, duration_minutes, buffer_before_minutes,'
+                    . ' buffer_after_minutes, is_active, created_at, updated_at)'
+                    . ' VALUES (:key, :label, :duration, :before, :after, 1, :created, :updated)',
+                    [
+                        'key' => $key, 'label' => $key, 'duration' => $duration, 'before' => $before, 'after' => $after,
+                        'created' => self::NOW, 'updated' => self::NOW,
+                    ],
+                );
+            }
+            $this->database->run(
+                'INSERT INTO booking_service_combinations (combination_key, proposed_duration_minutes,'
+                . ' duration_minutes, buffer_before_minutes, buffer_after_minutes, is_active, created_at, updated_at)'
+                . " VALUES ('brows+lips', 90, 75, 15, 20, 1, :created, :updated)",
+                ['created' => self::NOW, 'updated' => self::NOW],
+            );
+            $insertBooking = fn (string $reference, string $service, ?string $combination, string $end) =>
+                $this->database->run(
+                    'INSERT INTO bookings'
+                    . ' (reference, service_key, combination_key, state, starts_at_utc, ends_at_utc, timezone_name,'
+                    . ' customer_name, customer_email, consent_at_utc, created_at, updated_at, state_changed_at)'
+                    . " VALUES (:reference, :service, :combination, 'confirmed',"
+                    . " '2026-06-15 10:00:00.000', :end, 'Europe/Paris',"
+                    . " 'Cliente', 'cliente@example.test', '2026-06-13 09:00:00.000', :created, :updated, :changed)",
+                    [
+                        'reference' => $reference, 'service' => $service, 'combination' => $combination,
+                        'end' => $end, 'created' => self::NOW, 'updated' => self::NOW, 'changed' => self::NOW,
+                    ],
+                );
+            $insertBooking('bk_99999999999999999999999999999991', 'brows', null, '2026-06-15 10:30:00.000');
+            $insertBooking('bk_99999999999999999999999999999992', 'brows', 'brows+lips', '2026-06-15 11:15:00.000');
+            $before = $this->database->fetchAll('SELECT * FROM bookings ORDER BY id');
+
+            // The deploy: 0019 lands and applies alone.
+            copy($migrations . '/0019_booking_buffer_snapshots.sql', $directory . '/0019_booking_buffer_snapshots.sql');
+            self::assertSame(['0019'], $this->migrator($directory)->migrate());
+
+            self::assertSame($before, $this->database->fetchAll('SELECT * FROM bookings ORDER BY id'));
+            $frozen = fn (): array => $this->database->fetchAll(
+                'SELECT b.reference, ss.buffer_before_minutes AS before_m,'
+                . ' ss.buffer_after_minutes AS after_m, ss.origin'
+                . ' FROM booking_buffer_snapshots ss INNER JOIN bookings b ON b.id = ss.booking_id ORDER BY b.id',
+            );
+            $expected = [
+                [
+                    'reference' => 'bk_99999999999999999999999999999991',
+                    'before_m' => 5, 'after_m' => 0, 'origin' => 'legacy',
+                ],
+                [
+                    'reference' => 'bk_99999999999999999999999999999992',
+                    'before_m' => 15, 'after_m' => 20, 'origin' => 'legacy',
+                ],
+            ];
+            self::assertSame($expected, $frozen());
+            $frozenAt = $this->database->fetchOne(
+                'SELECT frozen_at FROM booking_buffer_snapshots LIMIT 1',
+            )['frozen_at'] ?? null;
+            self::assertIsString($frozenAt);
+            self::assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/', $frozenAt);
+
+            // A catalog edit after the freeze changes nothing frozen, and the
+            // migration stays repeat-safe.
+            $this->database->run("UPDATE booking_services SET buffer_before_minutes = 60 WHERE service_key = 'brows'");
+            $this->database->run(
+                "UPDATE booking_service_combinations SET buffer_after_minutes = 0 WHERE combination_key = 'brows+lips'",
+            );
+            self::assertSame([], $this->migrator($directory)->migrate());
+            self::assertSame($expected, $frozen());
+
+            // The schema refuses a second snapshot for a booking, a buffer
+            // above the ceiling and an unknown origin.
+            foreach (
+                [
+                    'INSERT INTO booking_buffer_snapshots VALUES (1, 0, 0, \'offer\', :now)',
+                    'INSERT INTO booking_buffer_snapshots VALUES (3, 241, 0, \'offer\', :now)',
+                    'INSERT INTO booking_buffer_snapshots VALUES (3, 0, 0, \'guess\', :now)',
+                ] as $bad
+            ) {
+                $this->expectConstraintFailure(fn () => $this->database->run($bad, ['now' => self::NOW]));
+            }
+        } finally {
+            TestEnvironment::removeDirectory($directory);
+        }
     }
 
     // --- helpers -----------------------------------------------------------

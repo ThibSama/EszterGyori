@@ -93,6 +93,24 @@ final class Booking
             : ServiceCombination::membersOf($this->combinationKey);
     }
 
+    /**
+     * ESZ-153 — the stored duration, in whole minutes: the authoritative
+     * duration snapshot is the row's own `starts_at_utc` → `ends_at_utc`,
+     * which creation fixed to the revalidated offer's duration and a move
+     * carries over unchanged. No separate duration column exists to disagree
+     * with it.
+     */
+    public function durationMinutes(): int
+    {
+        $seconds = BookingRequestFields::databaseInstant($this->endsAtUtc)->getTimestamp()
+            - BookingRequestFields::databaseInstant($this->startsAtUtc)->getTimestamp();
+        if ($seconds <= 0 || $seconds % 60 !== 0) {
+            throw new \RuntimeException('The stored booking interval is not a whole positive number of minutes.');
+        }
+
+        return intdiv($seconds, 60);
+    }
+
     /** @param array<string, mixed> $row */
     private static function requiredString(array $row, string $field): string
     {

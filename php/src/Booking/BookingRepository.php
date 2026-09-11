@@ -301,6 +301,13 @@ final class BookingRepository
      *     booking is for, whose first canonical member `$serviceKey` must be;
      *     null for a single-service booking. The interval must then equal the
      *     combination's *validated* duration, never a sum of its members.
+     * @param ?BookableOffer $offer ESZ-153 — the offer the lifecycle
+     *     revalidated under the serialization boundary; its buffers become
+     *     the booking's own snapshot. It must name the same service and
+     *     combination, and its shaping facts must equal the catalog rows this
+     *     method re-reads under the same boundary (defence in depth, exactly
+     *     like the duration check). Null — a direct repository caller — stores
+     *     the catalog's current buffers for the same identity.
      */
     public function createConfirmed(
         string $serviceKey,
@@ -313,6 +320,7 @@ final class BookingRepository
         \DateTimeImmutable $consentAt,
         string $consentNoticeId,
         ?string $combinationKey = null,
+        ?BookableOffer $offer = null,
     ): Booking {
         $service = $this->services->find($serviceKey);
         if ($service === null) {
@@ -322,8 +330,29 @@ final class BookingRepository
             throw new BookingValidationException('serviceKey', 'The bookable service is inactive.');
         }
         $expectedDurationMinutes = $service->durationMinutes;
+        $bufferBeforeMinutes = $service->bufferBeforeMinutes;
+        $bufferAfterMinutes = $service->bufferAfterMinutes;
         if ($combinationKey !== null) {
-            $expectedDurationMinutes = $this->combinationDuration($combinationKey, $serviceKey);
+            $combination = $this->bookableCombination($combinationKey, $serviceKey);
+            $expectedDurationMinutes = $combination->durationMinutes;
+            $bufferBeforeMinutes = $combination->bufferBeforeMinutes;
+            $bufferAfterMinutes = $combination->bufferAfterMinutes;
+        }
+        // ESZ-153: the snapshot is the revalidated offer's, and the offer must
+        // agree with the catalog as read here under the same boundary.
+        if ($offer !== null) {
+            if (
+                $offer->serviceKey !== $serviceKey
+                || $offer->combinationKey !== $combinationKey
+                || $offer->durationMinutes !== $expectedDurationMinutes
+                || $offer->bufferBeforeMinutes !== $bufferBeforeMinutes
+                || $offer->bufferAfterMinutes !== $bufferAfterMinutes
+            ) {
+                throw new BookingValidationException(
+                    'offer',
+                    'The revalidated offer disagrees with the catalog under the serialization boundary.',
+                );
+            }
         }
 
         $start = $startsAt->setTimezone(new \DateTimeZone('UTC'));
@@ -386,17 +415,53 @@ final class BookingRepository
             throw new \RuntimeException('The booking disappeared immediately after insertion.');
         }
 
+        // ESZ-153: the booking's own buffer snapshot, written once in the
+        // same transaction and never updated. From here on the interval this
+        // booking occupies depends on its own rows only.
+        $this->database->run(
+            'INSERT INTO booking_buffer_snapshots'
+            . ' (booking_id, buffer_before_minutes, buffer_after_minutes, origin, frozen_at)'
+            . ' VALUES (:booking_id, :before, :after, :origin, :frozen_at)',
+            [
+                'booking_id' => $booking->id,
+                'before' => $bufferBeforeMinutes,
+                'after' => $bufferAfterMinutes,
+                'origin' => BookingBufferSnapshot::ORIGIN_OFFER,
+                'frozen_at' => $now,
+            ],
+        );
+
         return $booking;
     }
 
     /**
-     * ESZ-150 — the validated duration of the combination a new booking
-     * names, after the same checks the catalog makes: the row exists, is
-     * active, `$serviceKey` is its first canonical member and every member
-     * is an active service. Defence in depth beside the offer the lifecycle
-     * already revalidated under the boundary.
+     * ESZ-153 — the buffers a booking was confirmed with: its own snapshot
+     * row, never the catalog. Every booking owns one (creation writes it,
+     * migration 0019 and the restore reconciliation freeze the legacy ones),
+     * so a missing row is a broken invariant, not a fallback case.
      */
-    private function combinationDuration(string $combinationKey, string $serviceKey): int
+    public function bufferSnapshot(Booking $booking): BookingBufferSnapshot
+    {
+        $row = $this->database->fetchOne(
+            'SELECT buffer_before_minutes, buffer_after_minutes, origin'
+            . ' FROM booking_buffer_snapshots WHERE booking_id = :booking_id',
+            ['booking_id' => $booking->id],
+        );
+        if ($row === null) {
+            throw new \RuntimeException("Booking {$booking->reference} owns no buffer snapshot.");
+        }
+
+        return BookingBufferSnapshot::fromRow($row);
+    }
+
+    /**
+     * ESZ-150 — the combination a new booking names, after the same checks
+     * the catalog makes: the row exists, is active, `$serviceKey` is its
+     * first canonical member and every member is an active service. Defence
+     * in depth beside the offer the lifecycle already revalidated under the
+     * boundary. ESZ-153 reads its buffers too, for the booking's snapshot.
+     */
+    private function bookableCombination(string $combinationKey, string $serviceKey): ServiceCombination
     {
         if ($this->combinations === null) {
             throw new \LogicException('A combination booking needs the combination repository.');
@@ -414,7 +479,7 @@ final class BookingRepository
             }
         }
 
-        return $combination->durationMinutes;
+        return $combination;
     }
 
     public function transition(string $reference, string $targetState, ?string $reason = null): Booking
@@ -507,8 +572,18 @@ final class BookingRepository
     }
 
     /**
-     * Returns only blocking appointments, expanded by the booked service's own
-     * buffers. Cancelled rows remain stored but never occupy time.
+     * Returns only blocking appointments, each expanded by the buffers of its
+     * own snapshot (ESZ-153). Cancelled rows remain stored but never occupy
+     * time.
+     *
+     * The read never joins the catalog: a booking's occupied interval is
+     * `starts_at_utc - before` to `ends_at_utc + after` from its own two rows,
+     * so editing a service's or a combination's buffers later reshapes new
+     * slots and leaves every confirmed appointment where it was. The SQL
+     * prefilter widens the range by the contract's buffer ceiling — the
+     * largest any snapshot may hold — and the exact half-open overlap test
+     * happens on the snapshotted values in PHP, so a booking that has somehow
+     * lost its snapshot is reported rather than silently dropped.
      *
      * @return list<OccupiedInterval>
      */
@@ -524,9 +599,10 @@ final class BookingRepository
         }
 
         $exclude = $excludeReference === null ? '' : ' AND b.reference <> :exclude_reference';
+        $ceiling = $this->contract->bufferMaxMinutes;
         $parameters = [
-            'from_utc' => $this->time->databaseUtc($from),
-            'until_utc' => $this->time->databaseUtc($until),
+            'from_utc' => $this->time->databaseUtc($from->modify('-' . $ceiling . ' minutes')),
+            'until_utc' => $this->time->databaseUtc($until->modify('+' . $ceiling . ' minutes')),
         ];
         if ($excludeReference !== null) {
             if (preg_match('/^bk_[0-9a-f]{32}$/D', $excludeReference) !== 1) {
@@ -536,42 +612,51 @@ final class BookingRepository
         }
 
         $rows = $this->database->fetchAll(
-            // ESZ-150: a combination booking occupies with the buffers
-            // snapshotted on its combination row; a single-service booking
-            // with its service's, exactly as before.
-            'SELECT DATE_SUB(b.starts_at_utc,'
-            . ' INTERVAL COALESCE(c.buffer_before_minutes, s.buffer_before_minutes) MINUTE) AS occupied_start,'
-            . ' DATE_ADD(b.ends_at_utc,'
-            . ' INTERVAL COALESCE(c.buffer_after_minutes, s.buffer_after_minutes) MINUTE) AS occupied_end'
-            . ' FROM bookings b INNER JOIN booking_services s ON s.service_key = b.service_key'
-            . ' LEFT JOIN booking_service_combinations c ON c.combination_key = b.combination_key'
+            'SELECT b.reference, b.starts_at_utc, b.ends_at_utc,'
+            . ' ss.buffer_before_minutes, ss.buffer_after_minutes, ss.origin'
+            . ' FROM bookings b LEFT JOIN booking_buffer_snapshots ss ON ss.booking_id = b.id'
             . " WHERE b.state <> 'cancelled'"
             . $exclude
-            . ' AND DATE_SUB(b.starts_at_utc,'
-            . ' INTERVAL COALESCE(c.buffer_before_minutes, s.buffer_before_minutes) MINUTE) < :until_utc'
-            . ' AND DATE_ADD(b.ends_at_utc,'
-            . ' INTERVAL COALESCE(c.buffer_after_minutes, s.buffer_after_minutes) MINUTE) > :from_utc'
-            . ' ORDER BY occupied_start, occupied_end, b.id',
+            . ' AND b.starts_at_utc < :until_utc AND b.ends_at_utc > :from_utc'
+            . ' ORDER BY b.starts_at_utc, b.ends_at_utc, b.id',
             $parameters,
         );
 
-        return array_map(static function (array $row): OccupiedInterval {
-            $start = $row['occupied_start'] ?? null;
-            $end = $row['occupied_end'] ?? null;
-            if (!\is_string($start) || !\is_string($end)) {
+        $occupied = [];
+        foreach ($rows as $row) {
+            $reference = $row['reference'] ?? null;
+            $start = $row['starts_at_utc'] ?? null;
+            $end = $row['ends_at_utc'] ?? null;
+            if (!\is_string($reference) || !\is_string($start) || !\is_string($end)) {
                 throw new \RuntimeException('Booking occupancy row is malformed.');
             }
+            if (($row['origin'] ?? null) === null) {
+                throw new \RuntimeException("Booking {$reference} owns no buffer snapshot.");
+            }
+            $snapshot = BookingBufferSnapshot::fromRow($row);
+            $occupiedStart = BookingRequestFields::databaseInstant($start)
+                ->modify('-' . $snapshot->bufferBeforeMinutes . ' minutes');
+            $occupiedEnd = BookingRequestFields::databaseInstant($end)
+                ->modify('+' . $snapshot->bufferAfterMinutes . ' minutes');
+            if ($occupiedStart < $until && $occupiedEnd > $from) {
+                $occupied[] = new OccupiedInterval($occupiedStart, $occupiedEnd);
+            }
+        }
 
-            return new OccupiedInterval(
-                new \DateTimeImmutable($start, new \DateTimeZone('UTC')),
-                new \DateTimeImmutable($end, new \DateTimeZone('UTC')),
-            );
-        }, $rows);
+        usort($occupied, static fn (OccupiedInterval $a, OccupiedInterval $b): int =>
+            [$a->startsAtUtc, $a->endsAtUtc] <=> [$b->startsAtUtc, $b->endsAtUtc]);
+
+        return $occupied;
     }
 
     public function move(Booking $booking, \DateTimeImmutable $start, \DateTimeImmutable $end): Booking
     {
         $this->assertCustomerDataLive($booking);
+        // ESZ-153: a move relocates the stored interval and never resizes it;
+        // the buffer snapshot row is not touched at all.
+        if ($end->getTimestamp() - $start->getTimestamp() !== $booking->durationMinutes() * 60) {
+            throw new BookingValidationException('endsAt', 'A move must preserve the booking\'s stored duration.');
+        }
 
         // ESZ-139: the derived instant is strictly later than the row's own
         // updatedAt, so a move that succeeds under a frozen or backward

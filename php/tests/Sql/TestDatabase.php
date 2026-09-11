@@ -231,6 +231,7 @@ final class TestDatabase
                 'rate_limit_buckets',
                 'notification_jobs',
                 'bookings',
+                'booking_buffer_snapshots',
                 'booking_history',
                 'booking_service_combinations',
                 'availability_exception_windows',

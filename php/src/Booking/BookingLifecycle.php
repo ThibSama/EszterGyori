@@ -94,6 +94,9 @@ final class BookingLifecycle
                 $this->clock->now(),
                 $consentNoticeId,
                 $offer->combinationKey,
+                // ESZ-153: the buffers of this very offer become the
+                // booking's own snapshot.
+                $offer,
             );
             // ESZ-131: the created event's row id is the lifecycle identity of
             // the confirmation job scheduled just below; the two share this
@@ -203,14 +206,10 @@ final class BookingLifecycle
             if ($booking->startsAtUtc === $this->time->databaseUtc($requestedStart)) {
                 throw new BookingValidationException('startsAtUtc', 'Booking already starts at that instant.');
             }
-            // ESZ-150: a move keeps the booking's stored services and
-            // recomputes against the same combination's validated duration.
-            ['slot' => $slot] = $this->availability->requestedSlot(
-                $booking->serviceKeys(),
-                $localDate,
-                $requestedStart,
-                $reference,
-            );
+            // ESZ-150/153: a move keeps the booking's stored services, its
+            // stored duration and its buffer snapshot; only the start moves,
+            // and the end follows by exactly the stored duration.
+            $slot = $this->availability->requestedMoveSlot($booking, $localDate, $requestedStart);
             $updated = $this->bookings->move($booking, $slot->startsAtUtc, $slot->endsAtUtc);
             // ESZ-131: the moved event's row id marks the booking_moved job, so
             // a later move or cancellation can prove it obsolete.

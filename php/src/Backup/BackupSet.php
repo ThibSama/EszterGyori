@@ -95,6 +95,8 @@ final class BackupSet
         'availability_exceptions',
         'availability_exception_windows',
         'bookings',
+        // ESZ-153: one buffer snapshot per booking; a child of bookings.
+        'booking_buffer_snapshots',
         'booking_history',
         'notification_jobs',
     ];

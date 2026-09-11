@@ -221,6 +221,17 @@ Calendar's weekly-hours panel under the availability revision. No migration; abs
 the defaults are lead 0, no preferred finish, overrun 0, which narrows nothing beyond
 refusing starts already in the past. Changing the row never moves an existing booking.
 
+Since ESZ-153 migration 0019 adds `booking_buffer_snapshots`: one row per booking with
+the before/after buffers it was confirmed with, written in the booking's own creation
+transaction and never updated. Occupancy is computed from the booking's stored
+start/end and that row, so editing a service's or combination's duration or buffers
+later reshapes new slots only. The migration freezes every pre-existing booking, once,
+to the buffers that were effective for it at that instant (its combination's when it
+names one, otherwise its service's; `origin = 'legacy'`) — old buffers were never
+recorded, so that is the legacy boundary, and no start, end, state or history changes.
+A restore applies the same freeze to bookings an archive carries without snapshots.
+A manual move keeps the booking's stored services, duration and snapshot.
+
 ## 4. Configure SMTP and the cron entries
 
 Do not send a probe message until the deployment owner has supplied an approved SMTP

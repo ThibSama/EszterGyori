@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Eszter\Backup;
 
+use Eszter\Booking\BookingBufferSnapshotFreeze;
 use Eszter\Config\Configuration;
 use Eszter\Contract\ContentValidator;
 use Eszter\Contract\ContractArtifacts;
@@ -176,6 +177,14 @@ final class BackupRestore
                 }
 
                 $count = DatabaseDump::import($connection, $sql, [Migrator::TABLE]);
+
+                // ESZ-153 restore reconciliation: an archive taken before the
+                // buffer-snapshot table existed carries bookings without their
+                // snapshot rows. Freeze those exactly as migration 0019 froze
+                // the live ones — to the effective buffers of the catalog just
+                // restored beside them — inside the same transaction. Bookings
+                // whose snapshot the archive carries keep it untouched.
+                BookingBufferSnapshotFreeze::apply($connection);
 
                 // ESZ-140 restore reconciliation: the imported rows may carry
                 // customer data whose retention period has expired since the

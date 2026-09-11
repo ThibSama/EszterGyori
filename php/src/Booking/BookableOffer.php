@@ -67,4 +67,31 @@ final class BookableOffer
             $active,
         );
     }
+
+    /**
+     * ESZ-153 — the same identity with a booking's own frozen shape.
+     *
+     * A confirmed booking moves as what it *is*: its stored services (the
+     * identity this offer resolved, still required to be bookable under the
+     * current catalog policy), its stored duration and its snapshotted
+     * buffers — never the duration or buffers the catalog configures later.
+     * The slot engine reads only the shaping facts, so the result is the one
+     * input it needs to move that booking without a second engine.
+     */
+    public function frozenAs(int $durationMinutes, BookingBufferSnapshot $buffers): self
+    {
+        if ($durationMinutes < 1) {
+            throw new BookingValidationException('durationMinutes', 'A booking duration must be positive.');
+        }
+
+        return new self(
+            $this->serviceKeys,
+            $this->serviceKey,
+            $this->combinationKey,
+            $durationMinutes,
+            $buffers->bufferBeforeMinutes,
+            $buffers->bufferAfterMinutes,
+            $this->isActive,
+        );
+    }
 }

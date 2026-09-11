@@ -175,6 +175,17 @@ final class BackupRestoreSqlTest extends TestCase
             )['customer_name'] ?? null,
         );
 
+        // ── ESZ-153: the booking's own buffer snapshot travels with it ─────
+        // Carried by the archive as captured, not re-frozen by the restore.
+        self::assertSame(
+            ['buffer_before_minutes' => 0, 'buffer_after_minutes' => 15, 'origin' => 'offer'],
+            $this->target->fetchOne(
+                'SELECT buffer_before_minutes, buffer_after_minutes, origin'
+                . ' FROM booking_buffer_snapshots WHERE booking_id = :id',
+                ['id' => $booking['id']],
+            ),
+        );
+
         // ── History: append-only, and it must come back whole ──────────────
         $history = $this->target->fetchAll(
             'SELECT event_type FROM booking_history WHERE booking_id = :id ORDER BY id',
@@ -223,6 +234,39 @@ final class BackupRestoreSqlTest extends TestCase
         self::assertSame(
             $expected['assetIds'],
             array_column($this->targetJson(MediaLibrary::INDEX_FILE)['assets'] ?? [], 'id'),
+        );
+    }
+
+    /**
+     * ESZ-153 — an archive from before the snapshot table carries bookings
+     * without snapshot rows. The restore freezes those, inside its own
+     * transaction, to the effective buffers of the catalog restored beside
+     * them — the same deterministic legacy freeze migration 0019 applies —
+     * so availability after such a restore never has to ask the catalog
+     * about an old booking. Simulated by removing the source's snapshot row
+     * before the backup: the dump then holds exactly what a pre-ESZ-153 dump
+     * held for that booking.
+     */
+    public function testAnArchiveWithoutBufferSnapshotsIsFrozenOnRestore(): void
+    {
+        $expected = $this->seedRealisticSource();
+        $this->source->run('DELETE FROM booking_buffer_snapshots');
+        $archive = $this->writeBackup();
+
+        $this->restoreIntoTarget($archive);
+
+        $booking = $this->target->fetchOne(
+            'SELECT id FROM bookings WHERE reference = :reference',
+            ['reference' => $expected['reference']],
+        );
+        self::assertNotNull($booking);
+        self::assertSame(
+            ['buffer_before_minutes' => 0, 'buffer_after_minutes' => 15, 'origin' => 'legacy'],
+            $this->target->fetchOne(
+                'SELECT buffer_before_minutes, buffer_after_minutes, origin'
+                . ' FROM booking_buffer_snapshots WHERE booking_id = :id',
+                ['id' => $booking['id']],
+            ),
         );
     }
 

@@ -168,6 +168,8 @@ final class BookingApiCompositionTest extends TestCase
                 'availability',
                 'adminMoveAvailability',
                 'requestedSlot',
+                // ESZ-153: the move-side revalidation for a booking's frozen shape.
+                'requestedMoveSlot',
                 'assertRange',
                 'utcDayRange',
             ],

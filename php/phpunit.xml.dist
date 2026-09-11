@@ -55,6 +55,7 @@
       <file>tests/Sql/SqlIntegrationTest.php</file>
       <file>tests/Sql/ServiceCatalogSqlTest.php</file>
       <file>tests/Sql/ServiceCombinationSqlTest.php</file>
+      <file>tests/Sql/BookingSnapshotSqlTest.php</file>
     </testsuite>
 
     <!--
