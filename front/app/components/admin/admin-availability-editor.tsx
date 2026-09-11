@@ -7,6 +7,7 @@ import type {
   AdminApiFailure,
   AdminAvailabilityException,
   AdminAvailabilityWindow,
+  AdminBookingTimeRules,
 } from "../../lib/admin-api";
 import {
   FOLD_OFFSETS,
@@ -14,6 +15,8 @@ import {
   WEEKDAY_LABELS,
   type FoldOffset,
   type RuleIssue,
+  type TimeRulesDraft,
+  type TimeRulesIssue,
   type WeeklyRuleDraft,
   describeDate,
   emptyDraft,
@@ -22,6 +25,9 @@ import {
   issuesFor,
   replaceException,
   sortDrafts,
+  timeRulesIssues,
+  timeRulesToDraft,
+  timeRulesToRequest,
   toDrafts,
   toRequest,
   weeklyRuleIssues,
@@ -56,6 +62,13 @@ function failureMessage(failure: AdminApiFailure): string {
   }
   return failure.message;
 }
+
+/** Before the first read lands: the contract defaults, which narrow nothing. */
+const NO_TIME_RULES: TimeRulesDraft = {
+  minimumLeadMinutes: "0",
+  preferredFinishLocal: "",
+  maxOverrunMinutes: "0",
+};
 
 const inputClass =
   "rounded-xl border border-warm-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sage-300";
@@ -101,6 +114,10 @@ export interface AvailabilityWorkspace {
   readonly covers: (localDate: string) => boolean;
   readonly issues: RuleIssue[];
   readonly draftIssues: RuleIssue[];
+  /** ESZ-151 — the booking-time rules, edited and saved with the week. */
+  readonly timeRules: TimeRulesDraft;
+  readonly savedTimeRules: TimeRulesDraft;
+  readonly timeRulesIssues: TimeRulesIssue[];
   readonly dirty: boolean;
   readonly noticeRef: RefObject<HTMLDivElement | null>;
   readonly draftHeadingRef: RefObject<HTMLHeadingElement | null>;
@@ -111,6 +128,7 @@ export interface AvailabilityWorkspace {
   readonly setConfirmation: Dispatch<SetStateAction<Confirmation | null>>;
   readonly setPreviewDate: Dispatch<SetStateAction<string>>;
   readonly updateRule: (key: string, patch: Partial<WeeklyRuleDraft>) => void;
+  readonly updateTimeRules: (patch: Partial<TimeRulesDraft>) => void;
   readonly submitWeekly: () => void;
   /** Opens the exception editor for one date — the week grid's own entry point. */
   readonly openDraft: (localDate: string) => void;
@@ -125,6 +143,8 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
 
   const [rules, setRules] = useState<WeeklyRuleDraft[]>([]);
   const [savedRules, setSavedRules] = useState<WeeklyRuleDraft[]>([]);
+  const [timeRules, setTimeRules] = useState<TimeRulesDraft>(NO_TIME_RULES);
+  const [savedTimeRules, setSavedTimeRules] = useState<TimeRulesDraft>(NO_TIME_RULES);
   const [exceptions, setExceptions] = useState<AdminAvailabilityException[]>([]);
   const [revision, setRevision] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
@@ -156,6 +176,7 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
   });
 
   const issues = useMemo(() => weeklyRuleIssues(rules), [rules]);
+  const ruleIssues = useMemo(() => timeRulesIssues(timeRules), [timeRules]);
   const draftIssues = useMemo(
     () => (draft === null || draft.kind === "closed" ? [] : exceptionWindowIssues(draft.windows)),
     [draft],
@@ -165,8 +186,10 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
   // than tracking a dirty flag — means an edit that is undone by hand stops
   // counting as unsaved, and a save that changed nothing is still allowed.
   const dirty = useMemo(
-    () => JSON.stringify(toRequest(rules)) !== JSON.stringify(toRequest(savedRules)),
-    [rules, savedRules],
+    () =>
+      JSON.stringify(toRequest(rules)) !== JSON.stringify(toRequest(savedRules)) ||
+      JSON.stringify(timeRules) !== JSON.stringify(savedTimeRules),
+    [rules, savedRules, savedTimeRules, timeRules],
   );
 
   const notify = useCallback((text: string, isAlert = false) => {
@@ -187,10 +210,15 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
     [markExpired, notify, refreshSession],
   );
 
-  const adopt = useCallback((weekly: WeeklyRuleDraft[]) => {
+  // The week and the booking-time rules are adopted together: they come back
+  // from the same response, under the same revision.
+  const adopt = useCallback((weekly: WeeklyRuleDraft[], stored: AdminBookingTimeRules) => {
     const sorted = sortDrafts(weekly);
     setRules(sorted);
     setSavedRules(sorted);
+    const draft = timeRulesToDraft(stored);
+    setTimeRules(draft);
+    setSavedTimeRules(draft);
   }, []);
 
   // One read per coverage gap, not one per navigation: paging inside the loaded
@@ -209,7 +237,7 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
       // this effect on the next render and retries a refused read forever.
       setFetchedSpan(requested);
       if (!result.ok) return void handleFailure(result.failure);
-      adopt(toDrafts(result.value.weeklyRules));
+      adopt(toDrafts(result.value.weeklyRules), result.value.bookingTimeRules);
       setExceptions(result.value.exceptions);
       setRevision(result.value.revision);
       setCoverage(requested);
@@ -229,7 +257,7 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
 
     // Discard every stale editing baseline. The next write is possible only
     // after the operator makes a new explicit edit against this server head.
-    adopt(toDrafts(fresh.value.weeklyRules));
+    adopt(toDrafts(fresh.value.weeklyRules), fresh.value.bookingTimeRules);
     setExceptions(fresh.value.exceptions);
     setRevision(fresh.value.revision);
     setCoverage(range);
@@ -249,11 +277,21 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
     setMessage(null);
   };
 
+  const updateTimeRules = (patch: Partial<TimeRulesDraft>) => {
+    setTimeRules((current) => ({ ...current, ...patch }));
+    setMessage(null);
+  };
+
   const saveWeekly = useCallback(async () => {
-    if (saving || revision === null || issues.length > 0) return;
+    if (saving || revision === null || issues.length > 0 || ruleIssues.length > 0) return;
     setSaving(true);
+    // One PUT: the week and the booking-time rules, under one revision.
     const result = await api.replaceWeeklyAvailability(
-      { expectedRevision: revision, rules: toRequest(rules) },
+      {
+        expectedRevision: revision,
+        rules: toRequest(rules),
+        bookingTimeRules: timeRulesToRequest(timeRules),
+      },
       csrfToken,
     );
     if (!result.ok) {
@@ -269,14 +307,27 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
 
     // The response, never the request. Ids, ordering and any normalisation are
     // the server's, and this is the only state the editor renders from here on.
-    adopt(toDrafts(result.value.weeklyRules));
+    adopt(toDrafts(result.value.weeklyRules), result.value.bookingTimeRules);
     setRevision(result.value.revision);
     notify(
       result.value.weeklyRules.length === 0
         ? "Les horaires hebdomadaires ont été enregistrés : aucun créneau récurrent n’est actif."
         : `Les horaires hebdomadaires ont été enregistrés : ${result.value.weeklyRules.length} créneau${result.value.weeklyRules.length > 1 ? "x" : ""} en place.`,
     );
-  }, [adopt, api, csrfToken, handleFailure, issues.length, notify, recoverAvailabilityConflict, revision, rules, saving]);
+  }, [
+    adopt,
+    api,
+    csrfToken,
+    handleFailure,
+    issues.length,
+    notify,
+    recoverAvailabilityConflict,
+    revision,
+    ruleIssues.length,
+    rules,
+    saving,
+    timeRules,
+  ]);
 
   const submitWeekly = () => {
     // Emptying the schedule closes the salon to every new booking, so it is
@@ -417,6 +468,9 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
     covers,
     issues,
     draftIssues,
+    timeRules,
+    savedTimeRules,
+    timeRulesIssues: ruleIssues,
     dirty,
     noticeRef,
     draftHeadingRef,
@@ -427,6 +481,7 @@ export function useAvailabilityWorkspace(visible: AvailabilityRange): Availabili
     setConfirmation,
     setPreviewDate,
     updateRule,
+    updateTimeRules,
     submitWeekly,
     openDraft,
     submitDraft,
@@ -452,6 +507,9 @@ export function AdminAvailabilityEditor({
     covers,
     issues,
     draftIssues,
+    timeRules,
+    savedTimeRules,
+    timeRulesIssues: ruleIssues,
     dirty,
     noticeRef,
     draftHeadingRef,
@@ -462,6 +520,7 @@ export function AdminAvailabilityEditor({
     setConfirmation,
     setPreviewDate,
     updateRule,
+    updateTimeRules,
     submitWeekly,
     openDraft,
     submitDraft,
@@ -670,10 +729,83 @@ export function AdminAvailabilityEditor({
                 </ul>
               )}
 
+              <fieldset
+                className="mt-6 rounded-2xl border border-warm-200 p-4"
+                aria-describedby="time-rules-help">
+                <legend className="px-1 text-sm font-medium text-warm-900">
+                  Règles de réservation
+                </legend>
+                <p id="time-rules-help" className="text-sm text-warm-600">
+                  Enregistrées avec la semaine. Elles ne font que restreindre les horaires
+                  ci-dessus et les ouvertures exceptionnelles : aucun rendez-vous existant n’est
+                  déplacé.
+                </p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <label className="block text-sm">
+                    <span className="text-warm-600">Délai minimum avant un rendez-vous (min)</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      step={15}
+                      value={timeRules.minimumLeadMinutes}
+                      onChange={(event) =>
+                        updateTimeRules({ minimumLeadMinutes: event.target.value })
+                      }
+                      aria-invalid={ruleIssues.some((issue) => issue.field === "minimumLeadMinutes")}
+                      aria-describedby={ruleIssues.length > 0 ? "time-rules-error" : undefined}
+                      className={`mt-1 w-full ${inputClass}`}
+                    />
+                  </label>
+                  <label className="block text-sm">
+                    <span className="text-warm-600">Heure de fin habituelle</span>
+                    <input
+                      type="time"
+                      value={timeRules.preferredFinishLocal}
+                      onChange={(event) =>
+                        updateTimeRules({ preferredFinishLocal: event.target.value })
+                      }
+                      aria-invalid={ruleIssues.some((issue) => issue.field === "preferredFinishLocal")}
+                      aria-describedby={ruleIssues.length > 0 ? "time-rules-error" : undefined}
+                      className={`mt-1 w-full ${inputClass}`}
+                    />
+                    <span className="mt-1 block text-xs text-warm-500">
+                      Vide : la fin de chaque plage horaire. Aucun rendez-vous ne commence à cette
+                      heure ou après.
+                    </span>
+                  </label>
+                  <label className="block text-sm">
+                    <span className="text-warm-600">Dépassement maximal après la fin (min)</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      step={15}
+                      value={timeRules.maxOverrunMinutes}
+                      onChange={(event) =>
+                        updateTimeRules({ maxOverrunMinutes: event.target.value })
+                      }
+                      aria-invalid={ruleIssues.some((issue) => issue.field === "maxOverrunMinutes")}
+                      aria-describedby={ruleIssues.length > 0 ? "time-rules-error" : undefined}
+                      className={`mt-1 w-full ${inputClass}`}
+                    />
+                    <span className="mt-1 block text-xs text-warm-500">
+                      Un rendez-vous peut se terminer au plus tard à l’heure de fin habituelle plus
+                      ce délai, sans jamais dépasser la plage horaire.
+                    </span>
+                  </label>
+                </div>
+                {ruleIssues.length > 0 && (
+                  <p id="time-rules-error" role="alert" className="mt-3 text-sm text-rose-800">
+                    {ruleIssues.map((issue) => issue.message).join(" ")}
+                  </p>
+                )}
+              </fieldset>
+
               <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-warm-200 pt-5">
                 <button
                   type="button"
-                  disabled={saving || issues.length > 0}
+                  disabled={saving || issues.length > 0 || ruleIssues.length > 0}
                   onClick={submitWeekly}
                   className="rounded-full bg-warm-900 px-5 py-2 text-sm text-white disabled:opacity-40">
                   {saving ? "Enregistrement…" : "Enregistrer la semaine"}
@@ -683,18 +815,19 @@ export function AdminAvailabilityEditor({
                   disabled={!dirty || saving}
                   onClick={() => {
                     setRules(savedRules);
-                    setMessage(null);
+                    updateTimeRules(savedTimeRules);
                   }}
                   className="rounded-full border border-warm-300 px-4 py-2 text-sm disabled:opacity-40">
                   Annuler les modifications
                 </button>
-                {issues.length > 0 && (
+                {issues.length + ruleIssues.length > 0 && (
                   <p role="status" className="text-sm text-rose-800">
-                    Corrigez les {issues.length} erreur{issues.length > 1 ? "s" : ""} ci-dessus avant
+                    Corrigez les {issues.length + ruleIssues.length} erreur
+                    {issues.length + ruleIssues.length > 1 ? "s" : ""} ci-dessus avant
                     d’enregistrer.
                   </p>
                 )}
-                {issues.length === 0 && dirty && (
+                {issues.length + ruleIssues.length === 0 && dirty && (
                   <p role="status" className="text-sm text-warm-600">
                     Modifications non enregistrées.
                   </p>

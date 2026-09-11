@@ -105,6 +105,7 @@ function fakeServer(): FakeServer {
         untilDate: body.untilDate,
         revision: state.revision,
         weeklyRules: WEEKLY_RULES,
+        bookingTimeRules: { minimumLeadMinutes: 0, preferredFinishLocal: null, maxOverrunMinutes: 0 },
         exceptions: STORED_EXCEPTIONS.filter(
           (exception) =>
             exception.localDate >= body.fromDate && exception.localDate <= body.untilDate,

@@ -21,6 +21,12 @@ use Eszter\Tests\TestEnvironment;
 final class InMemoryBookingApi implements BookingApi
 {
     private int $availabilityRevision = 0;
+    /** @var array{minimumLeadMinutes: int, preferredFinishLocal: ?string, maxOverrunMinutes: int} */
+    private array $bookingTimeRules = [
+        'minimumLeadMinutes' => 0,
+        'preferredFinishLocal' => null,
+        'maxOverrunMinutes' => 0,
+    ];
 
     private const REFERENCE = 'bk_00000000000000000000000000000000';
 
@@ -355,6 +361,7 @@ final class InMemoryBookingApi implements BookingApi
                 'windows' => [],
                 'note' => 'Jour férié',
             ]],
+            'bookingTimeRules' => $this->bookingTimeRules,
         ];
     }
 
@@ -398,12 +405,29 @@ final class InMemoryBookingApi implements BookingApi
 
         self::assertNoOverlap($rules);
 
+        // ESZ-151: the rules ride on the same PUT and are stored with it.
+        $timeRules = $request['bookingTimeRules'] ?? null;
+        if (\is_array($timeRules)) {
+            $lead = $timeRules['minimumLeadMinutes'] ?? null;
+            $finish = $timeRules['preferredFinishLocal'] ?? null;
+            $overrun = $timeRules['maxOverrunMinutes'] ?? null;
+            if (!\is_int($lead) || $lead < 0 || !\is_int($overrun) || $overrun < 0) {
+                throw new BookingValidationException('bookingTimeRules', 'Booking time rules are malformed.');
+            }
+            $this->bookingTimeRules = [
+                'minimumLeadMinutes' => $lead,
+                'preferredFinishLocal' => \is_string($finish) ? $finish : null,
+                'maxOverrunMinutes' => $overrun,
+            ];
+        }
+
         ++$this->availabilityRevision;
 
         return [
             'timezone' => 'Europe/Paris',
             'revision' => $this->availabilityRevision,
             'weeklyRules' => $stored,
+            'bookingTimeRules' => $this->bookingTimeRules,
         ];
     }
 

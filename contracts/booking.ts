@@ -49,8 +49,17 @@
  * duration changes. A booking stores its combination key beside its first
  * service key; single-service bookings, past and future, keep exactly the
  * facts they had.
+ *
+ * Version 10 (ESZ-151) adds the administrator's booking-time rules
+ * (`availability.bookingTimeRules`): a minimum lead time before a slot may
+ * start, a preferred usual finish time and the maximum overrun an appointment
+ * may run past it. They live in one `system_settings` row written under the
+ * availability revision and the serialization boundary, and they only ever
+ * *narrow* what the weekly and date-exception windows already allow. The
+ * defaults (no lead, no finish cap, no overrun) leave every existing
+ * deployment offering exactly the slots it offered before.
  */
-export const BOOKING_DOMAIN_VERSION = 9;
+export const BOOKING_DOMAIN_VERSION = 10;
 
 /**
  * The business operates in metropolitan France. Rules are authored as local
@@ -113,6 +122,27 @@ export const BOOKING_SLOT_GRID_MINUTES = 15;
 export const BOOKING_SLOT_MAX_HORIZON_DAYS = 90;
 export const BOOKING_SLOT_MAX_RESULTS = 1000;
 export const BOOKING_DST_FOLD_OFFSETS = ["+01:00", "+02:00"] as const;
+
+/**
+ * ESZ-151 — the administrator's booking-time rules, stored as one
+ * `system_settings` row (`{"minimumLeadMinutes", "preferredFinishLocal",
+ * "maxOverrunMinutes"}`) and read by every slot computation.
+ *
+ * The bounds are technical, not editorial. A lead longer than the public
+ * horizon could never be satisfied, so the horizon is its ceiling; an overrun
+ * longer than the longest possible appointment can never matter, so the
+ * duration ceiling is its ceiling. The defaults are the pre-ESZ-151 behaviour:
+ * no lead, no preferred finish, no overrun — nothing narrows until Esther
+ * configures it.
+ */
+export const BOOKING_TIME_RULES_SETTING_KEY = "booking.time_rules";
+export const BOOKING_MINIMUM_LEAD_MAX_MINUTES = BOOKING_SLOT_MAX_HORIZON_DAYS * 24 * 60;
+export const BOOKING_MAX_OVERRUN_MAX_MINUTES = BOOKING_SERVICE_DURATION_MAX_MINUTES;
+export const BOOKING_TIME_RULES_DEFAULTS = {
+  minimumLeadMinutes: 0,
+  preferredFinishLocal: null,
+  maxOverrunMinutes: 0,
+} as const;
 
 /**
  * ESZ-144 — the fixed page capacity of one admin booking range read.
@@ -497,7 +527,7 @@ export const bookingSerializationPolicy = {
     "The singleton row booking_resource_locks.primary, taken with SELECT ... FOR UPDATE as the first statement of the owning MySQL transaction. A plain InnoDB row lock: no Redis, daemon or process-local mutex, so it serializes across every PHP process and host of a shared-hosting deployment.",
   members: [
     "booking create, move and cancel",
-    "weekly availability replacement",
+    "weekly availability replacement, including the ESZ-151 booking-time rules it may carry",
     "date exception open, close and remove",
     "service provisioning or an admin service mutation (create, update, archive, restore) that changes is_active, duration, buffer-before or buffer-after",
   ],
@@ -766,6 +796,27 @@ export const bookingDomainContract = {
     limits: {
       maxHorizonDays: BOOKING_SLOT_MAX_HORIZON_DAYS,
       maxResults: BOOKING_SLOT_MAX_RESULTS,
+    },
+    /**
+     * ESZ-151 — the configurable booking-time rules. Stated once here; PHP
+     * reads the key and the bounds from the artifact and React reproduces
+     * none of the semantics.
+     */
+    bookingTimeRules: {
+      settingKey: BOOKING_TIME_RULES_SETTING_KEY,
+      defaults: BOOKING_TIME_RULES_DEFAULTS,
+      minimumLeadMinutes: { min: 0, max: BOOKING_MINIMUM_LEAD_MAX_MINUTES },
+      maxOverrunMinutes: { min: 0, max: BOOKING_MAX_OVERRUN_MAX_MINUTES },
+      lead:
+        "No slot is offered, and no slot passes transactional revalidation, whose start is earlier than now + minimumLeadMinutes; with the default lead of 0 this still refuses every start in the past.",
+      finish:
+        "preferredFinishLocal is the usual finish boundary, a local Europe/Paris wall time or null. Within one effective window the boundary is the earlier of the window's end and preferredFinishLocal: no appointment starts at or after it, and the appointment's own end (without after-buffer) may run past it by at most maxOverrunMinutes, never past the window's end. With a null preferredFinishLocal the window's end is the boundary and maxOverrunMinutes has no effect.",
+      windowsAuthoritative:
+        "Weekly rules and date exceptions stay authoritative. The rules only narrow an effective window; a shorter exceptional window is never widened by the general finish or overrun setting, and the resource interval [start-bufferBefore, start+duration+bufferAfter) must still fit inside the window.",
+      offerDuration:
+        "The end an appointment is judged by is start + the real offer duration: the service's duration or the persisted validated duration of an ESZ-150 combination.",
+      persistence:
+        "One system_settings row under the availability revision: it is replaced through the weekly availability PUT, under the ESZ-146 serialization boundary, and slot reads and transactional revalidation read the same stored row. Changing it never moves, shortens or recomputes an existing booking.",
     },
   },
   states: {

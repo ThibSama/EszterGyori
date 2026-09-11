@@ -9,6 +9,7 @@ use Eszter\Booking\AvailabilityException;
 use Eszter\Booking\AvailabilityWindow;
 use Eszter\Booking\BookableService;
 use Eszter\Booking\BookingDomainContract;
+use Eszter\Booking\BookingTimeRules;
 use Eszter\Booking\BookingValidationException;
 use Eszter\Booking\OccupiedInterval;
 use Eszter\Booking\SlotEngine;
@@ -207,6 +208,66 @@ final class AvailabilitySlotEngineTest extends TestCase
 
         self::assertCount(1, $foldSlot);
         self::assertSame('2026-10-25 00:00:00', $foldSlot[0]->startsAtUtc->format('Y-m-d H:i:s'));
+    }
+
+    /**
+     * ESZ-151 — lead time, preferred finish and overrun, on a 09:00–18:00
+     * Monday (2026-07-06, UTC+2) with a 60-minute service.
+     */
+    public function testLeadTimeFinishAndOverrunNarrowTheWindowWithoutWideningIt(): void
+    {
+        $weekly = [$this->rule(1, '09:00', '18:00')];
+        // 10:00 local; a 60-minute lead makes 11:00 the first offerable start.
+        $now = new \DateTimeImmutable('2026-07-06T08:00:00Z');
+        $rules = BookingTimeRules::create(60, '17:30', 30, $this->contract);
+
+        $starts = array_column(
+            $this->engine->generate($this->service(60), '2026-07-06', '2026-07-06', $weekly, [], [], $now, $rules),
+            'localStart',
+        );
+
+        // Lead: exactly now + lead is offered, one grid step earlier is not.
+        self::assertSame('11:00', $starts[0]);
+        self::assertNotContains('10:45', $starts);
+        // Finish 17:30 + overrun 30: the end may reach 18:00 (start 17:00) but
+        // not 18:15 (start 17:15), and nothing starts at or after 17:30.
+        self::assertContains('17:00', $starts);
+        self::assertNotContains('17:15', $starts);
+        self::assertNotContains('17:30', $starts);
+
+        // A short service still never starts at the finish boundary, even
+        // though it would end inside the overrun.
+        $short = array_column(
+            $this->engine->generate($this->service(15), '2026-07-06', '2026-07-06', $weekly, [], [], $now, $rules),
+            'localStart',
+        );
+        self::assertSame('17:15', end($short));
+
+        // The window stays authoritative: a shorter exceptional window is not
+        // widened by the finish + overrun, so the last end is its own 12:00.
+        $open = new AvailabilityException(3, '2026-07-06', 'open', [$this->window('09:00', '12:00')], null);
+        $exceptional = array_column(
+            $this->engine->generate($this->service(60), '2026-07-06', '2026-07-06', $weekly, [$open], [], $now, $rules),
+            'localStart',
+        );
+        self::assertSame('11:00', end($exceptional));
+
+        // Defaults with a clock: only the past is cut, the fit is unchanged.
+        $default = array_column(
+            $this->engine->generate(
+                $this->service(60),
+                '2026-07-06',
+                '2026-07-06',
+                $weekly,
+                [],
+                [],
+                $now,
+                BookingTimeRules::defaults(),
+            ),
+            'localStart',
+        );
+        self::assertSame('10:00', $default[0]);
+        self::assertSame('17:00', end($default));
     }
 
     public function testWindowAndRuleValidationRejectsMalformedCombinations(): void

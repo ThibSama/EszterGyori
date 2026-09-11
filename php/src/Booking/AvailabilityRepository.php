@@ -32,17 +32,39 @@ final class AvailabilityRepository
     }
 
     /**
+     * ESZ-151: `$timeRules`, when given, replaces the stored booking-time
+     * rules in the same transaction, under the same revision and the same
+     * serialization boundary — it changes bookability exactly the way the
+     * week does. Null leaves the stored rules untouched.
+     *
      * @param list<WeeklyAvailabilityRule> $rules
      * @return array{revision: int, value: list<WeeklyAvailabilityRule>}
      */
-    public function replaceWeeklyRulesWithRevision(array $rules, int $expectedRevision): array
-    {
+    public function replaceWeeklyRulesWithRevision(
+        array $rules,
+        int $expectedRevision,
+        ?BookingTimeRules $timeRules = null,
+    ): array {
         $this->assertWeeklyRules($rules);
 
         usort($rules, self::compareRules(...));
-        return $this->mutate($expectedRevision, function () use ($rules): array {
-            $this->database->run('DELETE FROM availability_rules');
+        return $this->mutate($expectedRevision, function () use ($rules, $timeRules): array {
             $now = $this->clock->nowIso();
+            if ($timeRules !== null) {
+                $this->database->run(
+                    'INSERT INTO system_settings (setting_key, value_json, created_at, updated_at)'
+                    . ' VALUES (:key, :value, :created, :updated) AS incoming'
+                    . ' ON DUPLICATE KEY UPDATE value_json = incoming.value_json, updated_at = incoming.updated_at',
+                    [
+                        'key' => $this->contract->timeRulesSettingKey,
+                        'value' => (string) json_encode($timeRules->payload(), JSON_THROW_ON_ERROR),
+                        'created' => $now,
+                        'updated' => $now,
+                    ],
+                );
+            }
+
+            $this->database->run('DELETE FROM availability_rules');
 
             foreach ($rules as $rule) {
                 $this->database->run(
@@ -70,10 +92,16 @@ final class AvailabilityRepository
     }
 
     /**
-     * Reads rules, exceptions and their shared revision from one repeatable-read
-     * snapshot, so the token can never describe a different schedule.
+     * Reads rules, exceptions, the booking-time rules and their shared revision
+     * from one repeatable-read snapshot, so the token can never describe a
+     * different schedule.
      *
-     * @return array{revision: int, weeklyRules: list<WeeklyAvailabilityRule>, exceptions: list<AvailabilityException>}
+     * @return array{
+     *     revision: int,
+     *     weeklyRules: list<WeeklyAvailabilityRule>,
+     *     exceptions: list<AvailabilityException>,
+     *     timeRules: BookingTimeRules,
+     * }
      */
     public function stateBetween(string $fromDate, string $untilDate): array
     {
@@ -82,6 +110,7 @@ final class AvailabilityRepository
             'revision' => $this->revision(),
             'weeklyRules' => $this->weeklyRules(),
             'exceptions' => $this->exceptionsBetween($fromDate, $untilDate),
+            'timeRules' => $this->bookingTimeRules(),
         ];
 
         return $this->database->inTransaction()
@@ -97,6 +126,34 @@ final class AvailabilityRepository
         );
 
         return $row === null ? 0 : self::revisionFromRow($row);
+    }
+
+    /**
+     * ESZ-151 — the stored booking-time rules, or the contract defaults while
+     * no row exists. Every slot computation and every revalidation reads this
+     * same row; nothing caches it across requests.
+     */
+    public function bookingTimeRules(): BookingTimeRules
+    {
+        $row = $this->database->fetchOne(
+            'SELECT value_json FROM system_settings WHERE setting_key = :key',
+            ['key' => $this->contract->timeRulesSettingKey],
+        );
+        if ($row === null) {
+            return BookingTimeRules::defaults();
+        }
+
+        $json = $row['value_json'] ?? null;
+        if (!\is_string($json)) {
+            throw new \RuntimeException('Booking time rules setting is malformed.');
+        }
+        /** @var mixed $decoded */
+        $decoded = json_decode($json, true, 2, JSON_THROW_ON_ERROR);
+        if (!\is_array($decoded)) {
+            throw new \RuntimeException('Booking time rules setting is malformed.');
+        }
+
+        return BookingTimeRules::fromStored($decoded, $this->contract);
     }
 
     /** @return list<WeeklyAvailabilityRule> */

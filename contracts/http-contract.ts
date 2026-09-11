@@ -14,6 +14,9 @@ import {
   BOOKING_SERVICE_DURATION_MIN_MINUTES,
   BOOKING_SERVICE_KEY_PATTERN,
   BOOKING_SERVICE_LABEL_MAX_LENGTH,
+  BOOKING_MAX_OVERRUN_MAX_MINUTES,
+  BOOKING_MINIMUM_LEAD_MAX_MINUTES,
+  BOOKING_TIME_RULES_SETTING_KEY,
   BOOKING_TIME_ZONE,
   bookingConsentNoticeIds,
   bookingStates,
@@ -1077,12 +1080,36 @@ export const adminAvailabilityWeeklyRuleSchema = z
   .object({ id: z.number().int().nonnegative(), ...availabilityWeeklyRuleFields })
   .strict();
 
+/**
+ * ESZ-151 — the administrator's booking-time rules, as stored and as
+ * returned: a minimum lead before a slot may start, the preferred usual finish
+ * (a local wall time, or null for "the window's end") and the maximum overrun
+ * past it. The bounds are the booking domain's; the semantics
+ * (`availability.bookingTimeRules` in the domain artifact) are the server's
+ * alone, and React reproduces none of them.
+ */
+export const bookingTimeRulesSchema = z
+  .object({
+    minimumLeadMinutes: z.number().int().min(0).max(BOOKING_MINIMUM_LEAD_MAX_MINUTES),
+    preferredFinishLocal: bookingLocalTimeSchema.nullable(),
+    maxOverrunMinutes: z.number().int().min(0).max(BOOKING_MAX_OVERRUN_MAX_MINUTES),
+  })
+  .strict();
+
+/**
+ * `bookingTimeRules` is optional on the request and, when present, replaces
+ * all three stored values; absent, the stored rules stay exactly as they were.
+ * It rides on the weekly PUT because it changes bookability the same way the
+ * week does, and so takes the same revision and the same serialization
+ * boundary in the same transaction.
+ */
 export const adminAvailabilityWeeklyReplaceRequestSchema = z
   .object({
     expectedRevision: availabilityRevisionSchema,
     rules: z
       .array(adminAvailabilityWeeklyRuleInputSchema)
       .max(ADMIN_AVAILABILITY_MAX_WEEKLY_RULES),
+    bookingTimeRules: bookingTimeRulesSchema.optional(),
   })
   .strict();
 
@@ -1091,6 +1118,7 @@ export const adminAvailabilityWeeklyResponseSchema = z
     timezone: z.literal(BOOKING_TIME_ZONE),
     revision: availabilityRevisionSchema,
     weeklyRules: z.array(adminAvailabilityWeeklyRuleSchema),
+    bookingTimeRules: bookingTimeRulesSchema,
   })
   .strict();
 
@@ -1119,6 +1147,7 @@ export const adminAvailabilityResponseSchema = z
     revision: availabilityRevisionSchema,
     weeklyRules: z.array(adminAvailabilityWeeklyRuleSchema),
     exceptions: z.array(adminAvailabilityExceptionSchema),
+    bookingTimeRules: bookingTimeRulesSchema,
   })
   .strict();
 
@@ -1420,6 +1449,16 @@ export const availabilityAdminPolicy = {
     "Weekly and exception writes contend on one durable global revision. A mutation locks it, compares expectedRevision before any availability write, then changes the schedule and increments exactly once in the same transaction. A stale request is 409 REVISION_CONFLICT, writes nothing and does not advance the revision.",
   weeklyReplacement:
     "PUT carries the complete intended rule set. The server validates all of it, then locks the global availability revision and deletes and reinserts inside one transaction, so a rejected or failed save leaves the previously stored schedule exactly as it was rather than a partial one.",
+  bookingTimeRules: {
+    settingKey: BOOKING_TIME_RULES_SETTING_KEY,
+    rule:
+      "ESZ-151 — the weekly PUT may carry bookingTimeRules; when it does, the three values replace the stored system_settings row inside the same transaction, under the same expectedRevision and the same serialization boundary as the rules, and the revision advances exactly once. Both availability reads return the stored rules beside the schedule. The server alone applies them to slot generation and revalidation.",
+    refusals: [
+      "A minimum lead outside 0 to the public horizon in minutes.",
+      "A preferred finish that is not a local HH:MM wall time or null.",
+      "A maximum overrun outside 0 to the longest service duration in minutes.",
+    ],
+  },
   weeklyRefusals: [
     "An ISO weekday outside 1-7.",
     "A window whose end is not strictly after its start.",
@@ -4674,6 +4713,34 @@ export const httpContractCases: HttpContractCase[] = [
     },
     auth: { session: "authenticated", csrf: "valid", account: "enabled" },
     expect: { status: 200, body: "adminAvailabilityWeeklyResponse" },
+  },
+  {
+    id: "admin.availability.weekly.put.bookingTimeRules",
+    endpoint: ADMIN_AVAILABILITY_WEEKLY_PATH,
+    description:
+      "ESZ-151 — the same PUT may carry the booking-time rules; they are replaced with the week under one revision and returned beside it.",
+    request: {
+      method: "PUT",
+      path: ADMIN_AVAILABILITY_WEEKLY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"expectedRevision":0,"rules":[{"weekdayIso":2,"startLocal":"09:00","endLocal":"18:00","foldUtcOffset":null,"validFrom":null,"validUntil":null,"isActive":true}],"bookingTimeRules":{"minimumLeadMinutes":120,"preferredFinishLocal":"17:30","maxOverrunMinutes":30}}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminAvailabilityWeeklyResponse" },
+  },
+  {
+    id: "admin.availability.weekly.put.bookingTimeRulesOutOfBounds",
+    endpoint: ADMIN_AVAILABILITY_WEEKLY_PATH,
+    description:
+      "ESZ-151 — a negative lead is structurally refused; nothing is written and the revision does not advance.",
+    request: {
+      method: "PUT",
+      path: ADMIN_AVAILABILITY_WEEKLY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"expectedRevision":0,"rules":[],"bookingTimeRules":{"minimumLeadMinutes":-1,"preferredFinishLocal":null,"maxOverrunMinutes":0}}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
   },
   {
     id: "admin.availability.weekly.put.emptySetIsAllowed",

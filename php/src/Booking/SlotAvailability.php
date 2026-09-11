@@ -182,6 +182,9 @@ final class SlotAvailability
     ): array {
         [$fromUtc, $untilUtc] = $this->utcDayRange($fromDate, $untilDate);
 
+        // ESZ-151: the stored booking-time rules and the current instant go
+        // in beside the schedule, for the public read, the move read and the
+        // revalidation alike — one persisted policy, one engine, no React copy.
         return $this->engine->generate(
             $offer,
             $fromDate,
@@ -189,6 +192,8 @@ final class SlotAvailability
             $this->availabilityRepository->weeklyRules(),
             $this->availabilityRepository->exceptionsBetween($fromDate, $untilDate),
             $this->bookings->occupiedBetween($fromUtc, $untilUtc, $excludeReference),
+            $this->clock->now(),
+            $this->availabilityRepository->bookingTimeRules(),
         );
     }
 

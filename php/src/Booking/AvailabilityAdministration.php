@@ -65,6 +65,7 @@ final class AvailabilityAdministration
                 $this->exceptionPayload(...),
                 $state['exceptions'],
             ),
+            'bookingTimeRules' => $state['timeRules']->payload(),
         ];
     }
 
@@ -117,7 +118,14 @@ final class AvailabilityAdministration
             );
         }
 
-        $stored = $this->availabilityRepository->replaceWeeklyRulesWithRevision($rules, $expectedRevision);
+        // ESZ-151: the booking-time rules ride on the same PUT, and are
+        // constructed (validated) here like every rule row — before the
+        // repository writes anything, under the same revision.
+        $stored = $this->availabilityRepository->replaceWeeklyRulesWithRevision(
+            $rules,
+            $expectedRevision,
+            $this->submittedTimeRules($request),
+        );
 
         return [
             'timezone' => $this->contract->timezone,
@@ -126,7 +134,33 @@ final class AvailabilityAdministration
                 $this->weeklyRulePayload(...),
                 $stored['value'],
             ),
+            'bookingTimeRules' => $this->availabilityRepository->bookingTimeRules()->payload(),
         ];
+    }
+
+    /**
+     * Absent means "leave the stored rules as they are"; present replaces all
+     * three values.
+     *
+     * @param array<string, mixed> $request
+     */
+    private function submittedTimeRules(array $request): ?BookingTimeRules
+    {
+        $submitted = $request['bookingTimeRules'] ?? null;
+        if ($submitted === null) {
+            return null;
+        }
+        if (!\is_array($submitted)) {
+            throw new BookingValidationException('bookingTimeRules', 'Booking time rules are malformed.');
+        }
+
+        /** @var array<string, mixed> $submitted */
+        return BookingTimeRules::create(
+            BookingRequestFields::requiredInt($submitted, 'minimumLeadMinutes'),
+            BookingRequestFields::nullableString($submitted, 'preferredFinishLocal'),
+            BookingRequestFields::requiredInt($submitted, 'maxOverrunMinutes'),
+            $this->contract,
+        );
     }
 
     /**

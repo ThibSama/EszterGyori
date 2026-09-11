@@ -54,13 +54,16 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+// ESZ-151: every availability response carries the stored booking-time rules.
+const TIME_RULES = { minimumLeadMinutes: 0, preferredFinishLocal: null, maxOverrunMinutes: 0 };
+
 // --- ESZ-063 / ESZ-064: the transport -------------------------------------
 
 test("availability reads carry no CSRF and mutations carry it on the frozen paths", async () => {
   const calls: Array<{ path: string; init?: RequestInit }> = [];
   const responses = [
-    { timezone: "Europe/Paris", fromDate: "2026-06-01", untilDate: "2026-06-30", revision: 4, weeklyRules: [rule()], exceptions: [] },
-    { timezone: "Europe/Paris", revision: 5, weeklyRules: [rule({ id: 7 })] },
+    { timezone: "Europe/Paris", fromDate: "2026-06-01", untilDate: "2026-06-30", revision: 4, weeklyRules: [rule()], exceptions: [], bookingTimeRules: TIME_RULES },
+    { timezone: "Europe/Paris", revision: 5, weeklyRules: [rule({ id: 7 })], bookingTimeRules: TIME_RULES },
     { revision: 6, exception: { id: 3, localDate: "2026-06-15", kind: "closed", windows: [], note: null } },
     {
       timezone: "Europe/Paris",
@@ -475,7 +478,7 @@ test("the editor adopts server state, confirms destructive changes and stays acc
   );
 
   // Server state, never the request, is what the editor renders after a save.
-  assert.match(source, /adopt\(toDrafts\(result\.value\.weeklyRules\)\)/);
+  assert.match(source, /adopt\(toDrafts\(result\.value\.weeklyRules\), result\.value\.bookingTimeRules\)/);
   assert.match(source, /The response, never the request/);
   assert.match(source, /setRevision\(result\.value\.revision\)/);
 
@@ -501,9 +504,10 @@ test("the editor adopts server state, confirms destructive changes and stays acc
   assert.match(source, /draftHeadingRef\.current\?\.focus/);
   assert.match(source, /tabIndex=\{-1\}/);
 
-  // Saving is blocked while the set is known-bad, and the whole set is sent.
-  assert.match(source, /disabled=\{saving \|\| issues\.length > 0\}/);
-  assert.match(source, /expectedRevision: revision, rules: toRequest\(rules\)/);
+  // Saving is blocked while the set is known-bad, and the whole set is sent —
+  // ESZ-151: the booking-time rules ride on the same PUT, under one revision.
+  assert.match(source, /disabled=\{saving \|\| issues\.length > 0 \|\| ruleIssues\.length > 0\}/);
+  assert.match(source, /expectedRevision: revision,\s+rules: toRequest\(rules\),\s+bookingTimeRules: timeRulesToRequest\(timeRules\)/);
   assert.match(source, /\{ \.\.\.body, expectedRevision: revision \}/);
 
   // A conflict is visible, performs one authoritative read, adopts its complete
@@ -517,7 +521,7 @@ test("the editor adopts server state, confirms destructive changes and stays acc
   // is no longer a fixed horizon from today.
   assert.match(recovery, /planAvailabilityRange\(\{ fromDate: visibleFrom, untilDate: visibleUntil \}, today\)/);
   assert.match(recovery, /api\.readAvailability\(range\)/);
-  assert.match(recovery, /adopt\(toDrafts\(fresh\.value\.weeklyRules\)\)/);
+  assert.match(recovery, /adopt\(toDrafts\(fresh\.value\.weeklyRules\), fresh\.value\.bookingTimeRules\)/);
   assert.match(recovery, /setExceptions\(fresh\.value\.exceptions\)/);
   assert.match(recovery, /setRevision\(fresh\.value\.revision\)/);
   assert.match(recovery, /setDraft\(null\)/);

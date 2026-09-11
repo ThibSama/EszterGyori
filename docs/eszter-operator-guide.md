@@ -72,6 +72,20 @@ horaires habituels de cette date :
 Vérifier particulièrement les jours de changement d’heure. L’interface et le
 serveur travaillent en Europe/Paris ; ne convertir aucune heure à la main en UTC.
 
+Le bloc **Règles de réservation**, sous les horaires hebdomadaires, s’enregistre
+avec la semaine (même bouton, même révision) :
+
+- délai minimum : aucun créneau ne commence avant « maintenant + délai » ;
+- heure de fin habituelle : aucun rendez-vous ne commence à cette heure ou après ;
+  vide, c’est la fin de chaque plage qui fait foi ;
+- dépassement maximal : un rendez-vous peut se terminer au plus tard à l’heure de
+  fin habituelle plus ce délai, sans jamais dépasser la plage horaire du jour (ni
+  une ouverture exceptionnelle plus courte).
+
+Ces règles ne font que restreindre les plages ; une combinaison de prestations est
+jugée sur sa durée validée. Les modifier ne déplace, ne raccourcit et ne recalcule
+aucun rendez-vous déjà confirmé.
+
 ## E-mails et SMS
 
 En production, `notifications.email.encryption` doit être `starttls` (TLS

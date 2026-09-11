@@ -1,5 +1,5 @@
 {
-  "version": 9,
+  "version": 10,
   "scope": "Package 4.1/4.2 booking domain and dynamic slot computation; no booking HTTP API.",
   "services": {
     "keyAuthority": "booking_services.service_key",
@@ -67,6 +67,27 @@
     "limits": {
       "maxHorizonDays": 90,
       "maxResults": 1000
+    },
+    "bookingTimeRules": {
+      "settingKey": "booking.time_rules",
+      "defaults": {
+        "minimumLeadMinutes": 0,
+        "preferredFinishLocal": null,
+        "maxOverrunMinutes": 0
+      },
+      "minimumLeadMinutes": {
+        "min": 0,
+        "max": 129600
+      },
+      "maxOverrunMinutes": {
+        "min": 0,
+        "max": 480
+      },
+      "lead": "No slot is offered, and no slot passes transactional revalidation, whose start is earlier than now + minimumLeadMinutes; with the default lead of 0 this still refuses every start in the past.",
+      "finish": "preferredFinishLocal is the usual finish boundary, a local Europe/Paris wall time or null. Within one effective window the boundary is the earlier of the window's end and preferredFinishLocal: no appointment starts at or after it, and the appointment's own end (without after-buffer) may run past it by at most maxOverrunMinutes, never past the window's end. With a null preferredFinishLocal the window's end is the boundary and maxOverrunMinutes has no effect.",
+      "windowsAuthoritative": "Weekly rules and date exceptions stay authoritative. The rules only narrow an effective window; a shorter exceptional window is never widened by the general finish or overrun setting, and the resource interval [start-bufferBefore, start+duration+bufferAfter) must still fit inside the window.",
+      "offerDuration": "The end an appointment is judged by is start + the real offer duration: the service's duration or the persisted validated duration of an ESZ-150 combination.",
+      "persistence": "One system_settings row under the availability revision: it is replaced through the weekly availability PUT, under the ESZ-146 serialization boundary, and slot reads and transactional revalidation read the same stored row. Changing it never moves, shortens or recomputes an existing booking."
     }
   },
   "states": {
@@ -273,7 +294,7 @@
     "boundary": "The singleton row booking_resource_locks.primary, taken with SELECT ... FOR UPDATE as the first statement of the owning MySQL transaction. A plain InnoDB row lock: no Redis, daemon or process-local mutex, so it serializes across every PHP process and host of a shared-hosting deployment.",
     "members": [
       "booking create, move and cancel",
-      "weekly availability replacement",
+      "weekly availability replacement, including the ESZ-151 booking-time rules it may carry",
       "date exception open, close and remove",
       "service provisioning or an admin service mutation (create, update, archive, restore) that changes is_active, duration, buffer-before or buffer-after"
     ],

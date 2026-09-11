@@ -180,6 +180,38 @@
         ],
         "additionalProperties": false
       }
+    },
+    "bookingTimeRules": {
+      "type": "object",
+      "properties": {
+        "minimumLeadMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 129600
+        },
+        "preferredFinishLocal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxOverrunMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 480
+        }
+      },
+      "required": [
+        "minimumLeadMinutes",
+        "preferredFinishLocal",
+        "maxOverrunMinutes"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
@@ -188,7 +220,8 @@
     "untilDate",
     "revision",
     "weeklyRules",
-    "exceptions"
+    "exceptions",
+    "bookingTimeRules"
   ],
   "additionalProperties": false
 }

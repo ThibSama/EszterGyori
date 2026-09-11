@@ -138,6 +138,8 @@ export type AdminAvailabilityWindow = AdminAvailabilityException["windows"][numb
 
 /** A weekly rule as it is *sent*: no id, because the whole set is replaced. */
 export type AdminWeeklyRuleInput = Omit<AdminWeeklyRule, "id">;
+/** ESZ-151 — the stored booking-time rules, as every availability response returns them. */
+export type AdminBookingTimeRules = AdminAvailability["bookingTimeRules"];
 
 /**
  * ESZ-149 — one catalog row as the back-office sees it. `updatedAt` is the
@@ -332,9 +334,14 @@ export interface AdminApiClient {
   /**
    * Replaces the entire weekly schedule in one request, and resolves with what
    * the server stored — never with what was sent. The caller renders the result.
+   * ESZ-151: `bookingTimeRules`, when carried, is replaced under the same revision.
    */
   replaceWeeklyAvailability(
-    input: { expectedRevision: number; rules: AdminWeeklyRuleInput[] },
+    input: {
+      expectedRevision: number;
+      rules: AdminWeeklyRuleInput[];
+      bookingTimeRules?: AdminBookingTimeRules;
+    },
     csrfToken: string,
   ): Promise<AdminApiResult<AdminWeeklyAvailability>>;
   /** Resolves with `null` after a removal, which is the server saying the date follows the weekly rules again. */

@@ -48,6 +48,13 @@ final class BookingDomainContract
         public readonly int $slotGridMinutes,
         public readonly int $slotMaxHorizonDays,
         public readonly int $slotMaxResults,
+        /**
+         * ESZ-151 — the booking-time rules: their `system_settings` key and
+         * the technical ceilings of the lead and overrun values.
+         */
+        public readonly string $timeRulesSettingKey,
+        public readonly int $minimumLeadMaxMinutes,
+        public readonly int $maxOverrunMaxMinutes,
         public readonly int $adminRangePageSize,
         public readonly int $adminRangeMaxPages,
         public readonly int $adminHistoryPageSize,
@@ -74,6 +81,7 @@ final class BookingDomainContract
         $availability = self::block($document, 'availability');
         $grid = self::block($availability, 'grid');
         $limits = self::block($availability, 'limits');
+        $timeRules = self::block($availability, 'bookingTimeRules');
         $dst = self::block($timezone, 'dst');
         $duration = self::block($services, 'durationMinutes');
         $buffer = self::block($services, 'bufferMinutes');
@@ -110,6 +118,9 @@ final class BookingDomainContract
             self::positiveInt($grid, 'minutes'),
             self::positiveInt($limits, 'maxHorizonDays'),
             self::positiveInt($limits, 'maxResults'),
+            self::string($timeRules, 'settingKey'),
+            self::positiveInt(self::block($timeRules, 'minimumLeadMinutes'), 'max'),
+            self::positiveInt(self::block($timeRules, 'maxOverrunMinutes'), 'max'),
             self::positiveInt($rangeRead, 'pageSize'),
             self::positiveInt($rangeRead, 'maxPages'),
             self::positiveInt($historyPage, 'pageSize'),

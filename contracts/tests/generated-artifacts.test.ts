@@ -133,6 +133,7 @@ test("the generated booking domain freezes service identity, timezone and states
       exceptionPrecedence: string;
       grid: { minutes: number; alignment: string };
       limits: { maxHorizonDays: number; maxResults: number };
+      bookingTimeRules: typeof bookingDomainContract.availability.bookingTimeRules;
     };
     states: {
       values: string[];
@@ -175,6 +176,15 @@ test("the generated booking domain freezes service identity, timezone and states
     maxHorizonDays: BOOKING_SLOT_MAX_HORIZON_DAYS,
     maxResults: BOOKING_SLOT_MAX_RESULTS,
   });
+  // ESZ-151: the booking-time rules block freezes byte-for-byte — PHP reads
+  // the setting key and the bounds from it, and the defaults are the
+  // pre-ESZ-151 behaviour (nothing narrows until configured).
+  assert.deepEqual(booking.availability.bookingTimeRules, bookingDomainContract.availability.bookingTimeRules);
+  assert.deepEqual(booking.availability.bookingTimeRules.defaults, {
+    minimumLeadMinutes: 0,
+    preferredFinishLocal: null,
+    maxOverrunMinutes: 0,
+  });
   assert.deepEqual(booking.states.values, [...bookingStates]);
   assert.equal(booking.states.initial, "confirmed");
   assert.deepEqual(booking.states.transitions, bookingStateTransitions);
@@ -191,7 +201,7 @@ test("the generated booking domain freezes service identity, timezone and states
   );
   assert.match(booking.adminViews.rangeRead.hasMore, /pageSize\+1/);
   assert.match(booking.adminViews.summary.counts, /aggregation/);
-  assert.equal(booking.version, 9, "adding a policy block is a domain version bump");
+  assert.equal(booking.version, 10, "adding a policy block is a domain version bump");
 
   // ESZ-146: the serialization block freezes byte-for-byte, the way the SQL
   // layer enforces it — booking create/move/cancel, every availability
@@ -218,7 +228,7 @@ test("the generated booking domain freezes the Package 7.1 notification policy",
   // The whole block, byte for byte. PHP reads this file rather than a second
   // copy of these constants, so anything that drifts here drifts everywhere.
   assert.deepEqual(document.notifications, notificationPolicy);
-  assert.equal(document.version, 9, "adding a policy block is a domain version bump");
+  assert.equal(document.version, 10, "adding a policy block is a domain version bump");
 
   // ESZ-142: the consent-notice catalog (immutable entries with their exact
   // French text, the bounded-ASCII id pattern and the current pointer) is

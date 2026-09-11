@@ -215,6 +215,12 @@ and the "services per appointment" maximum is a `system_settings` row
 default is 1 and the reservation flow stays single-service. Combinations are
 validated only from `/admin/services`; there is no CLI for them.
 
+Since ESZ-151 the booking-time rules — minimum lead, preferred finish, maximum
+overrun — are one `system_settings` row (`booking.time_rules`) written from the
+Calendar's weekly-hours panel under the availability revision. No migration; absent,
+the defaults are lead 0, no preferred finish, overrun 0, which narrows nothing beyond
+refusing starts already in the past. Changing the row never moves an existing booking.
+
 ## 4. Configure SMTP and the cron entries
 
 Do not send a probe message until the deployment owner has supplied an approved SMTP

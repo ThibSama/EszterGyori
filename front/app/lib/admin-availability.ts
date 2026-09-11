@@ -1,7 +1,12 @@
-import { BOOKING_LOCAL_TIME_PATTERN } from "@eszter/contracts";
+import {
+  BOOKING_LOCAL_TIME_PATTERN,
+  BOOKING_MAX_OVERRUN_MAX_MINUTES,
+  BOOKING_MINIMUM_LEAD_MAX_MINUTES,
+} from "@eszter/contracts";
 import type {
   AdminAvailabilityException,
   AdminAvailabilityWindow,
+  AdminBookingTimeRules,
   AdminWeeklyRule,
   AdminWeeklyRuleInput,
 } from "./admin-api";
@@ -237,6 +242,70 @@ export function weeklyRuleIssues(rules: WeeklyRuleDraft[]): RuleIssue[] {
     }
   });
 
+  return issues;
+}
+
+/**
+ * ESZ-151 — the booking-time rules while they are being edited: the three
+ * inputs as the operator typed them. `preferredFinishLocal` empty means "no
+ * preferred finish" (the window's end), which the request sends as null.
+ *
+ * Structural prevalidation only, like the rest of this module: what the
+ * rules *mean* for a slot — lead, finish boundary, overrun cap — is decided by
+ * the server's slot engine and reproduced nowhere here.
+ */
+export interface TimeRulesDraft {
+  minimumLeadMinutes: string;
+  preferredFinishLocal: string;
+  maxOverrunMinutes: string;
+}
+
+export interface TimeRulesIssue {
+  field: keyof TimeRulesDraft;
+  message: string;
+}
+
+export function timeRulesToDraft(rules: AdminBookingTimeRules): TimeRulesDraft {
+  return {
+    minimumLeadMinutes: String(rules.minimumLeadMinutes),
+    preferredFinishLocal: rules.preferredFinishLocal ?? "",
+    maxOverrunMinutes: String(rules.maxOverrunMinutes),
+  };
+}
+
+/** The wire shape; only meaningful once `timeRulesIssues` is empty. */
+export function timeRulesToRequest(draft: TimeRulesDraft): AdminBookingTimeRules {
+  return {
+    minimumLeadMinutes: Number(draft.minimumLeadMinutes),
+    preferredFinishLocal: draft.preferredFinishLocal === "" ? null : draft.preferredFinishLocal,
+    maxOverrunMinutes: Number(draft.maxOverrunMinutes),
+  };
+}
+
+function isBoundedMinutes(value: string, max: number): boolean {
+  return /^\d+$/.test(value) && Number(value) <= max;
+}
+
+export function timeRulesIssues(draft: TimeRulesDraft): TimeRulesIssue[] {
+  const issues: TimeRulesIssue[] = [];
+  if (!isBoundedMinutes(draft.minimumLeadMinutes, BOOKING_MINIMUM_LEAD_MAX_MINUTES)) {
+    issues.push({
+      field: "minimumLeadMinutes",
+      message: `Indiquez un délai en minutes entre 0 et ${BOOKING_MINIMUM_LEAD_MAX_MINUTES}.`,
+    });
+  }
+  if (draft.preferredFinishLocal !== "" && !isLocalTime(draft.preferredFinishLocal)) {
+    issues.push({
+      field: "preferredFinishLocal",
+      message: "Indiquez une heure de fin valide au format HH:MM, ou laissez vide.",
+    });
+  }
+  if (!isBoundedMinutes(draft.maxOverrunMinutes, BOOKING_MAX_OVERRUN_MAX_MINUTES)) {
+    issues.push({
+      field: "maxOverrunMinutes",
+      message: `Indiquez un dépassement en minutes entre 0 et ${BOOKING_MAX_OVERRUN_MAX_MINUTES}.`,
+    });
+  }
   return issues;
 }
 
