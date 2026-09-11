@@ -37,8 +37,16 @@ final class AvailabilityRepository
      * serialization boundary — it changes bookability exactly the way the
      * week does. Null leaves the stored rules untouched.
      *
+     * The returned weekly rules and booking-time rules are read inside the
+     * same transaction that produces the returned revision, so a caller
+     * echoing them never describes a later save's state under this revision.
+     *
      * @param list<WeeklyAvailabilityRule> $rules
-     * @return array{revision: int, value: list<WeeklyAvailabilityRule>}
+     * @return array{
+     *     revision: int,
+     *     weeklyRules: list<WeeklyAvailabilityRule>,
+     *     timeRules: BookingTimeRules,
+     * }
      */
     public function replaceWeeklyRulesWithRevision(
         array $rules,
@@ -48,7 +56,7 @@ final class AvailabilityRepository
         $this->assertWeeklyRules($rules);
 
         usort($rules, self::compareRules(...));
-        return $this->mutate($expectedRevision, function () use ($rules, $timeRules): array {
+        $stored = $this->mutate($expectedRevision, function () use ($rules, $timeRules): array {
             $now = $this->clock->nowIso();
             if ($timeRules !== null) {
                 $this->database->run(
@@ -87,8 +95,19 @@ final class AvailabilityRepository
                 );
             }
 
-            return $this->weeklyRules();
+            return [
+                'weeklyRules' => $this->weeklyRules(),
+                // Read here, not after commit: with `$timeRules` null this is
+                // the untouched stored value, still under this revision's lock.
+                'timeRules' => $timeRules ?? $this->bookingTimeRules(),
+            ];
         });
+
+        return [
+            'revision' => $stored['revision'],
+            'weeklyRules' => $stored['value']['weeklyRules'],
+            'timeRules' => $stored['value']['timeRules'],
+        ];
     }
 
     /**

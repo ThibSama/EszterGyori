@@ -127,14 +127,16 @@ final class AvailabilityAdministration
             $this->submittedTimeRules($request),
         );
 
+        // Every field below comes from the one transaction that produced
+        // `revision`; a reread here could describe a concurrent later save.
         return [
             'timezone' => $this->contract->timezone,
             'revision' => $stored['revision'],
             'weeklyRules' => array_map(
                 $this->weeklyRulePayload(...),
-                $stored['value'],
+                $stored['weeklyRules'],
             ),
-            'bookingTimeRules' => $this->availabilityRepository->bookingTimeRules()->payload(),
+            'bookingTimeRules' => $stored['timeRules']->payload(),
         ];
     }
 

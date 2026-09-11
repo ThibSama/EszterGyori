@@ -20,6 +20,7 @@ use Eszter\Booking\BookingRevisionConflictException;
 use Eszter\Booking\BookingSerializationLock;
 use Eszter\Booking\BookingStateMachine;
 use Eszter\Booking\BookingTimePolicy;
+use Eszter\Booking\BookingTimeRules;
 use Eszter\Booking\BookingValidationException;
 use Eszter\Booking\PdoBookingApi;
 use Eszter\Booking\SlotUnavailableException;
@@ -587,6 +588,53 @@ final class SqlIntegrationTest extends TestCase
             $this->weeklyRule(1, '10:00', '11:00'),
         ]);
         self::assertCount(3, $this->availability->weeklyRules());
+    }
+
+    /**
+     * ESZ-151 correction: the weekly replacement answers with the weekly
+     * rules and the booking-time rules captured by its own mutation, under
+     * the revision that mutation produced — never from a reread after commit.
+     */
+    public function testWeeklyReplacementReturnsTheTimeRulesOfItsOwnRevision(): void
+    {
+        $head = $this->availabilityHead();
+        $timeRules = BookingTimeRules::create(120, '18:00', 30, $this->bookingContract);
+
+        $stored = $this->availability->replaceWeeklyRulesWithRevision(
+            [$this->weeklyRule(2, '09:00', '12:00')],
+            $head,
+            $timeRules,
+        );
+
+        self::assertSame($head + 1, $stored['revision']);
+        self::assertSame([2], array_column($stored['weeklyRules'], 'weekdayIso'));
+        self::assertSame($timeRules, $stored['timeRules'], 'time rules were reread instead of bound to the mutation');
+        self::assertSame($timeRules->payload(), $this->availability->bookingTimeRules()->payload());
+
+        // Omitted time rules: the snapshot carries the untouched stored value.
+        $unchanged = $this->availability->replaceWeeklyRulesWithRevision(
+            [$this->weeklyRule(2, '09:00', '12:00'), $this->weeklyRule(4, '14:00', '16:00')],
+            $head + 1,
+        );
+
+        self::assertSame($head + 2, $unchanged['revision']);
+        self::assertSame([2, 4], array_column($unchanged['weeklyRules'], 'weekdayIso'));
+        self::assertSame($timeRules->payload(), $unchanged['timeRules']->payload());
+
+        // And the administration response echoes exactly that snapshot.
+        $response = $this->bookingApi->adminReplaceWeeklyAvailability([
+            'expectedRevision' => $head + 2,
+            'rules' => [['weekdayIso' => 5, 'startLocal' => '10:00', 'endLocal' => '11:00',
+                'foldUtcOffset' => null, 'validFrom' => null, 'validUntil' => null, 'isActive' => true]],
+            'bookingTimeRules' => ['minimumLeadMinutes' => 60, 'preferredFinishLocal' => null, 'maxOverrunMinutes' => 0],
+        ]);
+
+        self::assertSame($head + 3, $response['revision']);
+        self::assertSame([5], array_column($response['weeklyRules'], 'weekdayIso'));
+        self::assertSame(
+            ['minimumLeadMinutes' => 60, 'preferredFinishLocal' => null, 'maxOverrunMinutes' => 0],
+            $response['bookingTimeRules'],
+        );
     }
 
     public function testOneDateExceptionStoresOrderedReplacementWindowsAndCanBecomeClosed(): void
