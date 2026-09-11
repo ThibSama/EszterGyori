@@ -12,10 +12,12 @@ import {
 } from "../app/lib/retry-after";
 import type { BookingAvailability, BookingSlot } from "../app/lib/booking-api";
 import {
+  CUSTOMER_NAME_PART_MAX_LENGTH,
   RESERVATION_HORIZON_DAYS,
   bookableServicesToOffer,
   selectedServiceLabel,
   addCivilDays,
+  composeCustomerName,
   createBookingRequest,
   initialReservationState,
   parisToday,
@@ -164,15 +166,43 @@ test("navigation clears date and slot state before the new authoritative respons
 
 test("customer validation covers required identity, optional limits and explicit consent", () => {
   assert.deepEqual(Object.keys(validateCustomerDraft({
-    name: "",
+    firstName: "",
+    lastName: "",
     email: "not-an-email",
     phone: "x".repeat(33),
     note: "x".repeat(2001),
     consentAccepted: false,
-  })).sort(), ["consentAccepted", "email", "name", "note", "phone"]);
+  })).sort(), ["consentAccepted", "email", "firstName", "lastName", "note", "phone"]);
+
+  // ESZ-160: first and last names fail independently, and each part is
+  // capped so the composed `customerName` fits the API's 160 characters.
+  assert.deepEqual(Object.keys(validateCustomerDraft({
+    firstName: "Cliente",
+    lastName: " ",
+    email: "cliente@example.test",
+    phone: "",
+    note: "",
+    consentAccepted: true,
+  })), ["lastName"]);
+  assert.deepEqual(Object.keys(validateCustomerDraft({
+    firstName: "x".repeat(CUSTOMER_NAME_PART_MAX_LENGTH + 1),
+    lastName: "Exemple",
+    email: "cliente@example.test",
+    phone: "",
+    note: "",
+    consentAccepted: true,
+  })), ["firstName"]);
+  assert.equal(
+    composeCustomerName({
+      firstName: "x".repeat(CUSTOMER_NAME_PART_MAX_LENGTH),
+      lastName: "y".repeat(CUSTOMER_NAME_PART_MAX_LENGTH),
+    }).length <= 160,
+    true,
+  );
 
   assert.deepEqual(validateCustomerDraft({
-    name: " Cliente Exemple ",
+    firstName: " Cliente ",
+    lastName: " Exemple ",
     email: " cliente@example.test ",
     phone: "",
     note: "",
@@ -182,7 +212,8 @@ test("customer validation covers required identity, optional limits and explicit
 
 test("the creation payload preserves the exact slot instant and normalizes optional fields", () => {
   const request = createBookingRequest(["brows"], slot, {
-    name: " Cliente Exemple ",
+    firstName: " Cliente ",
+    lastName: " Exemple ",
     email: " cliente@example.test ",
     phone: " ",
     note: " question ",
@@ -207,7 +238,8 @@ test("the creation request names exactly the notice the current checkbox renders
   // `bookingConsentCurrentNotice.id`, so the server can store which wording
   // was accepted. Notice text is never part of the request.
   const request = createBookingRequest(["brows"], slot, {
-    name: "Cliente Exemple",
+    firstName: "Cliente",
+    lastName: "Exemple",
     email: "cliente@example.test",
     phone: "",
     note: "",
@@ -223,7 +255,8 @@ test("review, confirmed success and ordinary failure preserve customer and appoi
   let state = initialReservationState("2026-08-21");
   state = reservationFlowReducer(state, { type: "select-service", serviceKey: "brows" });
   state = reservationFlowReducer(state, { type: "select-slot", slot });
-  state = reservationFlowReducer(state, { type: "update-customer", field: "name", value: "Cliente Exemple" });
+  state = reservationFlowReducer(state, { type: "update-customer", field: "firstName", value: "Cliente" });
+  state = reservationFlowReducer(state, { type: "update-customer", field: "lastName", value: "Exemple" });
   state = reservationFlowReducer(state, { type: "show-review" });
   assert.equal(state.phase, "review");
   state = reservationFlowReducer(state, { type: "submit-start" });
@@ -233,7 +266,8 @@ test("review, confirmed success and ordinary failure preserve customer and appoi
     failure: { kind: "server", message: "Serveur indisponible" },
   });
   assert.equal(state.phase, "review");
-  assert.equal(state.customer.name, "Cliente Exemple");
+  assert.equal(state.customer.firstName, "Cliente");
+  assert.equal(state.customer.lastName, "Exemple");
   assert.equal(state.selectedSlot?.startsAtUtc, slot.startsAtUtc);
 
   state = reservationFlowReducer(state, { type: "submit-start" });
@@ -345,7 +379,8 @@ test("a 429 booking creation keeps the review state, the slot, the customer and 
   let state = initialReservationState("2026-08-21");
   state = reservationFlowReducer(state, { type: "select-service", serviceKey: "brows" });
   state = reservationFlowReducer(state, { type: "select-slot", slot });
-  state = reservationFlowReducer(state, { type: "update-customer", field: "name", value: "Cliente Exemple" });
+  state = reservationFlowReducer(state, { type: "update-customer", field: "firstName", value: "Cliente" });
+  state = reservationFlowReducer(state, { type: "update-customer", field: "lastName", value: "Exemple" });
   state = reservationFlowReducer(state, { type: "update-customer", field: "email", value: "cliente@example.test" });
   state = reservationFlowReducer(state, { type: "show-review" });
   state = reservationFlowReducer(state, { type: "submit-start" });
@@ -367,7 +402,8 @@ test("a 429 booking creation keeps the review state, the slot, the customer and 
   if (state.submissionError?.kind !== "rate-limited") return;
   assert.equal(state.submissionError.retryAfterSeconds, 120);
   assert.equal(state.selectedSlot?.startsAtUtc, slot.startsAtUtc);
-  assert.equal(state.customer.name, "Cliente Exemple");
+  assert.equal(state.customer.firstName, "Cliente");
+  assert.equal(state.customer.lastName, "Exemple");
   assert.equal(state.customer.email, "cliente@example.test");
   assert.equal(state.submissionRetryAtEpochMs, deadline);
   assert.equal(isRetryBlocked(state.submissionRetryAtEpochMs, receivedAt + 1), true);

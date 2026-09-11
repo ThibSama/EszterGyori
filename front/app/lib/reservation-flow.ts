@@ -158,7 +158,13 @@ export interface ReservationFlowState {
 }
 
 export interface CustomerDraft {
-  name: string;
+  /**
+   * ESZ-160 — the visitor's first and last names are entered, validated and
+   * reviewed separately; the booking API still receives one `customerName`
+   * (see `composeCustomerName`), so the split lives only in this form.
+   */
+  firstName: string;
+  lastName: string;
   email: string;
   phone: string;
   note: string;
@@ -217,7 +223,7 @@ export function initialReservationState(today: string): ReservationFlowState {
     error: null,
     notice: null,
     requestVersion: 0,
-    customer: { name: "", email: "", phone: "", note: "", consentAccepted: false },
+    customer: { firstName: "", lastName: "", email: "", phone: "", note: "", consentAccepted: false },
     customerErrors: {},
     phase: "selecting",
     submissionError: null,
@@ -227,14 +233,32 @@ export function initialReservationState(today: string): ReservationFlowState {
   };
 }
 
+/**
+ * ESZ-160 — each name part is capped so that the composed `customerName`
+ * (first, a space, last) always fits the API's 160-character limit.
+ */
+export const CUSTOMER_NAME_PART_MAX_LENGTH = 79;
+
+/**
+ * The single `customerName` the booking API expects, composed from the two
+ * validated form values: `"Prénom Nom"`.
+ */
+export function composeCustomerName(customer: Pick<CustomerDraft, "firstName" | "lastName">): string {
+  return `${customer.firstName.trim()} ${customer.lastName.trim()}`.trim();
+}
+
 export function validateCustomerDraft(customer: CustomerDraft): CustomerErrors {
   const errors: CustomerErrors = {};
-  const name = customer.name.trim();
+  const firstName = customer.firstName.trim();
+  const lastName = customer.lastName.trim();
   const email = customer.email.trim();
   const phone = customer.phone.trim();
   const note = customer.note.trim();
-  if (name.length < 1 || name.length > 160) {
-    errors.name = "Indiquez votre nom (160 caractères maximum).";
+  if (firstName.length < 1 || firstName.length > CUSTOMER_NAME_PART_MAX_LENGTH) {
+    errors.firstName = `Indiquez votre prénom (${CUSTOMER_NAME_PART_MAX_LENGTH} caractères maximum).`;
+  }
+  if (lastName.length < 1 || lastName.length > CUSTOMER_NAME_PART_MAX_LENGTH) {
+    errors.lastName = `Indiquez votre nom (${CUSTOMER_NAME_PART_MAX_LENGTH} caractères maximum).`;
   }
   if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     errors.email = "Indiquez une adresse email valide.";
@@ -255,7 +279,7 @@ export function createBookingRequest(
   return {
     serviceKeys: [...serviceKeys],
     startsAtUtc: slot.startsAtUtc,
-    customerName: customer.name.trim(),
+    customerName: composeCustomerName(customer),
     customerEmail: customer.email.trim(),
     customerPhone: customer.phone.trim() || null,
     customerNote: customer.note.trim() || null,

@@ -7,7 +7,10 @@ import type {
   ReservationFlowAction,
   ReservationFlowState,
 } from "../../lib/reservation-flow";
-import { validateCustomerDraft } from "../../lib/reservation-flow";
+import {
+  CUSTOMER_NAME_PART_MAX_LENGTH,
+  validateCustomerDraft,
+} from "../../lib/reservation-flow";
 import {
   isRetryBlocked,
   retryWaitLabel,
@@ -39,7 +42,8 @@ export function ReservationDetails({
   const reviewHeading = useRef<HTMLHeadingElement>(null);
   const confirmationHeading = useRef<HTMLHeadingElement>(null);
   const submissionAlert = useRef<HTMLDivElement>(null);
-  const nameInput = useRef<HTMLInputElement>(null);
+  const firstNameInput = useRef<HTMLInputElement>(null);
+  const lastNameInput = useRef<HTMLInputElement>(null);
   const emailInput = useRef<HTMLInputElement>(null);
   const phoneInput = useRef<HTMLInputElement>(null);
   const noteInput = useRef<HTMLTextAreaElement>(null);
@@ -103,7 +107,8 @@ export function ReservationDetails({
     if (first) {
       dispatch({ type: "customer-invalid", errors: validation });
       const refs = {
-        name: nameInput,
+        firstName: firstNameInput,
+        lastName: lastNameInput,
         email: emailInput,
         phone: phoneInput,
         note: noteInput,
@@ -142,20 +147,27 @@ export function ReservationDetails({
           <form onSubmit={showReview} noValidate className="mt-7 space-y-5">
             <div className="grid gap-5 sm:grid-cols-2">
               <div>
-                <label htmlFor="customer-name" className="mb-2 block text-sm font-medium text-warm-700">Nom <span aria-hidden="true">*</span></label>
-                <input ref={nameInput} id="customer-name" name="name" autoComplete="name" required maxLength={160} value={customer.name} onChange={(event) => update("name", event.target.value)} aria-invalid={Boolean(errorFor("name"))} aria-describedby={describedBy("name")} className="w-full rounded-xl border border-warm-300 bg-white/70 px-4 py-3 text-warm-800" />
-                {errorFor("name") && <p id="name-error" className="mt-2 text-sm text-warm-700">{errorFor("name")}</p>}
+                <label htmlFor="customer-first-name" className="mb-2 block text-sm font-medium text-warm-700">Prénom <span aria-hidden="true">*</span></label>
+                <input ref={firstNameInput} id="customer-first-name" name="firstName" autoComplete="given-name" required maxLength={CUSTOMER_NAME_PART_MAX_LENGTH} value={customer.firstName} onChange={(event) => update("firstName", event.target.value)} aria-invalid={Boolean(errorFor("firstName"))} aria-describedby={describedBy("firstName")} className="w-full rounded-xl border border-warm-300 bg-white/70 px-4 py-3 text-warm-800" />
+                {errorFor("firstName") && <p id="firstName-error" className="mt-2 text-sm text-warm-700">{errorFor("firstName")}</p>}
               </div>
+              <div>
+                <label htmlFor="customer-last-name" className="mb-2 block text-sm font-medium text-warm-700">Nom <span aria-hidden="true">*</span></label>
+                <input ref={lastNameInput} id="customer-last-name" name="lastName" autoComplete="family-name" required maxLength={CUSTOMER_NAME_PART_MAX_LENGTH} value={customer.lastName} onChange={(event) => update("lastName", event.target.value)} aria-invalid={Boolean(errorFor("lastName"))} aria-describedby={describedBy("lastName")} className="w-full rounded-xl border border-warm-300 bg-white/70 px-4 py-3 text-warm-800" />
+                {errorFor("lastName") && <p id="lastName-error" className="mt-2 text-sm text-warm-700">{errorFor("lastName")}</p>}
+              </div>
+            </div>
+            <div className="grid gap-5 sm:grid-cols-2">
               <div>
                 <label htmlFor="customer-email" className="mb-2 block text-sm font-medium text-warm-700">Email <span aria-hidden="true">*</span></label>
                 <input ref={emailInput} id="customer-email" name="email" type="email" inputMode="email" autoComplete="email" required maxLength={254} value={customer.email} onChange={(event) => update("email", event.target.value)} aria-invalid={Boolean(errorFor("email"))} aria-describedby={describedBy("email")} className="w-full rounded-xl border border-warm-300 bg-white/70 px-4 py-3 text-warm-800" />
                 {errorFor("email") && <p id="email-error" className="mt-2 text-sm text-warm-700">{errorFor("email")}</p>}
               </div>
-            </div>
-            <div>
-              <label htmlFor="customer-phone" className="mb-2 block text-sm font-medium text-warm-700">Téléphone <span className="font-normal text-warm-500">(facultatif)</span></label>
-              <input ref={phoneInput} id="customer-phone" name="phone" type="tel" inputMode="tel" autoComplete="tel" maxLength={32} value={customer.phone} onChange={(event) => update("phone", event.target.value)} aria-invalid={Boolean(errorFor("phone"))} aria-describedby={describedBy("phone")} className="w-full rounded-xl border border-warm-300 bg-white/70 px-4 py-3 text-warm-800" />
-              {errorFor("phone") && <p id="phone-error" className="mt-2 text-sm text-warm-700">{errorFor("phone")}</p>}
+              <div>
+                <label htmlFor="customer-phone" className="mb-2 block text-sm font-medium text-warm-700">Téléphone <span className="font-normal text-warm-500">(facultatif)</span></label>
+                <input ref={phoneInput} id="customer-phone" name="phone" type="tel" inputMode="tel" autoComplete="tel" maxLength={32} value={customer.phone} onChange={(event) => update("phone", event.target.value)} aria-invalid={Boolean(errorFor("phone"))} aria-describedby={describedBy("phone")} className="w-full rounded-xl border border-warm-300 bg-white/70 px-4 py-3 text-warm-800" />
+                {errorFor("phone") && <p id="phone-error" className="mt-2 text-sm text-warm-700">{errorFor("phone")}</p>}
+              </div>
             </div>
             <div>
               <label htmlFor="customer-note" className="mb-2 block text-sm font-medium text-warm-700">Note <span className="font-normal text-warm-500">(facultatif)</span></label>
@@ -187,7 +199,8 @@ export function ReservationDetails({
           <dl className="mt-7 grid gap-4 rounded-2xl bg-white/55 p-5 sm:grid-cols-2">
             <div><dt className="text-sm text-warm-500">Prestation</dt><dd className="font-medium text-warm-800">{serviceLabel}</dd></div>
             <div><dt className="text-sm text-warm-500">Date et heure</dt><dd className="font-medium text-warm-800">{dateLabel(state.selectedSlot.localDate)} à {state.selectedSlot.localStart}</dd></div>
-            <div><dt className="text-sm text-warm-500">Nom</dt><dd className="font-medium text-warm-800">{customer.name.trim()}</dd></div>
+            <div><dt className="text-sm text-warm-500">Prénom</dt><dd className="font-medium text-warm-800">{customer.firstName.trim()}</dd></div>
+            <div><dt className="text-sm text-warm-500">Nom</dt><dd className="font-medium text-warm-800">{customer.lastName.trim()}</dd></div>
             <div><dt className="text-sm text-warm-500">Email</dt><dd className="break-all font-medium text-warm-800">{customer.email.trim()}</dd></div>
             {customer.phone.trim() && <div><dt className="text-sm text-warm-500">Téléphone</dt><dd className="font-medium text-warm-800">{customer.phone.trim()}</dd></div>}
             {customer.note.trim() && <div className="sm:col-span-2"><dt className="text-sm text-warm-500">Note</dt><dd className="whitespace-pre-wrap text-warm-800">{customer.note.trim()}</dd></div>}
