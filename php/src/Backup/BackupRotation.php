@@ -77,7 +77,13 @@ final class BackupRotation
             $archives[$path] = $stamp;
         }
 
-        $cutoff = $this->clock->now()->modify('-' . $this->policy->backupArchiveRetentionDays . ' days');
+        // The names carry whole seconds, so the cutoff is compared at that precision:
+        // `SystemClock` is sub-second, and an unrounded `now` would make the archive
+        // sitting exactly on the boundary a few microseconds too old.
+        $now = $this->clock->now();
+        $cutoff = $now
+            ->setTime((int) $now->format('G'), (int) $now->format('i'), (int) $now->format('s'))
+            ->modify('-' . $this->policy->backupArchiveRetentionDays . ' days');
         $published = $directory . \DIRECTORY_SEPARATOR . basename($publishedArchive);
         $deleted = [];
         ksort($archives);

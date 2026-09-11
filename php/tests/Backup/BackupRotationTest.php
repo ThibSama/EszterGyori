@@ -67,6 +67,18 @@ final class BackupRotationTest extends TestCase
         );
     }
 
+    public function testASubSecondClockStillKeepsTheWholeSecondBoundary(): void
+    {
+        $rotation = new BackupRotation($this->policy, new FrozenClock('2026-06-13T03:30:00.750Z'));
+        $published = $this->file('eszter-backup-20260613-033000.tar.gz');
+        $boundary = $this->file('eszter-backup-20260514-033000.tar.gz');
+        $expired = $this->file('eszter-backup-20260514-032959.tar.gz');
+
+        self::assertSame(['deleted' => [$expired], 'retentionDays' => 30], $rotation->run($this->root, $published));
+        self::assertFileExists($boundary);
+        self::assertFileDoesNotExist($expired);
+    }
+
     public function testSymlinkedCanonicalNameRefusesBeforeAnyDeletion(): void
     {
         $published = $this->file('eszter-backup-20260613-033000.tar.gz');

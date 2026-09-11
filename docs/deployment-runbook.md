@@ -300,7 +300,9 @@ Once the new archive is in place, the same command deletes the canonical
 older than the frozen `backupArchiveRetentionDays` (§5). It prints the archive
 path, byte and row counts and the deleted archive paths only — no customer value
 reaches its stdout — so the cron log is safe to keep. A non-zero exit requires
-attention and deletes nothing: a failed backup leaves every existing archive.
+attention. A backup that fails to publish never reaches rotation, so it cannot
+prune existing archives; once rotation has begun, a deletion failure exits
+non-zero after any earlier expired archive was already removed.
 
 A fourth job runs the repository-owned **log maintenance** once daily, after the
 customer-data sweep and the backup:

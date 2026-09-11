@@ -126,8 +126,8 @@ SMS n’est disponible et leur absence n’est pas une panne de la V1.
 L’opérateur d’hébergement exécute `app/bin/backup.php` chaque jour (cron, après la
 purge de rétention) vers le dossier privé `backups/`, jamais sous `public_html/`.
 La commande supprime elle-même, une fois la nouvelle archive écrite, les archives
-canoniques de ce dossier plus anciennes que 30 jours ; rien n’est supprimé si la
-sauvegarde échoue. Conserver une copie chiffrée hors du serveur, y appliquer la
+canoniques de ce dossier plus anciennes que 30 jours ; rien n’est supprimé si
+l’écriture de la nouvelle archive échoue. Conserver une copie chiffrée hors du serveur, y appliquer la
 même rétention et répéter régulièrement une restauration dans une base et un
 dossier de test vides. Le détail et les commandes sont dans
 [`backup-and-restore.md`](backup-and-restore.md).
