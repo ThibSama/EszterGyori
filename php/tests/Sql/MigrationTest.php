@@ -69,7 +69,8 @@ final class MigrationTest extends TestCase
 
         self::assertSame(
             ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
-             '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016', '0017', '0018', '0019', '0020'],
+             '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016', '0017', '0018', '0019', '0020',
+             '0021'],
             $applied,
         );
     }
@@ -1015,6 +1016,131 @@ final class MigrationTest extends TestCase
         } finally {
             TestEnvironment::removeDirectory($directory);
         }
+    }
+
+    /**
+     * ESZ-161 correction — migration 0020's basis-evidence CHECK read "at
+     * least one evidence" and so admitted a hybrid row carrying both a consent
+     * instant and a privacy notice. Migration 0021 replaces it with the
+     * exclusive invariant: exactly one of the historical path (consent
+     * instant, notice id NULL or set, no privacy facts) and the current path
+     * (no consent facts, the full privacy pair). Nothing is rewritten, and the
+     * replacement is repeat-safe.
+     */
+    public function testMigration0021MakesTheBasisEvidenceCheckExclusive(): void
+    {
+        $directory = TestEnvironment::makeTempDirectory('eszter-migrations-esz161-basis');
+
+        try {
+            $migrations = TestDatabase::migrationsDirectory();
+            foreach (['000[1-9]_*.sql', '001[0-9]_*.sql', '0020_*.sql'] as $glob) {
+                foreach ((glob($migrations . '/' . $glob) ?: []) as $file) {
+                    copy($file, $directory . '/' . basename($file));
+                }
+            }
+
+            // The 0020 world: the faulty CHECK admits a hybrid row.
+            $applied = $this->migrator($directory)->migrate();
+            self::assertSame('0020', end($applied));
+            $this->seedBookingForNotifications();
+            $instant = '2026-06-13 09:00:00.000';
+            $consent = 'booking-consent-v1';
+            $privacy = 'booking-privacy-v1';
+            $this->seedBasisEvidenceBooking('bk_88888888888888888888888888888881', $instant, null, null, null);
+            $this->seedBasisEvidenceBooking('bk_88888888888888888888888888888882', $instant, $consent, null, null);
+            $this->seedBasisEvidenceBooking('HYBR-QRST', $instant, $consent, $privacy, $instant);
+            // No deployed database holds such a row; the test alone removes
+            // its proof of the defect before the corrected CHECK is added.
+            $this->database->run('DELETE FROM bookings WHERE reference = :reference', ['reference' => 'HYBR-QRST']);
+
+            // The deploy: 0021 lands and applies alone.
+            foreach ((glob($migrations . '/0021_*.sql') ?: []) as $file) {
+                copy($file, $directory . '/' . basename($file));
+            }
+            self::assertSame(['0021'], $this->migrator($directory)->migrate());
+            self::assertSame([], $this->migrator($directory)->pendingVersions());
+
+            // The replaced CHECK names the consent notice id (the exclusive
+            // clause) and nothing was rewritten.
+            $clause = (string) $this->checkClause('bookings', 'chk_bookings_basis_evidence');
+            self::assertStringContainsString('consent_notice_id', $clause);
+            self::assertSame(3, (int) $this->database->fetchOne('SELECT COUNT(*) AS n FROM bookings')['n']);
+            self::assertSame('booking-consent-v1', $this->database->fetchOne(
+                'SELECT consent_notice_id FROM bookings WHERE reference = :reference',
+                ['reference' => 'bk_88888888888888888888888888888882'],
+            )['consent_notice_id']);
+
+            // Accepted: the historical path with and without a consent notice
+            // id, and the current path.
+            $this->seedBasisEvidenceBooking('bk_88888888888888888888888888888883', $instant, null, null, null);
+            $this->seedBasisEvidenceBooking('bk_88888888888888888888888888888884', $instant, $consent, null, null);
+            $this->seedBasisEvidenceBooking('CURR-QRST', null, null, $privacy, $instant);
+
+            // Refused: hybrids (consent instant and/or consent notice id
+            // beside a privacy notice), a half-set privacy pair, and no
+            // evidence at all.
+            $refused = [
+                [$instant, $consent, $privacy, $instant],
+                [$instant, null, $privacy, $instant],
+                [null, $consent, $privacy, $instant],
+                [$instant, null, $privacy, null],
+                [$instant, null, null, $instant],
+                [null, null, $privacy, null],
+                [null, null, null, $instant],
+                [null, $consent, null, null],
+                [null, null, null, null],
+            ];
+            foreach ($refused as $index => [$consentAt, $consentNotice, $privacyId, $presentedAt]) {
+                $reference = 'BADR-QR' . ['AB', 'CD', 'EF', 'GH', 'JK', 'LM', 'NP', 'ST', 'UV'][$index];
+                $this->expectConstraintFailure(fn () => $this->seedBasisEvidenceBooking(
+                    $reference,
+                    $consentAt,
+                    $consentNotice,
+                    $privacyId,
+                    $presentedAt,
+                ));
+            }
+
+            // And 0021 stays repeat-safe on re-run: the exclusive clause remains.
+            self::assertSame([], $this->migrator($directory)->migrate());
+            self::assertStringContainsString(
+                'consent_notice_id',
+                (string) $this->checkClause('bookings', 'chk_bookings_basis_evidence'),
+            );
+        } finally {
+            TestEnvironment::removeDirectory($directory);
+        }
+    }
+
+    /** A booking row with every ESZ-142/ESZ-161 basis-evidence column stated explicitly. */
+    private function seedBasisEvidenceBooking(
+        string $reference,
+        ?string $consentAt,
+        ?string $consentNoticeId,
+        ?string $privacyNoticeId,
+        ?string $presentedAt,
+    ): void {
+        $this->database->run(
+            'INSERT INTO bookings'
+            . ' (reference, service_key, state, starts_at_utc, ends_at_utc, timezone_name,'
+            . ' customer_name, customer_email, consent_at_utc, consent_notice_id,'
+            . ' privacy_notice_id, privacy_notice_presented_at_utc,'
+            . ' created_at, updated_at, state_changed_at)'
+            . " VALUES (:reference, 'lips', 'confirmed',"
+            . " '2026-06-15 10:00:00.000', '2026-06-15 11:00:00.000', 'Europe/Paris',"
+            . " 'Cliente', 'cliente@example.test', :consentAt, :consentNotice, :notice, :presented,"
+            . ' :created, :updated, :changed)',
+            [
+                'reference' => $reference,
+                'consentAt' => $consentAt,
+                'consentNotice' => $consentNoticeId,
+                'notice' => $privacyNoticeId,
+                'presented' => $presentedAt,
+                'created' => self::NOW,
+                'updated' => self::NOW,
+                'changed' => self::NOW,
+            ],
+        );
     }
 
     /**

@@ -358,7 +358,7 @@
       {
         "id": "booking-privacy-v1",
         "legalBasis": "contract",
-        "text": "Responsable du traitement : Eszter Gyori. Vos coordonnées servent uniquement à organiser le rendez-vous que vous demandez (exécution de la prestation et démarches précontractuelles). Aucun consentement n’est requis pour cela. Elles sont conservées jusqu’à 90 jours après la fin ou l’annulation du rendez-vous, puis anonymisées. Elles ne sont transmises qu’aux prestataires techniques nécessaires (hébergement, envoi des e-mails). Vous disposez d’un droit d’accès, de rectification, d’effacement, de limitation et d’opposition, et pouvez saisir la CNIL. Pour l’exercer : contact@esztergyori.com. Politique de confidentialité : /confidentialite"
+        "text": "Responsable du traitement : Eszter Gyori. Vos coordonnées servent uniquement à organiser le rendez-vous que vous demandez (exécution de la prestation et démarches précontractuelles). Aucun consentement n’est requis pour cela. Elles sont conservées jusqu’à 90 jours après la fin ou l’annulation du rendez-vous, puis anonymisées. Elles ne sont transmises qu’aux prestataires techniques nécessaires (hébergement, envoi des e-mails). Vous disposez d’un droit d’accès, de rectification, d’effacement, de limitation et de portabilité, et pouvez saisir la CNIL. Pour l’exercer : contact@esztergyori.com. Politique de confidentialité : /confidentialite"
       }
     ],
     "idPattern": "^[a-z0-9][a-z0-9_-]{0,63}$",

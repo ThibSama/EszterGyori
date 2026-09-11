@@ -91,7 +91,9 @@ test("the current privacy notice covers every required statement with repository
   assert.match(content.legalBasis, /Aucun consentement n’est requis/);
   assert.match(content.retention, /90 jours/);
   assert.match(content.recipients, /hébergement, envoi des e-mails/);
-  assert.match(content.rights, /accès, de rectification, d’effacement, de limitation et d’opposition/);
+  // The five V1 rights (Package 10.3): opposition is not among them.
+  assert.match(content.rights, /accès, de rectification, d’effacement, de limitation et de portabilité/);
+  assert.doesNotMatch(content.rights, /opposition/);
   assert.equal(content.contact, "Pour l’exercer : contact@esztergyori.com.");
   assert.deepEqual(content.privacyPolicy, {
     label: "Politique de confidentialité",

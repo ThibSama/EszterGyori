@@ -821,7 +821,7 @@ export const bookingPrivacyNoticeContents: Record<BookingPrivacyNoticeId, Bookin
     recipients:
       "Elles ne sont transmises qu’aux prestataires techniques nécessaires (hébergement, envoi des e-mails).",
     rights:
-      "Vous disposez d’un droit d’accès, de rectification, d’effacement, de limitation et d’opposition, et pouvez saisir la CNIL.",
+      "Vous disposez d’un droit d’accès, de rectification, d’effacement, de limitation et de portabilité, et pouvez saisir la CNIL.",
     contact: "Pour l’exercer : contact@esztergyori.com.",
     privacyPolicy: { label: "Politique de confidentialité", href: BOOKING_PRIVACY_POLICY_PATH },
   },

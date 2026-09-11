@@ -663,7 +663,7 @@ Boundaries:
   privacy-information notice the form displayed (`privacyNoticeId`, immutable
   `privacyNotices` catalog, same discipline). The server stores it with its presentation
   instant in `bookings.privacy_notice_id` / `privacy_notice_presented_at_utc` (migration
-  0020, additive), leaves `consent_at_utc` / `consent_notice_id` NULL for those rows and
+  0020, additive; 0021 makes the one-basis-evidence CHECK exclusive), leaves `consent_at_utc` / `consent_notice_id` NULL for those rows and
   never fabricates a consent instant; the consent-era rows are untouched. The reference
   column admits the current `XXXX-XXXX` shape beside the legacy `bk_` one, and creation
   retries a duplicate draw under the column's UNIQUE key.
