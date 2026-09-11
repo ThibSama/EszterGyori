@@ -76,13 +76,19 @@ const chromeBinary = process.env.ESZTER_BROWSER_BOOKING_CHROME ?? "google-chrome
 const sessionCookieName = "eszter_session"; // non-Secure dev build drops __Host-
 const csrfHeader = "x-csrf-token";
 const consentNoticeId = "booking-consent-v1"; // the catalog's current id (ESZ-142)
+// ESZ-160: the public form asks for first and last name separately; the
+// backend/admin contract still stores the composed "firstName lastName".
 const customerA = {
+  firstName: "Adelaide",
+  lastName: "Preuve ESZ113",
   name: "Adelaide Preuve ESZ113",
   email: "adelaide.preuve@example.test",
   phone: "+33601020304",
   note: "Preuve navigateur ESZ-113, rendez-vous A.",
 };
 const customerB = {
+  firstName: "Bertrand",
+  lastName: "Preuve ESZ113",
   name: "Bertrand Preuve ESZ113",
   email: "bertrand.preuve@example.test",
   phone: "+33605060708",
@@ -269,7 +275,8 @@ async function main() {
   );
 
   // ── 5. Invalid customer input writes nothing and preserves the form ─────
-  await setReactInput(cdp, "customer-name", "");
+  await setReactInput(cdp, "customer-first-name", "");
+  await setReactInput(cdp, "customer-last-name", customerA.lastName);
   await setReactInput(cdp, "customer-email", customerA.email);
   await setReactInput(cdp, "customer-phone", customerA.phone);
   await setReactInput(cdp, "customer-note", customerA.note);
@@ -284,34 +291,41 @@ async function main() {
   const bookingsBeforeInvalid = mysqlExec("SELECT COUNT(*) FROM bookings");
   await clickButton(cdp, "Vérifier ma demande");
   await waitFor(
-    () => evaluate(cdp, `Boolean(document.getElementById("name-error")?.offsetParent) && document.activeElement?.id === "customer-name"`),
-    "invalid-name refusal with focus on the first invalid field",
+    () => evaluate(cdp, `Boolean(document.getElementById("firstName-error")?.offsetParent) && document.activeElement?.id === "customer-first-name"`),
+    "invalid-first-name refusal with focus on the first invalid required identity field",
   );
   const invalidState = await evaluate(cdp, `(() => {
-    const name = document.getElementById("customer-name");
+    const name = document.getElementById("customer-first-name");
+    const lastName = document.getElementById("customer-last-name");
     const email = document.getElementById("customer-email");
     const phone = document.getElementById("customer-phone");
     const note = document.getElementById("customer-note");
     const consent = document.getElementById("consent-accepted");
     return {
       nameValue: name?.value,
+      lastNameValue: lastName?.value,
       emailValue: email?.value,
       phoneValue: phone?.value,
       noteValue: note?.value,
       consentChecked: consent?.checked,
       nameInvalid: name?.getAttribute("aria-invalid"),
       nameDescribedBy: name?.getAttribute("aria-describedby"),
-      errorText: document.getElementById("name-error")?.textContent?.trim() ?? null,
+      lastNameInvalid: lastName?.getAttribute("aria-invalid"),
+      lastNameDescribedBy: lastName?.getAttribute("aria-describedby"),
+      errorText: document.getElementById("firstName-error")?.textContent?.trim() ?? null,
+      lastNameErrorText: document.getElementById("lastName-error")?.textContent?.trim() ?? null,
       fieldType: email?.getAttribute("type"),
-      autoComplete: { email: email?.getAttribute("autoComplete"), name: name?.getAttribute("autoComplete"), phone: phone?.getAttribute("autoComplete") },
+      autoComplete: { email: email?.getAttribute("autoComplete"), name: name?.getAttribute("autoComplete"), lastName: lastName?.getAttribute("autoComplete"), phone: phone?.getAttribute("autoComplete") },
       noValidate: Boolean(document.querySelector("form")?.getAttribute("novalidate") === "" || document.querySelector("form")?.noValidate),
     };
   })()`);
-  assert(invalidState.nameInvalid === "true" && invalidState.nameDescribedBy === "name-error", "the invalid name field does not report aria-invalid/aria-describedby");
-  assert(invalidState.errorText === "Indiquez votre nom (160 caractères maximum).", `unexpected name error copy: ${invalidState.errorText}`);
+  assert(invalidState.nameInvalid === "true" && invalidState.nameDescribedBy === "firstName-error", "the invalid first-name field does not report aria-invalid/aria-describedby");
+  assert(invalidState.errorText === "Indiquez votre prénom (79 caractères maximum).", `unexpected first-name error copy: ${invalidState.errorText}`);
+  assert(invalidState.lastNameInvalid === "false" && invalidState.lastNameDescribedBy === null && invalidState.lastNameErrorText === null, "the valid last-name field is not independent of the first-name error");
+  assert(invalidState.lastNameValue === customerA.lastName, "the refused submit lost the entered last name");
   assert(invalidState.emailValue === customerA.email && invalidState.phoneValue === customerA.phone && invalidState.noteValue === customerA.note, "the refused submit lost entered values");
   assert(invalidState.consentChecked === true, "the refused submit lost the consent state");
-  assert(invalidState.fieldType === "email" && invalidState.autoComplete.email === "email" && invalidState.autoComplete.name === "name" && invalidState.autoComplete.phone === "tel", "the customer fields lost their type/autoComplete");
+  assert(invalidState.fieldType === "email" && invalidState.autoComplete.email === "email" && invalidState.autoComplete.name === "given-name" && invalidState.autoComplete.lastName === "family-name" && invalidState.autoComplete.phone === "tel", "the customer fields lost their type/autoComplete");
   assert(invalidState.noValidate, "noValidate is not paired with the aria error wiring");
   await new Promise((resolveWait) => setTimeout(resolveWait, 800));
   assert(creationPosts.length === 0, `the invalid submit reached /api/bookings: ${creationPosts.length}`);
@@ -366,7 +380,8 @@ async function main() {
     () => evaluate(cdpB, `document.body?.innerText?.includes("Vos coordonnées")`),
     "tab B: customer details step",
   );
-  await setReactInput(cdpB, "customer-name", customerB.name);
+  await setReactInput(cdpB, "customer-first-name", customerB.firstName);
+  await setReactInput(cdpB, "customer-last-name", customerB.lastName);
   await setReactInput(cdpB, "customer-email", customerB.email);
   await setReactInput(cdpB, "customer-phone", customerB.phone);
   await setReactInput(cdpB, "customer-note", customerB.note);
@@ -383,7 +398,7 @@ async function main() {
   assert(bPressed === 3, `tab B holds ${bPressed} pressed choices, expected service+date+slot`);
 
   // ── 2. Tab A: valid booking completes through the browser ───────────────
-  await setReactInput(cdp, "customer-name", customerA.name);
+  await setReactInput(cdp, "customer-first-name", customerA.firstName);
   await clickButton(cdp, "Vérifier ma demande");
   await waitFor(
     () => evaluate(cdp, `document.getElementById("review-heading") && document.activeElement?.id === "review-heading"`),
@@ -455,13 +470,14 @@ async function main() {
     "alternative slot selection after the recovery",
   );
   await waitFor(
-    () => evaluate(cdpB, `Boolean(document.getElementById("customer-name")) && document.activeElement?.id === "details-heading"`),
+    () => evaluate(cdpB, `Boolean(document.getElementById("customer-first-name")) && Boolean(document.getElementById("customer-last-name")) && document.activeElement?.id === "details-heading"`),
     "details step after the recovery with focus on the details heading",
   );
   const preservedB = await evaluate(cdpB, `(() => {
     const value = (id) => document.getElementById(id)?.value ?? null;
     return {
-      name: value("customer-name"),
+      firstName: value("customer-first-name"),
+      lastName: value("customer-last-name"),
       email: value("customer-email"),
       phone: value("customer-phone"),
       note: value("customer-note"),
@@ -469,6 +485,7 @@ async function main() {
     };
   })()`);
   for (const [field, expected] of Object.entries(customerB)) {
+    if (field === "name") continue; // composed server-side value, not a form field
     assert(preservedB[field] === expected, `the recovery lost customer B's ${field}`);
   }
   assert(preservedB.consent === true, "the recovery lost customer B's consent");

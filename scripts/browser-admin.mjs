@@ -874,7 +874,7 @@ async function main() {
   await waitFor(
     () => evaluate(cdp, `(() => {
       const panel = document.getElementById("calendar-availability");
-      return Boolean(panel?.innerText.includes("Horaires et fermetures"))
+      return Boolean(panel?.innerText.includes("Horaires, fermetures et congés"))
         && Boolean(panel?.innerText.includes("Horaires hebdomadaires"));
     })()`),
     "the availability panel open on arrival",

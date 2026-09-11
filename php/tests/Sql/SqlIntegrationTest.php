@@ -626,7 +626,9 @@ final class SqlIntegrationTest extends TestCase
             'expectedRevision' => $head + 2,
             'rules' => [['weekdayIso' => 5, 'startLocal' => '10:00', 'endLocal' => '11:00',
                 'foldUtcOffset' => null, 'validFrom' => null, 'validUntil' => null, 'isActive' => true]],
-            'bookingTimeRules' => ['minimumLeadMinutes' => 60, 'preferredFinishLocal' => null, 'maxOverrunMinutes' => 0],
+            'bookingTimeRules' => [
+                'minimumLeadMinutes' => 60, 'preferredFinishLocal' => null, 'maxOverrunMinutes' => 0,
+            ],
         ]);
 
         self::assertSame($head + 3, $response['revision']);
@@ -787,6 +789,10 @@ final class SqlIntegrationTest extends TestCase
                 'durationMinutes' => 30,
                 'imageSrc' => null,
             ]],
+            // ESZ-150: the public discovery envelope also carries the
+            // combination facts; nothing is provisioned here, so none is offered.
+            'maxServicesPerAppointment' => 1,
+            'combinations' => [],
         ], $this->bookingApi->services());
     }
 

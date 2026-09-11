@@ -1048,7 +1048,10 @@ final class MigrationTest extends TestCase
         $insert('unavailability', 'strict', '2026-08-18', '2026-08-18', '09:00:00', '11:00:00');
         $insert('closure', 'strict', '2026-08-24', '2026-08-25', null, null);
         $insert('leave', 'strict', '2026-08-03', '2026-08-16', null, null);
-        self::assertSame(4, (int) ($this->database->fetchOne('SELECT COUNT(*) AS n FROM availability_constraints')['n'] ?? 0));
+        self::assertSame(
+            4,
+            (int) ($this->database->fetchOne('SELECT COUNT(*) AS n FROM availability_constraints')['n'] ?? 0),
+        );
 
         // A pause can only be flexible and a blocker only strict; a timed kind
         // needs its window on one date and an all-day kind refuses one; an

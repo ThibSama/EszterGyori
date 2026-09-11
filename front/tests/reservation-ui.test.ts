@@ -39,7 +39,16 @@ test("the completed flow stays responsive and delegates booking submission", () 
 
 test("customer form, review and confirmation expose accessible semantics and focus targets", () => {
   assert.match(details, /<form onSubmit=\{showReview\} noValidate/);
-  assert.match(details, /htmlFor="customer-name"/);
+  assert.doesNotMatch(details, /customer-name"/);
+  assert.match(details, /htmlFor="customer-first-name"/);
+  assert.match(details, /id="customer-first-name" name="firstName" autoComplete="given-name" required/);
+  assert.match(details, /htmlFor="customer-last-name"/);
+  assert.match(details, /id="customer-last-name" name="lastName" autoComplete="family-name" required/);
+  assert.match(details, /aria-describedby=\{describedBy\("firstName"\)\}/);
+  assert.match(details, /aria-describedby=\{describedBy\("lastName"\)\}/);
+  assert.match(details, /id="firstName-error"/);
+  assert.match(details, /id="lastName-error"/);
+  assert.match(details, /firstName: firstNameInput,\s*lastName: lastNameInput,/);
   assert.match(details, /type="email"/);
   assert.match(details, /type="tel"/);
   assert.match(details, /name="consentAccepted" type="checkbox"/);

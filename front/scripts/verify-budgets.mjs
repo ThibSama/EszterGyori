@@ -96,8 +96,24 @@ const routeBudgets = [
  * never match — one stylesheet serves the whole export. It is accepted here
  * rather than absorbed silently, and the honest way to give it back is to split
  * the admin stylesheet off the public one, which is its own piece of work.
+ *
+ * Package 10.2 (ESZ-149 to ESZ-160) moved both shared ceilings once more, at
+ * the package-wide gate on top of fff3506: CSS from 16 000 to 17 000 and
+ * JavaScript from 345 000 to 355 000 gzipped bytes. Measured the same way:
+ *
+ *   16 574 B  all CSS         (+947 B over the ESZ-158 build);
+ *  353 127 B  all JavaScript  (+8 127 B, about 2.4 %).
+ *
+ * No dependency changed across the package — the only lockfile movement since
+ * ESZ-158 is the `next` 16.3.2 → 16.3.3 security patch — and no unreferenced
+ * asset landed in the export. The growth is the product: the unified Calendar
+ * (ESZ-159), the administrable catalog and combinations (ESZ-149/150), the
+ * booking time rules and planning constraints (ESZ-151/152), the slot-coherence
+ * copy (ESZ-153) and the two-field identity form (ESZ-160). Each ceiling sits a
+ * few hundred bytes above what the build produces, so the ratchet keeps
+ * speaking on the next unexplained growth; the per-route totals were not moved.
  */
-const sharedBudgets = { css: 16_000, totalJavaScript: 345_000 };
+const sharedBudgets = { css: 17_000, totalJavaScript: 355_000 };
 
 const failures = [];
 const reported = [];
