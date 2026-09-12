@@ -1,4 +1,5 @@
 import type { MetadataRoute } from "next";
+import { LEGAL_PAGE_LINKS } from "@eszter/contracts";
 import { SITE_URL } from "./lib/metadata/site-metadata";
 
 /**
@@ -23,5 +24,11 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "daily",
       priority: 0.9,
     },
+    // ESZ-165: the two legal pages, from the same constants the footer links.
+    ...LEGAL_PAGE_LINKS.map((link) => ({
+      url: new URL(link.href.slice(1), SITE_URL).toString(),
+      changeFrequency: "yearly" as const,
+      priority: 0.3,
+    })),
   ];
 }

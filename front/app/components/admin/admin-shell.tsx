@@ -135,7 +135,10 @@ export function AdminShell({
           <div className="min-w-0 shrink-0 lg:w-full">
             <AdminSessionBadge />
           </div>
-          <AdminNavEntry item={ADMIN_SECONDARY_ITEMS[1]} active={false} />
+          <AdminNavEntry
+            item={ADMIN_SECONDARY_ITEMS[1]}
+            active={ADMIN_SECONDARY_ITEMS[1].key === activeKey}
+          />
         </div>
       </header>
 

@@ -122,6 +122,7 @@ test("the canonical source set is exactly the contracts-root .ts modules", () =>
     "default-site-content.ts",
     "http-contract.ts",
     "index.ts",
+    "legal.ts",
     "parity-runtime.ts",
     "semantic-rules.ts",
     "site-content.ts",

@@ -70,8 +70,13 @@ final class DocumentRootRouting
         '(?:^|/)[^/]+\.(?i:json|md|log|lock|neon|dist|example|sql|bak)$',
     ];
 
-    /** Exact public pages emitted by the static export, without their `.html` suffix. */
-    public const PUBLIC_EXPORTED_PATHS = ['/reservation'];
+    /**
+     * Exact public pages emitted by the static export, without their `.html`
+     * suffix: the reservation flow, and (ESZ-165) the two legal pages, which
+     * read the stored legal document at load exactly as `/reservation` reads
+     * the catalog.
+     */
+    public const PUBLIC_EXPORTED_PATHS = ['/reservation', '/mentions-legales', '/confidentialite'];
 
     /**
      * The ordered rule table.

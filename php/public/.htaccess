@@ -86,14 +86,14 @@ ErrorDocument 404 /404.html
     # 3. The `.html` spelling of a declared public page redirects to its
     #    canonical extensionless URL. THE_REQUEST keeps the internal
     #    rewrite in rule 4 from redirecting on a second per-directory pass.
-    RewriteCond %{THE_REQUEST} "\s/+(reservation)\.html(?:[?\s])" [NC]
-    RewriteRule ^(reservation)\.html$ /$1 [R=301,L,NE]
+    RewriteCond %{THE_REQUEST} "\s/+(reservation|mentions\-legales|confidentialite)\.html(?:[?\s])" [NC]
+    RewriteRule ^(reservation|mentions\-legales|confidentialite)\.html$ /$1 [R=301,L,NE]
 
     # 4. Exact exported public pages omit `.html` in their URL and need
     #    no server renderer. This precedes the filesystem checks because
     #    Next also emits a same-named directory of RSC payloads.
     RewriteCond %{DOCUMENT_ROOT}/$1.html -f
-    RewriteRule ^(reservation)$ $1.html [L]
+    RewriteRule ^(reservation|mentions\-legales|confidentialite)$ $1.html [L]
 
     # 5. /admin/<page> -> admin/<page>.html when the export has one. It
     #    likewise precedes filesystem checks because Next emits matching

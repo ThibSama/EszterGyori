@@ -36,6 +36,7 @@ import {
   privacyRequestStatuses,
   privacyRequestTypes,
 } from "./booking.js";
+import { legalInformationSchema } from "./legal.js";
 
 /**
  * Frozen HTTP contract for the public, authentication, CMS, media and booking surfaces.
@@ -165,6 +166,17 @@ export const ADMIN_PRIVACY_REQUEST_SEARCH_PATH = "/api/admin/privacy-requests/se
  * view of one request an action form is built from.
  */
 export const ADMIN_PRIVACY_REQUEST_ACTIONS_PATH = "/api/admin/privacy-requests/actions";
+
+/**
+ * ESZ-165 — the legal information (`contracts/legal.ts`). One persisted
+ * document, two routes: `GET /api/legal` is the public read the legal notice
+ * and the privacy policy render from, and `/api/admin/settings/legal` is the
+ * authenticated GET + PUT that edits it whole, under a revision, the way the
+ * content draft is. Nothing here is a `SiteContent` field: the identity,
+ * registration and hosting facts have exactly one authority.
+ */
+export const PUBLIC_LEGAL_INFORMATION_PATH = "/api/legal";
+export const ADMIN_LEGAL_INFORMATION_PATH = "/api/admin/settings/legal";
 
 /**
  * Header reporting the current head of the content revision sequence.
@@ -2080,6 +2092,53 @@ export const availabilityAdminPolicy = {
     "The operational summary stores nothing of its own. Counts and nextConfirmedStartsAtUtc are exact SQL aggregations over the whole window; listed entries are confirmed bookings in ascending start order, bounded at the domain's listedEntriesMax with the listings completeness flags, and cancelled bookings are reported in their own counts and never inflate a confirmed one.",
 } as const;
 
+// --- ESZ-165: the legal information -------------------------------------------
+
+/** The public read: the stored document, as it stands. The page decides what is shown. */
+export const publicLegalInformationResponseSchema = z
+  .object({ information: legalInformationSchema })
+  .strict();
+
+/**
+ * The admin read and the result of every save: the document, the revision
+ * the next save must name, and when it was last written (`null` until the
+ * first save — a fresh deployment holds no row and reports the empty
+ * document at revision 0).
+ */
+export const adminLegalInformationResponseSchema = z
+  .object({
+    information: legalInformationSchema,
+    revision: z.number().int().nonnegative(),
+    updatedAt: isoTimestampSchema.nullable(),
+  })
+  .strict();
+
+/**
+ * Replaces the document whole. `expectedRevision` is the revision the admin
+ * last read; a stale one is 409 REVISION_CONFLICT and writes nothing. Partial
+ * documents are accepted on purpose — an unknown fact stays `null` — but the
+ * shape is strict, so nothing outside the frozen model can be stored.
+ */
+export const adminLegalInformationSaveRequestSchema = z
+  .object({
+    expectedRevision: z.number().int().nonnegative(),
+    information: legalInformationSchema,
+  })
+  .strict();
+
+export const legalInformationPolicy = {
+  settingKey: "legal.information",
+  publicPages: ["/mentions-legales", "/confidentialite"],
+  source:
+    "One system_settings row (settingKey) holds the whole document beside its revision. The admin surface and both public pages read that row; no legal identity, registration or hosting fact is duplicated into SiteContent, a frontend constant or a page.",
+  unknown:
+    "Every fact is nullable and a fresh deployment holds the empty document at revision 0. The server never invents a value: a missing required fact is an admin warning computed by the frontend from the contract's rules, and it is never rendered on a public page.",
+  applicability:
+    "VAT and the salon address carry an explicit applicable flag. applicable:false is a complete statement (nothing to publish) and is dropped from the public rendering entirely — no label, no placeholder; applicable:true with a null value is an admin warning.",
+  concurrency:
+    "PUT replaces the document whole under expectedRevision; a stale revision is 409 REVISION_CONFLICT and writes nothing, and every save answers with the stored document and the next revision.",
+} as const;
+
 export const bookingApiPolicy = {
   publicAvailability:
     "Only active canonical services and dates from the Paris-local today through day 90 inclusive; response order is SlotEngine order and slots are never persisted.",
@@ -3187,6 +3246,8 @@ export const contractBodyMatchers = [
   "adminPrivacyRequestSearchResponse",
   "adminPrivacyRequestScopeResponse",
   "adminPrivacyRequestActionResponse",
+  "publicLegalInformationResponse",
+  "adminLegalInformationResponse",
   "empty",
 ] as const;
 
@@ -3322,6 +3383,8 @@ export interface HttpContractCase {
     | "/api/admin/privacy-requests/query"
     | "/api/admin/privacy-requests/search"
     | "/api/admin/privacy-requests/actions"
+    | "/api/legal"
+    | "/api/admin/settings/legal"
     | "unknown";
   description: string;
   request: {
@@ -6412,6 +6475,165 @@ export const httpContractCases: HttpContractCase[] = [
     request: { method: "POST", path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH, rawBody: "{invalid" },
     auth: { session: "none", csrf: "omitted" },
     expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  // ── ESZ-165: the legal information ─────────────────────────────────────
+  {
+    id: "legal.get.ok",
+    endpoint: PUBLIC_LEGAL_INFORMATION_PATH,
+    description:
+      "The stored legal document is public and readable without a session; a fresh deployment answers the empty document, never an invented one.",
+    request: { method: "GET", path: PUBLIC_LEGAL_INFORMATION_PATH },
+    expect: { status: 200, body: "publicLegalInformationResponse" },
+  },
+  {
+    id: "legal.post.methodNotAllowed",
+    endpoint: PUBLIC_LEGAL_INFORMATION_PATH,
+    description: "The public legal document is read-only: it is edited through the admin route alone.",
+    request: { method: "POST", path: PUBLIC_LEGAL_INFORMATION_PATH },
+    expect: {
+      status: 405,
+      body: "errorEnvelope",
+      errorCode: "METHOD_NOT_ALLOWED",
+      headers: { allow: "GET" },
+    },
+  },
+  {
+    id: "admin.settings.legal.get.ok",
+    endpoint: ADMIN_LEGAL_INFORMATION_PATH,
+    description: "The admin read carries the document, its revision and its last write; a fresh deployment is revision 0 and never written.",
+    request: { method: "GET", path: ADMIN_LEGAL_INFORMATION_PATH },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "adminLegalInformationResponse" },
+  },
+  {
+    id: "admin.settings.legal.get.unauthenticated",
+    endpoint: ADMIN_LEGAL_INFORMATION_PATH,
+    description: "The admin read is authenticated: anonymous callers are refused.",
+    request: { method: "GET", path: ADMIN_LEGAL_INFORMATION_PATH },
+    auth: { session: "none", csrf: "omitted" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.settings.legal.put.ok",
+    endpoint: ADMIN_LEGAL_INFORMATION_PATH,
+    description:
+      "A save under the current revision stores the document whole — a non-applicable VAT and a null phone included — and answers with what was stored at the next revision.",
+    request: {
+      method: "PUT",
+      path: ADMIN_LEGAL_INFORMATION_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"expectedRevision":0,"information":{"legalName":"Exemple EI","tradeName":null,"legalForm":"Entrepreneur individuel","siren":"123456789","siret":"12345678900012","registers":[{"label":"Registre national des entreprises","reference":"123 456 789"}],"vat":{"applicable":false},"activity":"Maquillage permanent","contact":{"email":"contact@example.test","phone":null},"hosting":{"name":"Hébergeur Exemple","address":"1 rue de l’Exemple\\n59000 Lille","phone":null,"website":"https://hebergeur.example"},"registeredAddress":"1 rue de l’Exemple\\n59000 Lille","salonAddress":{"applicable":true,"address":"2 rue du Salon\\n59000 Lille"}}}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminLegalInformationResponse" },
+  },
+  {
+    id: "admin.settings.legal.put.partialOk",
+    endpoint: ADMIN_LEGAL_INFORMATION_PATH,
+    description:
+      "An unknown fact stays null: a document with nothing filled in is accepted and stored as it is, because the server never guesses a legal identifier.",
+    request: {
+      method: "PUT",
+      path: ADMIN_LEGAL_INFORMATION_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"expectedRevision":0,"information":{"legalName":null,"tradeName":null,"legalForm":null,"siren":null,"siret":null,"registers":[],"vat":{"applicable":true,"number":null},"activity":null,"contact":{"email":null,"phone":null},"hosting":{"name":null,"address":null,"phone":null,"website":null},"registeredAddress":null,"salonAddress":{"applicable":true,"address":null}}}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminLegalInformationResponse" },
+  },
+  {
+    id: "admin.settings.legal.put.staleRevision",
+    endpoint: ADMIN_LEGAL_INFORMATION_PATH,
+    description: "A stale revision is 409 REVISION_CONFLICT and writes nothing.",
+    request: {
+      method: "PUT",
+      path: ADMIN_LEGAL_INFORMATION_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"expectedRevision":4,"information":{"legalName":"Exemple EI","tradeName":null,"legalForm":"Entrepreneur individuel","siren":"123456789","siret":"12345678900012","registers":[{"label":"Registre national des entreprises","reference":"123 456 789"}],"vat":{"applicable":false},"activity":"Maquillage permanent","contact":{"email":"contact@example.test","phone":null},"hosting":{"name":"Hébergeur Exemple","address":"1 rue de l’Exemple\\n59000 Lille","phone":null,"website":"https://hebergeur.example"},"registeredAddress":"1 rue de l’Exemple\\n59000 Lille","salonAddress":{"applicable":true,"address":"2 rue du Salon\\n59000 Lille"}}}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 409, body: "errorEnvelope", errorCode: "REVISION_CONFLICT" },
+  },
+  {
+    id: "admin.settings.legal.put.malformedSiren",
+    endpoint: ADMIN_LEGAL_INFORMATION_PATH,
+    description: "A SIREN that is not nine digits is refused structurally; a wrong number is never stored as if it were right.",
+    request: {
+      method: "PUT",
+      path: ADMIN_LEGAL_INFORMATION_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"expectedRevision":0,"information":{"legalName":null,"tradeName":null,"legalForm":null,"siren":"12","siret":null,"registers":[],"vat":{"applicable":true,"number":null},"activity":null,"contact":{"email":null,"phone":null},"hosting":{"name":null,"address":null,"phone":null,"website":null},"registeredAddress":null,"salonAddress":{"applicable":true,"address":null}}}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.settings.legal.put.vatNumberWhenNotApplicable",
+    endpoint: ADMIN_LEGAL_INFORMATION_PATH,
+    description: "Applicability is structural: a VAT declared not applicable cannot carry a number.",
+    request: {
+      method: "PUT",
+      path: ADMIN_LEGAL_INFORMATION_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"expectedRevision":0,"information":{"legalName":null,"tradeName":null,"legalForm":null,"siren":null,"siret":null,"registers":[],"vat":{"applicable":false,"number":"FR12345678901"},"activity":null,"contact":{"email":null,"phone":null},"hosting":{"name":null,"address":null,"phone":null,"website":null},"registeredAddress":null,"salonAddress":{"applicable":true,"address":null}}}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.settings.legal.put.unknownField",
+    endpoint: ADMIN_LEGAL_INFORMATION_PATH,
+    description: "The model is closed: a field outside the frozen document is refused rather than stored.",
+    request: {
+      method: "PUT",
+      path: ADMIN_LEGAL_INFORMATION_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"expectedRevision":0,"information":{"legalName":null,"tradeName":null,"legalForm":null,"siren":null,"siret":null,"registers":[],"vat":{"applicable":true,"number":null},"activity":null,"contact":{"email":null,"phone":null},"hosting":{"name":null,"address":null,"phone":null,"website":null},"registeredAddress":null,"salonAddress":{"applicable":true,"address":null},"capital":"1 €"}}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.settings.legal.put.invalidJson",
+    endpoint: ADMIN_LEGAL_INFORMATION_PATH,
+    description: "A body that is not JSON is INVALID_JSON.",
+    request: {
+      method: "PUT",
+      path: ADMIN_LEGAL_INFORMATION_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: "{invalid",
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "INVALID_JSON" },
+  },
+  {
+    id: "admin.settings.legal.put.csrfOmitted",
+    endpoint: ADMIN_LEGAL_INFORMATION_PATH,
+    description: "The save is a state change: without CSRF it is rejected before parsing.",
+    request: { method: "PUT", path: ADMIN_LEGAL_INFORMATION_PATH, rawBody: "{invalid" },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 403, body: "errorEnvelope", errorCode: "CSRF_TOKEN_INVALID" },
+  },
+  {
+    id: "admin.settings.legal.put.unauthenticated",
+    endpoint: ADMIN_LEGAL_INFORMATION_PATH,
+    description: "An anonymous caller cannot save, and is refused before the body is read.",
+    request: { method: "PUT", path: ADMIN_LEGAL_INFORMATION_PATH, rawBody: "{invalid" },
+    auth: { session: "none", csrf: "omitted" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
+  },
+  {
+    id: "admin.settings.legal.post.methodNotAllowed",
+    endpoint: ADMIN_LEGAL_INFORMATION_PATH,
+    description: "The document is read and replaced whole: GET and PUT, nothing else.",
+    request: { method: "POST", path: ADMIN_LEGAL_INFORMATION_PATH },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: {
+      status: 405,
+      body: "errorEnvelope",
+      errorCode: "METHOD_NOT_ALLOWED",
+      headers: { allow: "GET, PUT" },
+    },
   },
 ];
 

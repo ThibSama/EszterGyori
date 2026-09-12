@@ -75,6 +75,9 @@ final class KernelCompositionTest extends TestCase
             $sessions,
             null,
             $bookingApi ? new InMemoryBookingApi() : null,
+            // ESZ-165: the legal seam follows the booking one — both stand
+            // for "a database exists" in the seam-driven wiring.
+            $bookingApi ? new InMemoryLegalInformationApi() : null,
         );
     }
 
@@ -156,7 +159,8 @@ final class KernelCompositionTest extends TestCase
         // The one asymmetric seam combination the composition conditions
         // allow: a booking implementation exists (so the public booking
         // routes are registered) but no session store exists (so no
-        // authenticated surface is — admin booking included).
+        // authenticated surface is — admin booking included). The public
+        // legal read (ESZ-165) follows the same rule.
         $kernel = $this->boot(
             [],
             InMemoryAccountDirectory::withAccount(true),
@@ -173,6 +177,7 @@ final class KernelCompositionTest extends TestCase
                 '/api/bookings',
                 '/api/content',
                 '/api/health',
+                '/api/legal',
             ],
         );
     }

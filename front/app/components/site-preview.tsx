@@ -1,3 +1,4 @@
+import { LEGAL_PAGE_LINKS } from "@eszter/contracts";
 import { HeroInstagramButton } from "./hero-instagram-button";
 import { EditorialImage } from "./editorial-image";
 import { GallerySection } from "./site-gallery-section";
@@ -434,6 +435,13 @@ function ContactSection({
   );
 }
 
+/**
+ * The footer: the editable copyright line and the two content links
+ * (Instagram, contact), then the two legal pages (ESZ-165). The legal
+ * destinations are fixed constants of the contract, not `SiteContent`
+ * fields: their paths are frozen (`/confidentialite` by the ESZ-161 booking
+ * notice), so they are never editable URLs.
+ */
 function Footer({ content }: { content: FooterContent }) {
   return (
     <footer
@@ -453,6 +461,14 @@ function Footer({ content }: { content: FooterContent }) {
               rel={
                 link.href.startsWith("http") ? "noopener noreferrer" : undefined
               }
+              className="hover:text-warm-800 transition-colors duration-300">
+              {link.label}
+            </a>
+          ))}
+          {LEGAL_PAGE_LINKS.map((link) => (
+            <a
+              key={link.id}
+              href={link.href}
               className="hover:text-warm-800 transition-colors duration-300">
               {link.label}
             </a>

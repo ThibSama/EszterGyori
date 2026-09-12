@@ -119,11 +119,14 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
 /**
  * The secondary controls in the lower shell, in canonical order.
  *
- * Both are inert, for the same reason: no support destination and no account or
- * application settings page exist in this repository. Rendering them as visible
- * pending entries states where the product is going; giving either an `href`
- * would require inventing a screen, and `Paramètres` in particular is reserved
- * for real account/application settings rather than a stub.
+ * `Besoin d’aide` is inert: no support destination exists in this repository,
+ * and rendering it as a visible pending entry states where the product is
+ * going without inventing a screen.
+ *
+ * `Paramètres` is live (ESZ-165): `/admin/settings` is the application
+ * settings page — today the `Informations juridiques` section, the legal
+ * document both public legal pages publish — and the entry got its `href` the
+ * moment that route became usable, exactly as the first-level entries did.
  *
  * The account identity and the sign-out control sit between these two in the
  * shell. They are not modelled here because they are not destinations — they are
@@ -139,8 +142,11 @@ export const ADMIN_SECONDARY_ITEMS: readonly AdminNavItem[] = [
   {
     key: "settings",
     label: "Paramètres",
-    status: "pending",
-    pendingLabel: ADMIN_NAV_PENDING_LABEL,
+    href: "/admin/settings",
+    status: "available",
+    // Nothing lives below `/admin/settings` today; prefix-matching keeps the
+    // entry lit if settings ever gain a sub-route.
+    exact: false,
   },
 ];
 
@@ -186,13 +192,15 @@ export function isAdminNavItemActive(
  * not represent (`/admin/login`, `/admin/preview`).
  *
  * Resolving here rather than per-item guarantees exactly one `aria-current` in
- * the rendered navigation even if two entries were to match: the most specific
+ * the rendered shell even if two entries were to match: the most specific
  * match — the longest matched route — wins, which is the one the operator is on.
+ * The secondary entries take part (ESZ-165: `/admin/settings` lights
+ * `Paramètres`), so the shell has one active entry across both bands.
  */
 export function activeAdminNavKey(pathname: string | null): string | null {
   let best: { key: string; length: number } | null = null;
 
-  for (const item of ADMIN_NAV_ITEMS) {
+  for (const item of [...ADMIN_NAV_ITEMS, ...ADMIN_SECONDARY_ITEMS]) {
     const matched = matchedRoute(item, pathname);
     if (matched === null) continue;
     if (best === null || matched.length > best.length) {

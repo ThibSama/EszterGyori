@@ -16,6 +16,7 @@ import {
   ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
   ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
   ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+  ADMIN_LEGAL_INFORMATION_PATH,
   AUTH_LOGIN_PATH,
   AUTH_LOGOUT_PATH,
   AUTH_SESSION_PATH,
@@ -46,6 +47,8 @@ import {
   adminPrivacyRequestSearchResponseSchema,
   adminPrivacyRequestScopeResponseSchema,
   adminPrivacyRequestActionResponseSchema,
+  adminLegalInformationResponseSchema,
+  adminLegalInformationSaveRequestSchema,
   publishedContentEnvelopeV1Schema,
   serverDraftEnvelopeV1Schema,
   type ApiErrorCode,
@@ -173,6 +176,9 @@ export type AdminPlanningConstraintInput = Omit<AdminPlanningConstraint, "id" | 
  * `expectedUpdatedAt` on every mutation of that row.
  */
 export type AdminServiceCatalog = z.infer<typeof adminServicesResponseSchema>;
+/** ESZ-165 — the legal document with its revision and last write. */
+export type AdminLegalInformation = z.infer<typeof adminLegalInformationResponseSchema>;
+export type AdminLegalInformationSave = z.infer<typeof adminLegalInformationSaveRequestSchema>;
 export type AdminBookableService = AdminServiceCatalog["services"][number];
 /**
  * ESZ-150 — one combination as the back-office sees it: a stored row
@@ -494,6 +500,20 @@ export interface AdminApiClient {
     input: AdminPrivacyRequestAction,
     csrfToken: string,
   ): Promise<AdminApiResult<AdminPrivacyRequestActionResult>>;
+  /**
+   * ESZ-165 — the stored legal document, its revision and its last write.
+   * An authenticated read, no CSRF; what the settings form starts from.
+   */
+  readLegalInformation(): Promise<AdminApiResult<AdminLegalInformation>>;
+  /**
+   * ESZ-165 — replaces the legal document whole under the revision last
+   * read. Resolved with what the server stored at the next revision, never
+   * with what was sent; a stale revision is a `conflict`.
+   */
+  saveLegalInformation(
+    input: AdminLegalInformationSave,
+    csrfToken: string,
+  ): Promise<AdminApiResult<AdminLegalInformation>>;
 }
 
 /** The only reset source the contract defines. Stated once, sent from here. */
@@ -1032,6 +1052,22 @@ export function createAdminApiClient(
       });
       if (!response.ok) return response;
       return parsed(adminPrivacyRequestActionResponseSchema, response.body);
+    },
+
+    async readLegalInformation() {
+      const response = await send(ADMIN_LEGAL_INFORMATION_PATH, { method: "GET" });
+      if (!response.ok) return response;
+      return parsed(adminLegalInformationResponseSchema, response.body);
+    },
+
+    async saveLegalInformation(input, csrfToken) {
+      const response = await send(ADMIN_LEGAL_INFORMATION_PATH, {
+        method: "PUT",
+        csrfToken,
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      return parsed(adminLegalInformationResponseSchema, response.body);
     },
   };
 }

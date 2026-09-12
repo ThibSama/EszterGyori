@@ -23,6 +23,7 @@ use Eszter\Composition\AdminMediaRoutes;
 use Eszter\Composition\AuthRoutes;
 use Eszter\Composition\AuthenticatedServices;
 use Eszter\Composition\BookingRoutes;
+use Eszter\Composition\LegalRoutes;
 use Eszter\Composition\KernelServices;
 use Eszter\Composition\PublicRoutes;
 use Eszter\Config\Configuration;
@@ -32,6 +33,8 @@ use Eszter\Contract\ContractArtifactException;
 use Eszter\Contract\ContractArtifacts;
 use Eszter\Contract\StructuralValidator;
 use Eszter\Database\Database;
+use Eszter\Legal\LegalInformationApi;
+use Eszter\Legal\PdoLegalInformationApi;
 use Eszter\Http\Endpoint\AdminMediaEndpoint;
 use Eszter\Http\Endpoint\AuthSessionEndpoint;
 use Eszter\Http\Endpoint\ExportedPageReader;
@@ -171,6 +174,11 @@ final class Kernel
      * @param BookingApi|null $bookingApi Overrides booking use cases for the
      *        contract runner. Production passes null and gets the MySQL-backed
      *        implementation whenever database configuration exists.
+     * @param LegalInformationApi|null $legalInformation Overrides the legal
+     *        information use cases (ESZ-165) for the contract runner, under
+     *        the same rule: production passes null and gets the
+     *        `system_settings`-backed implementation whenever a database is
+     *        configured.
      */
     public static function boot(
         string $configPath,
@@ -181,6 +189,7 @@ final class Kernel
         ?SessionStore $sessionStore = null,
         ?UploadTransport $uploadTransport = null,
         ?BookingApi $bookingApi = null,
+        ?LegalInformationApi $legalInformation = null,
     ): self {
         $clock ??= new SystemClock();
         $config = Configuration::fromFile($configPath);
@@ -274,6 +283,9 @@ final class Kernel
                 null,
                 $serviceImages,
             );
+            // ESZ-165: the legal document is one system_settings row, so it
+            // exists exactly where the database does.
+            $legalInformation ??= new PdoLegalInformationApi($database, $clock, $structural);
             $serviceImageReferences[] = new BookingServiceImageReferences(
                 new BookableServiceRepository(
                     $database,
@@ -388,6 +400,10 @@ final class Kernel
 
         if ($bookingApi !== null) {
             (new BookingRoutes($services, $bookingApi, $authenticated))->register($router);
+        }
+
+        if ($legalInformation !== null) {
+            (new LegalRoutes($services, $legalInformation, $authenticated))->register($router);
         }
 
         // Logged after wiring, so the line reports what this request can actually

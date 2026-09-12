@@ -44,6 +44,10 @@ const LIVE_ADMIN_ROUTES = [
     href: "/admin/services",
     page: join(appRoot, "admin", "(protected)", "services", "page.tsx"),
   },
+  {
+    href: "/admin/settings",
+    page: join(appRoot, "admin", "(protected)", "settings", "page.tsx"),
+  },
 ] as const;
 
 test("the first level is exactly the four canonical business destinations, in order", () => {
@@ -89,6 +93,8 @@ test("every clickable entry points at a route that exists, and nothing else is c
       "Contenu du site": "/admin/content",
       Calendrier: "/admin/bookings",
       Prestations: "/admin/services",
+      // ESZ-165 gave `Paramètres` the settings page (legal information) to open.
+      Paramètres: "/admin/settings",
     },
     "only destinations backed by a usable route may be clickable",
   );
@@ -157,10 +163,8 @@ test("pending destinations are declared but announce themselves as not yet avail
     (item) => item.status === "pending",
   );
 
-  assert.deepEqual(pending.map((item) => item.label), [
-    "Besoin d’aide",
-    "Paramètres",
-  ]);
+  // `Paramètres` left this list in ESZ-165, when `/admin/settings` became real.
+  assert.deepEqual(pending.map((item) => item.label), ["Besoin d’aide"]);
   for (const item of pending) {
     assert.equal(item.pendingLabel, "Bientôt");
     assert.ok(
@@ -174,7 +178,6 @@ test("no placeholder page was created for a pending destination", () => {
   for (const segment of [
     "overview",
     "prestations",
-    "settings",
     "parametres",
     "aide",
     "help",
@@ -186,6 +189,8 @@ test("no placeholder page was created for a pending destination", () => {
       `${segment} must not exist: later checkpoints and Package 10.2 own those routes`,
     );
   }
+  // ESZ-165: `settings` is the one that exists now, as a real page.
+  assert.ok(existsSync(join(appRoot, "admin", "(protected)", "settings", "page.tsx")));
 });
 
 test("the lower band is Help, then the account and its sign-out, then Settings", () => {
@@ -241,6 +246,9 @@ test("the active entry is the one the operator is on, and there is exactly one",
     // a first-level entry of its own.
     ["/admin/availability", "calendar"],
     ["/admin/availability/weekly", "calendar"],
+    // ESZ-165: the settings page lights the secondary `Paramètres` entry.
+    ["/admin/settings", "settings"],
+    ["/admin/settings/", "settings"],
     ["/admin/login", null],
     ["/admin/preview", null],
     ["/", null],
@@ -253,7 +261,7 @@ test("the active entry is the one the operator is on, and there is exactly one",
       `${pathname} should resolve to ${expected ?? "no entry"}`,
     );
 
-    const matching = ADMIN_NAV_ITEMS.filter((item) =>
+    const matching = [...ADMIN_NAV_ITEMS, ...ADMIN_SECONDARY_ITEMS].filter((item) =>
       isAdminNavItemActive(item, pathname),
     );
     assert.ok(

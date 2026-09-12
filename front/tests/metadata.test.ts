@@ -75,6 +75,9 @@ test("robots and sitemap expose only the two public pages", () => {
   assert.deepEqual(sitemapResult.map((entry) => entry.url), [
     SITE_URL,
     new URL("reservation", SITE_URL).toString(),
+    // ESZ-165: the two legal pages.
+    new URL("mentions-legales", SITE_URL).toString(),
+    new URL("confidentialite", SITE_URL).toString(),
   ]);
   assert.doesNotMatch(JSON.stringify(sitemapResult), /admin|api|localhost/);
 });

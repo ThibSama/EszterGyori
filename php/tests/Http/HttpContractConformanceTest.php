@@ -1070,6 +1070,7 @@ final class HttpContractConformanceTest extends TestCase
             $this->sessionStore,
             null,
             new InMemoryBookingApi(),
+            new InMemoryLegalInformationApi(),
         );
     }
 
@@ -1255,6 +1256,8 @@ final class HttpContractConformanceTest extends TestCase
             case 'adminPrivacyRequestSearchResponse':
             case 'adminPrivacyRequestScopeResponse':
             case 'adminPrivacyRequestActionResponse':
+            case 'publicLegalInformationResponse':
+            case 'adminLegalInformationResponse':
                 self::assertIsArray($body);
                 $schema = match ($expected['body']) {
                     'publicBookableServicesResponse' => 'public-bookable-services-response.schema.json',
@@ -1275,6 +1278,8 @@ final class HttpContractConformanceTest extends TestCase
                     'adminPrivacyRequestResponse' => 'admin-privacy-request-response.schema.json',
                     'adminPrivacyRequestsResponse' => 'admin-privacy-requests-response.schema.json',
                     'adminPrivacyRequestSearchResponse' => 'admin-privacy-request-search-response.schema.json',
+                    'publicLegalInformationResponse' => 'public-legal-information-response.schema.json',
+                    'adminLegalInformationResponse' => 'admin-legal-information-response.schema.json',
                     'adminPrivacyRequestScopeResponse' => 'admin-privacy-request-scope-response.schema.json',
                     'adminPrivacyRequestActionResponse' => 'admin-privacy-request-action-response.schema.json',
                     default => throw new \LogicException('Unknown booking response matcher.'),

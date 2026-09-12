@@ -115,6 +115,8 @@ const expectedFiles = [
   join("admin", "login.html"),
   join("admin", "preview.html"),
   "reservation.html",
+  "mentions-legales.html",
+  "confidentialite.html",
   "robots.txt",
   "sitemap.xml",
   "manifest.webmanifest",

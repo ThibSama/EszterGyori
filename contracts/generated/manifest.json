@@ -78,6 +78,14 @@
       "sha256": "860e62aa2bc46dee2637a1ac7bb7a76fcd7fa0f07829e95b6b67429a228e753b"
     },
     {
+      "file": "admin-legal-information-response.schema.json",
+      "sha256": "224dd75ec7bdfcf154903499d5e5923ef0c238d2f63affa101dbf20e4b6f8112"
+    },
+    {
+      "file": "admin-legal-information-save-request.schema.json",
+      "sha256": "9f0f287e772dcf8b1f1615c12c570c088fcf533945e519d5fd01043b97291df8"
+    },
+    {
       "file": "admin-privacy-request-action-request.schema.json",
       "sha256": "30c612ddc2c44a7401e92897ecadc7e5987bc9bfe5a851e21d8aac6fe96ad94f"
     },
@@ -159,7 +167,7 @@
     },
     {
       "file": "http-contract.json",
-      "sha256": "a7827823d2d035c08ccfda2141a4cf99d0ad2f12a073561f9d103e6664e4fb6a"
+      "sha256": "65f21d3526c44712760bc7fb7a89127b9716fc1d228466f671b2a1071c7d400c"
     },
     {
       "file": "login-request.schema.json",
@@ -196,6 +204,10 @@
     {
       "file": "public-booking-response.schema.json",
       "sha256": "08d493d50243c0c01bbcadf7308702c441e4a12f902b991f028e23ba53299066"
+    },
+    {
+      "file": "public-legal-information-response.schema.json",
+      "sha256": "f57ba8413adc7dee7df2eacfb575151342daca2957e952d784c05ccb5925664b"
     },
     {
       "file": "published-content-envelope.input.schema.json",

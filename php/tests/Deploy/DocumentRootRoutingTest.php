@@ -38,6 +38,10 @@ final class DocumentRootRoutingTest extends TestCase
         'reservation.html',
         'reservation',
         'reservation/__next.reservation.__PAGE__.txt',
+        'mentions-legales.html',
+        'mentions-legales',
+        'confidentialite.html',
+        'confidentialite',
         'admin',
         'admin/login',
         'admin/preview',
@@ -259,6 +263,27 @@ final class DocumentRootRoutingTest extends TestCase
         self::assertFileExists(
             TestEnvironment::repositoryRoot() . '/front/app/reservation',
         );
+    }
+
+    public function testTheLegalPagesAreTwoDistinctExactStaticExportRoutes(): void
+    {
+        // ESZ-165: `/mentions-legales` and `/confidentialite` are exported
+        // pages exactly like `/reservation` — served before a same-named Next
+        // payload directory, canonicalised from their `.html` filename, and
+        // each backed by its own route directory in the frontend. The privacy
+        // path is the one the ESZ-161 booking notice froze.
+        foreach (['mentions-legales', 'confidentialite'] as $page) {
+            self::assertSame("{$page}.html", $this->resolve("/{$page}")['file']);
+            self::assertSame(DocumentRootRouting::STATIC_FILE, $this->resolve("/{$page}")['target']);
+            self::assertSame(
+                DocumentRootRouting::CANONICAL_REDIRECT,
+                $this->resolve("/{$page}.html")['target'],
+            );
+            self::assertSame(DocumentRootRouting::NOT_FOUND, $this->resolve("/{$page}/autre")['target']);
+            self::assertFileExists(TestEnvironment::repositoryRoot() . "/front/app/{$page}");
+        }
+        self::assertContains('/confidentialite', DocumentRootRouting::PUBLIC_EXPORTED_PATHS);
+        self::assertContains('/mentions-legales', DocumentRootRouting::PUBLIC_EXPORTED_PATHS);
     }
 
     public function testTheRootIsNeverResolvedAsAStaticFile(): void

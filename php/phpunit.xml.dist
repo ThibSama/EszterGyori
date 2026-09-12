@@ -57,6 +57,7 @@
       <file>tests/Sql/ServiceCombinationSqlTest.php</file>
       <file>tests/Sql/BookingSnapshotSqlTest.php</file>
       <file>tests/Sql/PrivacyRequestSqlTest.php</file>
+      <file>tests/Sql/LegalInformationSqlTest.php</file>
     </testsuite>
 
     <!--

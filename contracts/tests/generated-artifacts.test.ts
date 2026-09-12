@@ -425,6 +425,7 @@ test("the generated HTTP contract carries every frozen case", async () => {
       "/api/admin/privacy-requests/query",
       "/api/admin/privacy-requests/search",
       "/api/admin/services",
+      "/api/admin/settings/legal",
       "/api/auth/login",
       "/api/auth/logout",
       "/api/auth/session",
@@ -433,6 +434,7 @@ test("the generated HTTP contract carries every frozen case", async () => {
       "/api/bookings",
       "/api/content",
       "/api/health",
+      "/api/legal",
     ],
   );
 
