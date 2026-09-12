@@ -1,0 +1,708 @@
+{
+  "$comment": "GENERATED FILE - do not edit by hand. Run `npm run generate` in contracts/.",
+  "title": "AdminPrivacyRequestActionResponse",
+  "description": "The record and the scope as they stand after the action, and the generated export representation when the action was an export.",
+  "x-eszter-io": "output",
+  "x-eszter-contentSchemaVersion": 1,
+  "x-eszter-warning": "Structural validation only. Passing this schema is necessary but NOT sufficient; see semantic-rules.json.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "access",
+            "rectification",
+            "erasure",
+            "restriction",
+            "portability"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "received",
+            "in_progress",
+            "closed"
+          ]
+        },
+        "receivedDate": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "deadlineDate": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "closedAtUtc": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bookingReferences": {
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(bk_[0-9a-f]{32}|[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})$"
+          }
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "status",
+        "receivedDate",
+        "deadlineDate",
+        "closedAtUtc",
+        "bookingReferences",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false
+    },
+    "bookings": {
+      "maxItems": 50,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "reference": {
+            "type": "string",
+            "pattern": "^(bk_[0-9a-f]{32}|[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})$"
+          },
+          "serviceKeys": {
+            "minItems": 1,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{1,63}$"
+            }
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "confirmed",
+              "cancelled"
+            ]
+          },
+          "startsAtUtc": {
+            "type": "string"
+          },
+          "endsAtUtc": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "customerDataErasedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "processingRestrictedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "customer": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "email": {
+                    "type": "string",
+                    "maxLength": 254,
+                    "format": "email",
+                    "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                  },
+                  "phone": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 32
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "note": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 2000
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "name",
+                  "email",
+                  "phone",
+                  "note"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "reference",
+          "serviceKeys",
+          "state",
+          "startsAtUtc",
+          "endsAtUtc",
+          "updatedAt",
+          "customerDataErasedAt",
+          "processingRestrictedAt",
+          "customer"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "export": {
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "format": {
+                  "type": "string",
+                  "const": "json"
+                },
+                "fileName": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9-]+\\.json$"
+                },
+                "document": {
+                  "type": "object",
+                  "properties": {
+                    "format": {
+                      "type": "string",
+                      "const": "eszter.privacy-export"
+                    },
+                    "version": {
+                      "type": "number",
+                      "const": 1
+                    },
+                    "generatedAtUtc": {
+                      "type": "string"
+                    },
+                    "request": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "access",
+                            "rectification",
+                            "erasure",
+                            "restriction",
+                            "portability"
+                          ]
+                        },
+                        "receivedDate": {
+                          "type": "string",
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "receivedDate"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "information": {
+                      "type": "object",
+                      "properties": {
+                        "controller": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "purposes": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "legalBasis": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "retention": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "recipients": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "source": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "rights": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "contact": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "controller",
+                        "purposes",
+                        "legalBasis",
+                        "retention",
+                        "recipients",
+                        "source",
+                        "rights",
+                        "contact"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "bookings": {
+                      "maxItems": 50,
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "reference": {
+                                "type": "string",
+                                "pattern": "^(bk_[0-9a-f]{32}|[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})$"
+                              },
+                              "anonymised": {
+                                "type": "boolean",
+                                "const": false
+                              },
+                              "appointment": {
+                                "type": "object",
+                                "properties": {
+                                  "serviceKeys": {
+                                    "minItems": 1,
+                                    "maxItems": 4,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "pattern": "^[a-z][a-z0-9-]{1,63}$"
+                                    }
+                                  },
+                                  "serviceLabels": {
+                                    "minItems": 1,
+                                    "maxItems": 4,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 160
+                                    }
+                                  },
+                                  "state": {
+                                    "type": "string",
+                                    "enum": [
+                                      "confirmed",
+                                      "cancelled"
+                                    ]
+                                  },
+                                  "startsAtUtc": {
+                                    "type": "string"
+                                  },
+                                  "endsAtUtc": {
+                                    "type": "string"
+                                  },
+                                  "timezone": {
+                                    "type": "string",
+                                    "const": "Europe/Paris"
+                                  },
+                                  "createdAt": {
+                                    "type": "string"
+                                  },
+                                  "cancelledAtUtc": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "cancellationReason": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "maxLength": 500
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "serviceKeys",
+                                  "serviceLabels",
+                                  "state",
+                                  "startsAtUtc",
+                                  "endsAtUtc",
+                                  "timezone",
+                                  "createdAt",
+                                  "cancelledAtUtc",
+                                  "cancellationReason"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "customer": {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 160
+                                  },
+                                  "email": {
+                                    "type": "string",
+                                    "maxLength": 254,
+                                    "format": "email",
+                                    "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                                  },
+                                  "phone": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "maxLength": 32
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "note": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "maxLength": 2000
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "email",
+                                  "phone",
+                                  "note"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "basis": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "privacy_notice"
+                                      },
+                                      "noticeId": {
+                                        "type": "string",
+                                        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+                                      },
+                                      "presentedAtUtc": {
+                                        "type": "string"
+                                      },
+                                      "text": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "noticeId",
+                                      "presentedAtUtc",
+                                      "text"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "consent"
+                                      },
+                                      "noticeId": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "consentedAtUtc": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "noticeId",
+                                      "consentedAtUtc"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              },
+                              "history": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "enum": [
+                                        "created",
+                                        "moved",
+                                        "cancelled",
+                                        "customer_updated",
+                                        "customer_data_erased",
+                                        "processing_restricted",
+                                        "processing_restriction_lifted"
+                                      ]
+                                    },
+                                    "actor": {
+                                      "type": "string",
+                                      "enum": [
+                                        "public",
+                                        "admin"
+                                      ]
+                                    },
+                                    "occurredAt": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "actor",
+                                    "occurredAt"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "notifications": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "channel": {
+                                      "type": "string",
+                                      "enum": [
+                                        "email",
+                                        "sms"
+                                      ]
+                                    },
+                                    "type": {
+                                      "type": "string",
+                                      "enum": [
+                                        "booking_confirmation",
+                                        "booking_reminder",
+                                        "booking_cancellation",
+                                        "booking_moved",
+                                        "processing_restriction_lifted"
+                                      ]
+                                    },
+                                    "status": {
+                                      "type": "string",
+                                      "enum": [
+                                        "pending",
+                                        "processing",
+                                        "sent",
+                                        "failed",
+                                        "skipped",
+                                        "retired"
+                                      ]
+                                    },
+                                    "dueAtUtc": {
+                                      "type": "string"
+                                    },
+                                    "sentAtUtc": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "channel",
+                                    "type",
+                                    "status",
+                                    "dueAtUtc",
+                                    "sentAtUtc"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              }
+                            },
+                            "required": [
+                              "reference",
+                              "anonymised",
+                              "appointment",
+                              "customer",
+                              "basis",
+                              "history",
+                              "notifications"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "reference": {
+                                "type": "string",
+                                "pattern": "^(bk_[0-9a-f]{32}|[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})$"
+                              },
+                              "anonymised": {
+                                "type": "boolean",
+                                "const": true
+                              }
+                            },
+                            "required": [
+                              "reference",
+                              "anonymised"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "format",
+                    "version",
+                    "generatedAtUtc",
+                    "request",
+                    "information",
+                    "bookings"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "format",
+                "fileName",
+                "document"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "format": {
+                  "type": "string",
+                  "const": "html"
+                },
+                "fileName": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9-]+\\.html$"
+                },
+                "document": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "format",
+                "fileName",
+                "document"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "request",
+    "bookings",
+    "export"
+  ],
+  "additionalProperties": false
+}

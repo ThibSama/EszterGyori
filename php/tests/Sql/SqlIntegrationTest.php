@@ -1221,6 +1221,10 @@ final class SqlIntegrationTest extends TestCase
             public function cancelled(Booking $booking, int $lifecycleEventId): void
             {
             }
+
+            public function restrictionLifted(Booking $booking, int $lifecycleEventId): void
+            {
+            }
         };
         $api = PdoBookingApi::createDefault(
             $this->database,

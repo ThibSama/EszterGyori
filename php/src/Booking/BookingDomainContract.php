@@ -7,6 +7,7 @@ namespace Eszter\Booking;
 use Eszter\Contract\ContractArtifactException;
 use Eszter\Contract\ContractArtifacts;
 use Eszter\Privacy\PrivacyRequestPolicy;
+use Eszter\Retention\RetentionPolicy;
 
 /**
  * The generated Package 4.1/4.2 booking contract, consumed rather than restated.
@@ -103,6 +104,12 @@ final class BookingDomainContract
          * built from two generations of the artifact.
          */
         public readonly PrivacyRequestPolicy $privacyRequests,
+        /**
+         * ESZ-164 — the ESZ-140 customer-data retention policy, from the
+         * same document: the GDPR erasure runs the sweep's own primitive and
+         * therefore needs the sweep's own placeholders and code.
+         */
+        public readonly RetentionPolicy $customerDataRetention,
     ) {
     }
 
@@ -194,6 +201,7 @@ final class BookingDomainContract
             self::positiveInt($currentReference, 'significantCharacters'),
             self::positiveInt($currentReference, 'generationMaxAttempts'),
             PrivacyRequestPolicy::fromDocument($document),
+            RetentionPolicy::fromDocument($document),
         );
     }
 

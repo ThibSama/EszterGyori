@@ -12,13 +12,22 @@ use Eszter\Booking\BookingSerializationLock;
 use Eszter\Booking\BookingStateMachine;
 use Eszter\Booking\BookingTimePolicy;
 use Eszter\Booking\BookingValidationException;
+use Eszter\Booking\PdoBookingApi;
+use Eszter\Contract\StructuralValidator;
 use Eszter\Database\Database;
+use Eszter\Notification\NotificationJob;
+use Eszter\Notification\NotificationJobRepository;
+use Eszter\Notification\NotificationPolicy;
+use Eszter\Notification\NotificationRunner;
+use Eszter\Notification\NotificationTransportRegistry;
 use Eszter\Privacy\InvalidPrivacyRequestTransitionException;
 use Eszter\Privacy\PrivacyRequestAdministration;
 use Eszter\Privacy\PrivacyRequestRepository;
 use Eszter\Privacy\PrivacyRequestRetention;
 use Eszter\Retention\RetentionPolicy;
+use Eszter\Support\Logger;
 use Eszter\Tests\MovableClock;
+use Eszter\Tests\Notification\FixedEnabledChannels;
 use Eszter\Tests\TestEnvironment;
 use PHPUnit\Framework\TestCase;
 
@@ -37,6 +46,21 @@ use PHPUnit\Framework\TestCase;
  *    the closure instant lands with the status, and history reads all three;
  *  - the three-year purge removes only closed records whose closure is old
  *    enough, and never an open one.
+ *
+ * ESZ-164 adds the execution of the rights, through the production wiring
+ * (`PdoBookingApi::createDefault`), each as its own test:
+ *
+ *  - one export engine answers access and portability with a JSON document
+ *    the frozen schema validates and an HTML page rendering the same facts,
+ *    an anonymised link appearing as a reference and a flag only;
+ *  - early anonymisation runs the ESZ-140 primitive: placeholders, marker,
+ *    every pending or processing job retired in the same transaction, the
+ *    appointment and the trail kept, an already erased link untouched;
+ *  - restriction holds every pending job and releases a job claimed before
+ *    the restriction without delivering it; a reminder whose window closes
+ *    during the restriction is swept and never replayed after the lift; the
+ *    lift sends exactly one informational e-mail and lets the still-future
+ *    reminder resume.
  */
 final class PrivacyRequestSqlTest extends TestCase
 {
@@ -52,6 +76,10 @@ final class PrivacyRequestSqlTest extends TestCase
     private PrivacyRequestRepository $requests;
     private PrivacyRequestAdministration $admin;
     private RetentionPolicy $retention;
+    private PdoBookingApi $api;
+    private NotificationPolicy $notificationPolicy;
+    private NotificationJobRepository $jobs;
+    private string $logRoot;
 
     protected function setUp(): void
     {
@@ -102,6 +130,17 @@ final class PrivacyRequestSqlTest extends TestCase
 
         $services->provision('brows', 'Sourcils', 30, 0, 0, true);
 
+        // ESZ-164: the rights run through the production graph.
+        $this->notificationPolicy = NotificationPolicy::fromArtifacts($artifacts);
+        $this->jobs = new NotificationJobRepository($this->database, $this->clock, $this->notificationPolicy);
+        $this->api = PdoBookingApi::createDefault(
+            $this->database,
+            $this->clock,
+            $this->contract,
+            $this->notificationPolicy,
+        );
+        $this->logRoot = TestEnvironment::makeTempDirectory('eszter-privacy-rights');
+
         $this->database->beginTransaction();
     }
 
@@ -109,6 +148,9 @@ final class PrivacyRequestSqlTest extends TestCase
     {
         if (isset($this->database) && $this->database->inTransaction()) {
             $this->database->rollBack();
+        }
+        if (isset($this->logRoot)) {
+            TestEnvironment::removeDirectory($this->logRoot);
         }
     }
 
@@ -432,7 +474,359 @@ final class PrivacyRequestSqlTest extends TestCase
         self::assertSame(0, $retention->purgeExpired()['purged']);
     }
 
+    // --- ESZ-164: the rights --------------------------------------------------
+
+    public function testOneExportEngineAnswersAccessAndPortabilityWithoutReconnectingAnAnonymisedLink(): void
+    {
+        $live = $this->insertBooking('2026-06-15 07:00:00.000', 'cliente@example.test');
+        $gone = $this->insertBooking('2026-06-22 07:00:00.000', 'cliente@example.test');
+        $liveId = $this->bookingId($live);
+        $this->jobs->enqueue($liveId, 'email', 'booking_confirmation', 'export.live.confirmation', $this->clock->now());
+        $this->database->run(
+            'INSERT INTO booking_history (booking_id, event_type, actor_type, details_json, occurred_at)'
+            . " VALUES (:booking, 'created', 'public', JSON_OBJECT(), :occurred)",
+            ['booking' => $liveId, 'occurred' => $this->clock->nowIso()],
+        );
+        $id = $this->record('access', [$live, $gone]);
+        // Anonymised after the request was recorded: the export must not
+        // rebuild it from what the row still holds.
+        $this->erase($gone);
+
+        $validator = new StructuralValidator(TestEnvironment::artifacts());
+        $this->clock->advanceSeconds(30);
+        $json = $this->api->adminExecutePrivacyRequestAction(['action' => 'export', 'id' => $id, 'format' => 'json']);
+        self::assertSame([], $validator->validate($json, 'admin-privacy-request-action-response.schema.json'));
+        self::assertSame('closed', $json['request']['status']);
+        self::assertSame('2026-06-13T12:00:30.000Z', $json['request']['closedAtUtc']);
+        self::assertSame('json', $json['export']['format']);
+        self::assertSame("export-rgpd-demande-{$id}.json", $json['export']['fileName']);
+
+        $document = $json['export']['document'];
+        self::assertIsArray($document);
+        self::assertSame('eszter.privacy-export', $document['format']);
+        self::assertSame(['id' => $id, 'type' => 'access', 'receivedDate' => '2026-06-13'], $document['request']);
+        self::assertCount(2, $document['bookings']);
+        [$held, $anonymised] = $document['bookings'];
+        self::assertSame($live, $held['reference']);
+        self::assertFalse($held['anonymised']);
+        self::assertSame('cliente@example.test', $held['customer']['email']);
+        self::assertSame('Cliente Exemple', $held['customer']['name']);
+        self::assertSame(['Sourcils'], $held['appointment']['serviceLabels']);
+        self::assertSame('privacy_notice', $held['basis']['kind']);
+        self::assertSame($this->contract->currentPrivacyNoticeId, $held['basis']['noticeId']);
+        self::assertStringContainsString('Responsable du traitement', $held['basis']['text']);
+        self::assertSame([['type' => 'created', 'actor' => 'public', 'occurredAt' => self::NOW]], $held['history']);
+        self::assertSame('booking_confirmation', $held['notifications'][0]['type']);
+        self::assertSame('pending', $held['notifications'][0]['status']);
+        // The anonymised link: the reference and the fact, and nothing else.
+        self::assertSame(['reference' => $gone, 'anonymised' => true], $anonymised);
+        self::assertStringContainsString('90 jours', implode(' ', $document['information']['retention']));
+        self::assertNotEmpty($document['information']['rights']);
+
+        // The readable representation renders the same document: the same
+        // facts, and no placeholder for the anonymised link.
+        $html = $this->api->adminExecutePrivacyRequestAction(['action' => 'export', 'id' => $id, 'format' => 'html']);
+        self::assertSame([], $validator->validate($html, 'admin-privacy-request-action-response.schema.json'));
+        self::assertSame('closed', $html['request']['status'], 'a second export changes nothing');
+        self::assertSame('2026-06-13T12:00:30.000Z', $html['request']['closedAtUtc']);
+        $page = $html['export']['document'];
+        self::assertIsString($page);
+        self::assertStringStartsWith('<!doctype html><html lang="fr">', $page);
+        foreach (['Cliente Exemple', 'cliente@example.test', 'Sourcils', $live, $gone, 'anonymisées', '90 jours'] as $needle) {
+            self::assertStringContainsString($needle, $page);
+        }
+        self::assertSame(1, substr_count($page, 'Cliente Exemple'), 'the anonymised link must not carry a name');
+        self::assertStringNotContainsString($this->retention->erasedCustomerName, $page);
+        self::assertStringNotContainsString($this->retention->erasedCustomerEmail, $page);
+
+        // Portability is the same engine; an erasure request has no export.
+        $portability = $this->record('portability', [$live]);
+        $exported = $this->api->adminExecutePrivacyRequestAction([
+            'action' => 'export',
+            'id' => $portability,
+            'format' => 'json',
+        ]);
+        self::assertSame($document['bookings'][0]['customer'], $exported['export']['document']['bookings'][0]['customer']);
+        self::assertSame('closed', $exported['request']['status']);
+        $erasure = $this->record('erasure', [$live]);
+        try {
+            $this->api->adminExecutePrivacyRequestAction(['action' => 'export', 'id' => $erasure, 'format' => 'json']);
+            self::fail('an erasure request was exported');
+        } catch (BookingValidationException) {
+            // expected
+        }
+        self::assertSame('received', $this->requests->find($erasure)?->status);
+
+        // Nothing was persisted about the export: the register holds
+        // references and instants, and no table gained a customer value.
+        self::assertSame(0, $this->rowCount(
+            'SELECT COUNT(*) AS n FROM privacy_requests WHERE CAST(id AS CHAR) LIKE :needle',
+            ['needle' => '%example.test%'],
+        ));
+    }
+
+    public function testEarlyAnonymisationRunsTheRetentionPrimitiveAndNeutralisesActiveJobs(): void
+    {
+        // A future, confirmed booking: not a retention candidate for months.
+        $future = $this->insertBooking('2026-06-15 07:00:00.000', 'cliente@example.test');
+        $already = $this->insertBooking('2026-06-22 07:00:00.000', 'cliente@example.test');
+        $futureId = $this->bookingId($future);
+        $this->jobs->enqueue($futureId, 'email', 'booking_reminder', 'anon.reminder.pending', $this->clock->now()->modify('+1 day'));
+        $this->jobs->enqueue($futureId, 'email', 'booking_confirmation', 'anon.confirmation.due', $this->clock->now());
+        $this->jobs->enqueue($futureId, 'email', 'booking_moved', 'anon.moved.sent', $this->clock->now());
+        $this->database->run(
+            "UPDATE notification_jobs SET status = 'sent', sent_at_utc = :sent WHERE idempotency_key = 'anon.moved.sent'",
+            ['sent' => '2026-06-13 11:00:00.000'],
+        );
+        // One job already claimed by a runner: its lease must not survive.
+        $claimed = $this->jobs->claimDue(NotificationRunner::ownerFor('test-anon', getmypid() ?: 1), 10, ['email']);
+        self::assertCount(1, $claimed);
+        self::assertSame('anon.confirmation.due', $claimed[0]->idempotencyKey);
+
+        $id = $this->record('erasure', [$future, $already]);
+        // The second link was anonymised by the sweep in the meantime.
+        $this->erase($already);
+
+        try {
+            $this->api->adminExecutePrivacyRequestAction(['action' => 'anonymize', 'id' => $id]);
+            self::fail('an anonymisation ran without the confirmation');
+        } catch (BookingValidationException $exception) {
+            self::assertSame('confirm', $exception->field);
+        }
+        self::assertNull($this->bookings->find($future)?->customerDataErasedAt);
+
+        $this->clock->advanceSeconds(60);
+        $result = $this->api->adminExecutePrivacyRequestAction(['action' => 'anonymize', 'id' => $id, 'confirm' => true]);
+        self::assertSame('closed', $result['request']['status']);
+        self::assertSame('2026-06-13T12:01:00.000Z', $result['request']['closedAtUtc']);
+        self::assertSame(
+            [[$future, '2026-06-13T12:01:00.000Z', null], [$already, '2026-06-01T00:00:00.000Z', null]],
+            array_map(
+                static fn (array $entry): array => [$entry['reference'], $entry['customerDataErasedAt'], $entry['customer']],
+                $result['bookings'],
+            ),
+        );
+
+        // The row: the frozen placeholders, the marker, the appointment kept.
+        $erased = $this->bookings->find($future);
+        self::assertNotNull($erased);
+        self::assertSame($this->retention->erasedCustomerName, $erased->customerName);
+        self::assertSame($this->retention->erasedCustomerEmail, $erased->customerEmail);
+        self::assertNull($erased->customerPhone);
+        self::assertNull($erased->customerNote);
+        self::assertSame('2026-06-13 12:01:00.000', $erased->customerDataErasedAt);
+        self::assertSame('confirmed', $erased->state->value);
+        self::assertSame('2026-06-15 07:00:00.000', $erased->startsAtUtc);
+        self::assertSame($future, $erased->reference);
+        self::assertSame($this->contract->currentPrivacyNoticeId, $erased->privacyNoticeId);
+
+        // The queue: pending and processing retired with the frozen code and
+        // no lease; the sent job is evidence and is untouched.
+        $byKey = [];
+        foreach ($this->jobs->forBooking($futureId) as $job) {
+            $byKey[$job->idempotencyKey] = $job;
+        }
+        self::assertSame('retired', $byKey['anon.reminder.pending']->status);
+        self::assertSame('retired', $byKey['anon.confirmation.due']->status);
+        self::assertNull($byKey['anon.confirmation.due']->leaseOwner);
+        self::assertSame($this->retention->erasureJobCode, $byKey['anon.confirmation.due']->lastErrorCode);
+        self::assertSame('sent', $byKey['anon.moved.sent']->status);
+
+        // The trail: one non-personal event naming the request, none for the
+        // link that was already anonymised.
+        $events = $this->database->fetchAll(
+            'SELECT b.reference, h.event_type, h.details_json FROM booking_history h'
+            . ' JOIN bookings b ON b.id = h.booking_id ORDER BY h.id',
+        );
+        self::assertCount(1, $events);
+        self::assertSame($future, $events[0]['reference']);
+        self::assertSame('customer_data_erased', $events[0]['event_type']);
+        // MySQL stores JSON keys in its own order; the facts are what matter.
+        self::assertEquals(['privacyRequestId' => $id, 'retiredJobs' => 2], json_decode((string) $events[0]['details_json'], true));
+        self::assertStringNotContainsString('example.test', (string) $events[0]['details_json']);
+        self::assertSame('2026-06-01 00:00:00.000', $this->bookings->find($already)?->customerDataErasedAt);
+
+        // Closed, so it cannot run twice; and the erased row refuses a
+        // rectification through the same authority.
+        try {
+            $this->api->adminExecutePrivacyRequestAction(['action' => 'anonymize', 'id' => $id, 'confirm' => true]);
+            self::fail('a closed erasure request ran again');
+        } catch (BookingValidationException) {
+            // expected
+        }
+    }
+
+    public function testRestrictionHoldsAndReleasesJobsAndTheLiftNeverReplaysAStaleReminder(): void
+    {
+        $reference = $this->insertBooking('2026-06-15 07:00:00.000', 'cliente@example.test');
+        $bookingId = $this->bookingId($reference);
+        $now = $this->clock->now();
+        $this->jobs->enqueue($bookingId, 'email', 'booking_reminder', 'restrict.reminder.first', $now);
+        $this->jobs->enqueue($bookingId, 'email', 'booking_reminder', 'restrict.reminder.second', $now);
+        $this->jobs->enqueue($bookingId, 'email', 'booking_reminder', 'restrict.reminder.soon', $now->modify('+10 minutes'));
+        $this->jobs->enqueue($bookingId, 'email', 'booking_reminder', 'restrict.reminder.future', $now->modify('+19 hours'));
+        $id = $this->record('restriction', [$reference]);
+
+        // Tick 1: both due reminders are claimed; the restriction lands after
+        // the first delivery, so the second is re-checked before its transport
+        // and released — not sent, not terminal, its attempt refunded.
+        $transport = new RecordingTransport('email');
+        $api = $this->api;
+        $transport->before = static function () use ($api, $id, &$transport): void {
+            if ($transport->delivered === 0) {
+                $api->adminExecutePrivacyRequestAction(['action' => 'restrict', 'id' => $id]);
+            }
+        };
+        $first = $this->runner($transport)->run($this->owner('one'), 10);
+        self::assertSame(2, $first->claimed);
+        self::assertSame(1, $first->sent);
+        self::assertSame(1, $first->released);
+        self::assertSame(1, $transport->delivered);
+        $released = $this->jobs->findByIdempotencyKey('restrict.reminder.second');
+        self::assertInstanceOf(NotificationJob::class, $released);
+        self::assertSame('pending', $released->status);
+        self::assertSame(0, $released->attempts);
+        self::assertSame('processing_restricted', $released->lastErrorCode);
+        self::assertNull($released->leaseOwner);
+
+        $restricted = $this->bookings->find($reference);
+        // ESZ-139: the marker is the derived mutation instant, strictly later
+        // than the row's own token even under the frozen test clock.
+        self::assertSame('2026-06-13 12:00:00.001', $restricted?->processingRestrictedAt);
+        self::assertSame('closed', $this->requests->find($id)?->status);
+        self::assertSame('cliente@example.test', $restricted->customerEmail, 'the booking and its data are kept');
+        self::assertSame(
+            [$reference, 'processing_restricted', ['privacyRequestId' => $id]],
+            $this->lastHistoryEvent(),
+        );
+
+        // Ticks 2 and 3, restriction in place: nothing of this booking is
+        // claimed, whatever is due. The stale sweep still runs: the two
+        // reminders whose window closes meanwhile are terminally skipped.
+        $this->clock->advanceSeconds(5 * 60);
+        $second = $this->runner($transport)->run($this->owner('two'), 10);
+        self::assertSame(0, $second->claimed);
+        self::assertSame(0, $second->staleSkipped);
+        self::assertSame('pending', $this->jobs->findByIdempotencyKey('restrict.reminder.second')?->status);
+        $this->clock->advanceSeconds(2 * 60 * 60);
+        $third = $this->runner($transport)->run($this->owner('three'), 10);
+        self::assertSame(0, $third->claimed);
+        self::assertSame(2, $third->staleSkipped);
+        self::assertSame(1, $transport->delivered);
+        foreach (['restrict.reminder.second', 'restrict.reminder.soon'] as $stale) {
+            $job = $this->jobs->findByIdempotencyKey($stale);
+            self::assertSame('skipped', $job?->status, $stale);
+            self::assertSame('reminder_window_expired', $job->lastErrorCode, $stale);
+        }
+        self::assertSame('pending', $this->jobs->findByIdempotencyKey('restrict.reminder.future')?->status);
+
+        // The lift: confirmed on the wire, one informational e-mail scheduled
+        // in the same transaction, the request's status unchanged.
+        try {
+            $this->api->adminExecutePrivacyRequestAction(['action' => 'lift', 'id' => $id]);
+            self::fail('a lift ran without the confirmation');
+        } catch (BookingValidationException $exception) {
+            self::assertSame('confirm', $exception->field);
+        }
+        $lifted = $this->api->adminExecutePrivacyRequestAction(['action' => 'lift', 'id' => $id, 'confirm' => true]);
+        self::assertNull($lifted['bookings'][0]['processingRestrictedAt']);
+        self::assertSame('closed', $lifted['request']['status']);
+        self::assertNull($this->bookings->find($reference)?->processingRestrictedAt);
+        self::assertSame(
+            [$reference, 'processing_restriction_lifted', ['privacyRequestId' => $id]],
+            $this->lastHistoryEvent(),
+        );
+        $liftJobs = array_values(array_filter(
+            $this->jobs->forBooking($bookingId),
+            static fn (NotificationJob $job): bool => $job->jobType === 'processing_restriction_lifted',
+        ));
+        self::assertCount(1, $liftJobs);
+        self::assertSame('pending', $liftJobs[0]->status);
+        self::assertSame('email', $liftJobs[0]->channel);
+
+        // Tick 4: the lift e-mail goes out; the stale reminders stay skipped;
+        // the still-future reminder is not due yet and stays pending.
+        $fourth = $this->runner($transport)->run($this->owner('four'), 10);
+        self::assertSame(1, $fourth->claimed);
+        self::assertSame(1, $fourth->sent);
+        self::assertSame(2, $transport->delivered);
+        self::assertSame('sent', $this->jobs->find($liftJobs[0]->id)?->status);
+        self::assertSame('skipped', $this->jobs->findByIdempotencyKey('restrict.reminder.second')?->status);
+        self::assertSame('skipped', $this->jobs->findByIdempotencyKey('restrict.reminder.soon')?->status);
+        self::assertSame('pending', $this->jobs->findByIdempotencyKey('restrict.reminder.future')?->status);
+
+        // Tick 5, at the future reminder's time: it resumes normally.
+        $this->clock->advanceSeconds(17 * 60 * 60);
+        $fifth = $this->runner($transport)->run($this->owner('five'), 10);
+        self::assertSame(1, $fifth->sent);
+        self::assertSame('sent', $this->jobs->findByIdempotencyKey('restrict.reminder.future')?->status);
+        self::assertSame(3, $transport->delivered);
+
+        // A second lift has nothing to lift.
+        try {
+            $this->api->adminExecutePrivacyRequestAction(['action' => 'lift', 'id' => $id, 'confirm' => true]);
+            self::fail('a lifted restriction was lifted again');
+        } catch (BookingValidationException) {
+            // expected
+        }
+    }
+
     // --- helpers -------------------------------------------------------------
+
+    /**
+     * Records one request through the API and returns its id.
+     *
+     * @param list<string> $references
+     */
+    private function record(string $type, array $references): int
+    {
+        $id = $this->api->adminRecordPrivacyRequest([
+            'type' => $type,
+            'receivedDate' => '2026-06-13',
+            'bookingReferences' => $references,
+        ])['request']['id'];
+        self::assertIsInt($id);
+
+        return $id;
+    }
+
+    private function bookingId(string $reference): int
+    {
+        $id = $this->bookings->find($reference)?->id;
+        self::assertIsInt($id);
+
+        return $id;
+    }
+
+    /** @return array{0: string, 1: string, 2: array<string, mixed>}|null */
+    private function lastHistoryEvent(): ?array
+    {
+        $row = $this->database->fetchOne(
+            'SELECT b.reference, h.event_type, h.details_json FROM booking_history h'
+            . ' JOIN bookings b ON b.id = h.booking_id ORDER BY h.id DESC LIMIT 1',
+        );
+        if ($row === null) {
+            return null;
+        }
+
+        return [(string) $row['reference'], (string) $row['event_type'], json_decode((string) $row['details_json'], true)];
+    }
+
+    private function runner(RecordingTransport $transport): NotificationRunner
+    {
+        return new NotificationRunner(
+            $this->jobs,
+            new NotificationTransportRegistry($this->notificationPolicy, [$transport]),
+            new FixedEnabledChannels(['email']),
+            $this->notificationPolicy,
+            new Logger($this->logRoot . '/notifications.log', 'debug', $this->clock),
+        );
+    }
+
+    private function owner(string $tag): string
+    {
+        return NotificationRunner::ownerFor('test-' . $tag, getmypid() ?: 1);
+    }
 
     /** Inserts one confirmed booking row directly and returns its reference. */
     private function insertBooking(string $startsAtUtc, string $email, ?string $reference = null): string

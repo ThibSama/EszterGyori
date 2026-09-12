@@ -56,6 +56,13 @@ final class Booking
          * further customer or lifecycle write.
          */
         public readonly ?string $customerDataErasedAt,
+        /**
+         * ESZ-164: while set, the booking is under a restriction of
+         * processing — kept and shown, but no notification is delivered for
+         * it. Null means normal processing. Set and cleared only by the GDPR
+         * request centre; the notification claim scan reads it.
+         */
+        public readonly ?string $processingRestrictedAt,
         public readonly string $createdAt,
         public readonly string $updatedAt,
         public readonly string $stateChangedAt,
@@ -90,6 +97,7 @@ final class Booking
             self::nullableString($row, 'cancelled_at_utc'),
             self::nullableString($row, 'cancellation_reason'),
             self::nullableString($row, 'customer_data_erased_at'),
+            self::nullableString($row, 'processing_restricted_at'),
             self::requiredString($row, 'created_at'),
             self::requiredString($row, 'updated_at'),
             self::requiredString($row, 'state_changed_at'),

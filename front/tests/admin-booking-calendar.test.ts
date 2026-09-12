@@ -54,6 +54,8 @@ function booking(overrides: Partial<AdminBooking> = {}): AdminBooking {
     privacyNoticePresentedAtUtc: null,
     cancelledAtUtc: null,
     cancellationReason: null,
+    customerDataErasedAt: null,
+    processingRestrictedAt: null,
     createdAt: "2026-08-20T10:00:00.000Z",
     updatedAt: "2026-08-20T10:00:00.000Z",
     ...overrides,

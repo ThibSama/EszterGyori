@@ -70,7 +70,7 @@ final class MigrationTest extends TestCase
         self::assertSame(
             ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
              '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016', '0017', '0018', '0019', '0020',
-             '0021', '0022'],
+             '0021', '0022', '0023'],
             $applied,
         );
     }
@@ -394,7 +394,7 @@ final class MigrationTest extends TestCase
                     'customer_phone', 'customer_note', 'consent_at_utc', 'consent_notice_id',
                     'privacy_notice_id', 'privacy_notice_presented_at_utc',
                     'cancelled_at_utc', 'cancellation_reason', 'customer_data_erased_at',
-                    'created_at', 'updated_at', 'state_changed_at',
+                    'processing_restricted_at', 'created_at', 'updated_at', 'state_changed_at',
                 ],
                 'booking_resource_locks' => ['resource_key'],
                 'booking_history' => [
@@ -1991,6 +1991,78 @@ final class MigrationTest extends TestCase
      * error-code constraint that applies to the other statuses: no dangling
      * lease, no sent instant, a code that matches the frozen pattern.
      */
+    /**
+     * ESZ-164 — migration 0023 adds the reversible restriction marker and
+     * widens two CHECKs: the lift notification becomes a job type and the
+     * three GDPR trail events become history events. Proved on the 0022
+     * world first, so the widening is shown to be a change and not a
+     * restatement; then repeat-safe, then enforced.
+     */
+    public function testMigration0023AddsTheRestrictionMarkerAndWidensTheTwoChecks(): void
+    {
+        $directory = TestEnvironment::makeTempDirectory('eszter-migrations-esz164');
+
+        try {
+            $migrations = TestDatabase::migrationsDirectory();
+            foreach (['000[1-9]_*.sql', '001[0-9]_*.sql', '002[0-2]_*.sql'] as $glob) {
+                foreach ((glob($migrations . '/' . $glob) ?: []) as $file) {
+                    copy($file, $directory . '/' . basename($file));
+                }
+            }
+
+            // The 0022 world: no marker, and both CHECKs refuse the new values.
+            $applied = $this->migrator($directory)->migrate();
+            self::assertSame('0022', end($applied));
+            $bookingId = $this->seedBookingForNotifications();
+            self::assertSame([], $this->column('bookings', 'processing_restricted_at'));
+            $this->expectConstraintFailure(fn () => $this->insertJob(
+                $bookingId,
+                ['key' => 'lift.before.0023', 'type' => 'processing_restriction_lifted'],
+            ));
+            $this->expectConstraintFailure(fn () => $this->database->run(
+                'INSERT INTO booking_history (booking_id, event_type, actor_type, details_json, occurred_at)'
+                . " VALUES (:booking, 'processing_restricted', 'admin', JSON_OBJECT(), :occurred)",
+                ['booking' => $bookingId, 'occurred' => self::NOW],
+            ));
+
+            // The deploy: 0023 lands alone, and a second run applies nothing.
+            copy($migrations . '/0023_privacy_rights.sql', $directory . '/0023_privacy_rights.sql');
+            self::assertSame(['0023'], $this->migrator($directory)->migrate());
+            self::assertSame([], $this->migrator($directory)->migrate());
+
+            // The marker exists, nullable, and the seeded row is untouched.
+            $marker = $this->column('bookings', 'processing_restricted_at');
+            self::assertSame('datetime', $marker['DATA_TYPE'] ?? null);
+            self::assertSame('YES', $marker['IS_NULLABLE'] ?? null);
+            $seeded = $this->database->fetchOne(
+                'SELECT processing_restricted_at FROM bookings WHERE id = :id',
+                ['id' => $bookingId],
+            ) ?? [];
+            self::assertArrayHasKey('processing_restricted_at', $seeded);
+            self::assertNull($seeded['processing_restricted_at']);
+
+            // The widened CHECKs admit exactly the new values and still refuse others.
+            $this->insertJob($bookingId, ['key' => 'lift.after.0023', 'type' => 'processing_restriction_lifted']);
+            $this->expectConstraintFailure(
+                fn () => $this->insertJob($bookingId, ['key' => 'type.bad.value', 'type' => 'booking_haiku']),
+            );
+            foreach (['customer_data_erased', 'processing_restricted', 'processing_restriction_lifted'] as $event) {
+                $this->database->run(
+                    'INSERT INTO booking_history (booking_id, event_type, actor_type, details_json, occurred_at)'
+                    . ' VALUES (:booking, :event, \'admin\', JSON_OBJECT(), :occurred)',
+                    ['booking' => $bookingId, 'event' => $event, 'occurred' => self::NOW],
+                );
+            }
+            $this->expectConstraintFailure(fn () => $this->database->run(
+                'INSERT INTO booking_history (booking_id, event_type, actor_type, details_json, occurred_at)'
+                . " VALUES (:booking, 'opposed', 'admin', JSON_OBJECT(), :occurred)",
+                ['booking' => $bookingId, 'occurred' => self::NOW],
+            ));
+        } finally {
+            TestEnvironment::removeDirectory($directory);
+        }
+    }
+
     public function testARetiredNotificationJobSatisfiesTheTerminalConstraints(): void
     {
         $this->migrator()->migrate();

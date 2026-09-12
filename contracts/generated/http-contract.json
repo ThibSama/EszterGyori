@@ -668,7 +668,8 @@
       "adminServices": "/api/admin/services",
       "adminPrivacyRequests": "/api/admin/privacy-requests",
       "adminPrivacyRequestsQuery": "/api/admin/privacy-requests/query",
-      "adminPrivacyRequestSearch": "/api/admin/privacy-requests/search"
+      "adminPrivacyRequestSearch": "/api/admin/privacy-requests/search",
+      "adminPrivacyRequestActions": "/api/admin/privacy-requests/actions"
     },
     "publicErrors": "The frozen error envelope only; no booking, customer, SQL, lock or validation detail.",
     "adminMutationSecurity": "authenticated session followed by CSRF, before body parsing",
@@ -701,7 +702,8 @@
       "history": "Append-only created, moved, cancelled and customer_updated events; the bookings row remains authoritative current state. ESZ-145: history is served only by mode=reference, one fixed page of at most 50 chronological events with explicit hasMore and a strictly advancing typed cursor; range reads and mutation responses carry current-state booking facts only and never a history array.",
       "adminQuery": "An authenticated read, no CSRF. mode=reference is an exact lookup returning the booking's current facts beside one bounded page of its history (adminViews.historyPage: at most 50 events, chronological, hasMore from a pageSize+1 probe, typed eventId continuation). mode=range returns the bookings whose start falls in the requested Paris-civil window, deterministically ordered and paginated per adminViews.rangeRead: pageSize rows at most, a typed cursor for the next page, hasMore detected with a pageSize+1 probe — no row is silently clipped. Range rows carry current-state facts only: a range page costs a constant number of queries whatever its row count, and never one history read per booking.",
       "adminSummary": "An authenticated read, no CSRF. Counts and nextConfirmedStartsAtUtc are exact SQL aggregations over the whole window; the today/upcoming entry lists are confirmed-only and bounded at adminViews.summary.listedEntriesMax with listings.todayComplete/upcomingComplete stating whether each list is complete.",
-      "privacyRequests": "ESZ-163 — the admin GDPR request register (booking-domain privacyRequests). search is an authenticated read, no CSRF: mode=reference resolves exactly one stored booking (current or legacy shape; 404 NOT_FOUND when none, 404 as well for an erased booking, which has no customer left to identify), mode=email lists the non-erased bookings whose stored e-mail matches case-insensitively, one page of searchPageSize on the (startsAtUtc, reference) keyset with hasMore and a typed cursor — never a silent clip, and never a match through the frozen erased placeholder. query is an authenticated read: mode=history pages the register newest first, mode=detail serves one record. POST records one request behind session and CSRF: the frozen type, the reception date, and exactly the references the administrator selected (each must resolve to a non-erased booking, no duplicates, bounded at maxBookingReferences; an empty list is a confirmed empty scope). Status is received on creation and is never accepted from the wire. Recording writes the register only: no booking or customer row changes, nothing is exported."
+      "privacyRequests": "ESZ-163 — the admin GDPR request register (booking-domain privacyRequests). search is an authenticated read, no CSRF: mode=reference resolves exactly one stored booking (current or legacy shape; 404 NOT_FOUND when none, 404 as well for an erased booking, which has no customer left to identify), mode=email lists the non-erased bookings whose stored e-mail matches case-insensitively, one page of searchPageSize on the (startsAtUtc, reference) keyset with hasMore and a typed cursor — never a silent clip, and never a match through the frozen erased placeholder. query is an authenticated read: mode=history pages the register newest first, mode=detail serves one record. POST records one request behind session and CSRF: the frozen type, the reception date, and exactly the references the administrator selected (each must resolve to a non-erased booking, no duplicates, bounded at maxBookingReferences; an empty list is a confirmed empty scope). Status is received on creation and is never accepted from the wire. Recording writes the register only: no booking or customer row changes, nothing is exported.",
+      "privacyRights": "ESZ-164 — the rights are executed from the register (booking-domain privacyRequests.execution). query mode=scope serves one record beside the current state of each booking it names (appointment facts, updatedAt token, anonymised/restricted markers, held contact data or null once anonymised). POST /api/admin/privacy-requests/actions is a state change behind session and CSRF, discriminated by action and always scoped to the request's stored booking links: export (format html or json; access and portability only; the document is generated and returned, never persisted; a received request is moved through in_progress to closed in one write, a closed one may be exported again) — rectify (a list of per-booking contact updates each carrying the booking's expectedUpdatedAt; every reference must be one the request names and not anonymised; all bookings are written through the existing customer-update authority in one transaction with the request's closure, 409 REVISION_CONFLICT writes nothing) — anonymize (confirm: true required; the ESZ-140 erasure primitive per selected booking, active jobs retired in the same transaction; already anonymised bookings are left untouched; closes the request) — restrict (sets processing_restricted_at on the selected non-anonymised bookings; closes the request) — lift (confirm: true required; type restriction only; clears the marker on the restricted selected bookings and schedules one immediate processing_restriction_lifted e-mail per lifted booking; status unchanged). A request of the wrong type for an action, an action with nothing to do (no live booking, nothing restricted) and a rectification naming a foreign reference are 400 VALIDATION_FAILED; an unknown id is 404 NOT_FOUND. Every response carries the record and the scope as they now stand; the register itself never receives an export body or a customer value."
     },
     "availabilityAdministration": {
       "maxQueryRangeDays": 400,
@@ -1192,6 +1194,24 @@
       ],
       "requestBodySchema": "admin-privacy-request-search-request.schema.json",
       "successBodySchema": "admin-privacy-request-search-response.schema.json"
+    },
+    {
+      "path": "/api/admin/privacy-requests/actions",
+      "methods": [
+        "POST"
+      ],
+      "statuses": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        405,
+        409,
+        500
+      ],
+      "requestBodySchema": "admin-privacy-request-action-request.schema.json",
+      "successBodySchema": "admin-privacy-request-action-response.schema.json"
     }
   ],
   "unknownRouteStatus": 404,
@@ -5397,6 +5417,337 @@
         "headers": {
           "allow": "POST"
         }
+      }
+    },
+    {
+      "id": "admin.privacyRequests.query.post.scopeOk",
+      "endpoint": "/api/admin/privacy-requests/query",
+      "description": "ESZ-164 — the scope read serves the record beside the current state of each booking it names: the held contact data (or null once anonymised), the token and the two markers.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/query",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"mode\":\"scope\",\"id\":1}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestScopeResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.exportHtmlOk",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "ESZ-164 — an access request is answered by the readable HTML representation of the shared export document; the record is closed in the same response.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"export\",\"id\":1,\"format\":\"html\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestActionResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.exportJsonOk",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "The structured JSON representation is the same engine's document, validated field by field by the frozen export schema.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"export\",\"id\":1,\"format\":\"json\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestActionResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.exportWrongType",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "An export is the answer to an access or portability request only; an erasure request cannot be exported.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"export\",\"id\":2,\"format\":\"json\"}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.rectifyOk",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "A rectification carries one contact update per selected booking with that booking's own token; the existing customer-update authority applies them.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"rectify\",\"id\":4,\"bookings\":[{\"reference\":\"bk_00000000000000000000000000000000\",\"expectedUpdatedAt\":\"2026-06-13T12:00:00.000Z\",\"customerName\":\"Cliente Rectifiée\",\"customerEmail\":\"rectifiee@example.test\",\"customerPhone\":null,\"customerNote\":null}]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestActionResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.rectifyForeignReference",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "A rectification may only touch the bookings the request names: a reference outside the stored links is refused and nothing is written.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"rectify\",\"id\":4,\"bookings\":[{\"reference\":\"XG73-UVK9\",\"expectedUpdatedAt\":\"2026-06-13T12:00:00.000Z\",\"customerName\":\"Autre\",\"customerEmail\":\"autre@example.test\",\"customerPhone\":null,\"customerNote\":null}]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.rectifyStaleToken",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "A stale expectedUpdatedAt is the same 409 REVISION_CONFLICT the calendar's contact edit answers, and writes nothing.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"rectify\",\"id\":4,\"bookings\":[{\"reference\":\"bk_00000000000000000000000000000000\",\"expectedUpdatedAt\":\"2026-06-01T00:00:00.000Z\",\"customerName\":\"Cliente Rectifiée\",\"customerEmail\":\"rectifiee@example.test\",\"customerPhone\":null,\"customerNote\":null}]}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 409,
+        "body": "errorEnvelope",
+        "errorCode": "REVISION_CONFLICT"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.anonymizeOk",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "Early anonymisation keeps the appointment and returns the scope with the booking marked anonymised and its contact data gone.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"anonymize\",\"id\":2,\"confirm\":true}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestActionResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.anonymizeWithoutConfirmation",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "The destructive confirmation is on the wire: an anonymisation without confirm: true is refused structurally.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"anonymize\",\"id\":2}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.restrictOk",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "A restriction sets the reversible marker on the selected bookings; the response shows them as restricted.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"restrict\",\"id\":5}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestActionResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.liftOk",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "Lifting a restriction is confirmed on the wire and answers with the bookings no longer restricted.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"lift\",\"id\":6,\"confirm\":true}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 200,
+        "body": "adminPrivacyRequestActionResponse"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.unknownRequest",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "An action on a record the register does not hold is 404 NOT_FOUND.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"restrict\",\"id\":99}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 404,
+        "body": "errorEnvelope",
+        "errorCode": "NOT_FOUND"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.unknownAction",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "The five actions are closed; there is no delete, no opposition and no free status change.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "rawBody": "{\"action\":\"close\",\"id\":1}"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "valid",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 400,
+        "body": "errorEnvelope",
+        "errorCode": "VALIDATION_FAILED"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.csrfOmitted",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "Every action is a state change: without CSRF it is rejected before parsing.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "authenticated",
+        "csrf": "omitted",
+        "account": "enabled"
+      },
+      "expect": {
+        "status": 403,
+        "body": "errorEnvelope",
+        "errorCode": "CSRF_TOKEN_INVALID"
+      }
+    },
+    {
+      "id": "admin.privacyRequests.actions.post.unauthenticated",
+      "endpoint": "/api/admin/privacy-requests/actions",
+      "description": "An anonymous caller cannot execute a right, and is refused before the body is read.",
+      "request": {
+        "method": "POST",
+        "path": "/api/admin/privacy-requests/actions",
+        "rawBody": "{invalid"
+      },
+      "auth": {
+        "session": "none",
+        "csrf": "omitted"
+      },
+      "expect": {
+        "status": 401,
+        "body": "errorEnvelope",
+        "errorCode": "UNAUTHENTICATED"
       }
     }
   ],

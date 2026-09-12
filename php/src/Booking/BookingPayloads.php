@@ -57,6 +57,11 @@ final class BookingPayloads
             'privacyNoticePresentedAtUtc' => self::optionalInstant($booking->privacyNoticePresentedAtUtc),
             'cancelledAtUtc' => self::optionalInstant($booking->cancelledAtUtc),
             'cancellationReason' => $booking->cancellationReason,
+            // ESZ-164: the two markers the calendar renders as
+            // `Cliente anonymisée — rendez-vous maintenu` and
+            // `Traitement limité`.
+            'customerDataErasedAt' => self::optionalInstant($booking->customerDataErasedAt),
+            'processingRestrictedAt' => self::optionalInstant($booking->processingRestrictedAt),
             'createdAt' => $booking->createdAt,
             'updatedAt' => $booking->updatedAt,
         ];

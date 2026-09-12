@@ -12,6 +12,7 @@ use Eszter\Booking\BookingApi;
 use Eszter\Booking\BookingDomainContract;
 use Eszter\Booking\BookingNotFoundException;
 use Eszter\Booking\BookingRequestFields;
+use Eszter\Booking\BookingRevisionConflictException;
 use Eszter\Booking\BookingTimePolicy;
 use Eszter\Booking\BookingValidationException;
 use Eszter\Booking\PlanningConstraint;
@@ -698,6 +699,10 @@ final class InMemoryBookingApi implements BookingApi
     /** @return array<string, mixed> */
     public function adminPrivacyRequests(array $request): array
     {
+        if (($request['mode'] ?? null) === 'scope') {
+            return $this->privacyScope(\is_int($request['id'] ?? null) ? $request['id'] : 0);
+        }
+
         if (($request['mode'] ?? null) === 'detail') {
             $id = \is_int($request['id'] ?? null) ? $request['id'] : 0;
             if ($id !== 1) {
@@ -807,8 +812,211 @@ final class InMemoryBookingApi implements BookingApi
             'privacyNoticePresentedAtUtc' => null,
             'cancelledAtUtc' => $cancelled ? '2026-06-13T12:00:00.000Z' : null,
             'cancellationReason' => $cancelled ? 'Indisponible' : null,
+            'customerDataErasedAt' => null,
+            'processingRestrictedAt' => null,
             'createdAt' => '2026-06-13T12:00:00.000Z',
             'updatedAt' => '2026-06-13T12:00:00.000Z',
+        ];
+    }
+
+    // --- ESZ-164: the rights fixture ----------------------------------------
+
+    /**
+     * The register the action cases act on: one open record per type whose
+     * action the corpus exercises, plus one closed restriction whose booking
+     * is currently restricted (the lift case). The scope entry is the same
+     * booking `adminBooking()` serves, in the state the record needs.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function privacyFixture(int $id): ?array
+    {
+        return match ($id) {
+            1 => $this->privacyRequest(1, 'access', '2026-06-13', [self::REFERENCE]),
+            2 => $this->privacyRequest(2, 'erasure', '2026-06-13', [self::REFERENCE]),
+            4 => $this->privacyRequest(4, 'rectification', '2026-06-13', [self::REFERENCE]),
+            5 => $this->privacyRequest(5, 'restriction', '2026-06-13', [self::REFERENCE]),
+            6 => $this->privacyRequest(6, 'restriction', '2026-06-01', [self::REFERENCE], 'closed'),
+            default => null,
+        };
+    }
+
+    /**
+     * @param array{name: string, email: string, phone: ?string, note: ?string}|null $customer
+     * @return array<string, mixed>
+     */
+    private function scopeBooking(?array $customer, ?string $erasedAt, ?string $restrictedAt): array
+    {
+        return [
+            'reference' => self::REFERENCE,
+            'serviceKeys' => ['brows'],
+            'state' => 'confirmed',
+            'startsAtUtc' => '2026-06-15T07:00:00.000Z',
+            'endsAtUtc' => '2026-06-15T07:30:00.000Z',
+            'updatedAt' => '2026-06-13T12:00:00.000Z',
+            'customerDataErasedAt' => $erasedAt,
+            'processingRestrictedAt' => $restrictedAt,
+            'customer' => $customer,
+        ];
+    }
+
+    /** @return array{name: string, email: string, phone: ?string, note: ?string} */
+    private static function fixtureCustomer(): array
+    {
+        return ['name' => 'Cliente Exemple', 'email' => 'cliente@example.test', 'phone' => null, 'note' => null];
+    }
+
+    /** @return array<string, mixed> */
+    private function privacyScope(int $id): array
+    {
+        $record = $this->privacyFixture($id) ?? throw new PrivacyRequestNotFoundException($id);
+        // Record 6 is the closed restriction whose booking is restricted now.
+        $restricted = $id === 6 ? '2026-06-10T09:00:00.000Z' : null;
+
+        return ['request' => $record, 'bookings' => [$this->scopeBooking(self::fixtureCustomer(), null, $restricted)]];
+    }
+
+    /** @return array<string, mixed> */
+    public function adminExecutePrivacyRequestAction(array $request): array
+    {
+        $action = \is_string($request['action'] ?? null) ? $request['action'] : '';
+        $id = \is_int($request['id'] ?? null) ? $request['id'] : 0;
+        $record = $this->privacyFixture($id) ?? throw new PrivacyRequestNotFoundException($id);
+        $closed = ['status' => 'closed', 'closedAtUtc' => '2026-06-13T12:00:00.000Z'] + $record;
+
+        switch ($action) {
+            case 'export':
+                if (!\in_array($record['type'], ['access', 'portability'], true)) {
+                    throw new BookingValidationException(
+                        'type',
+                        'Only an access or portability request is answered by an export.',
+                    );
+                }
+                $format = \is_string($request['format'] ?? null) ? $request['format'] : 'json';
+                $document = $this->exportDocument($id, $record);
+
+                return [
+                    'request' => $closed,
+                    'bookings' => [$this->scopeBooking(self::fixtureCustomer(), null, null)],
+                    'export' => [
+                        'format' => $format,
+                        'fileName' => "export-rgpd-demande-{$id}.{$format}",
+                        'document' => $format === 'html'
+                            ? '<!doctype html><html lang="fr"><body><h1>Vos données personnelles</h1></body></html>'
+                            : $document,
+                    ],
+                ];
+            case 'rectify':
+                $entries = \is_array($request['bookings'] ?? null) ? $request['bookings'] : [];
+                $customer = self::fixtureCustomer();
+                foreach ($entries as $entry) {
+                    if (!\is_array($entry)) {
+                        throw new BookingValidationException('bookings', 'A rectification entry is malformed.');
+                    }
+                    if (($entry['reference'] ?? null) !== self::REFERENCE) {
+                        throw new BookingValidationException('reference', 'The request does not name this booking.');
+                    }
+                    if (($entry['expectedUpdatedAt'] ?? null) !== '2026-06-13T12:00:00.000Z') {
+                        throw new BookingRevisionConflictException(
+                            \is_string($entry['expectedUpdatedAt'] ?? null) ? $entry['expectedUpdatedAt'] : '',
+                            '2026-06-13T12:00:00.000Z',
+                        );
+                    }
+                    $customer = [
+                        'name' => \is_string($entry['customerName'] ?? null)
+                            ? $entry['customerName']
+                            : $customer['name'],
+                        'email' => \is_string($entry['customerEmail'] ?? null)
+                            ? $entry['customerEmail']
+                            : $customer['email'],
+                        'phone' => \is_string($entry['customerPhone'] ?? null) ? $entry['customerPhone'] : null,
+                        'note' => \is_string($entry['customerNote'] ?? null) ? $entry['customerNote'] : null,
+                    ];
+                }
+
+                return [
+                    'request' => $closed,
+                    'bookings' => [$this->scopeBooking($customer, null, null)],
+                    'export' => null,
+                ];
+            case 'anonymize':
+                return [
+                    'request' => $closed,
+                    'bookings' => [$this->scopeBooking(null, '2026-06-13T12:00:00.000Z', null)],
+                    'export' => null,
+                ];
+            case 'restrict':
+                return [
+                    'request' => $closed,
+                    'bookings' => [$this->scopeBooking(self::fixtureCustomer(), null, '2026-06-13T12:00:00.000Z')],
+                    'export' => null,
+                ];
+            case 'lift':
+                return [
+                    'request' => $record,
+                    'bookings' => [$this->scopeBooking(self::fixtureCustomer(), null, null)],
+                    'export' => null,
+                ];
+            default:
+                throw new BookingValidationException('action', 'Unknown privacy request action.');
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $record
+     * @return array<string, mixed>
+     */
+    private function exportDocument(int $id, array $record): array
+    {
+        return [
+            'format' => 'eszter.privacy-export',
+            'version' => 1,
+            'generatedAtUtc' => '2026-06-13T12:00:00.000Z',
+            'request' => ['id' => $id, 'type' => $record['type'], 'receivedDate' => $record['receivedDate']],
+            'information' => [
+                'controller' => 'Eszter Gyori',
+                'purposes' => ['Organiser le rendez-vous demandé.'],
+                'legalBasis' => 'Exécution de la prestation demandée et démarches précontractuelles.',
+                'retention' => ['90 jours après la fin ou l’annulation du rendez-vous.'],
+                'recipients' => ['Hébergement', 'Envoi des e-mails'],
+                'source' => 'La personne elle-même, par le formulaire de réservation.',
+                'rights' => ['Accès', 'Rectification', 'Effacement', 'Limitation', 'Portabilité'],
+                'contact' => 'contact@esztergyori.com',
+            ],
+            'bookings' => [
+                [
+                    'reference' => self::REFERENCE,
+                    'anonymised' => false,
+                    'appointment' => [
+                        'serviceKeys' => ['brows'],
+                        'serviceLabels' => ['Sourcils'],
+                        'state' => 'confirmed',
+                        'startsAtUtc' => '2026-06-15T07:00:00.000Z',
+                        'endsAtUtc' => '2026-06-15T07:30:00.000Z',
+                        'timezone' => 'Europe/Paris',
+                        'createdAt' => '2026-06-13T12:00:00.000Z',
+                        'cancelledAtUtc' => null,
+                        'cancellationReason' => null,
+                    ],
+                    'customer' => self::fixtureCustomer(),
+                    'basis' => [
+                        'kind' => 'privacy_notice',
+                        'noticeId' => $this->contract->currentPrivacyNoticeId,
+                        'presentedAtUtc' => '2026-06-13T12:00:00.000Z',
+                        'text' => 'Responsable du traitement : Eszter Gyori.',
+                    ],
+                    'history' => [
+                        ['type' => 'created', 'actor' => 'public', 'occurredAt' => '2026-06-13T12:00:00.000Z'],
+                    ],
+                    'notifications' => [[
+                        'channel' => 'email',
+                        'type' => 'booking_confirmation',
+                        'status' => 'sent',
+                        'dueAtUtc' => '2026-06-13T12:00:00.000Z',
+                        'sentAtUtc' => '2026-06-13T12:00:30.000Z',
+                    ]],
+                ],
+            ],
         ];
     }
 }

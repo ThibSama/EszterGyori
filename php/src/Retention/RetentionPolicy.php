@@ -34,7 +34,18 @@ final class RetentionPolicy
 
     public static function fromArtifacts(ContractArtifacts $artifacts): self
     {
-        $document = $artifacts->load('booking-domain.json');
+        return self::fromDocument($artifacts->load('booking-domain.json'));
+    }
+
+    /**
+     * ESZ-164 — from the decoded `booking-domain.json`, so the booking
+     * domain contract can carry the same policy the sweep reads and the GDPR
+     * erasure can be wired without a second artifact load.
+     *
+     * @param array<mixed> $document
+     */
+    public static function fromDocument(array $document): self
+    {
         $retention = self::block($document, 'customerDataRetention');
         $erasedFields = self::block($retention, 'erasedFields');
 

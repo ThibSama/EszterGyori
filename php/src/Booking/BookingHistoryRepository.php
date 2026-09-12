@@ -29,7 +29,14 @@ final class BookingHistoryRepository
      */
     public function append(int $bookingId, string $type, string $actor, array $details = []): int
     {
-        if (!\in_array($type, ['created', 'moved', 'cancelled', 'customer_updated'], true)) {
+        // ESZ-164: the three GDPR trail events are as non-personal as the
+        // others — their details carry the register's request id and field
+        // names, never a customer value.
+        $types = [
+            'created', 'moved', 'cancelled', 'customer_updated',
+            'customer_data_erased', 'processing_restricted', 'processing_restriction_lifted',
+        ];
+        if (!\in_array($type, $types, true)) {
             throw new BookingValidationException('historyType', 'Unknown booking history event.');
         }
         if (!\in_array($actor, ['public', 'admin'], true)) {

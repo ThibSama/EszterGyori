@@ -26,9 +26,11 @@ use Eszter\Support\IsoTimestamp;
  *    frozen type, the reception date and exactly the references the
  *    administrator selected.
  *
- * Recording is this module's final action. It changes no booking and no
- * customer row, exports nothing and sends nothing: executing the right is
- * ESZ-164's, through the repository's lifecycle transitions.
+ * Recording changes no booking and no customer row, exports nothing and
+ * sends nothing. Executing the right is {@see PrivacyRightsExecution}'s
+ * (ESZ-164): `mode=scope` and {@see adminExecutePrivacyRequestAction()} are
+ * delegated to it, and it is what moves a record through the repository's
+ * lifecycle transitions.
  */
 final class PrivacyRequestAdministration
 {
@@ -37,6 +39,8 @@ final class PrivacyRequestAdministration
         private readonly PrivacyRequestRepository $requests,
         private readonly BookingRepository $bookings,
         private readonly BookingTimePolicy $time,
+        /** ESZ-164 — null only for a caller that records and reads, never executes. */
+        private readonly ?PrivacyRightsExecution $rights = null,
     ) {
     }
 
@@ -118,6 +122,10 @@ final class PrivacyRequestAdministration
             return ['request' => $record->payload()];
         }
 
+        if ($mode === 'scope') {
+            return $this->rights()->scope(BookingRequestFields::requiredInt($request, 'id'));
+        }
+
         if ($mode === 'history') {
             $cursor = $request['cursor'] ?? null;
             $beforeId = null;
@@ -191,6 +199,23 @@ final class PrivacyRequestAdministration
         }
 
         return ['request' => $this->requests->record($type, $received, $selected)->payload()];
+    }
+
+    /**
+     * ESZ-164 — executes one right against the request's stored links.
+     *
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function adminExecutePrivacyRequestAction(array $request): array
+    {
+        return $this->rights()->execute($request);
+    }
+
+    private function rights(): PrivacyRightsExecution
+    {
+        return $this->rights
+            ?? throw new \LogicException('The privacy request centre was built without the rights execution.');
     }
 
     /** @return array<string, mixed> */

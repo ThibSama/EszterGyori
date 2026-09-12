@@ -15,7 +15,7 @@ final class BookingRepository
     private const SELECT_COLUMNS = 'id, reference, service_key, combination_key, state, starts_at_utc, ends_at_utc,'
         . ' timezone_name, customer_name, customer_email, customer_phone, customer_note,'
         . ' consent_at_utc, consent_notice_id, privacy_notice_id, privacy_notice_presented_at_utc,'
-        . ' cancelled_at_utc, cancellation_reason, customer_data_erased_at,'
+        . ' cancelled_at_utc, cancellation_reason, customer_data_erased_at, processing_restricted_at,'
         . ' created_at, updated_at, state_changed_at';
 
     public function __construct(
@@ -865,6 +865,39 @@ final class BookingRepository
                 // ESZ-139: strictly later than the row's own token even under
                 // a frozen or backward application clock.
                 'updated' => IsoTimestamp::format($this->mutationInstant($booking->updatedAt)),
+                'id' => $booking->id,
+            ],
+        );
+
+        return $this->required($booking->reference);
+    }
+
+    /**
+     * ESZ-164 — sets or clears the restriction of processing on a booking the
+     * caller has locked (`findForUpdate`).
+     *
+     * The marker is the authoritative state the notification claim reads;
+     * writing it here, beside every other booking column write, keeps the
+     * erasure guard and the derived mutation instant single-source. An
+     * anonymised booking is refused: there is no identity left to restrict
+     * or to notify on a lift. A write that would not change the state (a
+     * restriction already set, or already lifted) returns the booking as it
+     * is and mints no new token.
+     */
+    public function setProcessingRestriction(Booking $booking, bool $restricted): Booking
+    {
+        $this->assertCustomerDataLive($booking);
+        if (($booking->processingRestrictedAt !== null) === $restricted) {
+            return $booking;
+        }
+
+        $mutationInstant = $this->mutationInstant($booking->updatedAt);
+        $this->database->run(
+            'UPDATE bookings SET processing_restricted_at = :restricted, updated_at = :updated'
+            . ' WHERE id = :id AND customer_data_erased_at IS NULL',
+            [
+                'restricted' => $restricted ? $this->time->databaseUtc($mutationInstant) : null,
+                'updated' => IsoTimestamp::format($mutationInstant),
                 'id' => $booking->id,
             ],
         );

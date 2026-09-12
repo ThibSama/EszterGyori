@@ -130,4 +130,14 @@ interface BookingApi
      * @return array<string, mixed>
      */
     public function adminRecordPrivacyRequest(array $request): array;
+
+    /**
+     * ESZ-164 — executes one right (export, rectify, anonymize, restrict,
+     * lift) against a recorded request's stored booking links, and answers
+     * with the record and the scope as they now stand.
+     *
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function adminExecutePrivacyRequestAction(array $request): array;
 }

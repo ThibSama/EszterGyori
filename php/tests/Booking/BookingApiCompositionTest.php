@@ -35,8 +35,9 @@ final class BookingApiCompositionTest extends TestCase
     /**
      * The frozen booking surface (ESZ-105/ESZ-106): ten methods, plus the two
      * catalog-administration methods ESZ-149 adds, the planning-constraint
-     * mutation ESZ-152 adds to availability administration and the three
-     * GDPR request-register methods ESZ-163 adds.
+     * mutation ESZ-152 adds to availability administration, the three
+     * GDPR request-register methods ESZ-163 adds and the rights execution
+     * ESZ-164 adds beside them.
      */
     private const API_METHODS = [
         'services',
@@ -55,6 +56,7 @@ final class BookingApiCompositionTest extends TestCase
         'adminPrivacyRequestSearch',
         'adminPrivacyRequests',
         'adminRecordPrivacyRequest',
+        'adminExecutePrivacyRequestAction',
     ];
 
     /**
@@ -80,6 +82,7 @@ final class BookingApiCompositionTest extends TestCase
         'adminPrivacyRequestSearch' => [PrivacyRequestAdministration::class, 'privacyRequests'],
         'adminPrivacyRequests' => [PrivacyRequestAdministration::class, 'privacyRequests'],
         'adminRecordPrivacyRequest' => [PrivacyRequestAdministration::class, 'privacyRequests'],
+        'adminExecutePrivacyRequestAction' => [PrivacyRequestAdministration::class, 'privacyRequests'],
     ];
 
     /**
@@ -181,7 +184,16 @@ final class BookingApiCompositionTest extends TestCase
                 'assertRange',
                 'utcDayRange',
             ],
-            BookingLifecycle::class => ['create', 'adminMutate'],
+            BookingLifecycle::class => [
+                'create',
+                'adminMutate',
+                // ESZ-164: the GDPR booking writes, through the one lifecycle
+                // authority — the rights execution owns no booking write.
+                'updateCustomerContact',
+                'anonymize',
+                'restrictProcessing',
+                'liftProcessingRestriction',
+            ],
             BookingAdminReader::class => ['adminQuery', 'adminSummary'],
             AvailabilityAdministration::class => [
                 'adminAvailability',
@@ -193,6 +205,7 @@ final class BookingApiCompositionTest extends TestCase
                 'adminPrivacyRequestSearch',
                 'adminPrivacyRequests',
                 'adminRecordPrivacyRequest',
+                'adminExecutePrivacyRequestAction',
             ],
         ];
 

@@ -86,8 +86,19 @@
  * or identity document is ever stored — only selected booking references)
  * and the three-year retention of closed records. Executing the rights
  * themselves is ESZ-164's; this version freezes only the register.
+ *
+ * Version 14 (ESZ-164) executes the five rights from that register
+ * (`privacyRequests.execution`): one shared export engine with a readable
+ * HTML and a structured JSON representation, rectification through the
+ * existing booking customer-update authority, early anonymisation through
+ * the ESZ-140/162 erasure primitive, and a reversible *restriction of
+ * processing* state stored on the booking (`bookings.processing_restricted_at`)
+ * that the notification runner reads before every claim and before every
+ * transport call. Lifting a restriction sends one informational e-mail — the
+ * new `processing_restriction_lifted` job type — and never replays a
+ * reminder whose window elapsed while the booking was restricted.
  */
-export const BOOKING_DOMAIN_VERSION = 13;
+export const BOOKING_DOMAIN_VERSION = 14;
 
 /**
  * The business operates in metropolitan France. Rules are authored as local
@@ -330,6 +341,12 @@ export const notificationJobTypes = [
   "booking_reminder",
   "booking_cancellation",
   "booking_moved",
+  /**
+   * ESZ-164 — the one informational e-mail sent when a restriction of
+   * processing is lifted. Not time-sensitive: it is meaningful whenever it
+   * arrives, and there is never more than one per lift.
+   */
+  "processing_restriction_lifted",
 ] as const;
 export type NotificationJobType = (typeof notificationJobTypes)[number];
 
@@ -434,6 +451,15 @@ export const NOTIFICATION_LEASE_OWNER_PATTERN = "^[a-z0-9][a-z0-9_.:-]{7,63}$";
  */
 export const NOTIFICATION_CUSTOMER_DATA_ERASURE_CODE = "customer_data_erased";
 
+/**
+ * ESZ-164 — the code the runner writes when it releases a claimed job because
+ * its booking is under a restriction of processing. The job goes back to
+ * `pending` (the claim is refunded: no transport was called, so no attempt
+ * was made) and stays unclaimable until the restriction is lifted. A code,
+ * never a message, like every other reserved code.
+ */
+export const NOTIFICATION_PROCESSING_RESTRICTED_CODE = "processing_restricted";
+
 /** Reserved codes the runner and retention write themselves. Transports may add their own. */
 export const notificationReservedErrorCodes = [
   "lease_expired",
@@ -448,6 +474,7 @@ export const notificationReservedErrorCodes = [
   "transport_permanent",
   "attempts_exhausted",
   NOTIFICATION_CUSTOMER_DATA_ERASURE_CODE,
+  NOTIFICATION_PROCESSING_RESTRICTED_CODE,
 ] as const;
 
 /**
@@ -598,6 +625,25 @@ export const notificationPolicy = {
       "A booking_cancellation remains deliverable for its own cancellation: no lifecycle transition can follow a cancelled booking, so nothing supersedes it; customer-data retention (ESZ-140) remains the only path that retires it.",
     reminders:
       "Reminders keep their own rules untouched: catch-up decisions, the stale grace window and move-time rescheduling of the reminder of the superseded occurrence.",
+  },
+  /**
+   * ESZ-164 — restriction of processing (GDPR art. 18) as the queue sees
+   * it. The authoritative state is `bookings.processing_restricted_at`, not
+   * a queue status: a restricted booking's jobs are simply not claimable,
+   * and lifting the restriction makes them claimable again with no replay
+   * of anything whose window elapsed in between.
+   */
+  restriction: {
+    state: "bookings.processing_restricted_at",
+    claim:
+      "The claim scan joins bookings and selects only jobs whose booking carries no processing_restricted_at. A pending job of a restricted booking — any channel, any type — is never claimed; it stays pending, unchanged, for as long as the restriction lasts.",
+    deliveryTimeRecheck:
+      "A job that was already claimed when the restriction was written is re-checked by the runner before the transport boundary: when its booking is restricted at that instant the runner releases it — status back to pending, lease cleared, the attempt the claim charged refunded, last_error_code processing_restricted — and delivers nothing. The re-check happens after the stale-reminder and lifecycle-relevance checks, so a stale reminder is still terminally skipped first.",
+    noReplay:
+      "The stale-reminder sweep and the claim-time isStale check run unchanged while a booking is restricted: a reminder whose grace window closes during the restriction becomes terminally skipped (reminder_window_expired) and is never delivered after the lift. Only a reminder whose window is still open when the restriction is lifted resumes, because it simply becomes claimable again.",
+    lift:
+      "Lifting is an explicit, confirmed admin action from the GDPR request detail. It clears processing_restricted_at and, in the same transaction, schedules exactly one processing_restriction_lifted e-mail job due immediately (idempotent on the booking's reference and the lift instant). An anonymised booking is never restricted, never lifted and never notified.",
+    liftJobType: "processing_restriction_lifted",
   },
   runner: {
     defaultBatchSize: NOTIFICATION_DEFAULT_BATCH_SIZE,
@@ -1056,6 +1102,46 @@ export const privacyRequestPolicy = {
   },
   recordingIsNotExecution:
     "ESZ-163 records the reviewed scope and nothing else: no export, no rectification, no anonymisation, no restriction and no notification change happens when a request is recorded. Those actions are ESZ-164's, and they are what move a record through in_progress to closed.",
+  /**
+   * ESZ-164 — how each right is executed from a recorded request. Every
+   * action operates on the request's stored booking links and on nothing
+   * else, and the register keeps holding references only: no export body,
+   * no customer value and no free text is ever written to it.
+   */
+  execution: {
+    scope:
+      "An action reads the request's stored booking references and acts on exactly those bookings. A reference that has been anonymised since the request was recorded is listed as anonymised and is never rectified, restricted, notified or reconnected to a former identity; its former data is not reconstructed from history, backups or notification evidence.",
+    access: {
+      representation: "html",
+      rule:
+        "One shared export engine builds one structured document per request — the held data of each selected non-anonymised booking (name, e-mail, phone, note), the appointment facts, the non-personal history events, the basis (execution of the requested service and pre-contractual steps; the privacy notice shown, or the historical consent instant), the purposes, the retention periods, the recipient categories, the source (the customer, through the public booking form) and the five V1 rights. The readable HTML representation renders that document; it is generated on request, returned in the response and never persisted.",
+    },
+    portability: {
+      representation: "json",
+      rule:
+        "The same engine's document, as structured JSON (the machine-readable, commonly used format). The two representations are built from one document: a field cannot be present in one and absent from the other. Either representation may be produced for an access or a portability request; the request type only sets the default.",
+    },
+    rectification: {
+      rule:
+        "Applied only to explicitly selected, non-anonymised bookings, through the same customer-update authority as the calendar's contact edit: the row lock, the expectedUpdatedAt comparison, the field validation and the customer_updated history event are the existing ones. All selected bookings of one rectification are written in one transaction with the request's closure, or none is. There is no second customer UPDATE path.",
+    },
+    erasure: {
+      rule:
+        "Early anonymisation of the selected bookings, future or past, confirmed or cancelled: the ESZ-140 erasure primitive — the same transaction that the scheduled retention sweep uses — writes the frozen placeholders, clears phone, note and cancellation reason, sets customer_data_erased_at and retires every pending or processing notification job of the booking with customer_data_erased. The appointment, its service, its instants, its state, its public reference and its non-personal history are kept. It is irreversible, requires an explicit destructive confirmation, and an already anonymised booking is left untouched.",
+      historyEvent: "customer_data_erased",
+      adminLabel: "Cliente anonymisée — rendez-vous maintenu",
+    },
+    restriction: {
+      rule:
+        "Sets bookings.processing_restricted_at on the selected non-anonymised bookings and appends a processing_restricted history event. The booking and its data are kept; the calendar shows the booking as Traitement limité; no reminder e-mail or SMS is delivered while the state is set (notifications.restriction). The state is authoritative and reversible, never frontend-only.",
+      lift:
+        "Lifting requires an explicit confirmation from the request's history/detail view. It clears processing_restricted_at, appends processing_restriction_lifted and schedules one immediate informational e-mail per lifted booking, all in one transaction. A reminder whose window elapsed during the restriction is never replayed; only still-future reminders resume.",
+      adminLabel: "Traitement limité",
+      historyEvents: ["processing_restricted", "processing_restriction_lifted"],
+    },
+    lifecycle:
+      "An export moves a received request through in_progress to closed in one write once the document is built, and a closed access or portability request may be exported again (it changes nothing). Rectification, erasure and restriction move the request to closed in the same transaction as their booking writes, so a failed action leaves the request open and the bookings untouched. A lift acts on a request of type restriction whatever its status and changes the request's status no further.",
+  },
 } as const;
 
 export const bookingDomainContract = {

@@ -29,6 +29,7 @@ import {
   ADMIN_PRIVACY_REQUESTS_PATH,
   ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
   ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+  ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
   ADMIN_EMAIL_MAX_LENGTH,
   ADMIN_EMAIL_PATTERN,
   ADMIN_PASSWORD_MAX_LENGTH,
@@ -93,6 +94,9 @@ import {
   adminPrivacyRequestsResponseSchema,
   adminPrivacyRequestSearchRequestSchema,
   adminPrivacyRequestSearchResponseSchema,
+  adminPrivacyRequestScopeResponseSchema,
+  adminPrivacyRequestActionRequestSchema,
+  adminPrivacyRequestActionResponseSchema,
   availabilityAdminPolicy,
   bookingAvailabilityRequestSchema,
   bookingAvailabilityResponseSchema,
@@ -532,6 +536,30 @@ const schemaTargets: SchemaTarget[] = [
     io: "output",
   },
   {
+    file: "admin-privacy-request-scope-response.schema.json",
+    title: "AdminPrivacyRequestScopeResponse",
+    description:
+      "ESZ-164 — one register record beside the current state of each booking it names: held contact data or null once anonymised, the token and the markers.",
+    schema: adminPrivacyRequestScopeResponseSchema,
+    io: "output",
+  },
+  {
+    file: "admin-privacy-request-action-request.schema.json",
+    title: "AdminPrivacyRequestActionRequest",
+    description:
+      "ESZ-164 — executes one right against a recorded request's stored booking links: export, rectify, anonymize, restrict or lift.",
+    schema: adminPrivacyRequestActionRequestSchema,
+    io: "input",
+  },
+  {
+    file: "admin-privacy-request-action-response.schema.json",
+    title: "AdminPrivacyRequestActionResponse",
+    description:
+      "The record and the scope as they stand after the action, and the generated export representation when the action was an export.",
+    schema: adminPrivacyRequestActionResponseSchema,
+    io: "output",
+  },
+  {
     file: "error-envelope.schema.json",
     title: "ApiErrorEnvelope",
     description: "Body of every non-2xx JSON response.",
@@ -728,6 +756,7 @@ function buildHttpContractDocument(): unknown {
         adminPrivacyRequests: ADMIN_PRIVACY_REQUESTS_PATH,
         adminPrivacyRequestsQuery: ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
         adminPrivacyRequestSearch: ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+        adminPrivacyRequestActions: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
       },
       publicErrors:
         "The frozen error envelope only; no booking, customer, SQL, lock or validation detail.",
@@ -920,6 +949,13 @@ function buildHttpContractDocument(): unknown {
         statuses: [200, 400, 401, 404, 405, 500],
         requestBodySchema: "admin-privacy-request-search-request.schema.json",
         successBodySchema: "admin-privacy-request-search-response.schema.json",
+      },
+      {
+        path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+        methods: ["POST"],
+        statuses: [200, 400, 401, 403, 404, 405, 409, 500],
+        requestBodySchema: "admin-privacy-request-action-request.schema.json",
+        successBodySchema: "admin-privacy-request-action-response.schema.json",
       },
     ],
     unknownRouteStatus: 404,

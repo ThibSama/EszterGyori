@@ -18,6 +18,15 @@ use Eszter\Support\IsoTimestamp;
  * the only writer of `bookings.customer_data_erased_at`, and it never deletes
  * a booking, a history row or a notification job.
  *
+ * ## One erasure primitive, two callers (ESZ-164)
+ *
+ * The scheduled sweep and the manual GDPR erasure share {@see eraseLocked()}:
+ * the same placeholder write, the same job retirement, the same transaction.
+ * They differ only in the predicate that decides whether a booking may be
+ * erased *now* — the sweep's cutoff eligibility, or the request centre's
+ * explicit selection ({@see eraseBooking()}) — and both apply that predicate
+ * under the row lock, so neither can erase what the other already has.
+ *
  * ## Per-booking atomicity, and why the re-check happens under the row lock
  *
  * Each eligible booking is erased in its own transaction:
@@ -167,34 +176,77 @@ final class BookingRetentionService
                 return ['erased' => false, 'retired' => 0];
             }
 
-            $now = $this->clock->now()->setTimezone(new \DateTimeZone('UTC'));
-            $nowDatabase = $now->format('Y-m-d H:i:s.v');
-            $nowIso = IsoTimestamp::format($now);
+            return $this->eraseLocked($id);
+        });
+    }
 
-            // Retire first, inside the same transaction: no pending or
-            // processing job of this booking can outlive the erasure commit.
-            $retired = $this->jobs->retireForBooking($id, $this->policy->erasureJobCode);
-
-            $statement = $this->database->run(
-                'UPDATE bookings SET'
-                . ' customer_name = :name, customer_email = :email,'
-                . ' customer_phone = NULL, customer_note = NULL, cancellation_reason = NULL,'
-                . ' customer_data_erased_at = :marker, updated_at = :updated'
-                . ' WHERE id = :id AND customer_data_erased_at IS NULL',
-                [
-                    'name' => $this->policy->erasedCustomerName,
-                    'email' => $this->policy->erasedCustomerEmail,
-                    'marker' => $nowDatabase,
-                    'updated' => $nowIso,
-                    'id' => $id,
-                ],
+    /**
+     * ESZ-164 — erases one explicitly selected booking now, whatever its
+     * state or age, if its customer data is still live.
+     *
+     * The manual counterpart of {@see eraseEligibleBooking()}: the same
+     * `FOR UPDATE` re-read and marker predicate (so a booking the sweep, or a
+     * concurrent request, already erased is reported as not erased rather
+     * than erased twice), then the same {@see eraseLocked()} write. It runs
+     * in the caller's transaction when one is open — the GDPR action wraps
+     * it with its history event and the request's closure — and in its own
+     * otherwise.
+     *
+     * @return array{erased: bool, retired: int}
+     */
+    public function eraseBooking(int $bookingId): array
+    {
+        return $this->database->transactional(function () use ($bookingId): array {
+            $row = $this->database->fetchOne(
+                'SELECT id FROM bookings WHERE id = :id AND customer_data_erased_at IS NULL FOR UPDATE',
+                ['id' => $bookingId],
             );
-
-            if ($statement->rowCount() !== 1) {
-                throw new \RuntimeException('Retention could not anonymize booking ' . $id . '.');
+            if ($row === null) {
+                return ['erased' => false, 'retired' => 0];
             }
 
-            return ['erased' => true, 'retired' => $retired];
+            return $this->eraseLocked($bookingId);
         });
+    }
+
+    /**
+     * The erasure itself, for a booking row the caller holds locked and has
+     * just proved still live. Retires first, inside the same transaction, so
+     * no pending or processing job of this booking can outlive the erasure
+     * commit; then writes the frozen placeholders, clears phone, note and
+     * cancellation reason, and sets the marker. The restriction marker is
+     * cleared too: an anonymised booking has nothing left to restrict, and
+     * the claim scan must not keep a placeholder row in a special state.
+     *
+     * @return array{erased: bool, retired: int}
+     */
+    private function eraseLocked(int $id): array
+    {
+        $now = $this->clock->now()->setTimezone(new \DateTimeZone('UTC'));
+        $nowDatabase = $now->format('Y-m-d H:i:s.v');
+        $nowIso = IsoTimestamp::format($now);
+
+        $retired = $this->jobs->retireForBooking($id, $this->policy->erasureJobCode);
+
+        $statement = $this->database->run(
+            'UPDATE bookings SET'
+            . ' customer_name = :name, customer_email = :email,'
+            . ' customer_phone = NULL, customer_note = NULL, cancellation_reason = NULL,'
+            . ' customer_data_erased_at = :marker, processing_restricted_at = NULL, updated_at = :updated'
+            . ' WHERE id = :id AND customer_data_erased_at IS NULL',
+            [
+                'name' => $this->policy->erasedCustomerName,
+                'email' => $this->policy->erasedCustomerEmail,
+                'marker' => $nowDatabase,
+                'updated' => $nowIso,
+                'id' => $id,
+            ],
+        );
+
+        if ($statement->rowCount() !== 1) {
+            throw new \RuntimeException('Retention could not anonymize booking ' . $id . '.');
+        }
+
+        return ['erased' => true, 'retired' => $retired];
     }
 }

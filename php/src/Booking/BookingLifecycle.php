@@ -6,6 +6,7 @@ namespace Eszter\Booking;
 
 use Eszter\Database\Database;
 use Eszter\Notification\BookingNotificationProducer;
+use Eszter\Retention\BookingRetentionService;
 use Eszter\Support\Clock;
 use Eszter\Support\IsoTimestamp;
 
@@ -20,6 +21,15 @@ use Eszter\Support\IsoTimestamp;
  * appends history and notification scheduling inside the same transaction.
  * Stale `expectedUpdatedAt` tokens are refused here, before any write,
  * history or notification.
+ *
+ * ESZ-164 adds the three GDPR booking writes — a rectification through the
+ * same customer-update authority as the calendar's contact edit
+ * ({@see updateCustomerContact()}), early anonymisation through the ESZ-140
+ * erasure primitive ({@see anonymize()}) and the reversible restriction of
+ * processing ({@see restrictProcessing()}, {@see liftProcessingRestriction()}).
+ * Each is one booking write with its history event and, for a lift, its
+ * notification, in the caller's transaction; the request centre wraps them
+ * with the register's closure.
  */
 final class BookingLifecycle
 {
@@ -33,6 +43,11 @@ final class BookingLifecycle
         private readonly BookingRepository $bookings,
         private readonly BookingHistoryRepository $history,
         private readonly BookingNotificationProducer $notifications,
+        /**
+         * ESZ-164 — the erasure primitive the GDPR anonymisation runs. Null
+         * only for a caller that never anonymises.
+         */
+        private readonly ?BookingRetentionService $retention = null,
     ) {
     }
 
@@ -153,8 +168,45 @@ final class BookingLifecycle
     /** @param array<string, mixed> $request */
     private function updateCustomer(string $reference, array $request): Booking
     {
-        return $this->database->transactional(function () use ($reference, $request): Booking {
-            $expectedUpdatedAt = BookingRequestFields::expectedUpdatedAt($request);
+        return $this->updateCustomerContact(
+            $reference,
+            BookingRequestFields::expectedUpdatedAt($request),
+            BookingRequestFields::requiredString($request, 'customerName'),
+            BookingRequestFields::requiredString($request, 'customerEmail'),
+            BookingRequestFields::nullableString($request, 'customerPhone'),
+            BookingRequestFields::nullableString($request, 'customerNote'),
+        );
+    }
+
+    /**
+     * The customer-update authority: the calendar's contact edit and a GDPR
+     * rectification (ESZ-164) are this one method. The row lock, the
+     * byte-for-byte token comparison, the repository's validation and
+     * erasure guard and the `customer_updated` event are therefore single
+     * source; there is no second customer UPDATE path.
+     *
+     * @param array<string, mixed> $historyDetails Extra non-personal facts for
+     *     the history event (a rectification records the register's request
+     *     id). Never a customer value.
+     */
+    public function updateCustomerContact(
+        string $reference,
+        string $expectedUpdatedAt,
+        string $name,
+        string $email,
+        ?string $phone,
+        ?string $note,
+        array $historyDetails = [],
+    ): Booking {
+        return $this->database->transactional(function () use (
+            $reference,
+            $expectedUpdatedAt,
+            $name,
+            $email,
+            $phone,
+            $note,
+            $historyDetails,
+        ): Booking {
             $booking = $this->bookings->findForUpdate($reference);
             if ($booking === null) {
                 throw new BookingNotFoundException($reference);
@@ -163,13 +215,7 @@ final class BookingLifecycle
             // anything is written; a stale editor is refused with 409
             // REVISION_CONFLICT and leaves row, history and jobs untouched.
             $this->assertNotStale($expectedUpdatedAt, $booking);
-            $updated = $this->bookings->updateCustomer(
-                $booking,
-                BookingRequestFields::requiredString($request, 'customerName'),
-                BookingRequestFields::requiredString($request, 'customerEmail'),
-                BookingRequestFields::nullableString($request, 'customerPhone'),
-                BookingRequestFields::nullableString($request, 'customerNote'),
-            );
+            $updated = $this->bookings->updateCustomer($booking, $name, $email, $phone, $note);
             if (
                 $booking->customerName !== $updated->customerName
                 || $booking->customerEmail !== $updated->customerEmail
@@ -178,10 +224,113 @@ final class BookingLifecycle
             ) {
                 $this->history->append($booking->id, 'customer_updated', 'admin', [
                     'fields' => self::changedCustomerFields($booking, $updated),
-                ]);
+                ] + $historyDetails);
             }
 
             return $updated;
+        });
+    }
+
+    /**
+     * ESZ-164 — anonymises one booking now, through the ESZ-140 erasure
+     * primitive, and records the fact in the trail.
+     *
+     * Future or past, confirmed or cancelled: the primitive re-reads the row
+     * under its lock and erases it only if its data is still live, retiring
+     * every pending or processing notification job in the same transaction.
+     * Returns the booking as it now stands and whether this call erased it —
+     * false when it was already anonymised, which is left exactly as it was,
+     * with no second history event. No customer value is ever written to the
+     * event: the details name the request, nothing else.
+     *
+     * @return array{booking: Booking, erased: bool, retired: int}
+     */
+    public function anonymize(string $reference, int $privacyRequestId): array
+    {
+        if ($this->retention === null) {
+            throw new \LogicException('The booking lifecycle was built without the erasure primitive.');
+        }
+
+        return $this->database->transactional(function () use ($reference, $privacyRequestId): array {
+            $booking = $this->bookings->find($reference);
+            if ($booking === null) {
+                throw new BookingNotFoundException($reference);
+            }
+            $outcome = $this->retention->eraseBooking($booking->id);
+            if ($outcome['erased']) {
+                $this->history->append($booking->id, 'customer_data_erased', 'admin', [
+                    'privacyRequestId' => $privacyRequestId,
+                    'retiredJobs' => $outcome['retired'],
+                ]);
+            }
+            $stored = $this->bookings->find($reference);
+            if ($stored === null) {
+                throw new \RuntimeException('The booking disappeared during its anonymisation.');
+            }
+
+            return ['booking' => $stored, 'erased' => $outcome['erased'], 'retired' => $outcome['retired']];
+        });
+    }
+
+    /**
+     * ESZ-164 — sets the restriction of processing on one booking.
+     *
+     * Under the row lock, so it serialises with the runner's claim of the
+     * booking's jobs (the claim re-checks the marker before the transport).
+     * An anonymised booking is refused by the repository; a booking already
+     * restricted is returned unchanged with no second event.
+     *
+     * @return array{booking: Booking, changed: bool}
+     */
+    public function restrictProcessing(string $reference, int $privacyRequestId): array
+    {
+        return $this->database->transactional(function () use ($reference, $privacyRequestId): array {
+            $booking = $this->bookings->findForUpdate($reference);
+            if ($booking === null) {
+                throw new BookingNotFoundException($reference);
+            }
+            if ($booking->processingRestrictedAt !== null) {
+                return ['booking' => $booking, 'changed' => false];
+            }
+            $restricted = $this->bookings->setProcessingRestriction($booking, true);
+            $this->history->append($booking->id, 'processing_restricted', 'admin', [
+                'privacyRequestId' => $privacyRequestId,
+            ]);
+
+            return ['booking' => $restricted, 'changed' => true];
+        });
+    }
+
+    /**
+     * ESZ-164 — lifts the restriction on one booking and, in the same
+     * transaction, schedules the one informational e-mail the lift sends.
+     *
+     * Nothing is replayed: the reminders the restriction held are still
+     * pending rows and simply become claimable again; the stale sweep and the
+     * claim-time window check decide, as they always do, which of them is
+     * still worth sending. A booking that is not restricted (or has been
+     * anonymised in the meantime, which cleared the marker) is returned
+     * unchanged, with no event and no e-mail.
+     *
+     * @return array{booking: Booking, changed: bool}
+     */
+    public function liftProcessingRestriction(string $reference, int $privacyRequestId): array
+    {
+        return $this->database->transactional(function () use ($reference, $privacyRequestId): array {
+            $booking = $this->bookings->findForUpdate($reference);
+            if ($booking === null) {
+                throw new BookingNotFoundException($reference);
+            }
+            if ($booking->processingRestrictedAt === null || $booking->customerDataErasedAt !== null) {
+                return ['booking' => $booking, 'changed' => false];
+            }
+            $lifted = $this->bookings->setProcessingRestriction($booking, false);
+            $liftedEventId = $this->history->append($booking->id, 'processing_restriction_lifted', 'admin', [
+                'privacyRequestId' => $privacyRequestId,
+            ]);
+            $this->notifications->restrictionLifted($lifted, $liftedEventId);
+
+            return ['booking' => $lifted, 'changed' => true];
         });
     }
 

@@ -102,6 +102,7 @@ final class NotificationRunner
         $failed = 0;
         $skipped = 0;
         $leasesLost = 0;
+        $released = 0;
 
         foreach ($claimed as $job) {
             switch ($this->deliver($job, $owner)) {
@@ -117,6 +118,9 @@ final class NotificationRunner
                 case 'skipped':
                     ++$skipped;
                     break;
+                case 'released':
+                    ++$released;
+                    break;
                 default:
                     ++$leasesLost;
             }
@@ -131,6 +135,7 @@ final class NotificationRunner
             $failed,
             $skipped,
             $leasesLost,
+            $released,
         );
 
         $this->log('info', 'notification.run.completed', [
@@ -154,7 +159,9 @@ final class NotificationRunner
      * while it worked, and nothing is retried or rewritten after ownership loss.
      *
      * @return string The status that persisted (`sent`, `pending`, `failed`,
-     *                `skipped`), or `lease_lost` when the job was no longer
+     *                `skipped`; `released` for a `pending` written by the
+     *                ESZ-164 restriction release, which is not a retry), or
+     *                `lease_lost` when the job was no longer
      *                this runner's to write — nothing was persisted then, and
      *                the log line carries no status, because the row's current
      *                state belongs to whoever took the lease over.
@@ -192,6 +199,25 @@ final class NotificationRunner
                 ]);
 
                 return 'skipped';
+            }
+
+            return $this->leaseLost($job);
+        }
+
+        // ESZ-164: the restriction re-check, last before the transport
+        // boundary and after the two terminal checks above — a stale reminder
+        // is retired whether or not its booking is restricted, so nothing is
+        // replayed after a lift. A restricted booking's job goes back to
+        // pending with its attempt refunded; the claim scan will not see it
+        // again until the restriction is lifted.
+        if ($this->jobs->isProcessingRestricted($job)) {
+            if ($this->jobs->releaseRestricted($job, $owner)) {
+                $this->logJob('info', 'notification.released', $job, [
+                    'errorCode' => 'processing_restricted',
+                    'status' => 'pending',
+                ]);
+
+                return 'released';
             }
 
             return $this->leaseLost($job);

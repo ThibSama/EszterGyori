@@ -253,6 +253,8 @@ test("an admin booking exposes the consent instant and the privacy notice facts 
     privacyNoticePresentedAtUtc: "2026-06-13T12:00:00.000Z",
     cancelledAtUtc: null,
     cancellationReason: null,
+    customerDataErasedAt: null,
+    processingRestrictedAt: null,
     createdAt: "2026-06-13T12:00:00.000Z",
     updatedAt: "2026-06-13T12:00:00.000Z",
   };

@@ -13,6 +13,7 @@ use Eszter\Http\Endpoint\AdminBookingMoveAvailabilityEndpoint;
 use Eszter\Http\Endpoint\AdminBookingsMutationEndpoint;
 use Eszter\Http\Endpoint\AdminBookingsQueryEndpoint;
 use Eszter\Http\Endpoint\AdminBookingsSummaryEndpoint;
+use Eszter\Http\Endpoint\AdminPrivacyRequestActionsEndpoint;
 use Eszter\Http\Endpoint\AdminPrivacyRequestSearchEndpoint;
 use Eszter\Http\Endpoint\AdminPrivacyRequestsMutationEndpoint;
 use Eszter\Http\Endpoint\AdminPrivacyRequestsQueryEndpoint;
@@ -146,6 +147,11 @@ final class BookingRoutes
             'POST',
             AdminPrivacyRequestsMutationEndpoint::PATH,
             new AdminPrivacyRequestsMutationEndpoint(...$admin),
+        );
+        $router->register(
+            'POST',
+            AdminPrivacyRequestActionsEndpoint::PATH,
+            new AdminPrivacyRequestActionsEndpoint(...$admin),
         );
     }
 }

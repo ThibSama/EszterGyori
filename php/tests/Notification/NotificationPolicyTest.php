@@ -30,7 +30,11 @@ final class NotificationPolicyTest extends TestCase
     {
         self::assertSame(['email', 'sms'], $this->policy->channels);
         self::assertSame(
-            ['booking_confirmation', 'booking_reminder', 'booking_cancellation', 'booking_moved'],
+            [
+                'booking_confirmation', 'booking_reminder', 'booking_cancellation', 'booking_moved',
+                // ESZ-164: the one informational e-mail a lifted restriction sends.
+                'processing_restriction_lifted',
+            ],
             $this->policy->jobTypes,
         );
         self::assertSame(['booking_reminder'], $this->policy->timeSensitiveJobTypes);
@@ -173,7 +177,10 @@ final class NotificationPolicyTest extends TestCase
      *
      * The status set spans two files: 0009 created `chk_notification_jobs_status`
      * with the original five statuses, and 0011 (ESZ-140) replaced it to add the
-     * terminal `retired` status the retention sweep writes.
+     * terminal `retired` status the retention sweep writes. The job-type set
+     * spans two as well: 0009 created `chk_notification_jobs_type` with the
+     * four lifecycle types, and 0023 (ESZ-164) replaced it to add the lift
+     * notification.
      */
     public function testTheMigrationRestatesTheFrozenSetsAndBounds(): void
     {
@@ -182,8 +189,20 @@ final class NotificationPolicyTest extends TestCase
         );
         self::assertIsString($sql);
 
-        foreach ([...$this->policy->channels, ...$this->policy->jobTypes] as $value) {
+        $rightsSql = file_get_contents(
+            TestEnvironment::repositoryRoot() . '/php/migrations/0023_privacy_rights.sql',
+        );
+        self::assertIsString($rightsSql);
+        foreach ($this->policy->channels as $value) {
             self::assertStringContainsString("'{$value}'", $sql, "{$value} is not in the migration");
+        }
+        foreach ($this->policy->jobTypes as $value) {
+            // Every type lives in the CHECK 0023 now declares; the four
+            // original ones are in 0009's too.
+            self::assertStringContainsString("''{$value}''", $rightsSql, "{$value} is not in migration 0023");
+            if ($value !== 'processing_restriction_lifted') {
+                self::assertStringContainsString("'{$value}'", $sql, "{$value} is not in the migration");
+            }
         }
 
         // The five statuses 0009 was written with live in its CHECK; `retired`

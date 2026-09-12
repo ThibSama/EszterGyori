@@ -14,7 +14,21 @@ final class BookingEmailRenderer
         'booking_reminder' => 'Rappel de votre rendez-vous',
         'booking_cancellation' => 'Votre rendez-vous est annulé',
         'booking_moved' => 'Votre rendez-vous a été déplacé',
+        // ESZ-164 — the informational e-mail a lifted restriction sends.
+        'processing_restriction_lifted' => 'Levée de la limitation du traitement de vos données',
     ];
+
+    /**
+     * ESZ-164 — what the lift e-mail says, and all it says: that the
+     * limitation requested for this appointment is lifted and that the
+     * appointment's ordinary messages (a reminder, when its time has not
+     * passed) resume. No customer value beyond the reference and the
+     * appointment facts every template already carries.
+     */
+    private const RESTRICTION_LIFTED_STATEMENT =
+        'La limitation du traitement de vos données, demandée pour ce rendez-vous, est levée :'
+        . ' vos coordonnées sont de nouveau utilisées uniquement pour organiser ce rendez-vous'
+        . ' et, le cas échéant, vous le rappeler.';
 
     /**
      * ESZ-161 — the confirmation tells the customer explicitly to keep the
@@ -45,7 +59,11 @@ final class BookingEmailRenderer
             ->setTimezone(new \DateTimeZone('Europe/Paris'))
             ->format('d/m/Y à H:i');
 
-        $retain = $facts->jobType === 'booking_confirmation' ? self::RETAIN_REFERENCE_INSTRUCTION : null;
+        $retain = match ($facts->jobType) {
+            'booking_confirmation' => self::RETAIN_REFERENCE_INSTRUCTION,
+            'processing_restriction_lifted' => self::RESTRICTION_LIFTED_STATEMENT,
+            default => null,
+        };
 
         $text = implode("\n", array_values(array_filter([
             $title,

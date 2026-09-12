@@ -195,6 +195,13 @@ final class NotificationJobRepository
      * whose availability depends on the server version this shared host happens
      * to run.
      *
+     * ESZ-164: the scan joins `bookings` and takes only jobs whose booking is
+     * not under a restriction of processing. A restricted booking's pending
+     * jobs — any channel, any type — are left exactly as they are, so lifting
+     * the restriction makes them claimable again with nothing to replay; the
+     * runner's own delivery-time re-check ({@see isProcessingRestricted()})
+     * covers a restriction written between this scan and the transport.
+     *
      * @param list<string> $channels Restricts the scan to channels that have a
      *                               transport; a channel with none is never
      *                               claimed rather than being claimed and failed.
@@ -231,10 +238,12 @@ final class NotificationJobRepository
         $channelList = "'" . implode("','", $channels) . "'";
 
         $candidates = $this->database->fetchAll(
-            'SELECT id FROM notification_jobs'
-            . ' WHERE status = :pending AND next_attempt_at_utc <= :now'
-            . " AND channel IN ({$channelList})"
-            . ' ORDER BY next_attempt_at_utc, id LIMIT ' . $limit,
+            'SELECT j.id FROM notification_jobs j'
+            . ' JOIN bookings b ON b.id = j.booking_id'
+            . ' WHERE j.status = :pending AND j.next_attempt_at_utc <= :now'
+            . " AND j.channel IN ({$channelList})"
+            . ' AND b.processing_restricted_at IS NULL'
+            . ' ORDER BY j.next_attempt_at_utc, j.id LIMIT ' . $limit,
             ['pending' => 'pending', 'now' => $nowDatabase],
         );
 
@@ -598,6 +607,59 @@ final class NotificationJobRepository
         );
 
         return $job->dueAtUtc < $cutoff;
+    }
+
+    /**
+     * ESZ-164 — whether the job's booking is under a restriction of
+     * processing *now*, asked of an already-claimed job before the transport.
+     *
+     * The claim scan excludes restricted bookings, but a restriction written
+     * between the scan and the delivery — or while a slow batch was queued —
+     * must still stop the message. This is the last read before the
+     * transport boundary, and it reads the authoritative marker, not a
+     * queue-side copy of it.
+     */
+    public function isProcessingRestricted(NotificationJob $job): bool
+    {
+        $row = $this->database->fetchOne(
+            'SELECT processing_restricted_at FROM bookings WHERE id = :booking',
+            ['booking' => $job->bookingId],
+        );
+
+        return ($row['processing_restricted_at'] ?? null) !== null;
+    }
+
+    /**
+     * ESZ-164 — releases a claimed job whose booking turned out to be
+     * restricted: back to `pending`, lease cleared, the attempt the claim
+     * charged refunded (no transport was called, so nothing was attempted),
+     * `next_attempt_at_utc` untouched and the reserved code recorded.
+     *
+     * Guarded on the owner and the status like every other outcome writer,
+     * so a runner whose lease was lost cannot rewrite the new owner's row.
+     * The job then stays pending and unclaimable — the claim scan excludes
+     * its booking — until the restriction is lifted, at which point it is
+     * claimed again if its window is still open, or swept if it is not.
+     * Reversible by construction: no terminal status is ever written here.
+     */
+    public function releaseRestricted(NotificationJob $job, string $owner): bool
+    {
+        return $this->database->run(
+            'UPDATE notification_jobs SET'
+            . ' status = :pending, lease_owner = NULL, lease_expires_at_utc = NULL,'
+            . ' attempts = attempts - 1, last_error_code = :code,'
+            . ' updated_at = :updatedAt, status_changed_at = :changedAt'
+            . ' WHERE id = :id AND status = :processing AND lease_owner = :owner AND attempts > 0',
+            [
+                'pending' => 'pending',
+                'code' => 'processing_restricted',
+                'updatedAt' => $this->clock->nowIso(),
+                'changedAt' => $this->clock->nowIso(),
+                'id' => $job->id,
+                'processing' => 'processing',
+                'owner' => $owner,
+            ],
+        )->rowCount() === 1;
     }
 
     /**

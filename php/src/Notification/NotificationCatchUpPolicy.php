@@ -53,7 +53,13 @@ final class NotificationCatchUpPolicy
         string $jobType,
         \DateTimeImmutable $dueAt,
     ): string {
-        $suffix = ($this->policy->isTimeSensitive($jobType) || $jobType === 'booking_moved')
+        // ESZ-164: a lift notification recurs per lift the way a move
+        // notification recurs per move, so it carries its instant too.
+        $suffix = (
+            $this->policy->isTimeSensitive($jobType)
+            || $jobType === 'booking_moved'
+            || $jobType === 'processing_restriction_lifted'
+        )
             ? '.' . $dueAt->setTimezone(new \DateTimeZone('UTC'))->format('YmdHis')
             : '';
 

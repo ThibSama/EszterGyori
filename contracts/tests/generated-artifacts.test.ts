@@ -224,7 +224,7 @@ test("the generated booking domain freezes service identity, timezone and states
   );
   assert.match(booking.adminViews.rangeRead.hasMore, /pageSize\+1/);
   assert.match(booking.adminViews.summary.counts, /aggregation/);
-  assert.equal(booking.version, 13, "adding a policy block is a domain version bump");
+  assert.equal(booking.version, 14, "adding a policy block is a domain version bump");
 
   // ESZ-146: the serialization block freezes byte-for-byte, the way the SQL
   // layer enforces it — booking create/move/cancel, every availability
@@ -253,7 +253,7 @@ test("the generated booking domain freezes the Package 7.1 notification policy",
   // The whole block, byte for byte. PHP reads this file rather than a second
   // copy of these constants, so anything that drifts here drifts everywhere.
   assert.deepEqual(document.notifications, notificationPolicy);
-  assert.equal(document.version, 13, "adding a policy block is a domain version bump");
+  assert.equal(document.version, 14, "adding a policy block is a domain version bump");
 
   // ESZ-142: the consent-notice catalog (immutable entries with their exact
   // French text, the bounded-ASCII id pattern and the current pointer) is
@@ -421,6 +421,7 @@ test("the generated HTTP contract carries every frozen case", async () => {
       "/api/admin/content/reset",
       "/api/admin/media",
       "/api/admin/privacy-requests",
+      "/api/admin/privacy-requests/actions",
       "/api/admin/privacy-requests/query",
       "/api/admin/privacy-requests/search",
       "/api/admin/services",
@@ -1262,4 +1263,82 @@ test("ESZ-163: the register's wire schemas store nothing about the requester", a
   const csrfCase = httpContractCases.find((c) => c.id === "admin.privacyRequests.post.csrfOmitted");
   assert.equal(csrfCase?.expect.status, 403);
   assert.match(bookingApiPolicy.privacyRequests, /never accepted from the wire/);
+});
+
+test("ESZ-164: the rights are executed from the register, scoped to its links, never through it", async () => {
+  const document = JSON.parse(await readGenerated("booking-domain.json")) as {
+    privacyRequests?: typeof privacyRequestPolicy;
+    notifications?: typeof notificationPolicy;
+  };
+  const execution = document.privacyRequests?.execution;
+  assert.ok(execution, "the execution block is frozen in the domain artifact");
+  assert.equal(execution.access.representation, "html");
+  assert.equal(execution.portability.representation, "json");
+  assert.match(execution.scope, /never rectified, restricted, notified or reconnected/);
+  assert.match(execution.rectification.rule, /no second customer UPDATE path/i);
+  assert.match(execution.erasure.rule, /same transaction that the scheduled retention sweep uses/);
+  assert.equal(execution.erasure.adminLabel, "Cliente anonymisée — rendez-vous maintenu");
+  assert.equal(execution.restriction.adminLabel, "Traitement limité");
+  assert.match(execution.restriction.lift, /never replayed/);
+
+  // The queue side: the state lives on the booking, the claim reads it, the
+  // runner re-checks it, and the lift e-mail is a frozen job type.
+  const restriction = document.notifications?.restriction;
+  assert.ok(restriction);
+  assert.equal(restriction.state, "bookings.processing_restricted_at");
+  assert.equal(restriction.liftJobType, "processing_restriction_lifted");
+  assert.ok((notificationJobTypes as readonly string[]).includes("processing_restriction_lifted"));
+  assert.ok(
+    (document.notifications?.diagnostics.reservedErrorCodes as readonly string[]).includes("processing_restricted"),
+  );
+  assert.match(restriction.noReplay, /reminder_window_expired/);
+
+  // The action request is closed per action and the destructive ones carry
+  // the confirmation on the wire.
+  const action = JSON.parse(await readGenerated("admin-privacy-request-action-request.schema.json")) as {
+    oneOf: Array<{ properties: Record<string, { const?: unknown; enum?: string[] }>; required: string[] }>;
+  };
+  const byAction = Object.fromEntries(
+    action.oneOf.map((branch) => [String(branch.properties.action?.const), branch]),
+  );
+  assert.deepEqual(Object.keys(byAction).sort(), ["anonymize", "export", "lift", "rectify", "restrict"]);
+  assert.equal(byAction.anonymize?.properties.confirm?.const, true);
+  assert.equal(byAction.lift?.properties.confirm?.const, true);
+  assert.deepEqual(byAction.export?.properties.format?.enum, ["html", "json"]);
+  assert.ok(byAction.rectify?.required.includes("bookings"));
+
+  // The export document is one shape for both representations, and an
+  // anonymised booking in it is a reference and a flag, nothing else.
+  const response = JSON.parse(await readGenerated("admin-privacy-request-action-response.schema.json")) as {
+    properties: {
+      // `.union().nullable()` renders as anyOf[anyOf[html, json], null].
+      export: { anyOf: Array<{ anyOf?: Array<{ properties?: { format: { const: string }; document: unknown } }> }> };
+    };
+  };
+  const branches = response.properties.export.anyOf
+    .flatMap((branch) => branch.anyOf ?? [])
+    .filter((branch) => branch.properties);
+  assert.deepEqual(branches.map((branch) => branch.properties?.format.const).sort(), ["html", "json"]);
+  const json = branches.find((branch) => branch.properties?.format.const === "json");
+  const documentSchema = json?.properties?.document as {
+    properties: { bookings: { items: { anyOf: Array<{ properties: Record<string, unknown> }> } } };
+  };
+  const anonymised = documentSchema.properties.bookings.items.anyOf.find(
+    (branch) => "anonymised" in branch.properties && !("customer" in branch.properties),
+  );
+  assert.ok(anonymised, "an anonymised booking carries no customer block");
+  assert.deepEqual(Object.keys(anonymised.properties).sort(), ["anonymised", "reference"]);
+
+  for (const id of [
+    "admin.privacyRequests.query.post.scopeOk",
+    "admin.privacyRequests.actions.post.exportHtmlOk",
+    "admin.privacyRequests.actions.post.exportJsonOk",
+    "admin.privacyRequests.actions.post.rectifyForeignReference",
+    "admin.privacyRequests.actions.post.rectifyStaleToken",
+    "admin.privacyRequests.actions.post.anonymizeWithoutConfirmation",
+    "admin.privacyRequests.actions.post.liftOk",
+    "admin.privacyRequests.actions.post.csrfOmitted",
+  ]) {
+    assert.ok(httpContractCases.some((c) => c.id === id), `${id} is missing from the contract cases`);
+  }
 });

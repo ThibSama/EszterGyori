@@ -6,7 +6,10 @@ import {
 } from "@eszter/contracts";
 import type {
   AdminApiFailure,
+  AdminPrivacyRectificationEntry,
+  AdminPrivacyRequest,
   AdminPrivacyRequestMatch,
+  AdminPrivacyRequestScopeBooking,
   AdminPrivacyRequestStatus,
   AdminPrivacyRequestType,
 } from "./admin-api";
@@ -65,7 +68,115 @@ export const ADMIN_PRIVACY_MESSAGES = {
   registerEmpty: "Aucune demande enregistrée pour le moment.",
   registerNotFound: "Cette demande n’existe plus dans le registre.",
   tooManyReferences: `Une demande ne peut pas viser plus de ${PRIVACY_REQUEST_MAX_BOOKING_REFERENCES} réservations.`,
+  // ESZ-164 — the execution of the rights.
+  exported:
+    "L’export a été généré et téléchargé. Il n’est conservé nulle part sur le serveur ; la demande est clôturée.",
+  rectified: "Les coordonnées ont été rectifiées sur les réservations retenues. La demande est clôturée.",
+  anonymised:
+    "Les données personnelles des réservations retenues ont été anonymisées ; les rendez-vous sont maintenus. La demande est clôturée.",
+  restricted:
+    "Le traitement est limité pour les réservations retenues : aucun rappel ne sera envoyé tant que la limitation n’est pas levée. La demande est clôturée.",
+  lifted:
+    "La limitation est levée : un e-mail d’information est envoyé à la personne et les rappels encore à venir reprennent. Les rappels dont l’échéance est passée ne sont pas renvoyés.",
+  nothingToAct:
+    "Aucune réservation de cette demande ne permet cette action (réservations déjà anonymisées ou absentes).",
+  staleRectification:
+    "Une réservation a été modifiée entre-temps. Rechargez la demande et vérifiez les coordonnées avant de rectifier.",
 } as const;
+
+/** The labels the calendar and the detail view show for the two markers (booking-domain privacyRequests.execution). */
+export const PRIVACY_BOOKING_MARKER_LABELS = {
+  anonymised: "Cliente anonymisée — rendez-vous maintenu",
+  restricted: "Traitement limité",
+} as const;
+
+/** What the administrator must explicitly acknowledge before the two guarded actions run. */
+export const PRIVACY_CONFIRMATIONS = {
+  anonymize:
+    "Je confirme l’anonymisation définitive : nom, e-mail, téléphone et note seront effacés et ne pourront pas être restaurés. Le rendez-vous reste dans le calendrier.",
+  lift:
+    "Je confirme la levée de la limitation : la personne recevra un e-mail d’information et les rappels encore à venir reprendront.",
+} as const;
+
+/** One action the detail view may offer for a request. */
+export type PrivacyRequestAction = "export" | "rectify" | "anonymize" | "restrict" | "lift";
+
+/**
+ * Which actions a request admits *now*, from its type, its status and the
+ * current state of its bookings — the same rules the server enforces, so
+ * the view never offers a button the server would refuse:
+ *
+ * - access / portability: export, whatever the status (a closed request may
+ *   be exported again; the document is never stored);
+ * - rectification, erasure, restriction: their action while the request is
+ *   open and at least one linked booking still holds live data;
+ * - restriction: lift, whatever the status, while at least one linked
+ *   booking is restricted (an anonymised booking is never restricted).
+ */
+export function availableActions(
+  request: Pick<AdminPrivacyRequest, "type" | "status">,
+  bookings: readonly AdminPrivacyRequestScopeBooking[],
+): PrivacyRequestAction[] {
+  const open = request.status !== "closed";
+  const live = bookings.some((booking) => booking.customerDataErasedAt === null);
+  const restricted = bookings.some(
+    (booking) => booking.processingRestrictedAt !== null && booking.customerDataErasedAt === null,
+  );
+  switch (request.type) {
+    case "access":
+    case "portability":
+      return ["export"];
+    case "rectification":
+      return open && live ? ["rectify"] : [];
+    case "erasure":
+      return open && live ? ["anonymize"] : [];
+    case "restriction":
+      return [...(open && live ? (["restrict"] as const) : []), ...(restricted ? (["lift"] as const) : [])];
+  }
+}
+
+/** The representation a request type answers with by default; the other stays offered. */
+export function defaultExportFormat(type: AdminPrivacyRequestType): "html" | "json" {
+  return type === "portability" ? "json" : "html";
+}
+
+/**
+ * The rectification entries for the bookings that still hold data: each
+ * pre-filled with the current values and carrying the booking's own token,
+ * so the server's customer-update authority can refuse a stale edit.
+ */
+export function rectificationEntries(
+  bookings: readonly AdminPrivacyRequestScopeBooking[],
+): AdminPrivacyRectificationEntry[] {
+  return bookings.flatMap((booking) =>
+    booking.customer === null
+      ? []
+      : [
+          {
+            reference: booking.reference,
+            expectedUpdatedAt: booking.updatedAt,
+            customerName: booking.customer.name,
+            customerEmail: booking.customer.email,
+            customerPhone: booking.customer.phone,
+            customerNote: booking.customer.note,
+          },
+        ],
+  );
+}
+
+/** The MIME type a representation is saved with. */
+export function exportMimeType(format: "html" | "json"): string {
+  return format === "html" ? "text/html;charset=utf-8" : "application/json;charset=utf-8";
+}
+
+/**
+ * The bytes a representation is saved as: the HTML page as is, the JSON
+ * document pretty-printed. The name comes from the server and holds only
+ * the request id.
+ */
+export function exportFileContents(exported: { format: "html"; document: string } | { format: "json"; document: unknown }): string {
+  return exported.format === "html" ? exported.document : JSON.stringify(exported.document, null, 2);
+}
 
 /** How an identification input is to be searched, or that it cannot be. */
 export type PrivacyIdentification =
@@ -152,12 +263,17 @@ export function mergeMatches(
  */
 export function privacyFailureMessage(
   failure: AdminApiFailure,
-  context: "reference" | "record" | "register",
+  context: "reference" | "record" | "register" | "action",
 ): string {
   if (failure.kind === "not-found") {
-    return context === "register"
+    return context === "register" || context === "action"
       ? ADMIN_PRIVACY_MESSAGES.registerNotFound
       : ADMIN_PRIVACY_MESSAGES.referenceNotFound;
+  }
+  // ESZ-164: a rectification refused for a stale token is the calendar's
+  // own 409, worded for this surface.
+  if (context === "action" && failure.kind === "conflict" && failure.errorCode === "REVISION_CONFLICT") {
+    return ADMIN_PRIVACY_MESSAGES.staleRectification;
   }
   return failure.message;
 }

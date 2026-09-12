@@ -20,6 +20,7 @@ import {
   BOOKING_TIME_RULES_SETTING_KEY,
   BOOKING_TIME_ZONE,
   PLANNING_CONSTRAINT_MAX_DAYS,
+  BOOKING_CONSENT_NOTICE_ID_PATTERN,
   BOOKING_PRIVACY_NOTICE_ID_PATTERN,
   BOOKING_REFERENCE_PATTERN,
   PRIVACY_REQUEST_HISTORY_PAGE_SIZE,
@@ -27,6 +28,9 @@ import {
   PRIVACY_REQUEST_SEARCH_PAGE_SIZE,
   bookingPrivacyNoticeIds,
   bookingStates,
+  notificationChannels,
+  notificationJobTypes,
+  notificationStatuses,
   planningConstraintEnforcements,
   planningConstraintKinds,
   privacyRequestStatuses,
@@ -153,6 +157,14 @@ export const ADMIN_SERVICES_PATH = "/api/admin/services";
 export const ADMIN_PRIVACY_REQUESTS_PATH = "/api/admin/privacy-requests";
 export const ADMIN_PRIVACY_REQUESTS_QUERY_PATH = "/api/admin/privacy-requests/query";
 export const ADMIN_PRIVACY_REQUEST_SEARCH_PATH = "/api/admin/privacy-requests/search";
+/**
+ * ESZ-164 — the execution of a recorded right: `POST
+ * /api/admin/privacy-requests/actions` (session + CSRF) exports, rectifies,
+ * anonymises, restricts or lifts, always and only against the request's
+ * stored booking links. The query route gains `mode=scope`, the per-booking
+ * view of one request an action form is built from.
+ */
+export const ADMIN_PRIVACY_REQUEST_ACTIONS_PATH = "/api/admin/privacy-requests/actions";
 
 /**
  * Header reporting the current head of the content revision sequence.
@@ -941,7 +953,16 @@ export const adminBookingMoveAvailabilityRequestSchema = z
 
 export const bookingHistoryEventSchema = z
   .object({
-    type: z.enum(["created", "moved", "cancelled", "customer_updated"]),
+    type: z.enum([
+      "created",
+      "moved",
+      "cancelled",
+      "customer_updated",
+      // ESZ-164 — the GDPR actions leave non-personal trail events too.
+      "customer_data_erased",
+      "processing_restricted",
+      "processing_restriction_lifted",
+    ]),
     actor: z.enum(["public", "admin"]),
     occurredAt: isoTimestampSchema,
   })
@@ -1003,6 +1024,20 @@ export const adminBookingSchema = z
     privacyNoticePresentedAtUtc: isoTimestampSchema.nullable(),
     cancelledAtUtc: isoTimestampSchema.nullable(),
     cancellationReason: z.string().max(500).nullable(),
+    /**
+     * ESZ-140/ESZ-164 — when the customer data of this booking was
+     * anonymised (by the retention sweep or an early GDPR erasure); null
+     * while the data is live. The calendar shows an anonymised booking as
+     * `Cliente anonymisée — rendez-vous maintenu` and offers no contact edit.
+     */
+    customerDataErasedAt: isoTimestampSchema.nullable(),
+    /**
+     * ESZ-164 — while set, the booking is under a restriction of processing
+     * (`Traitement limité`): kept, shown, but no notification is delivered
+     * for it. Authoritative on the server; reversible only from the GDPR
+     * request that set it.
+     */
+    processingRestrictedAt: isoTimestampSchema.nullable(),
     createdAt: isoTimestampSchema,
     /**
      * ESZ-139: the V1 optimistic-concurrency token of this booking. It
@@ -1586,6 +1621,17 @@ export const adminPrivacyRequestsQueryRequestSchema = z.discriminatedUnion("mode
       id: privacyRequestIdSchema,
     })
     .strict(),
+  /**
+   * ESZ-164 — one record beside the current state of each booking it
+   * names: what the action forms are built from and what the detail view
+   * shows (anonymised, restricted). Answers `adminPrivacyRequestScopeResponse`.
+   */
+  z
+    .object({
+      mode: z.literal("scope"),
+      id: privacyRequestIdSchema,
+    })
+    .strict(),
 ]);
 
 export const adminPrivacyRequestsResponseSchema = z
@@ -1651,6 +1697,252 @@ export const adminPrivacyRequestSearchResponseSchema = z
         nextCursor: adminBookingsCursorSchema.nullable(),
       })
       .strict(),
+  })
+  .strict();
+
+// --- ESZ-164: executing the rights ------------------------------------------
+
+/**
+ * One booking a request names, as it stands now. `customer` is the held
+ * contact data the rectification form edits, and it is null exactly when the
+ * booking has been anonymised: an anonymised booking exposes its reference,
+ * its appointment facts and its markers, never a placeholder that could be
+ * mistaken for a person. `updatedAt` is the token a rectification sends back.
+ */
+export const adminPrivacyRequestScopeBookingSchema = z
+  .object({
+    reference: bookingReferenceSchema,
+    serviceKeys: bookableServiceKeysSchema,
+    state: bookingStateSchema,
+    startsAtUtc: isoTimestampSchema,
+    endsAtUtc: isoTimestampSchema,
+    updatedAt: isoTimestampSchema,
+    customerDataErasedAt: isoTimestampSchema.nullable(),
+    processingRestrictedAt: isoTimestampSchema.nullable(),
+    customer: z
+      .object({
+        name: z.string().min(1).max(160),
+        email: z.string().email().max(254),
+        phone: z.string().max(32).nullable(),
+        note: z.string().max(2000).nullable(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+
+export const adminPrivacyRequestScopeResponseSchema = z
+  .object({
+    request: adminPrivacyRequestSchema,
+    /** In the request's stored order; a reference that resolves to no booking is omitted. */
+    bookings: z.array(adminPrivacyRequestScopeBookingSchema).max(PRIVACY_REQUEST_MAX_BOOKING_REFERENCES),
+  })
+  .strict();
+
+/** The two representations one export engine produces. */
+export const privacyExportFormats = ["html", "json"] as const;
+export const privacyExportFormatSchema = z.enum(privacyExportFormats);
+
+/** The stable identity of the structured export document. */
+export const PRIVACY_EXPORT_DOCUMENT_FORMAT = "eszter.privacy-export";
+export const PRIVACY_EXPORT_DOCUMENT_VERSION = 1;
+
+const privacyExportHeldBookingSchema = z
+  .object({
+    reference: bookingReferenceSchema,
+    anonymised: z.literal(false),
+    appointment: z
+      .object({
+        serviceKeys: bookableServiceKeysSchema,
+        serviceLabels: z.array(z.string().min(1).max(160)).min(1).max(4),
+        state: bookingStateSchema,
+        startsAtUtc: isoTimestampSchema,
+        endsAtUtc: isoTimestampSchema,
+        timezone: z.literal(BOOKING_TIME_ZONE),
+        createdAt: isoTimestampSchema,
+        cancelledAtUtc: isoTimestampSchema.nullable(),
+        cancellationReason: z.string().max(500).nullable(),
+      })
+      .strict(),
+    customer: z
+      .object({
+        name: z.string().min(1).max(160),
+        email: z.string().email().max(254),
+        phone: z.string().max(32).nullable(),
+        note: z.string().max(2000).nullable(),
+      })
+      .strict(),
+    /**
+     * The basis evidence exactly as stored: the privacy notice the customer
+     * was shown (with the frozen text of that notice) or, for a booking made
+     * under ESZ-142, the consent instant and notice id.
+     */
+    basis: z.union([
+      z
+        .object({
+          kind: z.literal("privacy_notice"),
+          noticeId: z.string().regex(new RegExp(BOOKING_PRIVACY_NOTICE_ID_PATTERN)),
+          presentedAtUtc: isoTimestampSchema,
+          text: z.string().min(1),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal("consent"),
+          noticeId: z.string().regex(new RegExp(BOOKING_CONSENT_NOTICE_ID_PATTERN)).nullable(),
+          consentedAtUtc: isoTimestampSchema,
+        })
+        .strict(),
+    ]),
+    /** The non-personal trail: event types and instants, never a value. */
+    history: z.array(bookingHistoryEventSchema),
+    /** What was sent about this appointment: delivery metadata only. */
+    notifications: z.array(
+      z
+        .object({
+          channel: z.enum(notificationChannels),
+          type: z.enum(notificationJobTypes),
+          status: z.enum(notificationStatuses),
+          dueAtUtc: isoTimestampSchema,
+          sentAtUtc: isoTimestampSchema.nullable(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+/**
+ * An anonymised booking in an export is its reference and the fact of its
+ * anonymisation, nothing else: no appointment, history or delivery fact is
+ * placed beside a requester's name, so the export cannot reconnect the row
+ * to the identity it no longer carries.
+ */
+const privacyExportAnonymisedBookingSchema = z
+  .object({
+    reference: bookingReferenceSchema,
+    anonymised: z.literal(true),
+  })
+  .strict();
+
+/**
+ * The one document both representations are built from (ESZ-164). The JSON
+ * representation *is* this object; the HTML representation renders it.
+ */
+export const privacyExportDocumentSchema = z
+  .object({
+    format: z.literal(PRIVACY_EXPORT_DOCUMENT_FORMAT),
+    version: z.literal(PRIVACY_EXPORT_DOCUMENT_VERSION),
+    generatedAtUtc: isoTimestampSchema,
+    request: z
+      .object({
+        id: privacyRequestIdSchema,
+        type: privacyRequestTypeSchema,
+        receivedDate: bookingLocalDateSchema,
+      })
+      .strict(),
+    information: z
+      .object({
+        controller: z.string().min(1),
+        purposes: z.array(z.string().min(1)).min(1),
+        legalBasis: z.string().min(1),
+        retention: z.array(z.string().min(1)).min(1),
+        recipients: z.array(z.string().min(1)).min(1),
+        source: z.string().min(1),
+        rights: z.array(z.string().min(1)).min(1),
+        contact: z.string().min(1),
+      })
+      .strict(),
+    bookings: z
+      .array(z.union([privacyExportHeldBookingSchema, privacyExportAnonymisedBookingSchema]))
+      .max(PRIVACY_REQUEST_MAX_BOOKING_REFERENCES),
+  })
+  .strict();
+
+const privacyRequestRectificationEntrySchema = z
+  .object({
+    reference: bookingReferenceSchema,
+    expectedUpdatedAt: isoTimestampSchema,
+    customerName: z.string().trim().min(1).max(160),
+    customerEmail: z.string().trim().email().max(254),
+    customerPhone: z.string().trim().max(32).nullable(),
+    customerNote: z.string().trim().max(2000).nullable(),
+  })
+  .strict();
+
+/**
+ * One right, executed. Every action names the request by id and acts on its
+ * stored links only — no action carries a booking reference the request
+ * does not already hold, and a rectification entry naming one is refused.
+ * The two irreversible or state-lifting actions carry `confirm: true`: the
+ * explicit destructive confirmation is on the wire, not only in the dialog.
+ */
+export const adminPrivacyRequestActionRequestSchema = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("export"),
+      id: privacyRequestIdSchema,
+      format: privacyExportFormatSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("rectify"),
+      id: privacyRequestIdSchema,
+      bookings: z
+        .array(privacyRequestRectificationEntrySchema)
+        .min(1)
+        .max(PRIVACY_REQUEST_MAX_BOOKING_REFERENCES),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("anonymize"),
+      id: privacyRequestIdSchema,
+      confirm: z.literal(true),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("restrict"),
+      id: privacyRequestIdSchema,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("lift"),
+      id: privacyRequestIdSchema,
+      confirm: z.literal(true),
+    })
+    .strict(),
+]);
+
+/**
+ * The outcome of an action: the record as it now stands, the bookings as
+ * they now stand, and — for an export — the generated representation.
+ * `fileName` is derived from the request id alone and carries no PII.
+ */
+export const adminPrivacyRequestActionResponseSchema = z
+  .object({
+    request: adminPrivacyRequestSchema,
+    bookings: z.array(adminPrivacyRequestScopeBookingSchema).max(PRIVACY_REQUEST_MAX_BOOKING_REFERENCES),
+    export: z
+      .union([
+        z
+          .object({
+            format: z.literal("json"),
+            fileName: z.string().regex(/^[a-z0-9-]+\.json$/),
+            document: privacyExportDocumentSchema,
+          })
+          .strict(),
+        z
+          .object({
+            format: z.literal("html"),
+            fileName: z.string().regex(/^[a-z0-9-]+\.html$/),
+            document: z.string().min(1),
+          })
+          .strict(),
+      ])
+      .nullable(),
   })
   .strict();
 
@@ -1820,6 +2112,8 @@ export const bookingApiPolicy = {
     "An authenticated read, no CSRF. Counts and nextConfirmedStartsAtUtc are exact SQL aggregations over the whole window; the today/upcoming entry lists are confirmed-only and bounded at adminViews.summary.listedEntriesMax with listings.todayComplete/upcomingComplete stating whether each list is complete.",
   privacyRequests:
     "ESZ-163 — the admin GDPR request register (booking-domain privacyRequests). search is an authenticated read, no CSRF: mode=reference resolves exactly one stored booking (current or legacy shape; 404 NOT_FOUND when none, 404 as well for an erased booking, which has no customer left to identify), mode=email lists the non-erased bookings whose stored e-mail matches case-insensitively, one page of searchPageSize on the (startsAtUtc, reference) keyset with hasMore and a typed cursor — never a silent clip, and never a match through the frozen erased placeholder. query is an authenticated read: mode=history pages the register newest first, mode=detail serves one record. POST records one request behind session and CSRF: the frozen type, the reception date, and exactly the references the administrator selected (each must resolve to a non-erased booking, no duplicates, bounded at maxBookingReferences; an empty list is a confirmed empty scope). Status is received on creation and is never accepted from the wire. Recording writes the register only: no booking or customer row changes, nothing is exported.",
+  privacyRights:
+    "ESZ-164 — the rights are executed from the register (booking-domain privacyRequests.execution). query mode=scope serves one record beside the current state of each booking it names (appointment facts, updatedAt token, anonymised/restricted markers, held contact data or null once anonymised). POST /api/admin/privacy-requests/actions is a state change behind session and CSRF, discriminated by action and always scoped to the request's stored booking links: export (format html or json; access and portability only; the document is generated and returned, never persisted; a received request is moved through in_progress to closed in one write, a closed one may be exported again) — rectify (a list of per-booking contact updates each carrying the booking's expectedUpdatedAt; every reference must be one the request names and not anonymised; all bookings are written through the existing customer-update authority in one transaction with the request's closure, 409 REVISION_CONFLICT writes nothing) — anonymize (confirm: true required; the ESZ-140 erasure primitive per selected booking, active jobs retired in the same transaction; already anonymised bookings are left untouched; closes the request) — restrict (sets processing_restricted_at on the selected non-anonymised bookings; closes the request) — lift (confirm: true required; type restriction only; clears the marker on the restricted selected bookings and schedules one immediate processing_restriction_lifted e-mail per lifted booking; status unchanged). A request of the wrong type for an action, an action with nothing to do (no live booking, nothing restricted) and a rectification naming a foreign reference are 400 VALIDATION_FAILED; an unknown id is 404 NOT_FOUND. Every response carries the record and the scope as they now stand; the register itself never receives an export body or a customer value.",
 } as const;
 
 /**
@@ -2891,6 +3185,8 @@ export const contractBodyMatchers = [
   "adminPrivacyRequestResponse",
   "adminPrivacyRequestsResponse",
   "adminPrivacyRequestSearchResponse",
+  "adminPrivacyRequestScopeResponse",
+  "adminPrivacyRequestActionResponse",
   "empty",
 ] as const;
 
@@ -3025,6 +3321,7 @@ export interface HttpContractCase {
     | "/api/admin/privacy-requests"
     | "/api/admin/privacy-requests/query"
     | "/api/admin/privacy-requests/search"
+    | "/api/admin/privacy-requests/actions"
     | "unknown";
   description: string;
   request: {
@@ -5924,6 +6221,197 @@ export const httpContractCases: HttpContractCase[] = [
       errorCode: "METHOD_NOT_ALLOWED",
       headers: { allow: "POST" },
     },
+  },
+  {
+    id: "admin.privacyRequests.query.post.scopeOk",
+    endpoint: ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
+    description:
+      "ESZ-164 — the scope read serves the record beside the current state of each booking it names: the held contact data (or null once anonymised), the token and the two markers.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"mode":"scope","id":1}',
+    },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestScopeResponse" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.exportHtmlOk",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description:
+      "ESZ-164 — an access request is answered by the readable HTML representation of the shared export document; the record is closed in the same response.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"export","id":1,"format":"html"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestActionResponse" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.exportJsonOk",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description:
+      "The structured JSON representation is the same engine's document, validated field by field by the frozen export schema.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"export","id":1,"format":"json"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestActionResponse" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.exportWrongType",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description: "An export is the answer to an access or portability request only; an erasure request cannot be exported.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"export","id":2,"format":"json"}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.rectifyOk",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description:
+      "A rectification carries one contact update per selected booking with that booking's own token; the existing customer-update authority applies them.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"rectify","id":4,"bookings":[{"reference":"bk_00000000000000000000000000000000","expectedUpdatedAt":"2026-06-13T12:00:00.000Z","customerName":"Cliente Rectifiée","customerEmail":"rectifiee@example.test","customerPhone":null,"customerNote":null}]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestActionResponse" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.rectifyForeignReference",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description:
+      "A rectification may only touch the bookings the request names: a reference outside the stored links is refused and nothing is written.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"rectify","id":4,"bookings":[{"reference":"XG73-UVK9","expectedUpdatedAt":"2026-06-13T12:00:00.000Z","customerName":"Autre","customerEmail":"autre@example.test","customerPhone":null,"customerNote":null}]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.rectifyStaleToken",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description: "A stale expectedUpdatedAt is the same 409 REVISION_CONFLICT the calendar's contact edit answers, and writes nothing.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"rectify","id":4,"bookings":[{"reference":"bk_00000000000000000000000000000000","expectedUpdatedAt":"2026-06-01T00:00:00.000Z","customerName":"Cliente Rectifiée","customerEmail":"rectifiee@example.test","customerPhone":null,"customerNote":null}]}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 409, body: "errorEnvelope", errorCode: "REVISION_CONFLICT" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.anonymizeOk",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description:
+      "Early anonymisation keeps the appointment and returns the scope with the booking marked anonymised and its contact data gone.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"anonymize","id":2,"confirm":true}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestActionResponse" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.anonymizeWithoutConfirmation",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description: "The destructive confirmation is on the wire: an anonymisation without confirm: true is refused structurally.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"anonymize","id":2}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.restrictOk",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description: "A restriction sets the reversible marker on the selected bookings; the response shows them as restricted.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"restrict","id":5}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestActionResponse" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.liftOk",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description: "Lifting a restriction is confirmed on the wire and answers with the bookings no longer restricted.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"lift","id":6,"confirm":true}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 200, body: "adminPrivacyRequestActionResponse" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.unknownRequest",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description: "An action on a record the register does not hold is 404 NOT_FOUND.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"restrict","id":99}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 404, body: "errorEnvelope", errorCode: "NOT_FOUND" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.unknownAction",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description: "The five actions are closed; there is no delete, no opposition and no free status change.",
+    request: {
+      method: "POST",
+      path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+      headers: { "content-type": "application/json" },
+      rawBody: '{"action":"close","id":1}',
+    },
+    auth: { session: "authenticated", csrf: "valid", account: "enabled" },
+    expect: { status: 400, body: "errorEnvelope", errorCode: "VALIDATION_FAILED" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.csrfOmitted",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description: "Every action is a state change: without CSRF it is rejected before parsing.",
+    request: { method: "POST", path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH, rawBody: "{invalid" },
+    auth: { session: "authenticated", csrf: "omitted", account: "enabled" },
+    expect: { status: 403, body: "errorEnvelope", errorCode: "CSRF_TOKEN_INVALID" },
+  },
+  {
+    id: "admin.privacyRequests.actions.post.unauthenticated",
+    endpoint: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
+    description: "An anonymous caller cannot execute a right, and is refused before the body is read.",
+    request: { method: "POST", path: ADMIN_PRIVACY_REQUEST_ACTIONS_PATH, rawBody: "{invalid" },
+    auth: { session: "none", csrf: "omitted" },
+    expect: { status: 401, body: "errorEnvelope", errorCode: "UNAUTHENTICATED" },
   },
 ];
 

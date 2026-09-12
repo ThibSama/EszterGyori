@@ -143,6 +143,26 @@
               }
             ]
           },
+          "customerDataErasedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "processingRestrictedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "createdAt": {
             "type": "string"
           },
@@ -168,6 +188,8 @@
           "privacyNoticePresentedAtUtc",
           "cancelledAtUtc",
           "cancellationReason",
+          "customerDataErasedAt",
+          "processingRestrictedAt",
           "createdAt",
           "updatedAt"
         ],

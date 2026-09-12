@@ -15,6 +15,7 @@ import {
   ADMIN_PRIVACY_REQUESTS_PATH,
   ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
   ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
+  ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
   AUTH_LOGIN_PATH,
   AUTH_LOGOUT_PATH,
   AUTH_SESSION_PATH,
@@ -43,6 +44,8 @@ import {
   adminPrivacyRequestResponseSchema,
   adminPrivacyRequestsResponseSchema,
   adminPrivacyRequestSearchResponseSchema,
+  adminPrivacyRequestScopeResponseSchema,
+  adminPrivacyRequestActionResponseSchema,
   publishedContentEnvelopeV1Schema,
   serverDraftEnvelopeV1Schema,
   type ApiErrorCode,
@@ -235,6 +238,31 @@ export type AdminPrivacyRequestCreate = {
   receivedDate: string;
   bookingReferences: string[];
 };
+/**
+ * ESZ-164 — one booking a request names, as it stands now: `customer` is
+ * null once the booking has been anonymised, and the two markers are what
+ * the detail view renders as `Cliente anonymisée — rendez-vous maintenu`
+ * and `Traitement limité`.
+ */
+export type AdminPrivacyRequestScope = z.infer<typeof adminPrivacyRequestScopeResponseSchema>;
+export type AdminPrivacyRequestScopeBooking = AdminPrivacyRequestScope["bookings"][number];
+export type AdminPrivacyRequestActionResult = z.infer<typeof adminPrivacyRequestActionResponseSchema>;
+export type AdminPrivacyExport = NonNullable<AdminPrivacyRequestActionResult["export"]>;
+export type AdminPrivacyRectificationEntry = {
+  reference: string;
+  expectedUpdatedAt: string;
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string | null;
+  customerNote: string | null;
+};
+/** ESZ-164 — the five actions, each scoped to the request's stored links by the server. */
+export type AdminPrivacyRequestAction =
+  | { action: "export"; id: number; format: "html" | "json" }
+  | { action: "rectify"; id: number; bookings: AdminPrivacyRectificationEntry[] }
+  | { action: "anonymize"; id: number; confirm: true }
+  | { action: "restrict"; id: number }
+  | { action: "lift"; id: number; confirm: true };
 
 export type AdminAvailabilityExceptionMutation =
   | { action: "close"; expectedRevision: number; localDate: string; note: string | null }
@@ -450,6 +478,22 @@ export interface AdminApiClient {
     input: AdminPrivacyRequestCreate,
     csrfToken: string,
   ): Promise<AdminApiResult<AdminPrivacyRequest>>;
+  /**
+   * ESZ-164 — one record beside the current state of each booking it
+   * names. An authenticated read, no CSRF; what the action forms are built
+   * from.
+   */
+  readPrivacyRequestScope(id: number): Promise<AdminApiResult<AdminPrivacyRequestScope>>;
+  /**
+   * ESZ-164 — executes one right. A state change behind session and CSRF;
+   * resolved with the record and the scope as the server now holds them,
+   * and the generated representation for an export. The export document is
+   * never persisted anywhere: it exists in this response only.
+   */
+  executePrivacyRequestAction(
+    input: AdminPrivacyRequestAction,
+    csrfToken: string,
+  ): Promise<AdminApiResult<AdminPrivacyRequestActionResult>>;
 }
 
 /** The only reset source the contract defines. Stated once, sent from here. */
@@ -969,6 +1013,25 @@ export function createAdminApiClient(
       const record = parsed(adminPrivacyRequestResponseSchema, response.body);
       if (!record.ok) return record;
       return { ok: true, value: record.value.request };
+    },
+
+    async readPrivacyRequestScope(id) {
+      const response = await send(ADMIN_PRIVACY_REQUESTS_QUERY_PATH, {
+        method: "POST",
+        body: JSON.stringify({ mode: "scope", id }),
+      });
+      if (!response.ok) return response;
+      return parsed(adminPrivacyRequestScopeResponseSchema, response.body);
+    },
+
+    async executePrivacyRequestAction(input, csrfToken) {
+      const response = await send(ADMIN_PRIVACY_REQUEST_ACTIONS_PATH, {
+        method: "POST",
+        csrfToken,
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) return response;
+      return parsed(adminPrivacyRequestActionResponseSchema, response.body);
     },
   };
 }

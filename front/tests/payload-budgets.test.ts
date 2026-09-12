@@ -88,6 +88,8 @@ function booking(index: number) {
     privacyNoticePresentedAtUtc: null,
     cancelledAtUtc: null,
     cancellationReason: null,
+    customerDataErasedAt: null,
+    processingRestrictedAt: null,
     createdAt: "2026-08-01T09:00:00.000Z",
     updatedAt: "2026-08-01T09:00:00.000Z",
   };
@@ -137,7 +139,9 @@ test("an admin booking page stays bounded at its declared page size", () => {
 
   budget("admin bookings page at full page size (raw)", bytes(response), 250_000);
   budget("admin bookings page at full page size (gzip)", gzippedBytes(response), 20_000);
-  budget("one admin booking entry", bytes(booking(0)), 700);
+  // ESZ-164: +70 bytes for the two nullable markers (customerDataErasedAt,
+  // processingRestrictedAt) every admin booking now carries.
+  budget("one admin booking entry", bytes(booking(0)), 800);
 });
 
 test("the operations summary stays small regardless of its window", () => {

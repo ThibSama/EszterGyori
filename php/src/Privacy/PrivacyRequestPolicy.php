@@ -34,6 +34,14 @@ final class PrivacyRequestPolicy
         public readonly int $searchPageSize,
         public readonly int $historyPageSize,
         public readonly int $maxBookingReferences,
+        /**
+         * ESZ-164 — the exact text of every privacy-information and consent
+         * notice ever issued, by id, so an export can quote the wording the
+         * customer was actually shown rather than today's.
+         *
+         * @var array<string, string>
+         */
+        public readonly array $noticeTexts = [],
     ) {
     }
 
@@ -84,7 +92,33 @@ final class PrivacyRequestPolicy
             self::positiveInt($scope, 'searchPageSize'),
             self::positiveInt($history, 'pageSize'),
             self::positiveInt($scope, 'maxBookingReferences'),
+            self::noticeTexts($document),
         );
+    }
+
+    /**
+     * @param array<mixed> $document
+     * @return array<string, string>
+     */
+    private static function noticeTexts(array $document): array
+    {
+        $texts = [];
+        foreach (['privacyNotices', 'consentNotices'] as $catalog) {
+            $entries = \is_array($document[$catalog] ?? null) ? ($document[$catalog]['entries'] ?? null) : null;
+            if (!\is_array($entries)) {
+                throw new ContractArtifactException("booking-domain.json {$catalog} has no entries list.");
+            }
+            foreach ($entries as $entry) {
+                $id = \is_array($entry) ? ($entry['id'] ?? null) : null;
+                $text = \is_array($entry) ? ($entry['text'] ?? null) : null;
+                if (!\is_string($id) || $id === '' || !\is_string($text) || $text === '') {
+                    throw new ContractArtifactException("booking-domain.json {$catalog} has a malformed entry.");
+                }
+                $texts[$id] = $text;
+            }
+        }
+
+        return $texts;
     }
 
     public function acceptsType(string $type): bool

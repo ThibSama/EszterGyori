@@ -6,22 +6,30 @@ import test from "node:test";
 import {
   ADMIN_PRIVACY_REQUESTS_PATH,
   ADMIN_PRIVACY_REQUESTS_QUERY_PATH,
+  ADMIN_PRIVACY_REQUEST_ACTIONS_PATH,
   ADMIN_PRIVACY_REQUEST_SEARCH_PATH,
   PRIVACY_REQUEST_MAX_BOOKING_REFERENCES,
   privacyRequestStatuses,
   privacyRequestTypes,
 } from "@eszter/contracts";
-import { createAdminApiClient } from "../app/lib/admin-api";
+import { createAdminApiClient, type AdminPrivacyRequestScopeBooking } from "../app/lib/admin-api";
 import {
   ADMIN_PRIVACY_MESSAGES,
+  PRIVACY_BOOKING_MARKER_LABELS,
+  PRIVACY_CONFIRMATIONS,
   PRIVACY_REQUEST_STATUS_LABELS,
   PRIVACY_REQUEST_STEPS,
   PRIVACY_REQUEST_TYPE_LABELS,
   PRIVACY_REQUEST_TYPES,
+  availableActions,
   classifyIdentification,
+  defaultExportFormat,
   describeScopeCompleteness,
+  exportFileContents,
+  exportMimeType,
   mergeMatches,
   privacyFailureMessage,
+  rectificationEntries,
   scopeIsRecordable,
   toggleReference,
 } from "../app/lib/admin-privacy-requests";
@@ -62,7 +70,7 @@ const record = {
 const match = {
   reference: "XG73-UVK9",
   serviceKeys: ["brows"],
-  state: "confirmed",
+  state: "confirmed" as const,
   startsAtUtc: "2026-06-15T07:00:00.000Z",
   endsAtUtc: "2026-06-15T07:30:00.000Z",
   customerName: "Cliente Exemple",
@@ -97,16 +105,26 @@ test("the flow is type → identification → search → scope review → record
   for (const step of ["type", "identification", "search", "scope", "recorded"]) {
     assert.match(centreSource, new RegExp(`step === "${step}"`), `the modal renders the ${step} step`);
   }
-  // Recording is the last action: the scope form submits `record()`, and
-  // nothing after it mutates a booking, exports or notifies.
+  // Recording is the flow's last step: the scope form submits `record()`.
+  // Executing the right (ESZ-164) is a separate, explicit action from the
+  // recorded request's detail — never a side effect of recording.
   assert.match(centreSource, /api\.recordPrivacyRequest\(/);
-  // The only API calls the centre makes are the register's own: no booking
-  // mutation, no export, no notification change.
+  assert.doesNotMatch(centreSource, /recordPrivacyRequest\([\s\S]{0,600}executePrivacyRequestAction/);
+  // The only API calls the centre makes are the register's own reads and
+  // writes and the rights execution route: no direct booking mutation, no
+  // notification change.
   const apiCalls = [...centreSource.matchAll(/api\.(\w+)\(/g)].map((m) => m[1]);
   assert.deepEqual(
     [...new Set(apiCalls)].sort(),
-    ["listPrivacyRequests", "readPrivacyRequest", "recordPrivacyRequest", "searchPrivacyRequestScope"],
-    "ESZ-164 owns execution; the centre only records",
+    [
+      "executePrivacyRequestAction",
+      "listPrivacyRequests",
+      "readPrivacyRequest",
+      "readPrivacyRequestScope",
+      "recordPrivacyRequest",
+      "searchPrivacyRequestScope",
+    ],
+    "the centre records and executes through the register's routes only",
   );
 });
 
@@ -266,7 +284,7 @@ test("the register never renders a requester e-mail or message, and failures are
   // The detail view reads only the record's own fields.
   const detail = centreSource.slice(
     centreSource.indexOf("function RequestDetail("),
-    centreSource.indexOf("// --- Historique"),
+    centreSource.indexOf("// --- Exécution des droits"),
   );
   assert.doesNotMatch(detail, /email|message|customer/i);
   assert.equal(
@@ -280,4 +298,155 @@ test("the register never renders a requester e-mail or message, and failures are
   assert.equal(privacyFailureMessage({ kind: "network", message: "hors ligne" }, "record"), "hors ligne");
   assert.match(centreSource, /failure\.kind === "unauthenticated"[\s\S]{0,80}markExpired\(\)/);
   assert.match(centreSource, /failure\.kind === "forbidden"\) await refreshSession\(\)/);
+});
+
+// --- ESZ-164: executing the rights from the detail --------------------------
+
+const scopeBooking: AdminPrivacyRequestScopeBooking = {
+  reference: "XG73-UVK9",
+  serviceKeys: ["brows"],
+  state: "confirmed" as const,
+  startsAtUtc: "2026-06-15T07:00:00.000Z",
+  endsAtUtc: "2026-06-15T07:30:00.000Z",
+  updatedAt: "2026-06-13T12:00:00.000Z",
+  customerDataErasedAt: null,
+  processingRestrictedAt: null,
+  customer: { name: "Cliente Exemple", email: "cliente@example.test", phone: null, note: null },
+};
+const anonymised: AdminPrivacyRequestScopeBooking = {
+  ...scopeBooking,
+  reference: "AB23-CD45",
+  customerDataErasedAt: "2026-06-13T12:01:00.000Z",
+  customer: null,
+};
+const restricted: AdminPrivacyRequestScopeBooking = {
+  ...scopeBooking,
+  processingRestrictedAt: "2026-06-13T12:01:00.000Z",
+};
+
+test("the detail offers exactly the actions the server would accept, per type, status and booking state", () => {
+  // Export: access and portability, open or closed, and never anything else.
+  assert.deepEqual(availableActions({ type: "access", status: "received" }, [scopeBooking]), ["export"]);
+  assert.deepEqual(availableActions({ type: "portability", status: "closed" }, [anonymised]), ["export"]);
+  assert.equal(defaultExportFormat("access"), "html");
+  assert.equal(defaultExportFormat("portability"), "json");
+  // The three writes: open request and at least one live booking.
+  assert.deepEqual(availableActions({ type: "rectification", status: "received" }, [scopeBooking, anonymised]), ["rectify"]);
+  assert.deepEqual(availableActions({ type: "rectification", status: "received" }, [anonymised]), []);
+  assert.deepEqual(availableActions({ type: "rectification", status: "closed" }, [scopeBooking]), []);
+  assert.deepEqual(availableActions({ type: "erasure", status: "in_progress" }, [scopeBooking]), ["anonymize"]);
+  assert.deepEqual(availableActions({ type: "erasure", status: "closed" }, [anonymised]), []);
+  // Restriction: restrict while open; lift while something is restricted,
+  // even after closure — and an anonymised booking is never lifted.
+  assert.deepEqual(availableActions({ type: "restriction", status: "received" }, [scopeBooking]), ["restrict"]);
+  assert.deepEqual(availableActions({ type: "restriction", status: "closed" }, [restricted]), ["lift"]);
+  assert.deepEqual(availableActions({ type: "restriction", status: "closed" }, [scopeBooking]), []);
+  assert.deepEqual(
+    availableActions({ type: "restriction", status: "closed" }, [{ ...anonymised, processingRestrictedAt: "2026-06-13T12:01:00.000Z" }]),
+    [],
+  );
+
+  // A rectification is pre-filled from the held data with each booking's
+  // own token, and skips the anonymised one entirely.
+  assert.deepEqual(rectificationEntries([scopeBooking, anonymised]), [
+    {
+      reference: "XG73-UVK9",
+      expectedUpdatedAt: "2026-06-13T12:00:00.000Z",
+      customerName: "Cliente Exemple",
+      customerEmail: "cliente@example.test",
+      customerPhone: null,
+      customerNote: null,
+    },
+  ]);
+});
+
+test("the two markers are the frozen labels, shown in the detail and on the calendar", () => {
+  assert.equal(PRIVACY_BOOKING_MARKER_LABELS.anonymised, "Cliente anonymisée — rendez-vous maintenu");
+  assert.equal(PRIVACY_BOOKING_MARKER_LABELS.restricted, "Traitement limité");
+  assert.match(centreCopy, /PRIVACY_BOOKING_MARKER_LABELS\.anonymised/);
+  assert.match(centreCopy, /PRIVACY_BOOKING_MARKER_LABELS\.restricted/);
+  const calendar = withoutComments(
+    readFileSync(join(appRoot, "components", "admin", "admin-booking-calendar.tsx"), "utf8"),
+  );
+  assert.match(calendar, /PRIVACY_BOOKING_MARKER_LABELS\.anonymised/);
+  assert.match(calendar, /PRIVACY_BOOKING_MARKER_LABELS\.restricted/);
+  // An anonymised booking is never named by the stored placeholder, and
+  // offers no contact edit.
+  assert.match(calendar, /customerDataErasedAt === null \? booking\.customerName/);
+  assert.match(calendar, /selected\.customerDataErasedAt === null && <button[^>]*onClick=\{beginContactEdit\}/);
+});
+
+test("anonymisation and lift are behind an explicit ticked confirmation, and every action is sent by id with CSRF", async () => {
+  // The buttons stay disabled until the confirmation is ticked.
+  assert.match(centreCopy, /disabled=\{pending \|\| !confirmAnonymize\}/);
+  assert.match(centreCopy, /disabled=\{pending \|\| !confirmLift\}/);
+  assert.match(centreCopy, /PRIVACY_CONFIRMATIONS\.anonymize/);
+  assert.match(centreCopy, /PRIVACY_CONFIRMATIONS\.lift/);
+  assert.match(PRIVACY_CONFIRMATIONS.anonymize, /irréversible|définitive/);
+  // The lift lives in the request detail, not on the calendar.
+  assert.match(centreCopy, /action: "lift", id: request\.id, confirm: true/);
+  assert.doesNotMatch(
+    readFileSync(join(appRoot, "components", "admin", "admin-booking-calendar.tsx"), "utf8"),
+    /action: "lift"/,
+  );
+  // The detail is the only place an action starts from, on both entry points.
+  assert.equal((centreCopy.match(/<RequestActions/g) ?? []).length, 2);
+
+  const sent: Array<{ path: string; init: RequestInit | undefined }> = [];
+  const closed = { ...record, type: "restriction", status: "closed", closedAtUtc: "2026-06-13T12:01:00.000Z" };
+  const api = createAdminApiClient(async (input, init) => {
+    sent.push({ path: String(input), init });
+    if (String(input) === ADMIN_PRIVACY_REQUESTS_QUERY_PATH) {
+      return jsonResponse({ request: record, bookings: [scopeBooking, anonymised] });
+    }
+    return jsonResponse({ request: closed, bookings: [restricted], export: null });
+  });
+
+  const scope = await api.readPrivacyRequestScope(7);
+  assert.ok(scope.ok);
+  assert.equal(scope.value.bookings[1]?.customer, null);
+  assert.deepEqual(JSON.parse(String(sent[0]?.init?.body)), { mode: "scope", id: 7 });
+  assert.equal(new Headers(sent[0]?.init?.headers).has("x-csrf-token"), false, "the scope is a read");
+
+  const result = await api.executePrivacyRequestAction({ action: "restrict", id: 7 }, "csrf-token");
+  assert.ok(result.ok);
+  assert.equal(result.value.bookings[0]?.processingRestrictedAt, "2026-06-13T12:01:00.000Z");
+  assert.equal(sent[1]?.path, ADMIN_PRIVACY_REQUEST_ACTIONS_PATH);
+  assert.deepEqual(JSON.parse(String(sent[1]?.init?.body)), { action: "restrict", id: 7 });
+  assert.ok(new Headers(sent[1]?.init?.headers).get("x-csrf-token"), "an action is a state change");
+
+  // A stale rectification is the calendar's own 409, worded for this surface.
+  assert.equal(
+    privacyFailureMessage(
+      { kind: "conflict", message: "x", currentRevision: null, errorCode: "REVISION_CONFLICT" },
+      "action",
+    ),
+    ADMIN_PRIVACY_MESSAGES.staleRectification,
+  );
+});
+
+test("an export is downloaded from the response and stored nowhere; both representations share one document", async () => {
+  const document = { format: "eszter.privacy-export", version: 1 };
+  const api = createAdminApiClient(async () =>
+    jsonResponse({
+      request: { ...record, status: "closed", closedAtUtc: "2026-06-13T12:01:00.000Z" },
+      bookings: [scopeBooking],
+      export: { format: "json", fileName: "export-rgpd-demande-7.json", document },
+    }),
+  );
+  const result = await api.executePrivacyRequestAction({ action: "export", id: 7, format: "json" }, "csrf-token");
+  // The frozen document schema is enforced on the client too: a bare
+  // `{format, version}` is not a document.
+  assert.equal(result.ok, false);
+
+  assert.equal(exportMimeType("html"), "text/html;charset=utf-8");
+  assert.equal(exportMimeType("json"), "application/json;charset=utf-8");
+  assert.equal(exportFileContents({ format: "html", document: "<!doctype html>" }), "<!doctype html>");
+  assert.equal(exportFileContents({ format: "json", document: { a: 1 } }), JSON.stringify({ a: 1 }, null, 2));
+  // The file goes to the browser's download and the object URL is revoked;
+  // nothing is kept in state or sent anywhere else.
+  assert.match(centreCopy, /URL\.createObjectURL\(blob\)/);
+  assert.match(centreCopy, /URL\.revokeObjectURL\(url\)/);
+  assert.match(centreCopy, /anchor\.download = exported\.fileName/);
+  assert.match(ADMIN_PRIVACY_MESSAGES.exported, /conservé nulle part/);
 });

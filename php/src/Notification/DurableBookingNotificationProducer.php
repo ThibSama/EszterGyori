@@ -98,6 +98,29 @@ final class DurableBookingNotificationProducer implements BookingNotificationPro
     }
 
     /**
+     * ESZ-164 — one informational e-mail, due now, when a restriction of
+     * processing is lifted. Its identity is the booking reference plus the
+     * lift instant (the catch-up policy suffixes this type like a move), so
+     * two lifts of the same booking on different days are two e-mails and a
+     * replayed transaction is one. It supersedes nothing: the reminders that
+     * were held stay pending and simply become claimable again, and the
+     * stale sweep decides which of them still has a window.
+     */
+    public function restrictionLifted(Booking $booking, int $lifecycleEventId): void
+    {
+        $now = $this->clock->now();
+        $this->scheduler->schedule(
+            $booking->id,
+            $booking->reference,
+            'email',
+            'processing_restriction_lifted',
+            $now,
+            $now,
+            $lifecycleEventId,
+        );
+    }
+
+    /**
      * One reminder at T-24h. E-mail always; SMS only when the customer chose
      * to give a phone *and* the sms channel is enabled in the existing
      * `notifications.channels` setting (off by default, never enabled by the

@@ -26,4 +26,13 @@ interface BookingNotificationProducer
      *     `cancelled` event this notification belongs to.
      */
     public function cancelled(Booking $booking, int $lifecycleEventId): void;
+
+    /**
+     * ESZ-164 — the one informational e-mail a lifted restriction of
+     * processing sends, inside the lift's transaction.
+     *
+     * @param int $lifecycleEventId The booking_history id of the
+     *     `processing_restriction_lifted` event this notification belongs to.
+     */
+    public function restrictionLifted(Booking $booking, int $lifecycleEventId): void;
 }

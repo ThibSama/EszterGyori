@@ -12,8 +12,11 @@ use Eszter\Notification\NotificationChannelSettings;
 use Eszter\Notification\NotificationJobRepository;
 use Eszter\Notification\NotificationPolicy;
 use Eszter\Notification\NotificationScheduler;
+use Eszter\Privacy\PrivacyDataExport;
 use Eszter\Privacy\PrivacyRequestAdministration;
 use Eszter\Privacy\PrivacyRequestRepository;
+use Eszter\Privacy\PrivacyRightsExecution;
+use Eszter\Retention\BookingRetentionService;
 use Eszter\Support\Clock;
 
 /**
@@ -36,7 +39,8 @@ use Eszter\Support\Clock;
  * - {@see BookingServiceAdministration} — the back-office catalog reads and
  *   token-protected service mutations (ESZ-149);
  * - {@see PrivacyRequestAdministration} — the GDPR request centre's scope
- *   search, register reads and request recording (ESZ-163).
+ *   search, register reads and request recording (ESZ-163), and through
+ *   {@see PrivacyRightsExecution} the execution of the rights (ESZ-164).
  *
  * The class owns no domain rule of its own; it only routes. MySQL-owned
  * concurrency control stays in {@see BookingSerializationLock} and the
@@ -94,6 +98,9 @@ final class PdoBookingApi implements BookingApi
 
         $availabilityRepository = new AvailabilityRepository($database, $clock, $contract, $time, $serialization);
         $history = new BookingHistoryRepository($database, $clock);
+        // ESZ-164: the GDPR anonymisation runs the retention sweep's own
+        // erasure primitive, built on the same policy the sweep reads.
+        $retention = new BookingRetentionService($database, $clock, $contract->customerDataRetention, $jobs);
 
         $catalog = new BookingServiceCatalog($services, $combinations);
         $availability = new SlotAvailability(
@@ -106,29 +113,43 @@ final class PdoBookingApi implements BookingApi
             new SlotEngine($contract, $time),
         );
 
+        $lifecycle = new BookingLifecycle(
+            $database,
+            $contract,
+            $time,
+            $clock,
+            $serialization,
+            $availability,
+            $bookings,
+            $history,
+            $notificationProducer ?? new DurableBookingNotificationProducer($scheduler, $jobs, $clock, $channels),
+            $retention,
+        );
+        $privacyRequests = new PrivacyRequestRepository($database, $clock, $contract->privacyRequests);
+
         return new self(
             $catalog,
             $availability,
-            new BookingLifecycle(
-                $database,
-                $contract,
-                $time,
-                $clock,
-                $serialization,
-                $availability,
-                $bookings,
-                $history,
-                $notificationProducer ?? new DurableBookingNotificationProducer($scheduler, $jobs, $clock, $channels),
-            ),
+            $lifecycle,
             new BookingAdminReader($contract, $time, $clock, $availability, $bookings, $history),
             new AvailabilityAdministration($contract, $availabilityRepository, $time, $bookings),
             new BookingServiceAdministration($services, $combinations, $contract),
             // ESZ-163: the register reads the same domain artifact.
             new PrivacyRequestAdministration(
                 $contract->privacyRequests,
-                new PrivacyRequestRepository($database, $clock, $contract->privacyRequests),
+                $privacyRequests,
                 $bookings,
                 $time,
+                // ESZ-164: the rights act through the lifecycle, so every
+                // booking write keeps its one authority.
+                new PrivacyRightsExecution(
+                    $database,
+                    $contract->privacyRequests,
+                    $privacyRequests,
+                    $bookings,
+                    $lifecycle,
+                    new PrivacyDataExport($contract, $services, $history, $jobs, $clock),
+                ),
             ),
         );
     }
@@ -227,5 +248,11 @@ final class PdoBookingApi implements BookingApi
     public function adminRecordPrivacyRequest(array $request): array
     {
         return $this->privacyRequests->adminRecordPrivacyRequest($request);
+    }
+
+    /** @inheritDoc */
+    public function adminExecutePrivacyRequestAction(array $request): array
+    {
+        return $this->privacyRequests->adminExecutePrivacyRequestAction($request);
     }
 }

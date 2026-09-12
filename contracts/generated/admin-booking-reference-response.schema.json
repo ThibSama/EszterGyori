@@ -141,6 +141,26 @@
             }
           ]
         },
+        "customerDataErasedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "processingRestrictedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "createdAt": {
           "type": "string"
         },
@@ -166,6 +186,8 @@
         "privacyNoticePresentedAtUtc",
         "cancelledAtUtc",
         "cancellationReason",
+        "customerDataErasedAt",
+        "processingRestrictedAt",
         "createdAt",
         "updatedAt"
       ],
@@ -213,7 +235,10 @@
                   "created",
                   "moved",
                   "cancelled",
-                  "customer_updated"
+                  "customer_updated",
+                  "customer_data_erased",
+                  "processing_restricted",
+                  "processing_restriction_lifted"
                 ]
               },
               "actor": {
