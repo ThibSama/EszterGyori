@@ -1010,9 +1010,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc make libpng
       rendered.contactAnchors.some((link) => link.href === content.contact.emailCta.href),
     "the contact CTAs do not resolve as declared",
   );
+  // ESZ-165: the footer is the editable envelope links followed by the two
+  // fixed legal destinations, in that order. The envelope check stays exact
+  // over its own prefix; the legal pair is a constant of the contract, never a
+  // `SiteContent` field, so it is asserted literally and after the envelope.
+  const legalFooterHrefs = ["/mentions-legales", "/confidentialite"];
+  const renderedFooterHrefs = rendered.footerLinks.map((link) => link.href);
+  const envelopeFooterHrefs = content.footer.links.map((link) => link.href);
   assert(
-    JSON.stringify(rendered.footerLinks.map((link) => link.href)) === JSON.stringify(content.footer.links.map((link) => link.href)),
+    JSON.stringify(renderedFooterHrefs.slice(0, envelopeFooterHrefs.length)) === JSON.stringify(envelopeFooterHrefs),
     "the footer links diverge from the envelope",
+  );
+  assert(
+    JSON.stringify(renderedFooterHrefs.slice(envelopeFooterHrefs.length)) === JSON.stringify(legalFooterHrefs),
+    "the footer does not end with the two fixed ESZ-165 legal destinations in order",
   );
   assert(rendered.brand === content.navigation.brandLabel, "the brand label diverges from the envelope");
   assert(rendered.heroButtonLabel === content.hero.instagramAriaLabel, "the hero Instagram button loses its declared aria-label");
@@ -1346,7 +1357,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc make libpng
   process.stdout.write(`layout: ${layoutResults.join("; ")}\n`);
   process.stdout.write(`performance (lab measurements on the disposable local origin, no SLO): ${perfResults.join("; ")}\n`);
   process.stdout.write("accessibility: skip link first in the keyboard order and visible on focus, Enter lands on #main-content; mobile menu open focuses its first link, Escape and the backdrop close it with aria-expanded and focus restored to the trigger; 320 px reflow holds without overflow\n");
-  process.stdout.write(`envelope fidelity: hero + gallery alts, ${content.navigation.links.length} nav links, gallery/contact/footer links match /api/content\n`);
+  process.stdout.write(`envelope fidelity: hero + gallery alts, ${content.navigation.links.length} nav links, gallery/contact/footer links match /api/content, footer ends with the two legal pages\n`);
 }
 
 let failure = null;

@@ -176,7 +176,10 @@ final class PrivacyRequestSqlTest extends TestCase
         }
 
         $this->expectException(BookingNotFoundException::class);
-        $this->admin->adminPrivacyRequestSearch(['mode' => 'reference', 'reference' => 'bk_ffffffffffffffffffffffffffffffff']);
+        $this->admin->adminPrivacyRequestSearch([
+            'mode' => 'reference',
+            'reference' => 'bk_ffffffffffffffffffffffffffffffff',
+        ]);
     }
 
     public function testAnErasedBookingIsNotIdentifiableByReferenceEither(): void
@@ -236,7 +239,10 @@ final class PrivacyRequestSqlTest extends TestCase
             ['email' => $this->retention->erasedCustomerEmail],
         ));
 
-        $placeholder = $this->admin->adminPrivacyRequestSearch(['mode' => 'email', 'email' => $this->retention->erasedCustomerEmail]);
+        $placeholder = $this->admin->adminPrivacyRequestSearch([
+            'mode' => 'email',
+            'email' => $this->retention->erasedCustomerEmail,
+        ]);
         self::assertSame([], $placeholder['matches']);
         self::assertFalse($placeholder['page']['hasMore']);
 
@@ -269,7 +275,17 @@ final class PrivacyRequestSqlTest extends TestCase
         self::assertNull($recorded['closedAtUtc']);
         self::assertSame([$c, $a], $recorded['bookingReferences'], 'selection order is kept, and b is absent');
         self::assertSame(
-            ['id', 'type', 'status', 'receivedDate', 'deadlineDate', 'closedAtUtc', 'bookingReferences', 'createdAt', 'updatedAt'],
+            [
+                'id',
+                'type',
+                'status',
+                'receivedDate',
+                'deadlineDate',
+                'closedAtUtc',
+                'bookingReferences',
+                'createdAt',
+                'updatedAt',
+            ],
             array_keys($recorded),
         );
 
@@ -284,7 +300,16 @@ final class PrivacyRequestSqlTest extends TestCase
             'name',
         );
         self::assertSame(
-            ['id', 'request_type', 'status', 'received_date', 'deadline_date', 'closed_at_utc', 'created_at', 'updated_at'],
+            [
+                'id',
+                'request_type',
+                'status',
+                'received_date',
+                'deadline_date',
+                'closed_at_utc',
+                'created_at',
+                'updated_at',
+            ],
             array_map(static fn ($column): string => (string) $column, $columns),
         );
         self::assertSame(2, $this->rowCount(
@@ -317,7 +342,11 @@ final class PrivacyRequestSqlTest extends TestCase
             ] as [$exception, $references]
         ) {
             try {
-                $this->admin->adminRecordPrivacyRequest(['type' => 'erasure', 'receivedDate' => '2026-06-13', 'bookingReferences' => $references]);
+                $this->admin->adminRecordPrivacyRequest([
+                    'type' => 'erasure',
+                    'receivedDate' => '2026-06-13',
+                    'bookingReferences' => $references,
+                ]);
                 self::fail('a request with ' . json_encode($references) . ' was recorded');
             } catch (BookingNotFoundException | BookingValidationException $caught) {
                 self::assertInstanceOf($exception, $caught);
@@ -326,7 +355,11 @@ final class PrivacyRequestSqlTest extends TestCase
         self::assertSame(0, $this->rowCount('SELECT COUNT(*) AS n FROM privacy_requests'));
 
         $this->expectException(BookingValidationException::class);
-        $this->admin->adminRecordPrivacyRequest(['type' => 'opposition', 'receivedDate' => '2026-06-13', 'bookingReferences' => []]);
+        $this->admin->adminRecordPrivacyRequest([
+            'type' => 'opposition',
+            'receivedDate' => '2026-06-13',
+            'bookingReferences' => [],
+        ]);
     }
 
     // --- The lifecycle ------------------------------------------------------
@@ -532,7 +565,8 @@ final class PrivacyRequestSqlTest extends TestCase
         $page = $html['export']['document'];
         self::assertIsString($page);
         self::assertStringStartsWith('<!doctype html><html lang="fr">', $page);
-        foreach (['Cliente Exemple', 'cliente@example.test', 'Sourcils', $live, $gone, 'anonymisées', '90 jours'] as $needle) {
+        $needles = ['Cliente Exemple', 'cliente@example.test', 'Sourcils', $live, $gone, 'anonymisées', '90 jours'];
+        foreach ($needles as $needle) {
             self::assertStringContainsString($needle, $page);
         }
         self::assertSame(1, substr_count($page, 'Cliente Exemple'), 'the anonymised link must not carry a name');
@@ -546,7 +580,10 @@ final class PrivacyRequestSqlTest extends TestCase
             'id' => $portability,
             'format' => 'json',
         ]);
-        self::assertSame($document['bookings'][0]['customer'], $exported['export']['document']['bookings'][0]['customer']);
+        self::assertSame(
+            $document['bookings'][0]['customer'],
+            $exported['export']['document']['bookings'][0]['customer'],
+        );
         self::assertSame('closed', $exported['request']['status']);
         $erasure = $this->record('erasure', [$live]);
         try {
@@ -571,11 +608,18 @@ final class PrivacyRequestSqlTest extends TestCase
         $future = $this->insertBooking('2026-06-15 07:00:00.000', 'cliente@example.test');
         $already = $this->insertBooking('2026-06-22 07:00:00.000', 'cliente@example.test');
         $futureId = $this->bookingId($future);
-        $this->jobs->enqueue($futureId, 'email', 'booking_reminder', 'anon.reminder.pending', $this->clock->now()->modify('+1 day'));
+        $this->jobs->enqueue(
+            $futureId,
+            'email',
+            'booking_reminder',
+            'anon.reminder.pending',
+            $this->clock->now()->modify('+1 day'),
+        );
         $this->jobs->enqueue($futureId, 'email', 'booking_confirmation', 'anon.confirmation.due', $this->clock->now());
         $this->jobs->enqueue($futureId, 'email', 'booking_moved', 'anon.moved.sent', $this->clock->now());
         $this->database->run(
-            "UPDATE notification_jobs SET status = 'sent', sent_at_utc = :sent WHERE idempotency_key = 'anon.moved.sent'",
+            "UPDATE notification_jobs SET status = 'sent', sent_at_utc = :sent"
+            . " WHERE idempotency_key = 'anon.moved.sent'",
             ['sent' => '2026-06-13 11:00:00.000'],
         );
         // One job already claimed by a runner: its lease must not survive.
@@ -596,13 +640,21 @@ final class PrivacyRequestSqlTest extends TestCase
         self::assertNull($this->bookings->find($future)?->customerDataErasedAt);
 
         $this->clock->advanceSeconds(60);
-        $result = $this->api->adminExecutePrivacyRequestAction(['action' => 'anonymize', 'id' => $id, 'confirm' => true]);
+        $result = $this->api->adminExecutePrivacyRequestAction([
+            'action' => 'anonymize',
+            'id' => $id,
+            'confirm' => true,
+        ]);
         self::assertSame('closed', $result['request']['status']);
         self::assertSame('2026-06-13T12:01:00.000Z', $result['request']['closedAtUtc']);
         self::assertSame(
             [[$future, '2026-06-13T12:01:00.000Z', null], [$already, '2026-06-01T00:00:00.000Z', null]],
             array_map(
-                static fn (array $entry): array => [$entry['reference'], $entry['customerDataErasedAt'], $entry['customer']],
+                static fn (array $entry): array => [
+                    $entry['reference'],
+                    $entry['customerDataErasedAt'],
+                    $entry['customer'],
+                ],
                 $result['bookings'],
             ),
         );
@@ -642,7 +694,10 @@ final class PrivacyRequestSqlTest extends TestCase
         self::assertSame($future, $events[0]['reference']);
         self::assertSame('customer_data_erased', $events[0]['event_type']);
         // MySQL stores JSON keys in its own order; the facts are what matter.
-        self::assertEquals(['privacyRequestId' => $id, 'retiredJobs' => 2], json_decode((string) $events[0]['details_json'], true));
+        self::assertEquals(
+            ['privacyRequestId' => $id, 'retiredJobs' => 2],
+            json_decode((string) $events[0]['details_json'], true),
+        );
         self::assertStringNotContainsString('example.test', (string) $events[0]['details_json']);
         self::assertSame('2026-06-01 00:00:00.000', $this->bookings->find($already)?->customerDataErasedAt);
 
@@ -663,8 +718,20 @@ final class PrivacyRequestSqlTest extends TestCase
         $now = $this->clock->now();
         $this->jobs->enqueue($bookingId, 'email', 'booking_reminder', 'restrict.reminder.first', $now);
         $this->jobs->enqueue($bookingId, 'email', 'booking_reminder', 'restrict.reminder.second', $now);
-        $this->jobs->enqueue($bookingId, 'email', 'booking_reminder', 'restrict.reminder.soon', $now->modify('+10 minutes'));
-        $this->jobs->enqueue($bookingId, 'email', 'booking_reminder', 'restrict.reminder.future', $now->modify('+19 hours'));
+        $this->jobs->enqueue(
+            $bookingId,
+            'email',
+            'booking_reminder',
+            'restrict.reminder.soon',
+            $now->modify('+10 minutes'),
+        );
+        $this->jobs->enqueue(
+            $bookingId,
+            'email',
+            'booking_reminder',
+            'restrict.reminder.future',
+            $now->modify('+19 hours'),
+        );
         $id = $this->record('restriction', [$reference]);
 
         // Tick 1: both due reminders are claimed; the restriction lands after
@@ -809,7 +876,11 @@ final class PrivacyRequestSqlTest extends TestCase
             return null;
         }
 
-        return [(string) $row['reference'], (string) $row['event_type'], json_decode((string) $row['details_json'], true)];
+        return [
+            (string) $row['reference'],
+            (string) $row['event_type'],
+            json_decode((string) $row['details_json'], true),
+        ];
     }
 
     private function runner(RecordingTransport $transport): NotificationRunner

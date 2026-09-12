@@ -60,8 +60,8 @@ const routeBudgets = [
   },
   { route: "reservation.html", total: 300_000, note: "The public booking flow (ESZ-050)." },
   { route: "admin.html", total: 315_000, note: "The admin shell." },
-  { route: "admin/bookings.html", total: 300_000, note: "The booking calendar (ESZ-061)." },
-  { route: "admin/availability.html", total: 300_000, note: "The availability editor (ESZ-063/064)." },
+  { route: "admin/bookings.html", total: 305_000, note: "The booking calendar (ESZ-061)." },
+  { route: "admin/availability.html", total: 305_000, note: "The availability editor (ESZ-063/064)." },
   { route: "admin/login.html", total: 295_000, note: "The one route an unauthenticated person reaches." },
 ];
 
@@ -112,8 +112,30 @@ const routeBudgets = [
  * copy (ESZ-153) and the two-field identity form (ESZ-160). Each ceiling sits a
  * few hundred bytes above what the build produces, so the ratchet keeps
  * speaking on the next unexplained growth; the per-route totals were not moved.
+ *
+ * Package 10.3 (ESZ-161 to ESZ-166) moved the JavaScript ceiling from 355 000
+ * to 381 000 gzipped bytes and, for the first time, two per-route totals: the
+ * booking calendar and the availability editor from 300 000 to 305 000 each.
+ * Measured the same way, at the package-wide gate on top of 0bfbca07:
+ *
+ *  380 469 B  all JavaScript            (+27 342 B over the 10.2 build);
+ *  304 612 B  admin/bookings.html       total;
+ *  304 626 B  admin/availability.html   total.
+ *
+ * The acceptance correction then let the public footer links wrap at 320 px,
+ * which ships as 380 479 / 304 619 / 304 634 B — a few bytes of class names,
+ * still under the same ceilings.
+ *
+ * No frontend dependency changed and the lockfile did not move. The growth is
+ * the product: the admin GDPR request centre (ESZ-163/164), the legal settings
+ * (ESZ-165) and the two public legal pages. The two admin routes crossed their
+ * ceiling through what every admin route imports — the shared admin API client
+ * and the shell navigation that now carries Settings — not through anything
+ * they render themselves. Each ceiling again sits a few hundred bytes above the
+ * build, so the ratchet keeps speaking; CSS and the other route totals were not
+ * moved.
  */
-const sharedBudgets = { css: 17_000, totalJavaScript: 355_000 };
+const sharedBudgets = { css: 17_000, totalJavaScript: 381_000 };
 
 const failures = [];
 const reported = [];

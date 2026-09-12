@@ -347,9 +347,10 @@ async function main() {
   assert(shell.chromeOverflow, "the admin chrome overflows horizontally at 1280 px");
 
   // The lower band (ESZ-154 canonical architecture): help, the signed-in account
-  // with its sign-out, then settings last. Both bookends are inert because no
-  // support screen and no settings screen exist — "Paramètres" is reserved for
-  // real account/application settings and must not be faked into a dead link.
+  // with its sign-out, then settings last. Help is still inert because no
+  // support screen exists; Settings went live with ESZ-165 — `/admin/settings`
+  // is the application settings page — so it must be a real link now, exactly
+  // as the first-level entries became links the moment their routes existed.
   const secondary = shell.secondary;
   assert(secondary, "the admin chrome exposes no secondary band below the navigation");
   assert(
@@ -362,16 +363,32 @@ async function main() {
     `the lower band is not Help → account → Settings: ${bandOrder}`,
   );
   assert(secondary.hasLogout, "the lower band carries no sign-out control");
-  for (const entry of secondary.entries) {
-    assert(
-      !entry.link && entry.pending && entry.ariaDisabled === "true",
-      `${entry.label} must stay a visibly pending, inert control rather than a dead link (link=${entry.link}, href=${entry.href})`,
-    );
-    assert(
-      entry.tabIndex === null,
-      `${entry.label} is inert and must take no tab stop (tabindex=${entry.tabIndex})`,
-    );
-  }
+  const bandEntries = JSON.stringify(secondary.entries.map((entry) => entry.label));
+  assert(
+    bandEntries === JSON.stringify(["Besoin d’aide", "Paramètres"]),
+    `the lower band entries are not exactly Help and Settings: ${bandEntries}`,
+  );
+  const [helpEntry, settingsEntry] = secondary.entries;
+  assert(
+    !helpEntry.link && helpEntry.pending && helpEntry.ariaDisabled === "true",
+    `${helpEntry.label} must stay a visibly pending, inert control rather than a dead link (link=${helpEntry.link}, href=${helpEntry.href})`,
+  );
+  assert(
+    helpEntry.tabIndex === null,
+    `${helpEntry.label} is inert and must take no tab stop (tabindex=${helpEntry.tabIndex})`,
+  );
+  assert(
+    settingsEntry.link && settingsEntry.href === "/admin/settings",
+    `${settingsEntry.label} must be a live link to /admin/settings (link=${settingsEntry.link}, href=${settingsEntry.href})`,
+  );
+  assert(
+    !settingsEntry.pending && settingsEntry.ariaDisabled === null,
+    `${settingsEntry.label} is live and must not read as pending or disabled (pending=${settingsEntry.pending}, aria-disabled=${settingsEntry.ariaDisabled})`,
+  );
+  assert(
+    settingsEntry.tabIndex !== "-1",
+    `${settingsEntry.label} is live and must stay keyboard reachable (tabindex=${settingsEntry.tabIndex})`,
+  );
   assert(shell.publicReturn, "the chrome no longer offers a way back to the public site");
 
   // Keyboard traversal: only the destinations that exist are reachable by Tab,
@@ -388,9 +405,11 @@ async function main() {
       JSON.stringify(["Vue d’ensemble", "Contenu du site", "Calendrier", "Prestations"]),
     `the navigation tab stops are not exactly the four live destinations: ${JSON.stringify(navTabStops.nav)}`,
   );
+  // The band's tab stops are the sign-out control and the live Settings link,
+  // in DOM order; the pending Help entry is skipped rather than a dead end.
   assert(
-    JSON.stringify(navTabStops.band) === JSON.stringify(["Se déconnecter"]),
-    `the lower band must offer the sign-out control and nothing inert: ${JSON.stringify(navTabStops.band)}`,
+    JSON.stringify(navTabStops.band) === JSON.stringify(["Se déconnecter", "Paramètres"]),
+    `the lower band must offer sign-out and the live Settings link and nothing inert: ${JSON.stringify(navTabStops.band)}`,
   );
 
   // Narrow: the same DOM collapses to one scrollable rail, so the work area
@@ -1618,8 +1637,8 @@ async function main() {
   process.stdout.write("bad credentials: refused indistinguishably via role=alert, 0 authenticated session rows, session stayed anonymous; the same form then signed in\n");
   process.stdout.write(`valid login: session row ${row.id.slice(0, 8)}… matches the cookie, badge = ${credentials.email}, protected calendar reached\n`);
   const clickable = shell.entries.filter((entry) => entry.link);
-  const inert = shell.entries.length - clickable.length + secondary.entries.length;
-  process.stdout.write(`admin shell: ${shell.entries.length} first-level entries (${shell.entries.map((entry) => entry.label).join(" › ")}), ${clickable.length} clickable (${clickable.map((entry) => entry.href).join(", ")}) and both reached from the shell, ${inert} pending and inert with no tab stop; lower band ${secondary.order.join(" › ")} + sign-out; availability still reachable at /admin/availability and marked Calendrier; aria-current + weight ${activeEntry.weight} + painted marker on the current entry only; ${Math.round(shell.sidebarWidth)} px sticky sidebar at 1280 px, one navigation over a ${Math.round(narrowShell.chromeHeight)} px chrome and a full-width workspace at 375 px\n`);
+  const inert = shell.entries.length - clickable.length + secondary.entries.filter((entry) => entry.pending).length;
+  process.stdout.write(`admin shell: ${shell.entries.length} first-level entries (${shell.entries.map((entry) => entry.label).join(" › ")}), ${clickable.length} clickable (${clickable.map((entry) => entry.href).join(", ")}) and both reached from the shell, ${inert} pending and inert with no tab stop; lower band ${secondary.order.join(" › ")} + sign-out, Paramètres live at /admin/settings; availability still reachable at /admin/availability and marked Calendrier; aria-current + weight ${activeEntry.weight} + painted marker on the current entry only; ${Math.round(shell.sidebarWidth)} px sticky sidebar at 1280 px, one navigation over a ${Math.round(narrowShell.chromeHeight)} px chrome and a full-width workspace at 375 px\n`);
   process.stdout.write(`overview: /admin renders Vue d’ensemble (no editor), ${overview.panels.length} labelled panels (${overview.panels.join(" › ")}) over the reused operations summary, quick actions ${overview.actions.map((action) => `${action.key}:${action.status}`).join(", ")}, no invented metric, no horizontal overflow at 1280/768/375 px; CMS reached at /admin/content and functional\n`);
   process.stdout.write(`focused CMS: /admin/content opens on “Page d’accueil › Hero” (#editor-hero) with exactly one section editor in the document; an unsaved edit reached the live preview, survived a move to Contact and back, and wrote nothing to the server (draft revision ${draftAfterNavigation.body.revision} unchanged); desktop 1280 px keeps the preview sticky beside the editor, 834 px and 375 px switch between Éditeur and Aperçu without losing the section or the edit\n`);
     process.stdout.write(`content workflow: hero suffix -> "${marker}" saved (revision ${draftBefore.body.revision} -> ${draftSaved.body.revision}; published head before: ${publishedHeadBefore}), published, public page shows ${MARKER}\n`);

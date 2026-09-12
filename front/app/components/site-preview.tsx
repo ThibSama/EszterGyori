@@ -452,7 +452,7 @@ function Footer({ content }: { content: FooterContent }) {
           &copy; {new Date().getFullYear()} {content.copyrightName}.{" "}
           {content.copyrightSuffix}
         </p>
-        <div className="flex gap-6 text-sm text-warm-600">
+        <div className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm text-warm-600">
           {content.links.map((link) => (
             <a
               key={link.id}

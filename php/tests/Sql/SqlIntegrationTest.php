@@ -1208,7 +1208,9 @@ final class SqlIntegrationTest extends TestCase
                     $booking->id,
                     'email',
                     'booking_confirmation',
-                    $booking->reference . '.email.booking_confirmation',
+                    // The frozen key pattern is lowercase-only, and the real
+                    // derivation lowercases the public reference (XXXX-XXXX).
+                    strtolower($booking->reference . '.email.booking_confirmation'),
                     $this->clock->now(),
                 );
                 throw new \RuntimeException('forced producer failure');
