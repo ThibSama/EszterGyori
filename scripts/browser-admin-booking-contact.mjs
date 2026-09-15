@@ -2,10 +2,29 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// ESZ-099: the login half of this proof is the shared one. The local copies of
+// the CDP client, the DOM helpers and the sign-in sequence had drifted — the
+// login was considered ready as soon as the statically exported form existed,
+// and the local click reported success for a button it had merely found, even
+// a disabled one. Both are the shared helpers' job, and only theirs.
+import {
+  CdpClient,
+  addParisDays,
+  clickButton,
+  clickButtonWhere,
+  evaluate,
+  freePort,
+  parisDayCellPrefix,
+  parisToday,
+  phpString,
+  setReactInput,
+  signIn,
+  waitFor,
+} from "./browser-stack.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const chromeBinary = process.env.ESZTER_BOOKING_CONTACT_CHROME ?? "google-chrome";
@@ -55,140 +74,6 @@ function run(command, args, options = {}) {
   return result.stdout?.trim() ?? "";
 }
 
-async function waitFor(check, description, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError = null;
-  while (Date.now() < deadline) {
-    try {
-      const value = await check();
-      if (value) return value;
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
-  }
-  fail(`${description} did not become ready${lastError ? `: ${lastError.message}` : ""}`);
-}
-
-async function freePort() {
-  return new Promise((resolvePort, rejectPort) => {
-    const probe = createServer();
-    probe.once("error", rejectPort);
-    probe.listen(0, "127.0.0.1", () => {
-      const address = probe.address();
-      const port = typeof address === "object" && address ? address.port : null;
-      probe.close((error) => {
-        if (error) rejectPort(error);
-        else if (port === null) rejectPort(new Error("No free TCP port was allocated."));
-        else resolvePort(port);
-      });
-    });
-  });
-}
-
-function parisToday() {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Europe/Paris",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const pick = (type) => parts.find((part) => part.type === type)?.value;
-  return `${pick("year")}-${pick("month")}-${pick("day")}`;
-}
-
-function phpString(value) {
-  return `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
-}
-
-/** The exact label prefix the calendar's day cells carry (formatParisDate + ", "). */
-function parisDayCellPrefix(date) {
-  const parts = new Intl.DateTimeFormat("fr-FR", {
-    timeZone: "UTC",
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  }).formatToParts(new Date(`${date}T12:00:00Z`));
-  const pick = (type) => parts.find((part) => part.type === type)?.value;
-  return `${pick("weekday")} ${pick("day")} ${pick("month")} ${pick("year")}, `;
-}
-
-function addParisDays(date, days) {
-  const value = new Date(`${date}T12:00:00Z`);
-  value.setUTCDate(value.getUTCDate() + days);
-  return value.toISOString().slice(0, 10);
-}
-
-class CdpClient {
-  constructor(url) {
-    this.socket = new WebSocket(url);
-    this.nextId = 1;
-    this.pending = new Map();
-    this.ready = new Promise((resolveReady, rejectReady) => {
-      this.socket.addEventListener("open", resolveReady, { once: true });
-      this.socket.addEventListener("error", () => rejectReady(new Error("Chrome DevTools connection failed")), { once: true });
-    });
-    this.socket.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data);
-      if (!message.id) return;
-      const pending = this.pending.get(message.id);
-      if (!pending) return;
-      this.pending.delete(message.id);
-      if (message.error) pending.reject(new Error(message.error.message));
-      else pending.resolve(message.result);
-    });
-  }
-
-  async send(method, params = {}) {
-    await this.ready;
-    const id = this.nextId++;
-    const result = new Promise((resolveResult, rejectResult) => {
-      this.pending.set(id, { resolve: resolveResult, reject: rejectResult });
-    });
-    this.socket.send(JSON.stringify({ id, method, params }));
-    return result;
-  }
-
-  close() {
-    this.socket.close();
-  }
-}
-
-async function evaluate(cdp, expression, awaitPromise = false) {
-  const result = await cdp.send("Runtime.evaluate", { expression, awaitPromise, returnByValue: true });
-  if (result.exceptionDetails) fail(result.exceptionDetails.exception?.description ?? "browser evaluation failed");
-  return result.result.value;
-}
-
-async function setReactField(cdp, id, value) {
-  const changed = await evaluate(cdp, `(() => {
-    const field = document.getElementById(${JSON.stringify(id)});
-    const prototype = field instanceof HTMLInputElement
-      ? HTMLInputElement.prototype
-      : field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : null;
-    const setter = prototype && Object.getOwnPropertyDescriptor(prototype, "value")?.set;
-    if (!field || !setter) return false;
-    setter.call(field, ${JSON.stringify(value)});
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-    return true;
-  })()`);
-  assert(changed, `could not edit #${id}`);
-  await waitFor(
-    () => evaluate(cdp, `document.getElementById(${JSON.stringify(id)})?.value === ${JSON.stringify(value)}`),
-    `#${id} edit`,
-  );
-}
-
-async function clickButton(cdp, label) {
-  const clicked = await evaluate(cdp, `(() => {
-    const button = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)});
-    button?.click();
-    return Boolean(button);
-  })()`);
-  assert(clicked, `could not click ${label}`);
-}
-
 async function openBooking(cdp, name, localDate) {
   // ESZ-159: the calendar opens on the *week* now, not the month. The day head
   // carries the same accessible-name prefix the month cell did, so the lookup is
@@ -209,11 +94,10 @@ async function openBooking(cdp, name, localDate) {
     `calendar day cell ${localDate}`,
     45_000,
   );
-  const dayCell = await evaluate(cdp, `(() => {
-    const button = [...document.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-label")?.startsWith(${JSON.stringify(prefix)}));
-    button?.click();
-    return Boolean(button);
-  })()`);
+  const dayCell = await clickButtonWhere(
+    cdp,
+    `candidate.getAttribute("aria-label")?.startsWith(${JSON.stringify(prefix)})`,
+  );
   assert(dayCell, `could not open the calendar day ${localDate}`);
   await waitFor(
     () => evaluate(cdp, `[...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Jour" && button.getAttribute("aria-pressed") === "true")`),
@@ -223,11 +107,10 @@ async function openBooking(cdp, name, localDate) {
     () => evaluate(cdp, `[...document.querySelectorAll("button")].some((button) => button.textContent?.includes(${JSON.stringify(name)}))`),
     `day-view booking ${name}`,
   );
-  const opened = await evaluate(cdp, `(() => {
-    const button = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.includes(${JSON.stringify(name)}));
-    button?.click();
-    return Boolean(button);
-  })()`);
+  const opened = await clickButtonWhere(
+    cdp,
+    `candidate.textContent?.includes(${JSON.stringify(name)})`,
+  );
   assert(opened, `could not open booking ${name}`);
   await waitFor(
     () => evaluate(cdp, `document.querySelector('aside h2')?.textContent?.trim() === ${JSON.stringify(name)}`),
@@ -385,34 +268,21 @@ async function main() {
   const cdp = new CdpClient(target.webSocketDebuggerUrl);
   await cdp.send("Page.enable");
   await cdp.send("Runtime.enable");
-  await cdp.send("Page.navigate", { url: `${origin}/admin/login` });
-  await waitFor(() => evaluate(cdp, `document.readyState === "complete" && Boolean(document.getElementById("admin-login-email"))`), "admin login page");
-  await setReactField(cdp, "admin-login-email", credentials.email);
-  await setReactField(cdp, "admin-login-password", credentials.password);
-  await clickButton(cdp, "Se connecter");
-  // ESZ-155: signing in lands on `/admin`, which is the operational overview.
-  // The page state is dumped on failure the way the other admin proofs do it,
-  // so a timeout here names what the browser was actually showing.
-  try {
-    await waitFor(() => evaluate(cdp, `location.pathname === "/admin"`), "real admin login", 45_000);
-  } catch (loginError) {
-    const state = await evaluate(cdp, `JSON.stringify({
-      path: location.pathname,
-      readyState: document.readyState,
-      bodyHead: (document.body?.innerText ?? "").slice(0, 300),
-    })`);
-    throw new Error(`${loginError.message}; page state: ${state}`);
-  }
+  // ESZ-155: signing in lands on `/admin`, the operational overview. The shared
+  // sign-in waits for the hydrated form and its completed session bootstrap
+  // before typing, resends when the anonymous CSRF token rotated under it, and
+  // only reports success once `/admin` is showing the authenticated surface.
+  await signIn(cdp, origin, credentials.email, credentials.password);
 
   await cdp.send("Page.navigate", { url: `${origin}/admin/bookings` });
   await waitFor(() => evaluate(cdp, `location.pathname === "/admin/bookings" && document.querySelector("h1")?.textContent?.trim() === "Calendrier"`), "admin booking calendar", 45_000);
   await openBooking(cdp, initialContact.customerName, bookingDate);
   await clickButton(cdp, "Modifier les coordonnées");
   await waitFor(() => evaluate(cdp, `Boolean(document.getElementById("contact-name"))`), "contact editor");
-  await setReactField(cdp, "contact-name", updatedContact.customerName);
-  await setReactField(cdp, "contact-email", updatedContact.customerEmail);
-  await setReactField(cdp, "contact-phone", updatedContact.customerPhone);
-  await setReactField(cdp, "contact-note", updatedContact.customerNote);
+  await setReactInput(cdp, "contact-name", updatedContact.customerName);
+  await setReactInput(cdp, "contact-email", updatedContact.customerEmail);
+  await setReactInput(cdp, "contact-phone", updatedContact.customerPhone);
+  await setReactInput(cdp, "contact-note", updatedContact.customerNote);
   await clickButton(cdp, "Enregistrer les coordonnées");
   await assertDetail(cdp, updatedContact, "server-returned contact detail");
 
@@ -428,7 +298,7 @@ async function main() {
 
   await clickButton(cdp, "Modifier les coordonnées");
   await waitFor(() => evaluate(cdp, `Boolean(document.getElementById("contact-email"))`), "reopened contact editor");
-  await setReactField(cdp, "contact-email", "");
+  await setReactInput(cdp, "contact-email", "");
   await clickButton(cdp, "Enregistrer les coordonnées");
   await waitFor(
     () => evaluate(cdp, `Boolean(document.getElementById("contact-email-error")?.offsetParent) && Boolean(document.getElementById("contact-name"))`),

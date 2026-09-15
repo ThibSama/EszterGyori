@@ -512,6 +512,40 @@ export async function adminSession(cdp, origin, cookieName, csrfHeader) {
 }
 
 /**
+ * Waits until the login surface is *operational*, not merely served.
+ *
+ * `/admin/login` ships as prerendered HTML, so `readyState === "complete"` plus
+ * a `#admin-login-email` element proves only that the static export arrived:
+ * React may not have hydrated yet, and a value written into a field whose
+ * change handler is not attached is silently dropped when hydration commits —
+ * the click that follows then submits an empty form and the runner sits on
+ * `/admin/login` until it times out.
+ *
+ * The invariant waited on is application state, never elapsed time: a
+ * completed resource-timing entry for `/api/auth/session`. That request is
+ * issued by `AdminLoginForm`'s mount effect, and effects run only after
+ * hydration commits, so its completion proves both that the form is hydrated
+ * and that the anonymous session the CSRF token binds to exists. The submit
+ * control is required present and enabled in the same breath.
+ */
+export async function waitForAdminLoginReady(cdp) {
+  await waitFor(
+    () => evaluate(cdp, `(() => {
+      if (document.readyState !== "complete") return false;
+      const email = document.getElementById("admin-login-email");
+      const password = document.getElementById("admin-login-password");
+      const submit = [...document.querySelectorAll("button[type=submit]")]
+        .find((candidate) => candidate.textContent?.trim() === "Se connecter");
+      if (!email || !password || !submit || submit.disabled) return false;
+      return performance
+        .getEntriesByType("resource")
+        .some((entry) => entry.name.includes("/api/auth/session") && entry.responseEnd > 0);
+    })()`),
+    "hydrated admin login form whose session bootstrap completed",
+  );
+}
+
+/**
  * Signs in through the real login form. The login form carries an
  * anonymous-session CSRF token; a rotation race is answered by the form with
  * a "session renewed, resend" message and a transient stack 500 is equally
@@ -520,10 +554,7 @@ export async function adminSession(cdp, origin, cookieName, csrfHeader) {
  */
 export async function signIn(cdp, origin, email, password, click = clickButton) {
   await cdp.send("Page.navigate", { url: `${origin}/admin/login` });
-  await waitFor(
-    () => evaluate(cdp, `document.readyState === "complete" && Boolean(document.getElementById("admin-login-email"))`),
-    "admin login page",
-  );
+  await waitForAdminLoginReady(cdp);
   for (let attempt = 0; attempt < 4; attempt++) {
     await setReactInput(cdp, "admin-login-email", email);
     await setReactInput(cdp, "admin-login-password", password);
