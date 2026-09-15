@@ -213,7 +213,21 @@ Since ESZ-150 migration 0017 adds `booking_service_combinations` and a nullable
 and the "services per appointment" maximum is a `system_settings` row
 (`booking.max_services_per_appointment`) that the back-office writes — absent, the
 default is 1 and the reservation flow stays single-service. Combinations are
-validated only from `/admin/services`; there is no CLI for them.
+administered only from `/admin/services`; there is no CLI for them.
+
+Domain version 15 corrects that rule from an allowlist to **default-allow**: every
+set of up to the configured maximum of *active* services is bookable, for the sum of
+its component durations, with no row at all. `booking_service_combinations` is now an
+exception layer — `is_active = 0` disables exactly that membership, a non-null
+`duration_minutes` pins a custom duration for it — so raising the maximum is the whole
+configuration and Esther validates nothing to make a normal combination work.
+Migration 0024 makes that expressible and is additive in both statements: it makes
+`duration_minutes` NULLable (NULL = "no custom duration, the sum applies"; every
+existing value, and every existing `is_active = 0` row, is preserved exactly, so no
+disabled exception is re-enabled and no validated duration is recomputed) and drops
+`fk_bookings_combination`, because a booking of an implicit combination stores its
+canonical key while no override row exists. No read joined the two tables and no code
+path deletes a combination row, so nothing depended on that constraint.
 
 Since ESZ-151 the booking-time rules — minimum lead, preferred finish, maximum
 overrun — are one `system_settings` row (`booking.time_rules`) written from the

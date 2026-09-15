@@ -265,7 +265,7 @@ export function AdminSettings() {
                           Retirer
                         </button>
                         {errors[`registers.${index}`] && (
-                          <p role="alert" className="admin-note-danger rounded-xl px-3 py-2 text-xs sm:col-span-3">
+                          <p role="alert" className="admin-note-danger rounded-xl px-3 py-2 text-sm sm:col-span-3">
                             {errors[`registers.${index}`]}
                           </p>
                         )}
@@ -405,7 +405,7 @@ function DraftField({
         onChange={(value) => onChange(field, value)}
       />
       {error && (
-        <p role="alert" className="admin-note-danger mt-1.5 rounded-xl px-3 py-2 text-xs">
+        <p role="alert" className="admin-note-danger mt-1.5 rounded-xl px-3 py-2 text-sm">
           {error}
         </p>
       )}
@@ -431,7 +431,7 @@ function DraftArea({
     <div>
       <TextArea id={`legal-${field}`} label={label} value={draft[field]} rows={3} onChange={(value) => onChange(field, value)} />
       {error && (
-        <p role="alert" className="admin-note-danger mt-1.5 rounded-xl px-3 py-2 text-xs">
+        <p role="alert" className="admin-note-danger mt-1.5 rounded-xl px-3 py-2 text-sm">
           {error}
         </p>
       )}
@@ -464,7 +464,7 @@ function ApplicabilitySwitch({
         />
         <span>{label}</span>
       </label>
-      <p className="admin-text-muted mt-1.5 pl-7 text-xs leading-relaxed">{help}</p>
+      <p className="admin-text-muted mt-1.5 pl-7 text-sm leading-relaxed">{help}</p>
     </div>
   );
 }

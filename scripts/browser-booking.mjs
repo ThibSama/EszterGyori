@@ -282,22 +282,18 @@ async function main() {
   await setReactInput(cdp, "customer-email", customerA.email);
   await setReactInput(cdp, "customer-phone", customerA.phone);
   await setReactInput(cdp, "customer-note", customerA.note);
-  // ESZ-161: no consent checkbox — the form shows the privacy-information
-  // notice of the current catalog entry, and the note warns against
-  // sensitive data.
-  const noticeState = await evaluate(cdp, `(() => {
-    const notice = document.querySelector("[data-privacy-notice-id]");
-    return {
-      id: notice?.getAttribute("data-privacy-notice-id") ?? null,
-      text: notice?.textContent ?? "",
-      checkbox: document.querySelector('input[type="checkbox"]') !== null,
-      noteHint: document.getElementById("note-hint")?.textContent?.trim() ?? null,
-    };
-  })()`);
-  assert(noticeState.id === privacyNoticeId, `the form does not display the current privacy notice: ${noticeState.id}`);
-  assert(noticeState.text.includes("Responsable du traitement") && noticeState.text.includes("Aucun consentement"), "the privacy notice is missing its statements");
-  assert(!noticeState.checkbox, "a consent checkbox is still rendered");
-  assert(noticeState.noteHint === "N’indiquez ici aucune information médicale, de santé ou autre donnée sensible.", `unexpected note hint: ${noticeState.noteHint}`);
+  // ESZ-161: no consent checkbox anywhere, and the note warns against
+  // sensitive data. Package 10.4 moved the privacy-information notice itself
+  // out of this step and into the review, beside the confirmation controls —
+  // it is proved there, in full, at step 2.
+  const detailsState = await evaluate(cdp, `(() => ({
+    notice: document.querySelector("[data-privacy-notice-id]") !== null,
+    checkbox: document.querySelector('input[type="checkbox"]') !== null,
+    noteHint: document.getElementById("note-hint")?.textContent?.trim() ?? null,
+  }))()`);
+  assert(!detailsState.notice, "the privacy notice is still rendered on the details step; it belongs to the review");
+  assert(!detailsState.checkbox, "a consent checkbox is still rendered");
+  assert(detailsState.noteHint === "N’indiquez ici aucune information médicale, de santé ou autre donnée sensible.", `unexpected note hint: ${detailsState.noteHint}`);
   const creationPosts = [];
   cdp.on("Network.requestWillBeSent", ({ request }) => {
     if (request.method === "POST" && new URL(request.url).pathname === "/api/bookings") {
@@ -415,6 +411,36 @@ async function main() {
     () => evaluate(cdp, `document.getElementById("review-heading") && document.activeElement?.id === "review-heading"`),
     "review step with focus on the review heading (tab A)",
   );
+  // ESZ-161, placed by Package 10.4: the privacy-information notice is read on
+  // the review step, between the summary and the confirmation controls — the
+  // last thing before the booking is made, never behind a disclosure and never
+  // a consent checkbox. The id is what the request will carry; the statements
+  // are the frozen catalog text.
+  const noticeState = await evaluate(cdp, `(() => {
+    const notice = document.querySelector("[data-privacy-notice-id]");
+    const confirm = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Confirmer le rendez-vous") ?? null;
+    return {
+      id: notice?.getAttribute("data-privacy-notice-id") ?? null,
+      text: notice?.textContent ?? "",
+      heading: notice?.querySelector("h3")?.textContent?.trim() ?? null,
+      statements: notice ? notice.querySelectorAll("li").length : 0,
+      policyHref: notice?.querySelector("a")?.getAttribute("href") ?? null,
+      hidden: notice === null ? null : notice.closest("[hidden]") !== null || notice.closest("details") !== null,
+      afterHeading: Boolean(notice && document.getElementById("review-heading")
+        && (document.getElementById("review-heading").compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0),
+      beforeConfirm: Boolean(notice && confirm
+        && (notice.compareDocumentPosition(confirm) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0),
+      checkbox: document.querySelector('input[type="checkbox"]') !== null,
+    };
+  })()`);
+  assert(noticeState.id === privacyNoticeId, `the review does not display the current privacy notice: ${noticeState.id}`);
+  assert(noticeState.text.includes("Responsable du traitement") && noticeState.text.includes("Aucun consentement"), "the privacy notice is missing its statements");
+  assert(noticeState.statements === 6, `the privacy notice lists ${noticeState.statements} statements, expected the catalog's six`);
+  assert(noticeState.heading === "Vos données personnelles", `unexpected privacy notice heading: ${noticeState.heading}`);
+  assert(noticeState.policyHref === "/confidentialite", `the privacy notice does not link the policy page: ${noticeState.policyHref}`);
+  assert(noticeState.hidden === false, "the privacy notice is hidden behind a disclosure");
+  assert(noticeState.afterHeading && noticeState.beforeConfirm, "the privacy notice does not sit between the review summary and the confirmation controls");
+  assert(!noticeState.checkbox, "a consent checkbox is rendered on the review step");
   await clickButton(cdp, "Confirmer le rendez-vous");
   await waitFor(
     () => evaluate(cdp, `document.body?.innerText?.includes("Votre rendez-vous est bien enregistré")`),

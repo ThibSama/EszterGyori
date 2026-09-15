@@ -66,23 +66,31 @@ export const ADMIN_SERVICES_MESSAGES = {
   archiveConfirm:
     "Elle ne sera plus proposée à la réservation. Les rendez-vous déjà pris sont conservés et restent visibles dans le calendrier.",
   // ESZ-150 — combinations and the maximum.
-  maxSaved: "Le nombre maximal de prestations par rendez-vous a été enregistré.",
+  maxSaved:
+    "Le nombre maximal de prestations par rendez-vous a été enregistré. Toutes les combinaisons de ce nombre de prestations sont proposées par défaut.",
   combinationValidated:
-    "La durée de la combinaison a été enregistrée. Elle fait foi pour les nouvelles réservations ; les rendez-vous déjà pris ne changent pas.",
+    "La durée personnalisée de la combinaison a été enregistrée. Elle fait foi pour les nouvelles réservations ; les rendez-vous déjà pris ne changent pas.",
+  combinationCleared:
+    "La durée personnalisée a été retirée : la combinaison reprend la somme des durées de ses prestations.",
   combinationDisabled:
     "La combinaison n’est plus proposée à la réservation. Les rendez-vous déjà pris sont conservés.",
   combinationEnabled: "La combinaison est de nouveau proposée à la réservation.",
   combinationConflict:
     "Cette combinaison a été modifiée ailleurs depuis son chargement. La liste a été actualisée : vérifiez puis recommencez.",
   combinationsIncomplete:
-    "La liste des combinaisons possibles est tronquée : réduisez le maximum ou archivez des prestations pour la voir en entier.",
+    "La liste des combinaisons est tronquée : réduisez le maximum ou archivez des prestations pour la voir en entier.",
   combinationsNone:
     "Aucune combinaison à proposer : il faut au moins deux prestations actives et un maximum supérieur à 1.",
 } as const;
 
+/**
+ * Domain version 15 — a combination with no stored row is *active by
+ * default*, not a candidate waiting to be approved: Esther never has to
+ * valider quoi que ce soit pour qu’une combinaison normale fonctionne.
+ */
 export const COMBINATION_STATUS_LABELS: Record<AdminServiceCombination["status"], string> = {
-  proposed: "Proposée",
-  validated: "Validée",
+  default: "Active par défaut",
+  validated: "Durée personnalisée",
   disabled: "Désactivée",
 };
 
@@ -200,10 +208,10 @@ export function adoptStoredService(
 }
 
 /**
- * ESZ-150 — the mutation that validates one combination's duration, from
- * the row as listed: a candidate (no token) is created, a stored row is
- * re-validated under its token. `null` for a duration outside the bounds,
- * so an invalid value can never be sent.
+ * ESZ-150 — the mutation that stores one combination's *custom* duration,
+ * from the row as listed: a membership with no row yet (no token) creates
+ * one, a stored row is re-validated under its token. `null` for a duration
+ * outside the bounds, so an invalid value can never be sent.
  */
 export function validateCombinationMutation(
   combination: AdminServiceCombination,
@@ -220,25 +228,56 @@ export function validateCombinationMutation(
 }
 
 /**
- * ESZ-150 — the value the duration field starts with: the validated
- * duration when there is one, otherwise the proposal (the plain sum of the
- * components), clamped to nothing — a proposal above the bound is shown as
- * is, and `parseDuration` refuses it until Esther corrects it.
+ * Domain version 15 — the mutation that removes a custom duration and
+ * returns the combination to the automatic sum. Offered only where one is
+ * actually stored.
  */
-export function combinationDurationDraft(combination: AdminServiceCombination): string {
-  return String(combination.durationMinutes ?? combination.proposedDurationMinutes);
+export function clearCombinationDurationMutation(
+  combination: AdminServiceCombination,
+): Extract<AdminServiceMutation, { action: "validateCombination" }> {
+  return {
+    action: "validateCombination",
+    serviceKeys: [...combination.serviceKeys],
+    durationMinutes: null,
+    expectedUpdatedAt: combination.updatedAt,
+  };
 }
 
 /**
- * ESZ-150 — why a stored combination is not bookable, for the list. `null`
- * when it is, or when it is only a candidate.
+ * Domain version 15 — disabling names the membership, because a combination
+ * that is active by default has no row to name; `expectedUpdatedAt` is its
+ * token only when a row already exists.
+ */
+export function disableCombinationMutation(
+  combination: AdminServiceCombination,
+): Extract<AdminServiceMutation, { action: "disableCombination" }> {
+  return {
+    action: "disableCombination",
+    serviceKeys: [...combination.serviceKeys],
+    expectedUpdatedAt: combination.updatedAt,
+  };
+}
+
+/**
+ * ESZ-150 — the value the duration field starts with: the effective
+ * duration, which is the stored custom one when there is one and the plain
+ * sum of the components otherwise. A sum above the bound is shown as is, and
+ * `parseDuration` refuses it until Esther corrects it.
+ */
+export function combinationDurationDraft(combination: AdminServiceCombination): string {
+  return String(combination.effectiveDurationMinutes);
+}
+
+/**
+ * ESZ-150 — why a combination is not bookable, for the list. `null` when it
+ * is — which, since domain version 15, is the default.
  */
 export function combinationUnavailableReason(
   combination: AdminServiceCombination,
   services: readonly AdminBookableService[],
   maxServicesPerAppointment: number,
 ): string | null {
-  if (combination.status === "proposed" || combination.bookable) return null;
+  if (combination.bookable) return null;
   if (combination.status === "disabled") return "Désactivée par vous.";
   const archived = combination.serviceKeys.filter(
     (key) => services.find((service) => service.key === key)?.status !== "active",

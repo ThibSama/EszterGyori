@@ -1,5 +1,6 @@
 import type { NavigationContent } from "../types/site-content";
 import { MobileNav } from "./mobile-nav";
+import { NavScrollState } from "./nav-scroll-state";
 
 interface NavigationProps {
   content: NavigationContent;
@@ -10,6 +11,7 @@ export function Navigation({ content }: NavigationProps) {
     <nav
       className="fixed top-4 left-4 right-4 z-40 mx-auto max-w-6xl"
       aria-label="Navigation principale">
+      <NavScrollState />
       <div className="site-navigation-glass glass-card backdrop-blur-2xl rounded-2xl px-4 md:px-6 h-14 flex items-center justify-between">
         <a
           href="#"
@@ -28,7 +30,7 @@ export function Navigation({ content }: NavigationProps) {
           ))}
           <a
             href="/reservation"
-            className="text-sm font-medium px-5 py-2 bg-warm-800 text-porcelain rounded-full hover:bg-warm-700 transition-all duration-300 hover:shadow-[0_4px_16px_rgba(44,43,40,0.2)]">
+            className="polish-btn-primary text-sm font-medium px-5 py-2 bg-warm-800 text-porcelain rounded-full">
             Réserver
           </a>
         </div>

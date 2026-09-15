@@ -213,7 +213,7 @@ export function AdminLoginForm() {
   const alreadySignedIn = session.status === "authenticated";
 
   return (
-    <main className="min-h-screen bg-warm-50 px-4 py-10 text-warm-800 sm:px-6">
+    <main className="admin-theme admin-canvas min-h-screen px-4 py-10 sm:px-6">
       <div className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-md flex-col justify-center">
         <div className="rounded-3xl border border-warm-200 bg-white/85 p-6 shadow-[0_18px_60px_rgba(44,43,40,0.10)] backdrop-blur sm:p-8">
           <div className="mb-8 space-y-2">

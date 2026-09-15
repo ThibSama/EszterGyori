@@ -70,7 +70,7 @@ final class MigrationTest extends TestCase
         self::assertSame(
             ['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008',
              '0009', '0010', '0011', '0012', '0013', '0014', '0015', '0016', '0017', '0018', '0019', '0020',
-             '0021', '0022', '0023'],
+             '0021', '0022', '0023', '0024'],
             $applied,
         );
     }
@@ -1345,10 +1345,16 @@ final class MigrationTest extends TestCase
 
     /**
      * Migration 0017 adds the combination table and a nullable
-     * `bookings.combination_key` with a RESTRICT foreign key. An existing
-     * booking row is untouched (null combination, same service key, start and
-     * end), the key CHECK admits only the canonical sorted-and-joined shape,
-     * and every guard is repeat-safe.
+     * `bookings.combination_key`; migration 0024 corrects the rule the pair
+     * expresses. This asserts the schema the full migrator leaves behind.
+     *
+     * An existing booking row is untouched (null combination, same service
+     * key, start and end) and the key CHECK still admits only the canonical
+     * sorted-and-joined shape. What 0024 changed: `duration_minutes` is
+     * NULLable (NULL = "no custom duration, the sum of the components
+     * applies") and the RESTRICT foreign key `fk_bookings_combination` is
+     * gone, because under default-allow a booking names a combination that
+     * very often has no override row at all. Every guard stays repeat-safe.
      */
     public function testMigration0017AddsCombinationsWithoutTouchingExistingBookings(): void
     {
@@ -1357,11 +1363,15 @@ final class MigrationTest extends TestCase
         $column = $this->column('bookings', 'combination_key');
         self::assertSame('YES', $column['IS_NULLABLE']);
         self::assertSame('ascii_bin', $column['COLLATION_NAME']);
-        self::assertSame('fk_bookings_combination', $this->database->fetchOne(
+        // Domain version 15 (migration 0024): no foreign key stands between a
+        // booking and the override table.
+        self::assertNull($this->database->fetchOne(
             'SELECT constraint_name AS n FROM information_schema.table_constraints'
             . " WHERE table_schema = DATABASE() AND table_name = 'bookings'"
             . " AND constraint_type = 'FOREIGN KEY' AND constraint_name = 'fk_bookings_combination'",
         )['n'] ?? null);
+        // …and an override may carry no custom duration at all.
+        self::assertSame('YES', $this->column('booking_service_combinations', 'duration_minutes')['IS_NULLABLE']);
 
         // A pre-0017-style booking lands with a null combination and keeps
         // its stored facts: nothing recalculates it.
@@ -1389,25 +1399,50 @@ final class MigrationTest extends TestCase
         self::assertSame('2026-06-15 07:00:00.000', $legacy['starts_at_utc']);
         self::assertSame('2026-06-15 08:00:00.000', $legacy['ends_at_utc']);
 
-        // The combination key must be the canonical shape, and a booking
-        // may only name a stored combination.
+        // The combination key must be the canonical shape — that CHECK is
+        // untouched by 0024 — and an override row may be stored with or
+        // without a custom duration.
         $this->database->run(
             'INSERT INTO booking_service_combinations (combination_key, proposed_duration_minutes,'
             . " duration_minutes, created_at, updated_at) VALUES ('brows+lips', 150, 120, :created, :updated)",
             ['created' => self::NOW, 'updated' => self::NOW],
         );
+        $this->database->run(
+            'INSERT INTO booking_service_combinations (combination_key, proposed_duration_minutes,'
+            . " duration_minutes, is_active, created_at, updated_at)"
+            . " VALUES ('brows+freckles', 80, NULL, 0, :created, :updated)",
+            ['created' => self::NOW, 'updated' => self::NOW],
+        );
+        self::assertNull($this->database->fetchOne(
+            "SELECT duration_minutes AS d FROM booking_service_combinations WHERE combination_key = 'brows+freckles'",
+        )['d'] ?? null);
         $this->expectConstraintFailure(fn () => $this->database->run(
             'INSERT INTO booking_service_combinations (combination_key, proposed_duration_minutes,'
             . " duration_minutes, created_at, updated_at) VALUES ('brows', 60, 60, :created, :updated)",
             ['created' => self::NOW, 'updated' => self::NOW],
         ));
-        $this->expectConstraintFailure(fn () => $this->database->run(
-            "UPDATE bookings SET combination_key = 'lips+brows'",
-        ));
+        // Domain version 15: a booking may name a combination that has no
+        // override row — that is the normal, implicit case — so the schema no
+        // longer refuses a key the override table does not hold, and deleting
+        // a row never touches the booking that named it. Canonical ordering of
+        // `bookings.combination_key` is from here on a domain invariant
+        // (`ServiceCombination::canonicalKey()`, re-resolved by the repository
+        // on every create) rather than a schema one: the dropped foreign key
+        // was the only constraint that had refused an unsorted key.
+        $this->database->run("UPDATE bookings SET combination_key = 'brows+freckles'");
+        self::assertSame('brows+freckles', $this->database->fetchOne(
+            'SELECT combination_key FROM bookings',
+        )['combination_key'] ?? null);
         $this->database->run("UPDATE bookings SET combination_key = 'brows+lips'");
-        $this->expectConstraintFailure(fn () => $this->database->run(
+        $this->database->run(
             "DELETE FROM booking_service_combinations WHERE combination_key = 'brows+lips'",
-        ));
+        );
+        $afterDelete = $this->database->fetchOne(
+            'SELECT combination_key, service_key, starts_at_utc FROM bookings',
+        );
+        self::assertSame('brows+lips', $afterDelete['combination_key'] ?? null);
+        self::assertSame('brows', $afterDelete['service_key'] ?? null);
+        self::assertSame('2026-06-15 07:00:00.000', $afterDelete['starts_at_utc'] ?? null);
 
         // Repeat-safe: re-running the migrator applies nothing and changes
         // nothing.

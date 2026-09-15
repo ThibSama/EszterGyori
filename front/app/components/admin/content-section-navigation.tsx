@@ -63,7 +63,7 @@ export function ContentSectionNavigation({
         ))}
       </ul>
 
-      <p className="admin-border admin-text-muted border-t px-1 pb-2 pt-3 text-xs leading-relaxed">
+      <p className="admin-border admin-text-muted border-t px-1 pb-2 pt-3 text-sm leading-relaxed">
         {area.description}
       </p>
 

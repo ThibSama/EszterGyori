@@ -109,10 +109,15 @@
               }
             ]
           },
+          "effectiveDurationMinutes": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 1920
+          },
           "status": {
             "type": "string",
             "enum": [
-              "proposed",
+              "default",
               "validated",
               "disabled"
             ]
@@ -136,6 +141,7 @@
           "serviceKeys",
           "proposedDurationMinutes",
           "durationMinutes",
+          "effectiveDurationMinutes",
           "status",
           "bookable",
           "updatedAt"

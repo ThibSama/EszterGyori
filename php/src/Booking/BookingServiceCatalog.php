@@ -6,43 +6,71 @@ namespace Eszter\Booking;
 
 /**
  * Public service discovery and the single "actively bookable" rule
- * (ESZ-106, ESZ-149, ESZ-150).
+ * (ESZ-106, ESZ-149, ESZ-150, corrected in domain version 15).
  *
  * `services()` is the public catalogue read: every active row with the
  * name, description, duration and image the reservation page renders, plus
- * — since ESZ-150 — the configured maximum number of services per
- * appointment and the combinations that can be booked right now. The
- * catalog is the authority and the page matches nothing against SiteContent.
+ * the configured maximum number of services per appointment and — since the
+ * combination rule became default-allow — the *exceptions* to it. Every set
+ * of up to the maximum of active services is bookable for the sum of its
+ * component durations without being listed at all; a membership appears in
+ * `combinations` only because Esther disabled it or gave it a custom
+ * duration, so the payload is bounded by what she stored rather than by the
+ * combinatorics of the catalog. The catalog is the authority and the page
+ * matches nothing against SiteContent.
  *
  * {@see requireOffer()} is the one place a selection of service keys becomes
  * something a slot can be computed or confirmed for: slot reads, booking
- * creation and admin moves all go through it, so a reservation can never be
- * computed against a missing or archived service, an unvalidated or disabled
- * combination, or a selection larger than the configured maximum.
+ * creation and admin moves all go through it, and it asks
+ * {@see ServiceCombinationPolicy} rather than restating the rule. So a
+ * reservation can never be computed against a missing or archived service, an
+ * explicitly disabled combination or a selection larger than the configured
+ * maximum — and an implicit combination with no stored row is accepted by
+ * exactly the same path the public selector offered it on.
  */
 final class BookingServiceCatalog
 {
+    private readonly ServiceCombinationPolicy $policy;
+
     public function __construct(
         private readonly BookableServiceRepository $services,
         private readonly ServiceCombinationRepository $combinations,
+        ?ServiceCombinationPolicy $policy = null,
     ) {
+        $this->policy = $policy ?? new ServiceCombinationPolicy();
     }
 
     /** @return array<string, mixed> */
     public function services(): array
     {
         $active = $this->services->all(true);
-        $activeKeys = [];
+        $byKey = [];
         foreach ($active as $service) {
-            $activeKeys[$service->key] = true;
+            $byKey[$service->key] = $service;
         }
         $max = $this->combinations->maxServicesPerAppointment();
 
-        $bookable = [];
-        foreach ($this->combinations->all() as $combination) {
-            if ($this->isBookable($combination, $activeKeys, $max)) {
-                $bookable[] = $combination->toPublicPayload();
+        // Only the stored exceptions are published, and only those the
+        // visitor could otherwise build: every member active and the size
+        // within the configured maximum. Everything else is implied by the
+        // default-allow rule the page applies itself.
+        $exceptions = [];
+        foreach ($this->combinations->all() as $stored) {
+            if (\count($stored->serviceKeys) > $max) {
+                continue;
             }
+            $members = [];
+            foreach ($stored->serviceKeys as $memberKey) {
+                if (!isset($byKey[$memberKey])) {
+                    continue 2;
+                }
+                $members[] = $byKey[$memberKey];
+            }
+            $effective = $this->policy->effectiveCombination($members, $stored, $max);
+            if ($effective->isImplicit()) {
+                continue;
+            }
+            $exceptions[] = $effective->toPublicPayload();
         }
 
         return [
@@ -51,7 +79,7 @@ final class BookingServiceCatalog
                 $active,
             ),
             'maxServicesPerAppointment' => $max,
-            'combinations' => $bookable,
+            'combinations' => $exceptions,
         ];
     }
 
@@ -66,13 +94,13 @@ final class BookingServiceCatalog
     }
 
     /**
-     * The offer a selection names, or a refusal (ESZ-150).
+     * The offer a selection names, or a refusal.
      *
-     * One key is the active service itself. Two or more are canonicalised
-     * and resolved against the persisted combinations: the row must exist,
-     * be active, every member must be an active service and the count must
-     * be within the configured maximum. There is no implicit combination and
-     * no fallback to a single service.
+     * One key is the active service itself. Two or more are canonicalised,
+     * bounded by the configured maximum, resolved to active catalog rows and
+     * then handed — with the stored override row for that membership, if any
+     * — to the policy. Bookable by default; refused only when the policy says
+     * the membership is explicitly disabled.
      *
      * @param list<string> $serviceKeys
      */
@@ -82,40 +110,43 @@ final class BookingServiceCatalog
             return BookableOffer::ofService($this->requireActive($serviceKeys[0]));
         }
 
-        $members = $this->combinations->canonicalMembers($serviceKeys);
-        if (\count($members) > $this->combinations->maxServicesPerAppointment()) {
-            throw new BookingValidationException('serviceKeys', 'More services than one appointment may hold.');
-        }
-        $combination = $this->combinations->find(ServiceCombination::canonicalKey($members));
-        if ($combination === null || !$combination->isActive) {
-            throw new BookingValidationException('serviceKeys', 'This combination of services is not bookable.');
-        }
-        $offer = BookableOffer::ofCombination($combination, array_map($this->requireActive(...), $members));
-        if (!$offer->isActive) {
-            throw new BookingValidationException('serviceKeys', 'This combination of services is not bookable.');
-        }
-
-        return $offer;
+        return BookableOffer::ofCombination($this->requireEffectiveCombination($serviceKeys));
     }
 
     /**
-     * Whether a stored combination can be booked now, given the active keys
-     * and the configured maximum. The same rule `requireOffer()` applies,
-     * evaluated without a query per member so discovery stays one read.
+     * The effective policy for a selection of two or more services: the one
+     * resolution every server-side caller shares.
      *
-     * @param array<string, true> $activeKeys
+     * @param list<string> $serviceKeys in any order
      */
-    public function isBookable(ServiceCombination $combination, array $activeKeys, int $max): bool
+    public function requireEffectiveCombination(array $serviceKeys): EffectiveCombination
     {
-        if (!$combination->isActive || \count($combination->serviceKeys) > $max) {
-            return false;
+        $members = $this->combinations->canonicalMembers($serviceKeys);
+        $max = $this->combinations->maxServicesPerAppointment();
+        if (\count($members) > $max) {
+            throw new BookingValidationException('serviceKeys', 'More services than one appointment may hold.');
         }
-        foreach ($combination->serviceKeys as $member) {
-            if (!isset($activeKeys[$member])) {
-                return false;
-            }
+        $effective = $this->policy->effectiveCombination(
+            array_map($this->requireActive(...), $members),
+            $this->combinations->find(ServiceCombination::canonicalKey($members)),
+            $max,
+        );
+        if (!$effective->bookable) {
+            throw new BookingValidationException('serviceKeys', 'This combination of services is not bookable.');
         }
 
-        return true;
+        return $effective;
+    }
+
+    /**
+     * The effective policy for one membership, from rows the caller has
+     * already read — the back-office lists hundreds of these and must not
+     * issue a query per membership.
+     *
+     * @param list<BookableService> $members canonical order
+     */
+    public function effectiveCombination(array $members, ?ServiceCombination $stored, int $max): EffectiveCombination
+    {
+        return $this->policy->effectiveCombination($members, $stored, $max);
     }
 }

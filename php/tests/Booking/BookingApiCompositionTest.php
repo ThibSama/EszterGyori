@@ -174,7 +174,15 @@ final class BookingApiCompositionTest extends TestCase
     {
         // Public use-case slice of each collaborator (constructor excluded).
         $expectedSurfaces = [
-            BookingServiceCatalog::class => ['services', 'requireActive', 'requireOffer', 'isBookable'],
+            BookingServiceCatalog::class => [
+                'services',
+                'requireActive',
+                'requireOffer',
+                // Domain version 15: the one default-allow resolution, shared
+                // by availability, creation and the back-office read model.
+                'requireEffectiveCombination',
+                'effectiveCombination',
+            ],
             SlotAvailability::class => [
                 'availability',
                 'adminMoveAvailability',

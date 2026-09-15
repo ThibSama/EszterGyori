@@ -10,10 +10,13 @@ import {
 } from "../app/lib/admin-api";
 import {
   ADMIN_SERVICES_MESSAGES,
+  COMBINATION_STATUS_LABELS,
   SERVICE_STATUS_LABELS,
   adoptStoredService,
+  clearCombinationDurationMutation,
   combinationDurationDraft,
   combinationUnavailableReason,
+  disableCombinationMutation,
   draftFromService,
   emptyServiceDraft,
   formatServiceDuration,
@@ -69,13 +72,14 @@ function service(overrides: Partial<AdminBookableService> = {}): AdminBookableSe
   };
 }
 
-/** ESZ-150 — a stored, bookable combination of the two fixture services. */
+/** ESZ-150 — a bookable combination carrying a stored custom duration. */
 function combination(overrides: Partial<AdminServiceCombination> = {}): AdminServiceCombination {
   return {
     key: "brows+lips",
     serviceKeys: ["brows", "lips"],
     proposedDurationMinutes: 90,
     durationMinutes: 70,
+    effectiveDurationMinutes: 70,
     status: "validated",
     bookable: true,
     updatedAt: "2026-06-01T10:00:00.000Z",
@@ -258,33 +262,66 @@ test("a mutation is a PATCH carrying its action and the CSRF token, adopting the
   assert.deepEqual(result.value, { service: stored });
 });
 
-test("a combination is validated from the listed row and only with a bounded duration", () => {
-  // A candidate has no token: the mutation creates the row with Esther's
-  // corrected number, never the proposal by itself.
-  const candidate = combination({ status: "proposed", durationMinutes: null, updatedAt: null, bookable: false });
-  assert.equal(combinationDurationDraft(candidate), "90");
-  assert.deepEqual(validateCombinationMutation(candidate, " 75 "), {
+test("a combination is active by default and the panel only ever overrides that", () => {
+  // Domain version 15 — a membership with no row is already bookable, for
+  // the sum of its prestations, and says so without a token.
+  const byDefault = combination({
+    status: "default",
+    durationMinutes: null,
+    effectiveDurationMinutes: 90,
+    updatedAt: null,
+  });
+  assert.equal(COMBINATION_STATUS_LABELS[byDefault.status], "Active par défaut");
+  assert.equal(byDefault.bookable, true);
+  // The field starts from the effective duration — here the automatic sum.
+  assert.equal(combinationDurationDraft(byDefault), "90");
+  assert.equal(combinationUnavailableReason(byDefault, [service(), service({ key: "lips" })], 2), null);
+
+  // Disabling names the membership, because there is no row to name.
+  assert.deepEqual(disableCombinationMutation(byDefault), {
+    action: "disableCombination",
+    serviceKeys: ["brows", "lips"],
+    expectedUpdatedAt: null,
+  });
+  // Saving a duration pins it for this membership only.
+  assert.deepEqual(validateCombinationMutation(byDefault, " 75 "), {
     action: "validateCombination",
     serviceKeys: ["brows", "lips"],
     durationMinutes: 75,
     expectedUpdatedAt: null,
   });
-  // A stored row re-validates under its token and starts from its own value.
+
+  // A stored custom duration wins over the sum, re-validates under its token
+  // and can be cleared back to the automatic sum.
   const stored = combination();
   assert.equal(combinationDurationDraft(stored), "70");
   const revalidation = validateCombinationMutation(stored, "80");
   assert.ok(revalidation?.action === "validateCombination");
   assert.equal(revalidation.expectedUpdatedAt, stored.updatedAt);
+  assert.deepEqual(clearCombinationDurationMutation(stored), {
+    action: "validateCombination",
+    serviceKeys: ["brows", "lips"],
+    durationMinutes: null,
+    expectedUpdatedAt: stored.updatedAt,
+  });
+  // Disabling a stored row carries its token, so a stale form cannot win.
+  assert.equal(disableCombinationMutation(stored).expectedUpdatedAt, stored.updatedAt);
   // Out of bounds or not a whole number is never sent.
   assert.equal(validateCombinationMutation(stored, "481"), null);
   assert.equal(validateCombinationMutation(stored, "7.5"), null);
 
-  // Why a stored row is not bookable, stated from the catalog it lists.
+  // Why a combination is not bookable, stated from the catalog it lists.
   const services = [service(), service({ key: "lips", status: "archived" })];
-  assert.equal(combinationUnavailableReason(candidate, services, 2), null);
   assert.equal(combinationUnavailableReason(stored, services, 2), null);
   assert.match(combinationUnavailableReason(combination({ bookable: false }), services, 2) ?? "", /archivée/);
-  assert.match(combinationUnavailableReason(combination({ bookable: false, status: "disabled" }), services, 2) ?? "", /Désactivée/);
+  assert.match(
+    combinationUnavailableReason(
+      combination({ bookable: false, status: "disabled", durationMinutes: null, effectiveDurationMinutes: 90 }),
+      services,
+      2,
+    ) ?? "",
+    /Désactivée/,
+  );
   assert.match(combinationUnavailableReason(combination({ bookable: false }), [service(), service({ key: "lips" })], 1) ?? "", /maximum de 1/);
 });
 
@@ -314,9 +351,10 @@ test("the lists are Prestation, Durée, Statut, Actions — and the combinations
   const headers = [...servicesSource.matchAll(/role="columnheader">([^<]+)</g)].map((match) => match[1]);
   assert.deepEqual(headers, [
     "Prestation", "Durée", "Statut", "Actions",
-    // ESZ-150: the proposal and the validated duration are two columns, so
-    // the advisory number is never mistaken for the one that books.
-    "Prestations", "Durée proposée", "Durée validée", "Statut", "Actions",
+    // ESZ-150: the automatic sum and the duration that books are two
+    // columns, so the number Esther may pin is never mistaken for the one
+    // that follows her prestations.
+    "Prestations", "Durée automatique", "Durée du rendez-vous", "Statut", "Actions",
   ]);
   for (const banned of [/prix/i, /tarif/i, /catégorie/i, /categorie/i, /revenu/i, /chiffre d.affaires/i, /statistique/i, /€/]) {
     assert.doesNotMatch(servicesSource, banned);

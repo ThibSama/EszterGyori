@@ -31,9 +31,15 @@ test("active services come only from the frozen discovery endpoint", async () =>
   const result = await loadBookableServices(async (input, init) => {
     calls.push({ input: String(input), init });
     return Response.json({
-      // ESZ-150: the catalog also states the maximum and the bookable combinations.
+      // ESZ-150: the catalog also states the maximum and, since domain
+      // version 15, the exceptions to the default-allow combination rule.
       maxServicesPerAppointment: 2,
-      combinations: [{ key: "brows+microblading-sourcils", serviceKeys: ["brows", "microblading-sourcils"], durationMinutes: 100 }],
+      combinations: [{
+        key: "brows+microblading-sourcils",
+        serviceKeys: ["brows", "microblading-sourcils"],
+        durationMinutes: 100,
+        bookable: true,
+      }],
       services: [
         // ESZ-149: the catalog carries description and image, and a key the
         // fixed CMS list never contained is a first-class service.

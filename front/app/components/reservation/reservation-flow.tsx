@@ -23,7 +23,8 @@ import {
   parisToday,
   rangeFrom,
   reservationFlowReducer,
-  resolveCombination,
+  canAddService,
+  combinationIsDisabled,
   selectedServiceLabel,
   selectionDurationMinutes,
   selectionIsBookable,
@@ -35,6 +36,7 @@ import {
   retryWaitLabel,
 } from "../../lib/retry-after";
 import { EditorialImage } from "../editorial-image";
+import { SiteFooter } from "../site-footer";
 import { ReservationDetails } from "./reservation-details";
 
 const DATE_FORMAT = new Intl.DateTimeFormat("fr-FR", {
@@ -131,8 +133,9 @@ export function ReservationFlow() {
   const selectionBookable = selectionIsBookable(combinations, state.serviceKeys, maxServices);
 
   useEffect(() => {
-    // ESZ-150: a selection that names no validated offer is never sent; the
-    // page says so instead, and the server would refuse it regardless.
+    // ESZ-150: a selection the server would refuse — over the maximum, or an
+    // explicitly disabled combination — is never sent; the page says so
+    // instead. Everything else is bookable by default.
     if (state.serviceKeys.length === 0 || !selectionBookable) return;
     // ESZ-136: while a trusted Retry-After delay from a refused availability
     // load is running, no availability request is started — not even from a
@@ -179,8 +182,7 @@ export function ReservationFlow() {
   const serviceLabelText = selectedServiceLabel(visibleServices, state.serviceKeys);
   const selectionDuration = selectionDurationMinutes(visibleServices, combinations, state.serviceKeys);
   const hasSelection = state.serviceKeys.length > 0;
-  const unapprovedSelection = state.serviceKeys.length > 1
-    && resolveCombination(combinations, state.serviceKeys) === null;
+  const unapprovedSelection = combinationIsDisabled(combinations, state.serviceKeys);
   const dates = state.availabilityStatus === "ready"
     ? datesBetween(state.fromDate, state.untilDate)
     : [];
@@ -251,12 +253,20 @@ export function ReservationFlow() {
 
   return (
     <div
-      className="site-preview min-h-screen relative overflow-hidden"
+      className="site-preview reservation-surface min-h-screen relative overflow-hidden"
       style={createSiteAppearanceVariables(content.appearance)}>
       <a href="#reservation-main" className="skip-link">Aller au choix du rendez-vous</a>
       <div aria-hidden="true" className="fixed inset-0 pointer-events-none overflow-hidden">
-        <div className="ambient-shape absolute -top-32 -left-36 h-[520px] w-[520px] rounded-full bg-sage-300/60 blur-[110px]" />
-        <div className="ambient-drift absolute bottom-[-12rem] right-[-10rem] h-[560px] w-[560px] rounded-full bg-mist-300/50 blur-[110px]" />
+        {/*
+          Package 10.4: the two ambient fields keep their place and their tone —
+          they are what makes this page belong to the site — but they no longer
+          animate. `ambient-shape` and `ambient-drift` are the landing page's
+          breathing loop; on a form the same movement reads as the page not
+          settling, and it runs behind every field the visitor is typing into.
+          Held still, they are material rather than motion.
+        */}
+        <div className="absolute -top-32 -left-36 h-[520px] w-[520px] rounded-full bg-sage-300/60 blur-[110px]" />
+        <div className="absolute bottom-[-12rem] right-[-10rem] h-[560px] w-[560px] rounded-full bg-mist-300/50 blur-[110px]" />
       </div>
 
       <header className="relative z-10 px-4 py-5 md:px-6">
@@ -306,7 +316,7 @@ export function ReservationFlow() {
                 <h2 id="service-heading" className="font-display text-2xl text-warm-800 sm:text-3xl">{maxServices > 1 ? "Les prestations" : "La prestation"}</h2>
                 <p className="mt-1 text-sm text-warm-500">
                   {maxServices > 1
-                    ? `Seules les prestations actuellement réservables sont proposées. Vous pouvez en combiner jusqu’à ${maxServices} dans un même rendez-vous.`
+                    ? `Seules les prestations actuellement réservables sont proposées. Vous pouvez en combiner jusqu’à ${maxServices} dans un même rendez-vous ; la durée du rendez-vous est alors la somme des prestations choisies.`
                     : "Seules les prestations actuellement réservables sont proposées."}
                 </p>
               </div>
@@ -326,15 +336,19 @@ export function ReservationFlow() {
               <div className="mt-7 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {visibleServices.map((booking) => {
                   const selected = state.serviceKeys.includes(booking.key);
-                  // ESZ-150: with a maximum of one the click replaces the
-                  // selection; above it, it toggles and the extra cards close
-                  // once the maximum is reached.
+                  // ESZ-150 (domain version 15): with a maximum of one the
+                  // click replaces the selection. Above it, every remaining
+                  // service stays selectable by default — it closes only
+                  // once the maximum is reached, or because the exact set it
+                  // would make was explicitly taken off the menu.
                   const atMax = !selected && state.serviceKeys.length >= maxServices;
+                  const addable = canAddService(combinations, state.serviceKeys, booking.key, maxServices);
+                  const unavailableWithSelection = !selected && !atMax && !addable;
                   return (
                     <button
                       key={booking.key}
                       type="button"
-                      disabled={submissionInFlight || (maxServices > 1 && atMax)}
+                      disabled={submissionInFlight || (maxServices > 1 && !addable)}
                       aria-pressed={selected}
                       data-service-key={booking.key}
                       onClick={() => dispatch(
@@ -357,8 +371,16 @@ export function ReservationFlow() {
                       <span className="block p-5">
                         <span className="block font-display text-2xl text-warm-800">{booking.label}</span>
                         {maxServices > 1 && (
-                          <span className={`mt-1 block text-xs font-medium uppercase tracking-wide ${selected ? "text-sage-700" : "text-warm-400"}`}>
-                            {selected ? "Sélectionnée" : atMax ? "Maximum atteint" : "Ajouter"}
+                          <span
+                            data-service-availability={selected ? "selected" : unavailableWithSelection ? "unavailable" : atMax ? "at-max" : "addable"}
+                            className={`mt-1 block text-xs font-medium uppercase tracking-wide ${selected ? "text-sage-700" : "text-warm-400"}`}>
+                            {selected
+                              ? "Sélectionnée"
+                              : unavailableWithSelection
+                                ? "Non disponible avec cette sélection"
+                                : atMax
+                                  ? "Maximum atteint"
+                                  : "Ajouter"}
                           </span>
                         )}
                         <span className="mt-1 block text-sm text-sage-600">{durationLabel(booking.durationMinutes)}</span>
@@ -380,7 +402,7 @@ export function ReservationFlow() {
                 </p>
                 {unapprovedSelection && (
                   <p className="mt-2 text-warm-600">
-                    Cette combinaison n’est pas proposée en un seul rendez-vous. Modifiez votre sélection ou réservez ces prestations séparément.
+                    Cette combinaison n’est pas disponible en un seul rendez-vous. Modifiez votre sélection ou réservez ces prestations séparément.
                   </p>
                 )}
               </div>
@@ -396,7 +418,7 @@ export function ReservationFlow() {
               </div>
             </div>
 
-            {!selectionBookable && <p className="mt-7 text-warm-500">{maxServices > 1 ? "Choisissez d’abord une ou plusieurs prestations proposées ensemble." : "Choisissez d’abord une prestation."}</p>}
+            {!selectionBookable && <p className="mt-7 text-warm-500">{maxServices > 1 ? "Choisissez d’abord une ou plusieurs prestations disponibles ensemble." : "Choisissez d’abord une prestation."}</p>}
             {selectionBookable && (
               <>
                 <nav aria-label="Navigation des dates" className="mt-7 flex items-center justify-between gap-3">
@@ -488,6 +510,8 @@ export function ReservationFlow() {
           )}
         </div>
       </main>
+
+      <SiteFooter content={content.footer} variant="reservation" />
     </div>
   );
 }

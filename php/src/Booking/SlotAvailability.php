@@ -42,8 +42,11 @@ final class SlotAvailability
         $fromDate = BookingRequestFields::requiredString($request, 'fromDate');
         $untilDate = BookingRequestFields::requiredString($request, 'untilDate');
         $this->assertRange($fromDate, $untilDate);
-        // ESZ-150: one key or a validated combination — the catalog decides,
-        // and an unapproved selection is refused before any slot is computed.
+        // ESZ-150: one key or a combination — the catalog's single resolver
+        // decides. A set of active services within the configured maximum is
+        // bookable by default; only an explicitly disabled membership (or an
+        // archived member, or too many) is refused, before any slot is
+        // computed.
         $offer = $this->catalog->requireOffer($serviceKeys);
         $slots = $this->compute($offer, $fromDate, $untilDate);
 
@@ -90,8 +93,9 @@ final class SlotAvailability
      * The offer is re-resolved through the catalogue's single bookability
      * rule before any slot is generated, and returned beside the slot so the
      * caller stores exactly what was revalidated (ESZ-150: the combination's
-     * validated duration, its key and its first member; ESZ-153: the buffers
-     * the booking snapshots as its own). A move of an existing booking goes
+     * effective duration — summed by default, custom when overridden — its
+     * key and its first member; ESZ-153: the buffers the booking snapshots
+     * as its own). A move of an existing booking goes
      * through {@see requestedMoveSlot()} instead.
      *
      * @param list<string> $serviceKeys

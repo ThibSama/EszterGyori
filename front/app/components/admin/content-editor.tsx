@@ -433,7 +433,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
               </div>
             )}
 
-            <p className="admin-border admin-text-subtle mt-4 border-t pt-3 text-xs leading-relaxed">
+            <p className="admin-border admin-text-muted mt-4 border-t pt-3 text-sm leading-relaxed">
               Enregistrer envoie le brouillon au serveur : il est conservé pour
               tous les appareils et le site public n&apos;est pas modifié.{" "}
               Publier est une action distincte : c&apos;est elle, et elle seule,
@@ -562,7 +562,7 @@ export function ContentEditor({ defaultContent }: ContentEditorProps) {
           onViewChange={setWorkspaceView}
         />
 
-        <p className="admin-text-subtle mt-8 text-xs">
+        <p className="admin-text-subtle mt-8 text-sm">
           Référence initiale chargée : {initialContent.navigation.brandLabel}.
           Les IDs techniques restent disponibles au rendu mais ne sont pas
           éditables.

@@ -78,11 +78,12 @@ export function selectedServiceLabel(
 }
 
 /**
- * ESZ-150 — the validated combination a selection of two or more services
- * names, from the list the server said it will book. `null` for a single
- * service (the service itself is the offer) and for any selection the
- * server has not validated: the page then shows that the combination is
- * not offered and never asks for slots. The server re-decides regardless.
+ * ESZ-150, corrected in domain version 15 — the stored *exception* that
+ * governs a selection of two or more services, from the short list of
+ * overrides the server published. `null` means there is none, which is the
+ * normal case: the selection is then bookable by default for the sum of its
+ * component durations. The server re-decides regardless, through the same
+ * rule.
  */
 export function resolveCombination(
   combinations: readonly PublicBookableCombination[],
@@ -93,9 +94,21 @@ export function resolveCombination(
 }
 
 /**
+ * Whether exactly this set of services was explicitly taken off the menu.
+ * Everything not disabled is offered, so this is the only refusal the
+ * selector applies besides the configured maximum.
+ */
+export function combinationIsDisabled(
+  combinations: readonly PublicBookableCombination[],
+  serviceKeys: readonly BookableServiceKey[],
+): boolean {
+  return resolveCombination(combinations, serviceKeys)?.bookable === false;
+}
+
+/**
  * Whether a selection can be sent for availability: one active service, or
- * a validated combination within the configured maximum. Everything else
- * is a selection in progress, not a request.
+ * two to `maxServices` services that were not explicitly disabled together.
+ * Everything else is a selection in progress, not a request.
  */
 export function selectionIsBookable(
   combinations: readonly PublicBookableCombination[],
@@ -103,22 +116,51 @@ export function selectionIsBookable(
   maxServices: number,
 ): boolean {
   if (serviceKeys.length === 0 || serviceKeys.length > maxServices) return false;
-  return serviceKeys.length === 1 || resolveCombination(combinations, serviceKeys) !== null;
+  return serviceKeys.length === 1 || !combinationIsDisabled(combinations, serviceKeys);
 }
 
 /**
- * The duration the visitor will be told: the validated combination's, or
- * the single service's; `null` while the selection names no offer.
+ * Whether the visitor may add `serviceKey` to what is already selected: the
+ * resulting *complete* set must stay within the maximum and must not be an
+ * explicitly disabled combination. Applied incrementally, this is the same
+ * rule at a maximum of two and of four — a third service stays offered only
+ * while the whole trio it would make is still on the menu.
+ */
+export function canAddService(
+  combinations: readonly PublicBookableCombination[],
+  serviceKeys: readonly BookableServiceKey[],
+  serviceKey: BookableServiceKey,
+  maxServices: number,
+): boolean {
+  if (serviceKeys.includes(serviceKey)) return true;
+  if (serviceKeys.length >= maxServices) return false;
+  return !combinationIsDisabled(combinations, [...serviceKeys, serviceKey]);
+}
+
+/**
+ * The duration the visitor will be told: the single service's, the stored
+ * custom duration of this exact combination, or — by default — the sum of
+ * the selected services' durations. `null` while the selection names a
+ * service the catalog did not serve.
  */
 export function selectionDurationMinutes(
   services: readonly PublicBookableService[],
   combinations: readonly PublicBookableCombination[],
   serviceKeys: readonly BookableServiceKey[],
 ): number | null {
+  if (serviceKeys.length === 0) return null;
   if (serviceKeys.length === 1) {
     return services.find((service) => service.key === serviceKeys[0])?.durationMinutes ?? null;
   }
-  return resolveCombination(combinations, serviceKeys)?.durationMinutes ?? null;
+  const custom = resolveCombination(combinations, serviceKeys)?.durationMinutes ?? null;
+  if (custom !== null) return custom;
+  let sum = 0;
+  for (const serviceKey of serviceKeys) {
+    const service = services.find((candidate) => candidate.key === serviceKey);
+    if (service === undefined) return null;
+    sum += service.durationMinutes;
+  }
+  return sum;
 }
 
 export interface ReservationFlowState {

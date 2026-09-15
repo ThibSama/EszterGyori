@@ -114,7 +114,7 @@ export function AdminOperationsSummary() {
                 {tile.label}
               </dt>
               <dd className="admin-text mt-1 text-2xl font-medium">{tile.value}</dd>
-              <p className="admin-text-subtle mt-1 text-xs">{tile.hint}</p>
+              <p className="admin-text-muted mt-1 text-sm">{tile.hint}</p>
             </div>
           ))}
         </dl>

@@ -62,8 +62,8 @@ test("the two legal pages are distinct exported routes reading one public docume
 });
 
 test("the footer keeps its content links and adds the two fixed legal links; the booking form still points at /confidentialite", () => {
-  const preview = read("components", "site-preview.tsx");
-  const footer = preview.slice(preview.indexOf("function Footer("), preview.indexOf("function AtmosphericLayer("));
+  // The footer markup is shared by the public site and the reservation shell.
+  const footer = read("components", "site-footer.tsx");
   assert.match(footer, /content\.links\.map/);
   assert.match(footer, /LEGAL_PAGE_LINKS\.map/);
   // Fixed constants, not SiteContent fields: no editable URL reaches the legal pages.

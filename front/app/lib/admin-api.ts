@@ -181,9 +181,11 @@ export type AdminLegalInformation = z.infer<typeof adminLegalInformationResponse
 export type AdminLegalInformationSave = z.infer<typeof adminLegalInformationSaveRequestSchema>;
 export type AdminBookableService = AdminServiceCatalog["services"][number];
 /**
- * ESZ-150 — one combination as the back-office sees it: a stored row
- * (`validated` or `disabled`, with its token) or a `proposed` candidate the
- * server enumerated (no token, no validated duration yet).
+ * ESZ-150, corrected in domain version 15 — one combination as the
+ * back-office sees it. `default` is bookable with no override at all (its
+ * duration is the sum of its prestations), `validated` carries a custom
+ * duration, `disabled` was explicitly taken off the menu. A membership the
+ * server enumerated rather than read has no token.
  */
 export type AdminServiceCombination = AdminServiceCatalog["combinations"][number];
 /** What one catalog mutation stored: a service row, a combination row or the maximum. */
@@ -212,11 +214,20 @@ export type AdminServiceMutation =
   | {
       action: "validateCombination";
       serviceKeys: string[];
-      durationMinutes: number;
-      /** `null` to store a candidate; the row's token to re-validate it. */
+      /** A custom duration; `null` returns the combination to the automatic sum. */
+      durationMinutes: number | null;
+      /** `null` while the membership has no row; the row's token otherwise. */
       expectedUpdatedAt: string | null;
     }
-  | { action: "disableCombination"; key: string; expectedUpdatedAt: string }
+  | {
+      /**
+       * Domain version 15 — disabling names the membership, not a row: a
+       * combination that is bookable by default has none.
+       */
+      action: "disableCombination";
+      serviceKeys: string[];
+      expectedUpdatedAt: string | null;
+    }
   | { action: "enableCombination"; key: string; expectedUpdatedAt: string };
 
 /**

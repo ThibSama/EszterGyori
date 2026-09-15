@@ -41,14 +41,11 @@
  * administrator configures the maximum number of services per appointment
  * (`services.combinations.maxPerAppointment`, a `system_settings` row,
  * default 1); a *combination* is the canonical set of two or more active
- * service keys — sorted, joined with `+` — and exists for booking only once
- * the administrator has persisted a *validated* duration for it. The server
- * proposes a duration (the plain sum of the component durations, advisory
- * only); the persisted validated duration is the sole authority for slot
- * generation and creation and is never recomputed when a component's
- * duration changes. A booking stores its combination key beside its first
- * service key; single-service bookings, past and future, keep exactly the
- * facts they had.
+ * service keys — sorted, joined with `+`. A booking stores its combination
+ * key beside its first service key; single-service bookings, past and
+ * future, keep exactly the facts they had. (Version 15 replaced this
+ * version's allowlist of explicitly validated combinations with the
+ * default-allow rule stated below.)
  *
  * Version 10 (ESZ-151) adds the administrator's booking-time rules
  * (`availability.bookingTimeRules`): a minimum lead time before a slot may
@@ -97,8 +94,20 @@
  * transport call. Lifting a restriction sends one informational e-mail — the
  * new `processing_restriction_lifted` job type — and never replays a
  * reminder whose window elapsed while the booking was restricted.
+ *
+ * Version 15 corrects the ESZ-150 combination semantics from an *allowlist*
+ * to a *default-allow policy with explicit exceptions*. Every set of two to
+ * `services.combinations.maxPerAppointment` active services is bookable
+ * without any stored row, for the plain sum of its component durations; a
+ * `booking_service_combinations` row is an override — `is_active = 0`
+ * disables exactly that membership, and a non-null `duration_minutes`
+ * replaces the sum for exactly that membership. An absent row means "the
+ * default policy applies", so no combination is ever materialised merely
+ * because it is allowed, and an edit to a component's duration moves every
+ * implicit combination's duration while leaving every stored custom
+ * duration alone.
  */
-export const BOOKING_DOMAIN_VERSION = 14;
+export const BOOKING_DOMAIN_VERSION = 15;
 
 /**
  * The business operates in metropolitan France. Rules are authored as local
@@ -1200,20 +1209,24 @@ export const bookingDomainContract = {
         default: BOOKING_MAX_SERVICES_PER_APPOINTMENT_DEFAULT,
         settingKey: BOOKING_MAX_SERVICES_SETTING_KEY,
         rule:
-          "The administrator's configured maximum number of services per appointment. Absent setting row means the default. Public discovery advertises it; availability and creation refuse a selection larger than it, and a persisted combination larger than it stays stored but is not bookable while the maximum is lower.",
+          "The administrator's configured maximum number of services per appointment. Absent setting row means the default. Public discovery advertises it; availability and creation refuse a selection larger than it, and a stored combination larger than it is not bookable while the maximum is lower. Setting it to n means every set of up to n active services is bookable.",
       },
+      defaultPolicy:
+        "Default-allow (domain version 15). Every set of two to maxPerAppointment *active* services is bookable with no stored row at all, for the plain sum of its component durations. booking_service_combinations is an exception layer, not an allowlist: an absent row means the default policy applies, and no combination is ever materialised merely because it is allowed.",
+      override:
+        "One row overrides the default policy for exactly one canonical membership. is_active = 0 makes that membership unbookable (availability and creation both refuse it with 400 VALIDATION_FAILED). A non-null duration_minutes replaces the summed duration for that membership and nothing recomputes it. A row that is active with a null duration_minutes is the default policy again, stored: it is exactly equivalent to no row.",
       proposedDuration:
-        "Advisory only: the plain sum of the current component durations, computed at read time with no weighting or percentage heuristic. It is shown to the administrator beside the validated duration and is never used to compute a slot.",
+        "The plain sum of the current component durations, computed at read time with no weighting or percentage heuristic. It is the *effective* duration of every combination that carries no custom duration, and it is shown to the administrator beside a custom duration when one exists.",
       validatedDuration:
-        "The duration the administrator explicitly persisted for the combination, within services.durationMinutes. It alone shapes availability and creation for that combination. A later change to a component's duration updates the proposal and never rewrites the validated duration; only a new explicit validation does.",
+        "The custom duration the administrator explicitly persisted for one combination, within services.durationMinutes. While it is set it alone shapes availability and creation for that combination. A later change to a component's duration moves the summed proposal and never rewrites a stored custom duration; only a new explicit validation does.",
       buffers:
-        "A combination's buffers are snapshotted at validation time as the largest before-buffer and largest after-buffer among its members.",
+        "A combination's buffers are the largest before-buffer and the largest after-buffer among its members, computed from the current catalog for an implicit combination and snapshotted at validation time for a stored custom duration.",
       bookability:
-        "A selection of two or more services is bookable only when a combination row with exactly that canonical membership exists, is active (not disabled), has a validated duration, every member service is active, and the member count is within the configured maximum. Anything else fails closed with 400 VALIDATION_FAILED; there is no implicit combination.",
+        "A selection of two or more services is bookable when every member is an active service, the members are distinct, the member count is within the configured maximum, and no stored row for exactly that canonical membership is disabled. Its duration is the stored custom duration when the row has one, otherwise the sum of the component durations. Anything else fails closed with 400 VALIDATION_FAILED.",
       archive:
-        "Disabling a combination or archiving one of its members removes it from public discovery and from bookability for new reservations only. The row, its key and every booking that references it survive; restoring the member or enabling the combination brings it back. No combination row is ever hard-deleted.",
+        "Disabling a combination or archiving one of its members removes it from bookability for new reservations only. The row, its key and every booking that references it survive; restoring the member or re-enabling the combination brings it back. No combination row is ever hard-deleted, and re-enabling never resurrects a custom duration the administrator cleared.",
       existingBookings:
-        "A booking stores its combination key beside its first (canonical) service key, its own start and end. Bookings created before this version carry a null combination key and are never migrated, recomputed or re-attributed.",
+        "A booking stores its combination key beside its first (canonical) service key, its own start and end. The key a booking stores need not name a row: an implicit combination has none. Bookings created before this version carry a null combination key and are never migrated, recomputed or re-attributed.",
       candidatesListedMax: BOOKING_SERVICE_COMBINATION_CANDIDATES_MAX,
     },
   },

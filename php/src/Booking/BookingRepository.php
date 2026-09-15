@@ -369,10 +369,12 @@ final class BookingRepository
      *     notice the form displayed; the caller (BookingLifecycle) has already
      *     checked membership against the booking-domain artifact, and every
      *     new booking stores a non-null id.
-     * @param ?string $combinationKey ESZ-150 — the validated combination the
-     *     booking is for, whose first canonical member `$serviceKey` must be;
-     *     null for a single-service booking. The interval must then equal the
-     *     combination's *validated* duration, never a sum of its members.
+     * @param ?string $combinationKey ESZ-150 — the combination the booking is
+     *     for, whose first canonical member `$serviceKey` must be; null for a
+     *     single-service booking. The interval must then equal the
+     *     combination's *effective* duration — its stored custom duration
+     *     when it has one, the sum of its members otherwise — as the one
+     *     domain resolver computes it under this boundary.
      * @param ?BookableOffer $offer ESZ-153 — the offer the lifecycle
      *     revalidated under the serialization boundary; its buffers become
      *     the booking's own snapshot. It must name the same service and
@@ -605,31 +607,30 @@ final class BookingRepository
     }
 
     /**
-     * ESZ-150 — the combination a new booking names, after the same checks
-     * the catalog makes: the row exists, is active, `$serviceKey` is its
-     * first canonical member and every member is an active service. Defence
-     * in depth beside the offer the lifecycle already revalidated under the
-     * boundary. ESZ-153 reads its buffers too, for the booking's snapshot.
+     * ESZ-150, corrected in domain version 15 — the effective combination a
+     * new booking names, re-resolved here through the *same* domain resolver
+     * the catalog used: every member an active service, the membership within
+     * the configured maximum and no disabling override for it. Defence in
+     * depth beside the offer the lifecycle already revalidated under the
+     * boundary, and the reason an implicit combination with no stored row is
+     * accepted here exactly as the public selector offered it. ESZ-153 reads
+     * its buffers too, for the booking's snapshot.
      */
-    private function bookableCombination(string $combinationKey, string $serviceKey): ServiceCombination
+    private function bookableCombination(string $combinationKey, string $serviceKey): EffectiveCombination
     {
         if ($this->combinations === null) {
             throw new \LogicException('A combination booking needs the combination repository.');
         }
-        $combination = $this->combinations->find($combinationKey);
-        if ($combination === null) {
-            throw new BookableServiceNotFoundException($combinationKey);
+        if (!$this->contract->acceptsCombinationKey($combinationKey)) {
+            throw new BookingValidationException('combinationKey', 'Malformed combination key.');
         }
-        if (!$combination->isActive || $combination->serviceKeys[0] !== $serviceKey) {
+        $members = ServiceCombination::membersOf($combinationKey);
+        if ($members[0] !== $serviceKey) {
             throw new BookingValidationException('combinationKey', 'The combination is not bookable.');
         }
-        foreach ($this->combinations->memberServices($combination->serviceKeys) as $member) {
-            if (!$member->isActive) {
-                throw new BookingValidationException('combinationKey', 'A combination member is inactive.');
-            }
-        }
+        $catalog = new BookingServiceCatalog($this->services, $this->combinations);
 
-        return $combination;
+        return $catalog->requireEffectiveCombination($members);
     }
 
     public function transition(string $reference, string $targetState, ?string $reason = null): Booking

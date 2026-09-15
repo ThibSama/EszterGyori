@@ -744,7 +744,7 @@ const bookingFoldOffsetSchema = z.enum(BOOKING_DST_FOLD_OFFSETS).nullable();
 /**
  * ESZ-150 — a selection of services, in the visitor's order. One to the
  * absolute limit; the configured maximum, duplicates and whether the set
- * names a validated combination are the domain's refusals (400
+ * names an explicitly disabled combination are the domain's refusals (400
  * VALIDATION_FAILED), not the schema's.
  */
 const bookableServiceKeysSchema = z
@@ -793,15 +793,26 @@ export const publicBookableServiceSchema = z
   .strict();
 
 /**
- * ESZ-150 — one bookable combination as public discovery lists it: its
- * canonical key, its members in canonical order and the validated duration.
- * Only combinations that can be booked right now are listed.
+ * ESZ-150, corrected in domain version 15 — one *exception* to the
+ * default-allow combination rule, as public discovery lists it.
+ *
+ * Every set of up to `maxServicesPerAppointment` active services is bookable
+ * for the sum of its component durations without appearing here at all. A
+ * membership is listed only because the administrator overrode that default:
+ * `bookable: false` is an explicitly disabled membership the selector must
+ * refuse, and a non-null `durationMinutes` is the custom duration that
+ * replaces the sum. Only exceptions whose members are all active and whose
+ * size is within the configured maximum are listed, so the list is bounded
+ * by what Esther stored and never by the combinatorics of the catalog.
  */
 export const publicBookableServiceCombinationSchema = z
   .object({
     key: bookableServiceCombinationKeySchema,
     serviceKeys: z.array(bookableServiceKeySchema).min(2).max(BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT),
-    durationMinutes: bookableServiceDurationSchema,
+    /** The custom duration for this membership; null when the sum applies. */
+    durationMinutes: bookableServiceDurationSchema.nullable(),
+    /** False for an explicitly disabled membership. */
+    bookable: z.boolean(),
   })
   .strict();
 
@@ -810,6 +821,7 @@ export const publicBookableServicesResponseSchema = z
     services: z.array(publicBookableServiceSchema),
     /** ESZ-150 — the configured maximum; 1 means single-service selection only. */
     maxServicesPerAppointment: maxServicesPerAppointmentSchema,
+    /** The stored exceptions to the default-allow rule; never an allowlist. */
     combinations: z.array(publicBookableServiceCombinationSchema),
   })
   .strict();
@@ -1405,14 +1417,21 @@ export const adminBookableServiceSchema = z
   .strict();
 
 /**
- * ESZ-150 — one combination as the back-office sees it. `proposedDurationMinutes`
- * is the advisory sum of the current component durations; `durationMinutes` is
- * the validated duration the administrator persisted (null while the row is
- * only a candidate). `status` is `proposed` for a candidate with no row,
- * `validated` for a stored active row and `disabled` for a stored row taken
- * out of bookability. `bookable` is the whole rule in one flag: validated,
- * every member active, member count within the configured maximum.
- * `updatedAt` is the row's optimistic-concurrency token, null for a candidate.
+ * ESZ-150, corrected in domain version 15 — one combination as the
+ * back-office sees it, stored or not.
+ *
+ * `proposedDurationMinutes` is the automatic sum of the *current* component
+ * durations; `durationMinutes` is the custom duration the administrator
+ * persisted for this membership, null whenever the sum applies.
+ * `effectiveDurationMinutes` is the one a reservation would actually use —
+ * the custom duration when there is one, the sum otherwise — so the panel
+ * never has to restate the rule. `status` is `default` for a membership
+ * that follows the default-allow policy (with or without a stored row),
+ * `validated` for one carrying a custom duration and `disabled` for one the
+ * administrator explicitly took out of bookability. `bookable` is the whole
+ * rule in one flag: not disabled, every member active, member count within
+ * the configured maximum. `updatedAt` is the row's optimistic-concurrency
+ * token, null while the membership has no row at all.
  */
 export const adminServiceCombinationSchema = z
   .object({
@@ -1424,7 +1443,12 @@ export const adminServiceCombinationSchema = z
       .min(BOOKING_SERVICE_DURATION_MIN_MINUTES)
       .max(BOOKING_SERVICE_DURATION_MAX_MINUTES * BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT),
     durationMinutes: bookableServiceDurationSchema.nullable(),
-    status: z.enum(["proposed", "validated", "disabled"]),
+    effectiveDurationMinutes: z
+      .number()
+      .int()
+      .min(BOOKING_SERVICE_DURATION_MIN_MINUTES)
+      .max(BOOKING_SERVICE_DURATION_MAX_MINUTES * BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT),
+    status: z.enum(["default", "validated", "disabled"]),
     bookable: z.boolean(),
     updatedAt: isoTimestampSchema.nullable(),
   })
@@ -1436,10 +1460,12 @@ export const adminServicesResponseSchema = z
     /** ESZ-150 — the configured maximum number of services per appointment. */
     maxServicesPerAppointment: maxServicesPerAppointmentSchema,
     /**
-     * ESZ-150 — every stored combination (validated or disabled, members
-     * archived or not) followed by the candidates: the not-yet-stored subsets
-     * of two to `maxServicesPerAppointment` active services, in catalog order,
-     * bounded at the domain's `candidatesListedMax`.
+     * ESZ-150 — every stored combination (a custom duration or a disabling
+     * override, members archived or not) followed by the memberships that
+     * follow the default policy with no row at all: the subsets of two to
+     * `maxServicesPerAppointment` active services, in catalog order, bounded
+     * at the domain's `candidatesListedMax`. A membership with no row is
+     * bookable by default and is listed so Esther can see and override it.
      */
     combinations: z.array(adminServiceCombinationSchema),
     /** False when the candidate enumeration hit its bound. */
@@ -1494,29 +1520,37 @@ const adminServiceSetMaxServicesSchema = z
   .strict();
 
 /**
- * ESZ-150 — persists the validated duration of one combination. `serviceKeys`
- * is the membership in any order (the server canonicalises it);
- * `expectedUpdatedAt` is null when the combination has no row yet and the
- * row's token when it has one, so a stale form cannot overwrite a duration
- * validated elsewhere.
+ * ESZ-150 — persists (or clears) the custom duration of one combination.
+ * `serviceKeys` is the membership in any order (the server canonicalises it);
+ * a null `durationMinutes` clears the override and returns the membership to
+ * the automatic sum. `expectedUpdatedAt` is null when the combination has no
+ * row yet and the row's token when it has one, so a stale form cannot
+ * overwrite a duration validated elsewhere.
  */
 const adminServiceValidateCombinationSchema = z
   .object({
     action: z.literal("validateCombination"),
     serviceKeys: z.array(bookableServiceKeySchema).min(2).max(BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT),
-    durationMinutes: bookableServiceDurationSchema,
+    durationMinutes: bookableServiceDurationSchema.nullable(),
     expectedUpdatedAt: isoTimestampSchema.nullable(),
   })
   .strict();
 
+/**
+ * Domain version 15 — disabling now names the *membership*, not a row: a
+ * combination that is bookable by default has no row to name. A null
+ * `expectedUpdatedAt` creates the disabling override, a token replaces an
+ * existing row's state.
+ */
 const adminServiceDisableCombinationSchema = z
   .object({
     action: z.literal("disableCombination"),
-    key: bookableServiceCombinationKeySchema,
-    expectedUpdatedAt: isoTimestampSchema,
+    serviceKeys: z.array(bookableServiceKeySchema).min(2).max(BOOKING_MAX_SERVICES_PER_APPOINTMENT_LIMIT),
+    expectedUpdatedAt: isoTimestampSchema.nullable(),
   })
   .strict();
 
+/** Re-enabling always names an existing (disabled) row, under its token. */
 const adminServiceEnableCombinationSchema = z
   .object({
     action: z.literal("enableCombination"),

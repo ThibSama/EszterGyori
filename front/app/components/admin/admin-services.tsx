@@ -17,8 +17,10 @@ import {
   MAX_SERVICES_OPTIONS,
   SERVICE_DRAFT_ERRORS,
   SERVICE_STATUS_LABELS,
+  clearCombinationDurationMutation,
   combinationDurationDraft,
   combinationUnavailableReason,
+  disableCombinationMutation,
   draftFromService,
   emptyServiceDraft,
   formatServiceDuration,
@@ -62,15 +64,17 @@ import {
  * in place, and what it does is stated in the confirmation: the service leaves
  * the reservation page, its bookings stay. "Restaurer" is the way back.
  *
- * ## Combinations (ESZ-150)
+ * ## Combinations (ESZ-150, corrected in domain version 15)
  *
- * The same page owns the maximum number of services per appointment and
- * the combinations: every one the server stored and every candidate it
- * enumerated, each with the proposed duration (the plain sum of the
- * components, advisory) and the validated one. Esther corrects the number
- * and saves it explicitly; only that saved value ever shapes a booking, and
- * a later component edit moves the proposal without touching it. Every
- * combination mutation re-reads the catalog, because the candidate list is
+ * The same page owns the maximum number of services per appointment and the
+ * combinations. The maximum is the whole rule: at 2, every pair of active
+ * prestations is bookable, for the sum of its durations, with nothing stored
+ * and nothing to click. The list exists to *override* that — to take one
+ * combination off the menu, or to pin a duration that is not the sum — so a
+ * row with no stored override reads `Active par défaut` and still offers
+ * `Désactiver`. Saving a duration pins it for that combination only and a
+ * later component edit never rewrites it; `Durée automatique` gives it back.
+ * Every combination mutation re-reads the catalog, because the list is
  * derived from what is stored.
  */
 export function AdminServices() {
@@ -320,12 +324,18 @@ export function AdminServices() {
                   mutation,
                   ADMIN_SERVICES_MESSAGES.combinationValidated,
                 )}
+                onClearDuration={(combination) => void mutateCombinations(
+                  clearCombinationDurationMutation(combination),
+                  ADMIN_SERVICES_MESSAGES.combinationCleared,
+                )}
                 onSetActive={(combination, active) => void mutateCombinations(
-                  {
-                    action: active ? "enableCombination" : "disableCombination",
-                    key: combination.key,
-                    expectedUpdatedAt: combination.updatedAt ?? "",
-                  },
+                  active
+                    ? {
+                        action: "enableCombination",
+                        key: combination.key,
+                        expectedUpdatedAt: combination.updatedAt ?? "",
+                      }
+                    : disableCombinationMutation(combination),
                   active
                     ? ADMIN_SERVICES_MESSAGES.combinationEnabled
                     : ADMIN_SERVICES_MESSAGES.combinationDisabled,
@@ -526,7 +536,7 @@ function ServiceForm({
               onChange={(value) => onChange("label", value)}
             />
             {errors.label && (
-              <p role="alert" className="admin-note-danger mt-1.5 rounded-lg px-3 py-1.5 text-xs">
+              <p role="alert" className="admin-note-danger mt-1.5 rounded-lg px-3 py-1.5 text-sm">
                 {errors.label}
               </p>
             )}
@@ -540,7 +550,7 @@ function ServiceForm({
               onChange={(value) => onChange("description", value)}
             />
             {errors.description && (
-              <p role="alert" className="admin-note-danger mt-1.5 rounded-lg px-3 py-1.5 text-xs">
+              <p role="alert" className="admin-note-danger mt-1.5 rounded-lg px-3 py-1.5 text-sm">
                 {errors.description}
               </p>
             )}
@@ -556,7 +566,7 @@ function ServiceForm({
               onChange={(value) => onChange("durationMinutes", value)}
             />
             {errors.durationMinutes && (
-              <p role="alert" className="admin-note-danger mt-1.5 rounded-lg px-3 py-1.5 text-xs">
+              <p role="alert" className="admin-note-danger mt-1.5 rounded-lg px-3 py-1.5 text-sm">
                 {errors.durationMinutes}
               </p>
             )}
@@ -588,7 +598,7 @@ function ServiceForm({
             selected={draft.imageSrc}
             onSelect={(asset) => onChange("imageSrc", asset.path)}
           />
-          <p className="admin-text-subtle text-xs leading-relaxed">
+          <p className="admin-text-muted text-sm leading-relaxed">
             La même image sert la liste, ce formulaire et la page de réservation. Retirer une
             image ne la supprime pas de la médiathèque.
           </p>
@@ -615,13 +625,18 @@ function ServiceForm({
 }
 
 /**
- * ESZ-150 — the maximum and the combinations, inside `Prestations`.
+ * ESZ-150, corrected in domain version 15 — the maximum and the
+ * combinations, inside `Prestations`.
  *
- * Five columns: Prestations, Durée proposée, Durée validée, Statut,
- * Actions. The proposal is read-only and advisory; the validated duration is
- * an input Esther corrects and saves explicitly — a candidate starts from
- * the proposal, a stored row from its validated value. The list is exactly
- * what the server listed: stored rows first, then candidates, and a truncated
+ * The maximum means exactly what it says: at 2, every pair of prestations
+ * actives est réservable, sans aucune action de la part d’Esther. Every
+ * combination the server listed is shown whether or not it has a row, and
+ * the five columns say which rule applies to it: Prestations, Durée
+ * automatique (the sum of its prestations, recomputed whenever a prestation
+ * moves), Durée du rendez-vous (an input — saving it pins a custom duration
+ * for this combination only), Statut (`Active par défaut`, `Durée
+ * personnalisée`, `Désactivée`) and Actions (`Désactiver` / `Réactiver`, and
+ * `Durée automatique` to drop a custom duration again). A truncated
  * enumeration says so.
  */
 function CombinationsPanel({
@@ -633,6 +648,7 @@ function CombinationsPanel({
   labelOf,
   onSetMax,
   onValidate,
+  onClearDuration,
   onSetActive,
 }: {
   services: AdminBookableService[];
@@ -643,6 +659,7 @@ function CombinationsPanel({
   labelOf: (key: string | readonly string[]) => string;
   onSetMax: (max: number) => void;
   onValidate: (mutation: NonNullable<ReturnType<typeof validateCombinationMutation>>) => Promise<boolean>;
+  onClearDuration: (combination: AdminServiceCombination) => void;
   onSetActive: (combination: AdminServiceCombination, active: boolean) => void;
 }) {
   const idPrefix = useId();
@@ -676,9 +693,10 @@ function CombinationsPanel({
         Combinaisons
       </h2>
       <p className="admin-text-muted mt-2 max-w-2xl text-sm leading-relaxed">
-        Une cliente peut réserver plusieurs prestations dans un même rendez-vous. La durée proposée
-        est la somme des durées ; la durée validée est celle que vous enregistrez, et elle seule
-        fait foi pour les nouvelles réservations.
+        Une cliente peut réserver plusieurs prestations dans un même rendez-vous. Toutes les
+        combinaisons sont proposées automatiquement, dans la limite du maximum ci-dessous, et durent
+        la somme des prestations choisies. Vous n’avez donc rien à valider : servez-vous de cette
+        liste seulement pour désactiver une combinaison ou lui fixer une durée particulière.
       </p>
 
       <div className="mt-5 flex flex-wrap items-center gap-3">
@@ -711,15 +729,16 @@ function CombinationsPanel({
             role="row"
             className={`admin-text-subtle hidden gap-4 px-3 pb-2 text-xs font-semibold uppercase tracking-wide sm:grid ${columns}`}>
             <span role="columnheader">Prestations</span>
-            <span role="columnheader">Durée proposée</span>
-            <span role="columnheader">Durée validée</span>
+            <span role="columnheader">Durée automatique</span>
+            <span role="columnheader">Durée du rendez-vous</span>
             <span role="columnheader">Statut</span>
             <span role="columnheader">Actions</span>
           </div>
           <ul className="admin-border divide-y divide-[color:var(--admin-border)] border-t">
             {combinations.map((combination) => {
               const reason = combinationUnavailableReason(combination, services, maxServices);
-              const stored = combination.status !== "proposed";
+              const disabled = combination.status === "disabled";
+              const customised = combination.durationMinutes !== null;
               const inputId = `${idPrefix}-${combination.key}`;
               return (
                 <li
@@ -728,18 +747,18 @@ function CombinationsPanel({
                   data-combination-key={combination.key}
                   data-combination-status={combination.status}
                   data-combination-bookable={combination.bookable ? "true" : "false"}
-                  className={`grid gap-3 px-3 py-4 sm:items-center sm:gap-4 ${columns} ${combination.status === "disabled" ? "opacity-75" : ""}`}>
+                  className={`grid gap-3 px-3 py-4 sm:items-center sm:gap-4 ${columns} ${disabled ? "opacity-75" : ""}`}>
                   <div role="cell" className="min-w-0">
                     <span className="admin-text block font-medium">{labelOf(combination.serviceKeys)}</span>
                     {reason && <span className="admin-text-muted block text-xs">{reason}</span>}
                   </div>
                   <p role="cell" className="admin-text text-sm">
-                    <span className="admin-text-subtle mr-2 text-xs uppercase tracking-wide sm:hidden">Proposée</span>
+                    <span className="admin-text-subtle mr-2 text-xs uppercase tracking-wide sm:hidden">Automatique</span>
                     {formatServiceDuration(combination.proposedDurationMinutes)}
                   </p>
                   <div role="cell">
                     <label htmlFor={inputId} className="admin-text-subtle mr-2 text-xs uppercase tracking-wide sm:sr-only">
-                      Validée (minutes)
+                      Durée du rendez-vous (minutes)
                     </label>
                     <input
                       id={inputId}
@@ -756,10 +775,13 @@ function CombinationsPanel({
                       className="admin-input w-28 rounded-full px-3 py-1.5 text-sm"
                     />
                     {errors[combination.key] && (
-                      <p role="alert" className="admin-note-danger mt-1.5 rounded-lg px-3 py-1.5 text-xs">
+                      <p role="alert" className="admin-note-danger mt-1.5 rounded-lg px-3 py-1.5 text-sm">
                         {errors[combination.key]}
                       </p>
                     )}
+                    <span className="admin-text-subtle mt-1 block text-xs">
+                      {customised ? "Durée personnalisée" : "Somme automatique"}
+                    </span>
                   </div>
                   <p role="cell" className="text-sm">
                     <span className="admin-text-subtle mr-2 text-xs uppercase tracking-wide sm:hidden">Statut</span>
@@ -774,17 +796,25 @@ function CombinationsPanel({
                       disabled={busy}
                       onClick={() => void validate(combination)}
                       className="admin-btn-secondary rounded-full px-3 py-1.5 text-xs font-medium">
-                      {stored ? "Enregistrer la durée" : "Valider"}
+                      Enregistrer la durée
                     </button>
-                    {stored && (
+                    {customised && (
                       <button
                         type="button"
                         disabled={busy}
-                        onClick={() => onSetActive(combination, combination.status === "disabled")}
+                        onClick={() => onClearDuration(combination)}
                         className="admin-btn-quiet rounded-full px-3 py-1.5 text-xs">
-                        {combination.status === "disabled" ? "Réactiver" : "Désactiver"}
+                        Durée automatique
                       </button>
                     )}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      data-combination-action={disabled ? "enable" : "disable"}
+                      onClick={() => onSetActive(combination, disabled)}
+                      className="admin-btn-quiet rounded-full px-3 py-1.5 text-xs">
+                      {disabled ? "Réactiver" : "Désactiver"}
+                    </button>
                   </div>
                 </li>
               );

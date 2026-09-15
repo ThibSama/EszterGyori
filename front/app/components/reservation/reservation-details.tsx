@@ -174,30 +174,13 @@ export function ReservationDetails({
             <div>
               <label htmlFor="customer-note" className="mb-2 block text-sm font-medium text-warm-700">Précision sur le rendez-vous <span className="font-normal text-warm-500">— facultatif</span></label>
               <textarea ref={noteInput} id="customer-note" name="note" rows={4} maxLength={2000} placeholder="Ex. : une question sur la prestation, une contrainte d’horaire…" value={customer.note} onChange={(event) => update("note", event.target.value)} aria-invalid={Boolean(errorFor("note"))} aria-describedby={describedBy("note", "note-hint")} className="w-full resize-y rounded-xl border border-warm-300 bg-white/70 px-4 py-3 text-warm-800" />
-              <p id="note-hint" className="mt-2 text-sm text-warm-600">N’indiquez ici aucune information médicale, de santé ou autre donnée sensible.</p>
+              {/* Not a hint: the one instruction on this form whose cost lands on the
+                  visitor rather than on the booking. It is the only field note that
+                  takes the full text colour and a medium weight, so it separates from
+                  the optional-phone hint two fields above it. */}
+              <p id="note-hint" className="mt-2 text-sm font-medium text-warm-700">N’indiquez ici aucune information médicale, de santé ou autre donnée sensible.</p>
               {errorFor("note") && <p id="note-error" className="mt-2 text-sm text-warm-700">{errorFor("note")}</p>}
             </div>
-            {/*
-              ESZ-161 — information, not consent. A booking rests on the
-              execution of the requested service and the pre-contractual
-              steps the visitor asks for, so there is no checkbox to tick:
-              the form states who processes the data, on what basis, for how
-              long, who receives it and which rights apply. The statements
-              are the contract catalog's frozen text; the request sends only
-              its id, never the text.
-            */}
-            <section aria-labelledby="privacy-notice-heading" data-privacy-notice-id={bookingPrivacyCurrentNotice.id} className="rounded-2xl bg-white/55 p-4 text-sm leading-relaxed text-warm-700">
-              <h3 id="privacy-notice-heading" className="font-medium text-warm-800">Vos données personnelles</h3>
-              <ul className="mt-2 space-y-1.5">
-                <li>{bookingPrivacyCurrentNotice.content.controller}</li>
-                <li>{bookingPrivacyCurrentNotice.content.legalBasis}</li>
-                <li>{bookingPrivacyCurrentNotice.content.retention}</li>
-                <li>{bookingPrivacyCurrentNotice.content.recipients}</li>
-                <li>{bookingPrivacyCurrentNotice.content.rights}</li>
-                <li>{bookingPrivacyCurrentNotice.content.contact}</li>
-              </ul>
-              <p className="mt-2"><a href={bookingPrivacyCurrentNotice.content.privacyPolicy.href} className="underline decoration-warm-400 underline-offset-2 hover:text-warm-800">{bookingPrivacyCurrentNotice.content.privacyPolicy.label}</a></p>
-            </section>
             <button type="submit" disabled={state.availabilityStatus !== "ready"} className="w-full rounded-full bg-warm-800 px-6 py-3.5 font-medium text-porcelain transition-colors hover:bg-warm-700 disabled:cursor-wait disabled:opacity-60 sm:w-auto">Vérifier ma demande</button>
             {state.availabilityStatus !== "ready" && <p role="status" className="text-sm text-warm-600">Attendez la vérification des disponibilités avant de continuer.</p>}
           </form>
@@ -222,7 +205,37 @@ export function ReservationDetails({
             {customer.phone.trim() && <div><dt className="text-sm text-warm-500">Téléphone</dt><dd className="font-medium text-warm-800">{customer.phone.trim()}</dd></div>}
             {customer.note.trim() && <div className="sm:col-span-2"><dt className="text-sm text-warm-500">Précision sur le rendez-vous</dt><dd className="whitespace-pre-wrap text-warm-800">{customer.note.trim()}</dd></div>}
           </dl>
-          <p className="mt-5 text-sm text-warm-600">Vos coordonnées servent uniquement à organiser ce rendez-vous (voir « Vos données personnelles » ci-dessus).</p>
+          {/*
+            ESZ-161 — information, not consent. A booking rests on the
+            execution of the requested service and the pre-contractual steps
+            the visitor asks for, so there is no checkbox to tick: the notice
+            states who processes the data, on what basis, for how long, who
+            receives it and which rights apply. The statements are the
+            contract catalog's frozen text; the request sends only its id,
+            never the text.
+
+            It sits in the review, between the summary and the confirmation
+            controls, because it belongs to the booking action itself — read
+            in full, never behind a disclosure, but in a quiet editorial
+            treatment rather than another form card.
+          */}
+          <section
+            aria-labelledby="privacy-notice-heading"
+            data-privacy-notice-id={bookingPrivacyCurrentNotice.id}
+            className="mt-8 border-t border-sage-400/40 pt-5">
+            <h3 id="privacy-notice-heading" className="text-xs font-medium uppercase tracking-[0.16em] text-sage-600">Vos données personnelles</h3>
+            <ul className="mt-3 space-y-1 text-[0.8125rem] leading-relaxed text-warm-500">
+              <li>{bookingPrivacyCurrentNotice.content.controller}</li>
+              <li>{bookingPrivacyCurrentNotice.content.legalBasis}</li>
+              <li>{bookingPrivacyCurrentNotice.content.retention}</li>
+              <li>{bookingPrivacyCurrentNotice.content.recipients}</li>
+              <li>{bookingPrivacyCurrentNotice.content.rights}</li>
+              <li>{bookingPrivacyCurrentNotice.content.contact}</li>
+            </ul>
+            <p className="mt-3 text-[0.8125rem] leading-relaxed text-warm-500">
+              <a href={bookingPrivacyCurrentNotice.content.privacyPolicy.href} className="underline decoration-warm-400/70 underline-offset-4 transition-colors hover:text-warm-700">{bookingPrivacyCurrentNotice.content.privacyPolicy.label}</a>
+            </p>
+          </section>
           <div className="mt-7 flex flex-col gap-3 sm:flex-row">
             <button type="button" disabled={state.phase === "submitting"} onClick={() => dispatch({ type: "edit-details" })} className="rounded-full border border-warm-300 bg-white/60 px-6 py-3 font-medium text-warm-700 disabled:opacity-50">Modifier mes coordonnées</button>
             <button type="button" disabled={state.phase === "submitting" || submissionRetryBlocked || state.availabilityStatus !== "ready"} onClick={() => { if (submissionRetryBlocked) return; void onSubmit(); }} className="rounded-full bg-warm-800 px-6 py-3 font-medium text-porcelain transition-colors hover:bg-warm-700 disabled:cursor-wait disabled:opacity-60">

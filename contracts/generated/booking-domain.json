@@ -1,5 +1,5 @@
 {
-  "version": 14,
+  "version": 15,
   "scope": "Package 4.1/4.2 booking domain and dynamic slot computation; no booking HTTP API.",
   "services": {
     "keyAuthority": "booking_services.service_key",
@@ -28,14 +28,16 @@
         "max": 4,
         "default": 1,
         "settingKey": "booking.max_services_per_appointment",
-        "rule": "The administrator's configured maximum number of services per appointment. Absent setting row means the default. Public discovery advertises it; availability and creation refuse a selection larger than it, and a persisted combination larger than it stays stored but is not bookable while the maximum is lower."
+        "rule": "The administrator's configured maximum number of services per appointment. Absent setting row means the default. Public discovery advertises it; availability and creation refuse a selection larger than it, and a stored combination larger than it is not bookable while the maximum is lower. Setting it to n means every set of up to n active services is bookable."
       },
-      "proposedDuration": "Advisory only: the plain sum of the current component durations, computed at read time with no weighting or percentage heuristic. It is shown to the administrator beside the validated duration and is never used to compute a slot.",
-      "validatedDuration": "The duration the administrator explicitly persisted for the combination, within services.durationMinutes. It alone shapes availability and creation for that combination. A later change to a component's duration updates the proposal and never rewrites the validated duration; only a new explicit validation does.",
-      "buffers": "A combination's buffers are snapshotted at validation time as the largest before-buffer and largest after-buffer among its members.",
-      "bookability": "A selection of two or more services is bookable only when a combination row with exactly that canonical membership exists, is active (not disabled), has a validated duration, every member service is active, and the member count is within the configured maximum. Anything else fails closed with 400 VALIDATION_FAILED; there is no implicit combination.",
-      "archive": "Disabling a combination or archiving one of its members removes it from public discovery and from bookability for new reservations only. The row, its key and every booking that references it survive; restoring the member or enabling the combination brings it back. No combination row is ever hard-deleted.",
-      "existingBookings": "A booking stores its combination key beside its first (canonical) service key, its own start and end. Bookings created before this version carry a null combination key and are never migrated, recomputed or re-attributed.",
+      "defaultPolicy": "Default-allow (domain version 15). Every set of two to maxPerAppointment *active* services is bookable with no stored row at all, for the plain sum of its component durations. booking_service_combinations is an exception layer, not an allowlist: an absent row means the default policy applies, and no combination is ever materialised merely because it is allowed.",
+      "override": "One row overrides the default policy for exactly one canonical membership. is_active = 0 makes that membership unbookable (availability and creation both refuse it with 400 VALIDATION_FAILED). A non-null duration_minutes replaces the summed duration for that membership and nothing recomputes it. A row that is active with a null duration_minutes is the default policy again, stored: it is exactly equivalent to no row.",
+      "proposedDuration": "The plain sum of the current component durations, computed at read time with no weighting or percentage heuristic. It is the *effective* duration of every combination that carries no custom duration, and it is shown to the administrator beside a custom duration when one exists.",
+      "validatedDuration": "The custom duration the administrator explicitly persisted for one combination, within services.durationMinutes. While it is set it alone shapes availability and creation for that combination. A later change to a component's duration moves the summed proposal and never rewrites a stored custom duration; only a new explicit validation does.",
+      "buffers": "A combination's buffers are the largest before-buffer and the largest after-buffer among its members, computed from the current catalog for an implicit combination and snapshotted at validation time for a stored custom duration.",
+      "bookability": "A selection of two or more services is bookable when every member is an active service, the members are distinct, the member count is within the configured maximum, and no stored row for exactly that canonical membership is disabled. Its duration is the stored custom duration when the row has one, otherwise the sum of the component durations. Anything else fails closed with 400 VALIDATION_FAILED.",
+      "archive": "Disabling a combination or archiving one of its members removes it from bookability for new reservations only. The row, its key and every booking that references it survive; restoring the member or re-enabling the combination brings it back. No combination row is ever hard-deleted, and re-enabling never resurrects a custom duration the administrator cleared.",
+      "existingBookings": "A booking stores its combination key beside its first (canonical) service key, its own start and end. The key a booking stores need not name a row: an implicit combination has none. Bookings created before this version carry a null combination key and are never migrated, recomputed or re-attributed.",
       "candidatesListedMax": 300
     }
   },

@@ -9,16 +9,19 @@ use Eszter\Support\Clock;
 use Eszter\Support\IsoTimestamp;
 
 /**
- * Explicit, repeat-safe persistence for validated service combinations and
- * the "services per appointment" setting (ESZ-150).
+ * Explicit, repeat-safe persistence for combination *overrides* and the
+ * "services per appointment" setting (ESZ-150, corrected in domain
+ * version 15).
  *
- * `booking_service_combinations` holds only what the administrator has
- * explicitly validated: a row exists because Esther saved a duration for that
- * membership, never because the server enumerated it. The stored
- * `duration_minutes` is the authority for every new reservation of the
- * combination and nothing here ever recomputes it — a component's duration
- * may move, the proposal shown beside it follows, the validated value does
- * not.
+ * `booking_service_combinations` is an exception layer, not an allowlist. An
+ * absent row means "the default policy applies": the membership is bookable
+ * for the sum of its component durations. A row exists only because Esther
+ * overrode that — she disabled the membership (`is_active = 0`) or saved a
+ * custom duration for it (`duration_minutes` non-null). Nothing here ever
+ * enumerates or materialises a combination merely because it is allowed, and
+ * nothing here ever recomputes a stored custom duration: a component's
+ * duration may move, the proposal shown beside it follows, the custom value
+ * does not.
  *
  * Every write can change bookability (a new bookable combination, a new
  * duration, disable/enable, a lower or higher maximum), so every write takes
@@ -131,7 +134,15 @@ final class ServiceCombinationRepository
     }
 
     /**
-     * Persists the administrator's validated duration for one membership.
+     * Persists — or clears — the administrator's custom duration for one
+     * membership.
+     *
+     * A non-null `$durationMinutes` overrides the automatic sum for exactly
+     * this membership; null clears the override and returns the membership to
+     * the default policy without deleting anything (a cleared row is
+     * behaviourally identical to no row). Validating always leaves the
+     * membership *enabled*: it is an explicit act on a combination Esther is
+     * looking at.
      *
      * `$expectedUpdatedAt` is null to create the row (refused with a conflict
      * if a row already exists — the form was stale) and the row's token to
@@ -139,17 +150,22 @@ final class ServiceCombinationRepository
      * limit of *existing* services (archived members are allowed here so an
      * administrator can prepare a combination before restoring a service;
      * the combination is simply not bookable until they are active). Buffers
-     * are snapshotted from the members at this moment.
+     * are snapshotted from the members at this moment, and are read back only
+     * while a custom duration stands.
      *
      * @param list<string> $serviceKeys
      */
-    public function validate(array $serviceKeys, int $durationMinutes, ?string $expectedUpdatedAt): ServiceCombination
-    {
+    public function validate(
+        array $serviceKeys,
+        ?int $durationMinutes,
+        ?string $expectedUpdatedAt,
+    ): ServiceCombination {
         $members = $this->canonicalMembers($serviceKeys);
         $key = ServiceCombination::canonicalKey($members);
         if (
-            $durationMinutes < $this->contract->durationMinMinutes
-            || $durationMinutes > $this->contract->durationMaxMinutes
+            $durationMinutes !== null
+            && ($durationMinutes < $this->contract->durationMinMinutes
+                || $durationMinutes > $this->contract->durationMaxMinutes)
         ) {
             throw new BookingValidationException('durationMinutes', 'Combination duration is outside the V1 bounds.');
         }
@@ -218,36 +234,106 @@ final class ServiceCombinationRepository
     }
 
     /**
-     * Disables (`false`) or enables (`true`) one combination for new
-     * bookings under its token. Only `is_active` and `updated_at` change.
+     * Disables one *membership* for new bookings — the explicit exception to
+     * the default-allow rule.
+     *
+     * Domain version 15 names the membership rather than a row, because the
+     * combination Esther is disabling is very often bookable by default and
+     * has no row at all: `$expectedUpdatedAt` is null for exactly that case
+     * (creating the disabling override, refused with a conflict if a row has
+     * appeared meanwhile) and the row's token when one exists. A disabling
+     * insert carries no custom duration — `duration_minutes` stays NULL — so
+     * re-enabling later returns the membership to the default policy rather
+     * than resurrecting a duration Esther never chose.
+     *
+     * @param list<string> $serviceKeys
      */
-    public function setActive(string $key, string $expectedUpdatedAt, bool $active): ServiceCombination
+    public function disable(array $serviceKeys, ?string $expectedUpdatedAt): ServiceCombination
+    {
+        $members = $this->canonicalMembers($serviceKeys);
+        $key = ServiceCombination::canonicalKey($members);
+
+        return $this->database->transactional(function () use ($members, $key, $expectedUpdatedAt): ServiceCombination {
+            $this->serialization->acquire();
+            $current = $this->lockedCurrent($key);
+
+            if ($expectedUpdatedAt === null) {
+                if ($current !== null) {
+                    throw new BookableServiceRevisionConflictException($key, '', $current->updatedAt);
+                }
+                $services = $this->memberServices($members);
+                $before = 0;
+                $after = 0;
+                foreach ($services as $service) {
+                    $before = max($before, $service->bufferBeforeMinutes);
+                    $after = max($after, $service->bufferAfterMinutes);
+                }
+                $now = $this->clock->nowIso();
+                $this->database->run(
+                    'INSERT INTO booking_service_combinations'
+                    . ' (combination_key, proposed_duration_minutes, duration_minutes,'
+                    . ' buffer_before_minutes, buffer_after_minutes, is_active, created_at, updated_at)'
+                    . ' VALUES (:key, :proposed, NULL, :before, :after, 0, :created, :updated)',
+                    [
+                        'key' => $key,
+                        'proposed' => self::proposedDuration($services),
+                        'before' => $before,
+                        'after' => $after,
+                        'created' => $now,
+                        'updated' => $now,
+                    ],
+                );
+
+                return $this->stored($key);
+            }
+
+            $this->writeActive($key, $current, $expectedUpdatedAt, false);
+
+            return $this->stored($key);
+        });
+    }
+
+    /**
+     * Re-enables one stored combination under its token. Only `is_active` and
+     * `updated_at` change: a row that carries a custom duration keeps it, and
+     * one that does not returns to the default policy.
+     */
+    public function enable(string $key, string $expectedUpdatedAt): ServiceCombination
     {
         if (!$this->contract->acceptsCombinationKey($key)) {
             throw new BookingValidationException('combinationKey', 'Malformed combination key.');
         }
 
-        return $this->database->transactional(function () use ($key, $expectedUpdatedAt, $active): ServiceCombination {
+        return $this->database->transactional(function () use ($key, $expectedUpdatedAt): ServiceCombination {
             $this->serialization->acquire();
-            $current = $this->lockedCurrent($key);
-            if ($current === null) {
-                throw new BookableServiceNotFoundException($key);
-            }
-            if ($current->updatedAt !== $expectedUpdatedAt) {
-                throw new BookableServiceRevisionConflictException($key, $expectedUpdatedAt, $current->updatedAt);
-            }
-            $this->database->run(
-                'UPDATE booking_service_combinations SET is_active = :active, updated_at = :updated'
-                . ' WHERE combination_key = :key',
-                [
-                    'active' => $active ? 1 : 0,
-                    'updated' => $this->nextUpdatedAt($current),
-                    'key' => $key,
-                ],
-            );
+            $this->writeActive($key, $this->lockedCurrent($key), $expectedUpdatedAt, true);
 
             return $this->stored($key);
         });
+    }
+
+    /** The token check and the one-column write both state changes share. */
+    private function writeActive(
+        string $key,
+        ?ServiceCombination $current,
+        string $expectedUpdatedAt,
+        bool $active,
+    ): void {
+        if ($current === null) {
+            throw new BookableServiceNotFoundException($key);
+        }
+        if ($current->updatedAt !== $expectedUpdatedAt) {
+            throw new BookableServiceRevisionConflictException($key, $expectedUpdatedAt, $current->updatedAt);
+        }
+        $this->database->run(
+            'UPDATE booking_service_combinations SET is_active = :active, updated_at = :updated'
+            . ' WHERE combination_key = :key',
+            [
+                'active' => $active ? 1 : 0,
+                'updated' => $this->nextUpdatedAt($current),
+                'key' => $key,
+            ],
+        );
     }
 
     /**

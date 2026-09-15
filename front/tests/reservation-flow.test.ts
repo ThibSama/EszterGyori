@@ -15,6 +15,8 @@ import {
   CUSTOMER_NAME_PART_MAX_LENGTH,
   RESERVATION_HORIZON_DAYS,
   bookableServicesToOffer,
+  canAddService,
+  combinationIsDisabled,
   selectedServiceLabel,
   addCivilDays,
   composeCustomerName,
@@ -87,9 +89,19 @@ test("the catalog is offered as served: catalog order, no CMS matching, no dupli
   assert.equal(selectedServiceLabel(visible, []), "Prestation");
 });
 
-test("multi-selection toggles up to the maximum and resolves only a validated combination", () => {
+test("multi-selection is default-allowed up to the maximum, minus the explicit exceptions", () => {
+  // Domain version 15 — the server publishes only the *exceptions*: one
+  // membership taken off the menu, one with a custom duration. Everything
+  // else is bookable without being listed.
   const combinations = [
-    { key: "brows+lips", serviceKeys: ["brows", "lips"], durationMinutes: 75 },
+    { key: "eyeliner+lips", serviceKeys: ["eyeliner", "lips"], durationMinutes: null, bookable: false },
+    { key: "brows+lips", serviceKeys: ["brows", "lips"], durationMinutes: 75, bookable: true },
+  ];
+  const catalogue = [
+    { key: "brows", label: "Sourcils", description: "", durationMinutes: 90, imageSrc: null },
+    { key: "lips", label: "Lèvres", description: "", durationMinutes: 60, imageSrc: null },
+    { key: "freckles", label: "Taches", description: "", durationMinutes: 20, imageSrc: null },
+    { key: "eyeliner", label: "Eye-liner", description: "", durationMinutes: 45, imageSrc: null },
   ];
   let state = initialReservationState("2026-08-21");
   state = reservationFlowReducer(state, { type: "toggle-service", serviceKey: "lips", maxServices: 2 });
@@ -102,11 +114,37 @@ test("multi-selection toggles up to the maximum and resolves only a validated co
   // Order of selection does not matter: B+A resolves the stored A+B row…
   assert.equal(resolveCombination(combinations, state.serviceKeys)?.key, "brows+lips");
   assert.equal(selectionIsBookable(combinations, state.serviceKeys, 2), true);
-  assert.equal(selectionDurationMinutes([], combinations, state.serviceKeys), 75);
-  // …while a set the server never validated, or one above the maximum, is
-  // not bookable and never becomes an availability request.
+  // …and its stored custom duration wins over the 150-minute sum.
+  assert.equal(selectionDurationMinutes(catalogue, combinations, state.serviceKeys), 75);
+
+  // A pair the server never stored is bookable by default, for the sum.
   assert.equal(resolveCombination(combinations, ["brows", "freckles"]), null);
-  assert.equal(selectionIsBookable(combinations, ["brows", "freckles"], 2), false);
+  assert.equal(selectionIsBookable(combinations, ["brows", "freckles"], 2), true);
+  assert.equal(selectionDurationMinutes(catalogue, combinations, ["brows", "freckles"]), 110);
+
+  // The explicitly disabled pair is the only refusal — in either order.
+  assert.equal(combinationIsDisabled(combinations, ["lips", "eyeliner"]), true);
+  assert.equal(selectionIsBookable(combinations, ["eyeliner", "lips"], 2), false);
+
+  // After one pick, every other service stays selectable unless its exact
+  // pair with it was disabled; once the maximum is reached, none is.
+  assert.equal(canAddService(combinations, ["eyeliner"], "freckles", 2), true);
+  assert.equal(canAddService(combinations, ["eyeliner"], "lips", 2), false);
+  assert.equal(canAddService(combinations, ["lips", "brows"], "freckles", 2), false);
+  assert.equal(canAddService(combinations, ["lips", "brows"], "brows", 2), true);
+  // A maximum of three applies the same rule incrementally: the third
+  // service is refused only when the whole trio is the disabled set.
+  assert.equal(canAddService(combinations, ["lips", "brows"], "freckles", 3), true);
+  assert.equal(
+    canAddService(
+      [{ key: "brows+freckles+lips", serviceKeys: ["brows", "freckles", "lips"], durationMinutes: null, bookable: false }],
+      ["lips", "brows"],
+      "freckles",
+      3,
+    ),
+    false,
+  );
+
   assert.equal(selectionIsBookable(combinations, state.serviceKeys, 1), false);
   assert.equal(selectionIsBookable([], [], 2), false);
   assert.equal(selectionIsBookable([], ["brows"], 1), true);

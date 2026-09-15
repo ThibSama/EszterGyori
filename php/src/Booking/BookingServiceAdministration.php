@@ -10,12 +10,19 @@ namespace Eszter\Booking;
  * Reads return every row, archived included: an archived service still
  * names historical bookings the calendar must render. Since ESZ-150 the same
  * read carries the configured maximum number of services per appointment
- * and the combinations: every stored one (validated or disabled, whatever
- * its members' state) followed by the *candidates* — the not-yet-stored
- * subsets of two to `max` active services, in catalog order, bounded by the
- * contract with an explicit completeness flag. Each carries the advisory
- * proposal (the plain sum of the current component durations) beside the
- * validated duration, which only an explicit validation ever writes.
+ * and the combinations: every stored override (a custom duration or a
+ * disabling exception, whatever its members' state) followed by every
+ * membership that has no row — the subsets of two to `max` active services,
+ * in catalog order, bounded by the contract with an explicit completeness
+ * flag.
+ *
+ * Since domain version 15 a membership with no row is *bookable by default*,
+ * not a candidate awaiting approval, and every row of the list says so the
+ * same way: the automatic sum, the custom duration when one is stored, the
+ * effective duration a reservation would use, and the one bookability flag —
+ * all of them {@see ServiceCombinationPolicy}'s answer, never restated here.
+ * So Esther never has to click anything to make a normal combination work;
+ * the panel's actions exist only to override the default.
  *
  * Mutations are the closed set the contract freezes — create, update,
  * archive, restore, setMaxServices, validateCombination, disableCombination,
@@ -54,12 +61,13 @@ final class BookingServiceAdministration
 
         $combinations = [];
         $stored = [];
-        foreach ($this->combinations->all() as $combination) {
-            $stored[$combination->key] = true;
-            $combinations[] = $combination->toAdminPayload(
-                self::currentProposal($combination->serviceKeys, $byKey),
-                $catalog->isBookable($combination, $activeKeys, $max),
-            );
+        foreach ($this->combinations->all() as $override) {
+            $stored[$override->key] = true;
+            $combinations[] = $catalog->effectiveCombination(
+                self::membersOf($override->serviceKeys, $byKey),
+                $override,
+                $max,
+            )->toAdminPayload();
         }
 
         ['candidates' => $candidates, 'complete' => $complete] = $this->candidates(
@@ -67,6 +75,7 @@ final class BookingServiceAdministration
             $max,
             $stored,
             $byKey,
+            $catalog,
         );
 
         return [
@@ -120,77 +129,70 @@ final class BookingServiceAdministration
             ],
             'validateCombination' => $this->combinationPayload($this->combinations->validate(
                 self::stringList($request, 'serviceKeys'),
-                self::int($request, 'durationMinutes'),
+                self::optionalInt($request, 'durationMinutes'),
                 self::optionalString($request, 'expectedUpdatedAt'),
             )),
-            'disableCombination' => $this->combinationPayload($this->combinations->setActive(
-                self::string($request, 'key'),
-                self::string($request, 'expectedUpdatedAt'),
-                false,
+            // Domain version 15: disabling names the membership, because the
+            // combination being disabled usually has no row to name.
+            'disableCombination' => $this->combinationPayload($this->combinations->disable(
+                self::stringList($request, 'serviceKeys'),
+                self::optionalString($request, 'expectedUpdatedAt'),
             )),
-            'enableCombination' => $this->combinationPayload($this->combinations->setActive(
+            'enableCombination' => $this->combinationPayload($this->combinations->enable(
                 self::string($request, 'key'),
                 self::string($request, 'expectedUpdatedAt'),
-                true,
             )),
             default => throw new BookingValidationException('action', 'Unknown service mutation action.'),
         };
     }
 
     /** @return array<string, mixed> */
-    private function combinationPayload(ServiceCombination $combination): array
+    private function combinationPayload(ServiceCombination $override): array
     {
-        $byKey = [];
-        $activeKeys = [];
-        foreach ($this->combinations->memberServices($combination->serviceKeys) as $member) {
-            $byKey[$member->key] = $member;
-            if ($member->isActive) {
-                $activeKeys[$member->key] = true;
-            }
-        }
         $catalog = new BookingServiceCatalog($this->services, $this->combinations);
 
-        return ['combination' => $combination->toAdminPayload(
-            self::currentProposal($combination->serviceKeys, $byKey),
-            $catalog->isBookable($combination, $activeKeys, $this->combinations->maxServicesPerAppointment()),
-        )];
+        return ['combination' => $catalog->effectiveCombination(
+            $this->combinations->memberServices($override->serviceKeys),
+            $override,
+            $this->combinations->maxServicesPerAppointment(),
+        )->toAdminPayload()];
     }
 
     /**
-     * The not-yet-stored subsets of two to `$max` active services, in
-     * catalog order (smaller subsets first, then lexicographic by position),
-     * as `proposed` candidates. Enumeration stops at the contract bound and
-     * says so rather than pretending the list is exhaustive.
+     * The subsets of two to `$max` active services that carry no stored row,
+     * in catalog order (smaller subsets first, then lexicographic by
+     * position). Domain version 15: each is *bookable by default* for the sum
+     * of its members, so it is listed to be seen and optionally overridden,
+     * not to be approved. Enumeration stops at the contract bound and says so
+     * rather than pretending the list is exhaustive.
      *
      * @param list<string> $activeKeys catalog order
      * @param array<string, true> $stored
      * @param array<string, BookableService> $byKey
      * @return array{candidates: list<array<string, mixed>>, complete: bool}
      */
-    private function candidates(array $activeKeys, int $max, array $stored, array $byKey): array
-    {
+    private function candidates(
+        array $activeKeys,
+        int $max,
+        array $stored,
+        array $byKey,
+        BookingServiceCatalog $catalog,
+    ): array {
         $candidates = [];
         $bound = $this->contract->combinationCandidatesMax;
         $count = \count($activeKeys);
         for ($size = 2; $size <= min($max, $count); $size++) {
             foreach (self::subsets($activeKeys, $size) as $subset) {
                 $members = ServiceCombination::canonicalMembers($subset);
-                $key = ServiceCombination::canonicalKey($members);
-                if (isset($stored[$key])) {
+                if (isset($stored[ServiceCombination::canonicalKey($members)])) {
                     continue;
                 }
                 if (\count($candidates) >= $bound) {
                     return ['candidates' => $candidates, 'complete' => false];
                 }
-                $candidates[] = [
-                    'key' => $key,
-                    'serviceKeys' => $members,
-                    'proposedDurationMinutes' => self::currentProposal($members, $byKey),
-                    'durationMinutes' => null,
-                    'status' => 'proposed',
-                    'bookable' => false,
-                    'updatedAt' => null,
-                ];
+                $candidates[] = $catalog
+                    ->effectiveCombination(self::membersOf($members, $byKey), null, $max)
+                    ->toAdminPayload();
             }
         }
 
@@ -198,14 +200,16 @@ final class BookingServiceAdministration
     }
 
     /**
-     * The advisory proposal from the *current* catalog rows: the plain sum
-     * of the members' durations. A member the catalog no longer resolves
-     * (cannot happen — rows are never deleted) counts nothing.
+     * The *current* catalog rows of a membership, in canonical order, so the
+     * policy sees the durations, buffers and activity as they are now. A
+     * member the catalog no longer resolves (cannot happen — rows are never
+     * deleted) is skipped rather than fabricated.
      *
      * @param list<string> $members
      * @param array<string, BookableService> $byKey
+     * @return list<BookableService>
      */
-    private static function currentProposal(array $members, array $byKey): int
+    private static function membersOf(array $members, array $byKey): array
     {
         $services = [];
         foreach ($members as $member) {
@@ -214,7 +218,7 @@ final class BookingServiceAdministration
             }
         }
 
-        return ServiceCombinationRepository::proposedDuration($services);
+        return $services;
     }
 
     /**
@@ -287,6 +291,25 @@ final class BookingServiceAdministration
         $value = $request[$field] ?? null;
         if (!\is_int($value)) {
             throw new BookingValidationException($field, "The {$field} field must be an integer.");
+        }
+
+        return $value;
+    }
+
+    /**
+     * Domain version 15 — a null combination duration is meaningful: it
+     * clears the custom duration and returns the membership to the sum.
+     *
+     * @param array<string, mixed> $request
+     */
+    private static function optionalInt(array $request, string $field): ?int
+    {
+        if (!\array_key_exists($field, $request)) {
+            throw new BookingValidationException($field, "The {$field} field is required.");
+        }
+        $value = $request[$field];
+        if ($value !== null && !\is_int($value)) {
+            throw new BookingValidationException($field, "The {$field} field must be an integer or null.");
         }
 
         return $value;

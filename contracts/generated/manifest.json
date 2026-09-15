@@ -131,15 +131,15 @@
     },
     {
       "file": "admin-service-mutation-request.schema.json",
-      "sha256": "089484c6e58c458dddc1490e51cf603af90ead8e54c479df8310dceb095b3cbb"
+      "sha256": "b0777c79bbe087bdd1f9e27483f9256631cc50e70d1a8ad691e662880cd275a1"
     },
     {
       "file": "admin-service-response.schema.json",
-      "sha256": "f7b8629f1daf55aaf518854c7f95b232abe27212e4b401210eea829f8b97eed9"
+      "sha256": "e39874e402885cd61c11352edb2bc858a5d34a9f4aa86a26eea3a9f575b28740"
     },
     {
       "file": "admin-services-response.schema.json",
-      "sha256": "91a31d11d978108949feb761f021215f49ffdf8d5083ef8ba9089803735f0d5b"
+      "sha256": "903e58bee04c099b1c8e80779ff5fed4f365775e061ac83de8fdfd19551b19a8"
     },
     {
       "file": "auth-session-response.schema.json",
@@ -155,7 +155,7 @@
     },
     {
       "file": "booking-domain.json",
-      "sha256": "f261f8ca57ba128e0cde81a8ee600b89a759fefe823ce75f13b62c13bef6fc70"
+      "sha256": "9c203dd4b29d1b1b907c39a2af8e1e6819035ccec279ed7c73a2b669881a8d6e"
     },
     {
       "file": "error-envelope.schema.json",
@@ -191,11 +191,11 @@
     },
     {
       "file": "parity-corpus.json",
-      "sha256": "ed1848f42f102ff516fb59834e09d660dd32e085e61a54f956472fe7489c8113"
+      "sha256": "1c99573cbe882aa88a0508d06f467306e3ef4f2129d2f5b0208e441a7c3d02c6"
     },
     {
       "file": "public-bookable-services-response.schema.json",
-      "sha256": "6601a8f5b0f2db073e6d7d10c2f5229776544996e7bc8275e45efc2c8a4ece2d"
+      "sha256": "1149fab74f1ea720194db612a898a0aee6a1c6bbf175a7a47633221b4f3abaf7"
     },
     {
       "file": "public-booking-create-request.schema.json",
@@ -215,7 +215,7 @@
     },
     {
       "file": "published-content-envelope.output.schema.json",
-      "sha256": "7f4e358bded6007ee34f9e241bad67b48ea0fcf2fde03aabc346ad49a331670b"
+      "sha256": "db0a82b98f031c433989cd2e9d41a352f5167f828d2e6b5b4c2da0a847e0b81e"
     },
     {
       "file": "semantic-rules.json",
@@ -227,7 +227,7 @@
     },
     {
       "file": "server-draft-envelope.output.schema.json",
-      "sha256": "cd4ab7bb2e66524885367aa8809f2c244edcc7b206733a44b00d185d6d8ea9ea"
+      "sha256": "07770d786946b5f233c79d01800f06bf19330d555a7a2925618525b8224538f3"
     },
     {
       "file": "site-content-draft.input.schema.json",
@@ -239,7 +239,7 @@
     },
     {
       "file": "site-content.output.schema.json",
-      "sha256": "9c8d7277b246287682d4ce60f88fd0cfae3b84a1604e29218330ae908f8af01d"
+      "sha256": "99108187ce8db37119160b8f52b420e8ba2f1c8020d35dcf9d7f59c4fc2485e4"
     }
   ]
 }

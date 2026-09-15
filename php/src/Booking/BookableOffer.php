@@ -6,7 +6,8 @@ namespace Eszter\Booking;
 
 /**
  * What one reservation is *for* (ESZ-150): a single active service, or a
- * validated, active combination of services.
+ * bookable combination of services — implicit under the default-allow rule
+ * or shaped by a stored override.
  *
  * The slot engine reads the four shaping facts — duration, both buffers,
  * activity — and nothing else, so a combination and a service are the same
@@ -45,18 +46,13 @@ final class BookableOffer
     }
 
     /**
-     * The validated duration and snapshotted buffers of the combination row;
-     * bookable only while the row and every member are active.
-     *
-     * @param list<BookableService> $members in canonical order
+     * The effective duration and buffers of a combination — the summed
+     * default, or the custom duration and its snapshotted buffers when the
+     * membership carries an override. The policy has already decided
+     * bookability; nothing is re-derived here.
      */
-    public static function ofCombination(ServiceCombination $combination, array $members): self
+    public static function ofCombination(EffectiveCombination $combination): self
     {
-        $active = $combination->isActive;
-        foreach ($members as $member) {
-            $active = $active && $member->isActive;
-        }
-
         return new self(
             $combination->serviceKeys,
             $combination->serviceKeys[0],
@@ -64,7 +60,7 @@ final class BookableOffer
             $combination->durationMinutes,
             $combination->bufferBeforeMinutes,
             $combination->bufferAfterMinutes,
-            $active,
+            $combination->bookable,
         );
     }
 

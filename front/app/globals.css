@@ -105,47 +105,47 @@ body {
    */
   --site-section-navigation: color-mix(
     in srgb,
-    var(--site-tint-navigation) 16%,
+    var(--site-tint-navigation) 30%,
     var(--site-background)
   );
   --site-section-hero: color-mix(
     in srgb,
-    var(--site-tint-hero) 20%,
+    var(--site-tint-hero) 45%,
     var(--site-background)
   );
   --site-section-reassurance: color-mix(
     in srgb,
-    var(--site-tint-reassurance) 18%,
+    var(--site-tint-reassurance) 35%,
     var(--site-background)
   );
   --site-section-services: color-mix(
     in srgb,
-    var(--site-tint-services) 18%,
+    var(--site-tint-services) 45%,
     var(--site-background)
   );
   --site-section-process: color-mix(
     in srgb,
-    var(--site-tint-process) 22%,
+    var(--site-tint-process) 50%,
     var(--site-background)
   );
   --site-section-gallery: color-mix(
     in srgb,
-    var(--site-tint-gallery) 16%,
+    var(--site-tint-gallery) 30%,
     var(--site-background)
   );
   --site-section-about: color-mix(
     in srgb,
-    var(--site-tint-about) 20%,
+    var(--site-tint-about) 45%,
     var(--site-background)
   );
   --site-section-contact: color-mix(
     in srgb,
-    var(--site-tint-contact) 18%,
+    var(--site-tint-contact) 50%,
     var(--site-background)
   );
   --site-section-footer: color-mix(
     in srgb,
-    var(--site-tint-footer) 22%,
+    var(--site-tint-footer) 50%,
     var(--site-background)
   );
 }
@@ -244,11 +244,60 @@ body {
 }
 
 .site-preview .bg-white\/40,
+.site-preview .bg-white\/45,
 .site-preview .bg-white\/50,
 .site-preview .bg-white\/55,
+.site-preview .bg-white\/60,
 .site-preview .bg-white\/70,
-.site-preview .bg-white\/80 {
+.site-preview .bg-white\/80,
+.site-preview .bg-white\/85 {
   background-color: color-mix(in srgb, var(--site-surface) 62%, transparent);
+}
+
+.site-preview .hover\:bg-white\/50:hover,
+.site-preview .hover\:bg-white\/70:hover {
+  background-color: color-mix(in srgb, var(--site-surface) 78%, transparent);
+}
+
+.site-preview .hover\:border-white\/70:hover,
+.site-preview .hover\:border-white\/80:hover {
+  border-color: color-mix(in srgb, var(--site-surface) 80%, transparent);
+}
+
+/*
+ * The remaining literal whites and `warm-*` greys on the public pages. Under the
+ * original porcelain palette each of these resolves to the same colour the
+ * utility already produced; they are routed through `--site-*` so a warmer
+ * background is not undercut by cool white edges and grey borders.
+ */
+.site-preview .border-white\/40,
+.site-preview .border-white\/45,
+.site-preview .border-white\/55,
+.site-preview .border-white\/60,
+.site-preview .border-white\/70,
+.site-preview .border-white\/80 {
+  border-color: color-mix(in srgb, var(--site-surface) 60%, transparent);
+}
+
+.site-preview .border-warm-200,
+.site-preview .border-warm-300,
+.site-preview .border-warm-300\/50,
+.site-preview .border-warm-300\/70 {
+  border-color: color-mix(in srgb, var(--site-warm-accent) 70%, transparent);
+}
+
+.site-preview .bg-warm-100,
+.site-preview .bg-warm-100\/80 {
+  background-color: color-mix(in srgb, var(--site-warm-accent) 35%, var(--site-surface));
+}
+
+.site-preview .bg-warm-300\/55 {
+  background-color: color-mix(in srgb, var(--site-warm-accent) 55%, transparent);
+}
+
+.site-preview .bg-sage-100,
+.site-preview .bg-sage-100\/80 {
+  background-color: color-mix(in srgb, var(--site-primary) 22%, var(--site-surface));
 }
 
 .site-preview .site-navigation-glass {
@@ -274,12 +323,49 @@ body {
 }
 
 .site-preview .via-mist-100,
+.site-preview .via-mist-100\/50,
 .site-preview .via-mist-200\/60,
-.site-preview .via-mist-100,
 .site-preview .via-sage-100,
+.site-preview .via-sage-100\/70,
 .site-preview .via-sage-100\/80,
-.site-preview .via-warm-200 {
-  --tw-gradient-via: color-mix(in srgb, var(--site-secondary) 35%, transparent) var(--tw-gradient-via-position);
+.site-preview .via-warm-200,
+.site-preview .via-warm-200\/60,
+.site-preview .via-warm-300\/60 {
+  --tw-gradient-via: color-mix(in srgb, var(--site-warm-accent) 30%, transparent) var(--tw-gradient-via-position);
+}
+
+/*
+ * Section washes and halos that were literal pale sage / cool mist. Painted at
+ * 50–80% alpha over a tinted section they pulled every section back towards
+ * ivory; on the warm palette they follow the sage accent and the neutral
+ * secondary at a low alpha instead, so the section tint stays legible.
+ */
+.site-preview .from-sage-100\/50,
+.site-preview .from-sage-100\/60 {
+  --tw-gradient-from: color-mix(in srgb, var(--site-primary) 18%, transparent) var(--tw-gradient-from-position);
+}
+
+.site-preview .to-sage-100,
+.site-preview .to-sage-100\/40,
+.site-preview .to-sage-100\/50,
+.site-preview .to-sage-200 {
+  --tw-gradient-to: color-mix(in srgb, var(--site-primary) 18%, transparent) var(--tw-gradient-to-position);
+}
+
+.site-preview .from-mist-200 {
+  --tw-gradient-from: color-mix(in srgb, var(--site-secondary) 30%, transparent) var(--tw-gradient-from-position);
+}
+
+.site-preview .to-mist-100,
+.site-preview .to-mist-200\/20,
+.site-preview .to-mist-200\/30 {
+  --tw-gradient-to: color-mix(in srgb, var(--site-secondary) 30%, transparent) var(--tw-gradient-to-position);
+}
+
+.site-preview .bg-mist-200\/50,
+.site-preview .bg-mist-300\/45,
+.site-preview .bg-mist-300\/50 {
+  background-color: color-mix(in srgb, var(--site-secondary) 45%, transparent);
 }
 
 .site-preview .to-warm-200,
@@ -310,12 +396,27 @@ body {
 
 @keyframes float-gentle {
   0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-8px); }
+  50% { transform: translateY(-4px); }
 }
 
 @keyframes hero-entrance {
-  from { opacity: 0; transform: translateY(20px); }
+  from { opacity: 0; transform: translateY(16px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes hero-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes hero-entrance-soft {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes hero-visual-entrance {
+  from { opacity: 0; transform: translateY(14px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .ambient-shape {
@@ -328,24 +429,56 @@ body {
   will-change: transform;
 }
 
-.float-gentle {
-  animation: float-gentle 6s ease-in-out infinite;
-}
-
+/*
+ * Hero sequencing (Package 10.4). One calm curve, short offsets: rule, title,
+ * the italic phrase a beat later, description, CTAs; the visual rises and
+ * settles from 0.98 alongside the title, and the badge and Instagram button
+ * arrive last on their own. Everything is `both`-filled and finishes well
+ * under 1.5 s; the page is interactive from the first frame.
+ */
 .hero-entrance {
-  animation: hero-entrance 1s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: hero-entrance 0.8s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .hero-entrance-delayed {
-  animation: hero-entrance 1s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
+  animation: hero-entrance 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.09s both;
+}
+
+/* An inline `<em>` cannot be transformed without changing how the title
+   wraps, so the emphasised phrase only fades in, a beat after the title. */
+.hero-entrance-em {
+  animation: hero-fade 0.7s ease-out 0.34s both;
 }
 
 .hero-entrance-delayed-2 {
-  animation: hero-entrance 1s cubic-bezier(0.22, 1, 0.36, 1) 0.3s both;
+  animation: hero-entrance 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.22s both;
 }
 
 .hero-entrance-delayed-3 {
-  animation: hero-entrance 1s cubic-bezier(0.22, 1, 0.36, 1) 0.5s both;
+  animation: hero-entrance 0.8s cubic-bezier(0.22, 1, 0.36, 1) 0.36s both;
+}
+
+.hero-visual {
+  animation: hero-visual-entrance 0.9s cubic-bezier(0.22, 1, 0.36, 1) 0.16s both;
+}
+
+/* V4: badge and button close the sequence a beat earlier, so the whole
+   opening settles inside ~1.2 s. */
+.hero-badge {
+  animation:
+    hero-entrance-soft 0.55s ease-out 0.6s both,
+    float-gentle 9s ease-in-out 1.5s infinite;
+}
+
+.hero-instagram {
+  animation:
+    hero-entrance-soft 0.55s ease-out 0.7s both,
+    float-gentle 9s ease-in-out 2.6s infinite;
+}
+
+/* The light behind the media breathes in with it, slightly behind. */
+.hero-visual-light {
+  animation: hero-fade 1.1s ease-out 0.3s both;
 }
 
 /* ----- Accessibility ----- */
@@ -358,14 +491,18 @@ body {
   }
 
   .ambient-shape,
-  .ambient-drift,
-  .float-gentle {
+  .ambient-drift {
     animation: none;
   }
   .hero-entrance,
   .hero-entrance-delayed,
+  .hero-entrance-em,
   .hero-entrance-delayed-2,
-  .hero-entrance-delayed-3 {
+  .hero-entrance-delayed-3,
+  .hero-visual,
+  .hero-badge,
+  .hero-instagram,
+  .hero-visual-light {
     animation: none;
     opacity: 1;
     transform: none;
@@ -374,9 +511,1051 @@ body {
 
 @media (prefers-reduced-transparency: reduce) {
   .glass-card {
-    background: #FAFAF8 !important;
+    background: var(--site-surface, #FAFAF8) !important;
     backdrop-filter: none !important;
   }
+}
+
+/* =====================================================================
+ * Package 10.4 — public visual polish trial
+ *
+ * Depth and light, section continuity, one reveal treatment, tactile cards
+ * and buttons, three signature moments (hero, gallery fallback, process).
+ * Everything is scoped to `.site-preview`, resolved from the `--site-*`
+ * palette, and unlayered so it wins over the Tailwind utilities it refines.
+ * Every reveal's *default* styling is its final state: the staged states
+ * exist only under `[data-reveal="hidden"|"visible"]`, attributes that only
+ * `Reveal` sets, and never under reduced motion.
+ * ===================================================================== */
+
+.site-preview {
+  --polish-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /* Warm-neutral shadow ink: the palette's text colour, never black. */
+  --polish-ink-05: color-mix(in srgb, var(--site-text) 5%, transparent);
+  --polish-ink-10: color-mix(in srgb, var(--site-text) 10%, transparent);
+  --polish-ink-16: color-mix(in srgb, var(--site-text) 16%, transparent);
+  --polish-ink-24: color-mix(in srgb, var(--site-text) 24%, transparent);
+  --polish-shadow-rest:
+    0 1px 2px var(--polish-ink-05),
+    0 14px 34px -14px var(--polish-ink-16);
+  --polish-shadow-lift:
+    0 2px 4px var(--polish-ink-05),
+    0 24px 48px -18px var(--polish-ink-24);
+  /* The light vocabulary: a warm lift from the surface tone, a sage cast. */
+  --polish-light-warm: color-mix(in srgb, var(--site-surface) 44%, transparent);
+  --polish-light-warm-strong: color-mix(in srgb, var(--site-surface) 54%, transparent);
+  --polish-light-warm-soft: color-mix(in srgb, var(--site-surface) 26%, transparent);
+  --polish-light-sage: color-mix(in srgb, var(--site-primary) 18%, transparent);
+  /*
+   * V3: the sage counterpoint. One cooler sage (the palette accent pulled a
+   * little towards mist) for ambient light, and four alphas of the accent
+   * itself for hairlines, ticks, rings and hover edges — never for fills.
+   */
+  --polish-sage-cool: color-mix(in srgb, var(--site-primary) 72%, #A8AEB8);
+  --polish-light-sage-cool: color-mix(in srgb, var(--polish-sage-cool) 16%, transparent);
+  --polish-sage-12: color-mix(in srgb, var(--site-primary) 12%, transparent);
+  --polish-sage-22: color-mix(in srgb, var(--site-primary) 22%, transparent);
+  --polish-sage-40: color-mix(in srgb, var(--site-primary) 40%, transparent);
+  --polish-sage-62: color-mix(in srgb, var(--site-primary) 62%, transparent);
+  /*
+   * V4: two inks for *small* text only. The palette accent and muted text are
+   * tuned for rules and body copy; at 10–14px on the mocha sections they fall
+   * to 2.2–3.4:1. Pulling each a little towards the text colour keeps its hue
+   * and its place in the hierarchy while clearing ~3.3–4.6:1 where it is used.
+   */
+  --polish-sage-ink: color-mix(in srgb, var(--site-primary) 62%, var(--site-text));
+  --polish-sage-ink-70: color-mix(in srgb, var(--polish-sage-ink) 70%, transparent);
+  /*
+   * Package 10.4 re-seats this one. It was mixed at 80% for text sitting on a
+   * *card* — the glass surfaces, where it reads 4.7–5.1:1 — and that is where
+   * the V4 pass measured it. Half the muted copy on the page is not on a card:
+   * the hero description, the reassurance items, the process captions and the
+   * about paragraphs sit straight on their section tint, and against the
+   * darkest of those (process, contact) the 80% mix falls to 3.63:1 for text a
+   * visitor is meant to read end to end.
+   *
+   * At 45% it clears 4.6:1 on every section tint and 5.5:1 on the cards, and
+   * the hierarchy it belongs to survives intact: on the same ground the text
+   * colour reads about 7.5:1, so muted copy is still visibly a step below the
+   * headings rather than joining them. Nothing here turns black, and the two
+   * genuinely decorative inks — the faint `warm-400` tier and the fallback
+   * label's own alpha — are deliberately left where they are.
+   */
+  --polish-muted-ink: color-mix(in srgb, var(--site-muted-text) 45%, var(--site-text));
+  /* CSS-generated grain: a 160px tile of fractal noise, no asset. */
+  --polish-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.55 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+}
+
+/* ----- Texture: a barely-there global grain over the whole page ----- */
+
+.site-preview::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  background-image: var(--polish-grain);
+  background-size: 160px 160px;
+  opacity: 0.045;
+}
+
+/* ----- Ambient light: broad, low-alpha radial fields per section ----- */
+
+.site-preview .site-section-hero {
+  background-image:
+    radial-gradient(56% 62% at 76% 50%, var(--polish-light-warm), transparent 70%),
+    radial-gradient(44% 52% at 8% 16%, var(--polish-light-sage), transparent 70%);
+}
+
+.site-preview .site-section-reassurance {
+  background-image:
+    radial-gradient(66% 56% at 30% 40%, var(--polish-light-warm-soft), transparent 74%);
+}
+
+.site-preview .site-section-services {
+  background-image:
+    radial-gradient(78% 60% at 54% 64%, var(--polish-light-warm-soft), transparent 74%),
+    radial-gradient(40% 44% at 94% 92%, var(--polish-light-sage), transparent 70%);
+}
+
+/* Process: a low, wide band of light along the progression, cooler at the far end. */
+.site-preview .site-section-process {
+  background-image:
+    radial-gradient(60% 40% at 44% 30%, var(--polish-light-warm-soft), transparent 74%),
+    radial-gradient(34% 40% at 92% 62%, var(--polish-light-sage-cool), transparent 70%);
+}
+
+/* Gallery: the one section where the cool sage is allowed to read. */
+.site-preview .site-section-gallery {
+  background-image:
+    radial-gradient(56% 50% at 64% 24%, var(--polish-light-warm-soft), transparent 72%),
+    radial-gradient(44% 48% at 8% 84%, var(--polish-light-sage-cool), transparent 70%),
+    radial-gradient(30% 36% at 92% 12%, var(--polish-light-sage-cool), transparent 70%);
+}
+
+/* About: light sits behind the media, not the section; only a sage breath top-right. */
+.site-preview .site-section-about {
+  background-image:
+    radial-gradient(36% 44% at 90% 18%, var(--polish-light-sage-cool), transparent 70%);
+}
+
+/* Contact: the closing glow is central, warm at the core, sage at the rim. */
+.site-preview .site-section-contact {
+  background-image:
+    radial-gradient(48% 54% at 50% 50%, var(--polish-light-warm-strong), transparent 70%),
+    radial-gradient(70% 70% at 50% 50%, transparent 40%, var(--polish-light-sage-cool) 62%, transparent 82%);
+}
+
+/* Local light behind the hero visual and the portrait. */
+.site-preview .hero-visual-light {
+  background: radial-gradient(
+    54% 54% at 50% 48%,
+    color-mix(in srgb, var(--site-surface) 70%, transparent),
+    color-mix(in srgb, var(--site-primary) 16%, transparent) 56%,
+    transparent 80%
+  );
+}
+
+.site-preview .about-media-light {
+  background: radial-gradient(
+    50% 50% at 46% 48%,
+    color-mix(in srgb, var(--site-surface) 62%, transparent),
+    color-mix(in srgb, var(--polish-sage-cool) 18%, transparent) 54%,
+    transparent 76%
+  );
+}
+
+/* ----- Section continuity: each section inherits a breath of the one above ----- */
+
+.site-preview .site-section-reassurance::before,
+.site-preview .site-section-services::before,
+.site-preview .site-section-process::before,
+.site-preview .site-section-gallery::before,
+.site-preview .site-section-about::before,
+.site-preview .site-section-contact::before,
+.site-preview .site-section-footer::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 9rem;
+  pointer-events: none;
+  background: linear-gradient(to bottom, var(--polish-blend-from), transparent);
+}
+
+.site-preview .site-section-reassurance::before { --polish-blend-from: var(--site-section-hero); }
+.site-preview .site-section-services::before { --polish-blend-from: var(--site-section-reassurance); }
+.site-preview .site-section-process::before { --polish-blend-from: var(--site-section-services); }
+.site-preview .site-section-gallery::before { --polish-blend-from: var(--site-section-process); }
+.site-preview .site-section-about::before { --polish-blend-from: var(--site-section-gallery); }
+.site-preview .site-section-contact::before { --polish-blend-from: var(--site-section-about); }
+.site-preview .site-section-footer::before { --polish-blend-from: var(--site-section-contact); }
+
+/* ----- Reveal ----- */
+
+.site-preview [data-reveal="hidden"] {
+  opacity: 0;
+  transform: translateY(14px);
+}
+
+.site-preview [data-reveal="visible"] {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity 600ms ease-out,
+    transform 620ms var(--polish-ease);
+  transition-delay: var(--reveal-delay, 0ms);
+}
+
+/* ----- Surfaces, cards and media ----- */
+
+.site-preview .polish-surface {
+  border-color: color-mix(in srgb, var(--site-surface) 62%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--site-surface) 55%, transparent),
+    var(--polish-shadow-rest);
+}
+
+.site-preview .polish-card {
+  transition:
+    transform 260ms var(--polish-ease),
+    box-shadow 260ms ease,
+    border-color 260ms ease;
+}
+
+.site-preview .polish-card {
+  --polish-card-lift: -2px;
+  --polish-card-zoom: 1.015;
+}
+
+/* Gallery cards may be a little more expressive than service cards. */
+.site-preview .site-section-gallery .polish-card {
+  --polish-card-lift: -4px;
+  --polish-card-zoom: 1.035;
+}
+
+.site-preview .polish-card:hover,
+.site-preview .polish-card:focus-within {
+  transform: translateY(var(--polish-card-lift));
+  border-color: color-mix(in srgb, var(--polish-sage-cool) 22%, color-mix(in srgb, var(--site-surface) 86%, transparent));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--site-surface) 72%, transparent),
+    0 0 0 1px var(--polish-sage-12),
+    var(--polish-shadow-lift);
+}
+
+.site-preview .polish-media {
+  transition: transform 640ms var(--polish-ease);
+}
+
+.site-preview .polish-card:hover .polish-media,
+.site-preview .polish-card:focus-within .polish-media {
+  transform: scale(var(--polish-card-zoom));
+}
+
+/* A whisper of light that lifts on hover, over a photo or the fallback alike. */
+.site-preview .polish-media-veil {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--site-text) 10%, transparent),
+    transparent 45%
+  );
+  opacity: 0.5;
+  transition: opacity 320ms ease;
+}
+
+.site-preview .polish-card:hover .polish-media-veil,
+.site-preview .polish-card:focus-within .polish-media-veil {
+  opacity: 0.15;
+}
+
+.site-preview .polish-caption {
+  transition: transform 300ms var(--polish-ease);
+}
+
+.site-preview .polish-card:hover .polish-caption,
+.site-preview .polish-card:focus-within .polish-caption {
+  transform: translateY(-2px);
+}
+
+.site-preview .polish-link {
+  transition:
+    transform 260ms var(--polish-ease),
+    color 260ms ease;
+}
+
+.site-preview .polish-card:hover .polish-link,
+.site-preview .polish-card:focus-within .polish-link {
+  transform: translateX(2px);
+}
+
+/* ----- The photo-neutral media fallback ----- */
+
+.site-preview .media-fallback {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: var(--site-primary);
+  --mf-light: color-mix(in srgb, var(--site-surface) 78%, transparent);
+  --mf-sage: color-mix(in srgb, var(--polish-sage-cool) 32%, transparent);
+  --mf-base: color-mix(in srgb, var(--site-warm-accent) 68%, var(--site-background));
+  --mf-deep: color-mix(in srgb, var(--site-secondary) 42%, var(--site-background));
+  --mf-lx: 18%;
+  --mf-ly: 12%;
+  --mf-sx: 86%;
+  --mf-sy: 92%;
+  --mf-angle: 158deg;
+  background:
+    radial-gradient(110% 80% at var(--mf-lx) var(--mf-ly), var(--mf-light), transparent 62%),
+    radial-gradient(90% 70% at var(--mf-sx) var(--mf-sy), var(--mf-sage), transparent 66%),
+    linear-gradient(var(--mf-angle), var(--mf-base), var(--mf-deep));
+  transition: transform 640ms var(--polish-ease);
+}
+
+.site-preview .media-fallback-tone-1 { --mf-lx: 80%; --mf-ly: 14%; --mf-sx: 12%; --mf-sy: 90%; --mf-angle: 202deg; }
+.site-preview .media-fallback-tone-2 { --mf-lx: 26%; --mf-ly: 86%; --mf-sx: 84%; --mf-sy: 10%; --mf-angle: 336deg; }
+.site-preview .media-fallback-tone-3 { --mf-lx: 84%; --mf-ly: 82%; --mf-sx: 14%; --mf-sy: 12%; --mf-angle: 24deg; }
+
+/* Light falloff: a soft vignette that keeps the surface from reading flat. */
+.site-preview .media-fallback::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    80% 80% at 50% 42%,
+    transparent 40%,
+    color-mix(in srgb, var(--site-text) 9%, transparent)
+  );
+}
+
+.site-preview .media-fallback::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: var(--polish-grain);
+  background-size: 160px 160px;
+  opacity: 0.08;
+  pointer-events: none;
+}
+
+.site-preview .media-fallback-motif {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.64;
+}
+
+.site-preview .media-fallback-label {
+  position: absolute;
+  left: 1rem;
+  bottom: 0.9rem;
+  right: 1rem;
+  z-index: 1;
+  /* 0.68rem at 78% alpha was ~11px reading about 3.2:1 over the fallback's own
+     wash. It names the picture that is missing, so it is the one thing on the
+     tile a visitor has to be able to read; 12px at 90% is the smallest this
+     can be and still be that. */
+  font-size: 0.75rem;
+  line-height: 1.4;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--site-text);
+  opacity: 0.9;
+  transition:
+    transform 300ms var(--polish-ease),
+    opacity 300ms ease;
+}
+
+.site-preview .polish-card:hover .media-fallback,
+.site-preview .polish-card:focus-within .media-fallback {
+  transform: scale(var(--polish-card-zoom));
+}
+
+.site-preview .polish-card:hover .media-fallback-label,
+.site-preview .polish-card:focus-within .media-fallback-label {
+  transform: translateY(-2px);
+  opacity: 1;
+}
+
+.site-preview .media-fallback-hero .media-fallback-motif {
+  opacity: 0.5;
+}
+
+.site-preview .media-fallback-hero .media-fallback-label {
+  left: 1.5rem;
+  right: 5rem;
+  bottom: 1.6rem;
+}
+
+/* ----- Process: the progression line and the 01 → 04 sequence -----
+ *
+ * V3. One hairline track runs above the four numbers on wide screens
+ * (`.process-line`): its rest state is a faint sage line so the order reads
+ * without any motion; when the row reveals, a sage progress layer draws
+ * across it left to right, and each number and its tick take on the accent
+ * as the line reaches them. Below `lg` the track is gone and each step keeps
+ * only a short sage rule under its number.
+ */
+
+.site-preview .process-step {
+  position: relative;
+}
+
+.site-preview .process-number {
+  display: inline-block;
+  color: var(--polish-sage-ink);
+}
+
+/* Narrow: a short rule under each number, sage fading to warm. */
+.site-preview .process-step::after {
+  content: "";
+  position: absolute;
+  height: 1px;
+  top: 3.45rem;
+  left: 0;
+  width: 2.5rem;
+  background: linear-gradient(to right, var(--polish-sage-ink-70), var(--polish-sage-12));
+  transform-origin: left center;
+  pointer-events: none;
+}
+
+.site-preview .process-line {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .site-preview .process-track {
+    padding-top: 2.25rem;
+  }
+
+  .site-preview .process-step::after {
+    display: none;
+  }
+
+  /* The tick that hangs from the line at each step. */
+  .site-preview .process-step::before {
+    content: "";
+    position: absolute;
+    top: -2.25rem;
+    left: 0;
+    width: 1px;
+    height: 0.75rem;
+    background: var(--polish-sage-ink-70);
+    transform-origin: top center;
+    pointer-events: none;
+  }
+
+  .site-preview .process-line {
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    pointer-events: none;
+    background: linear-gradient(
+      to right,
+      var(--polish-sage-40),
+      var(--polish-sage-40) 82%,
+      transparent
+    );
+  }
+
+  .site-preview .process-line::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      to right,
+      var(--polish-sage-ink-70),
+      var(--polish-sage-ink-70) 70%,
+      color-mix(in srgb, var(--site-secondary) 55%, transparent) 90%,
+      transparent
+    );
+    transform-origin: left center;
+  }
+}
+
+/* A low band of light along the row, so the steps sit on something. */
+.site-preview .process-light {
+  background: radial-gradient(
+    70% 34% at 50% 58%,
+    color-mix(in srgb, var(--site-surface) 22%, transparent),
+    transparent 72%
+  );
+}
+
+/* Staged states — only under attributes `Reveal` sets, never at rest. */
+.site-preview [data-reveal="hidden"] .process-step {
+  opacity: 0;
+  transform: translateY(12px);
+}
+
+.site-preview [data-reveal="hidden"] .process-number {
+  color: var(--site-muted-text);
+  opacity: 0.35;
+}
+
+.site-preview [data-reveal="hidden"] .process-step::before,
+.site-preview [data-reveal="hidden"] .process-step::after {
+  transform: scaleY(0);
+}
+
+.site-preview [data-reveal="hidden"] .process-step::after {
+  transform: scaleX(0);
+}
+
+.site-preview [data-reveal="hidden"] .process-line::after {
+  transform: scaleX(0);
+}
+
+.site-preview [data-reveal="visible"] .process-step {
+  transition:
+    opacity 600ms ease-out,
+    transform 620ms var(--polish-ease);
+  transition-delay: calc(var(--step-index, 0) * 80ms);
+}
+
+/* The line crosses in 1 s; numbers light at 0.14 / 0.38 / 0.62 / 0.86 s, as
+   it reaches each one, so the whole sequence settles inside 1.3 s. */
+.site-preview [data-reveal="visible"] .process-number {
+  transition:
+    color 360ms ease,
+    opacity 360ms ease;
+  transition-delay: calc(140ms + var(--step-index, 0) * 240ms);
+}
+
+.site-preview [data-reveal="visible"] .process-step::before,
+.site-preview [data-reveal="visible"] .process-step::after {
+  transition: transform 320ms var(--polish-ease);
+  transition-delay: calc(140ms + var(--step-index, 0) * 240ms);
+}
+
+.site-preview [data-reveal="visible"] .process-line::after {
+  transition: transform 1000ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition-delay: 100ms;
+}
+
+/* ----- About: an editorial spread rather than image-left / text-right ----- */
+
+/* A hairline sage frame offset from the media, the way a plate is matted. */
+.site-preview .about-media-frame {
+  border: 1px solid var(--polish-sage-22);
+}
+
+.site-preview .about-media-surface {
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--site-surface) 55%, transparent),
+    0 0 0 1px var(--polish-sage-12),
+    0 2px 4px var(--polish-ink-05),
+    0 30px 60px -28px var(--polish-ink-24),
+    0 60px 90px -50px color-mix(in srgb, var(--site-text) 18%, transparent);
+}
+
+.site-preview .about-media-surface:hover,
+.site-preview .about-media-surface:focus-within {
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--site-surface) 72%, transparent),
+    0 0 0 1px var(--polish-sage-22),
+    0 3px 6px var(--polish-ink-05),
+    0 36px 70px -30px var(--polish-ink-24),
+    0 70px 100px -54px color-mix(in srgb, var(--site-text) 20%, transparent);
+}
+
+/* The heading rule: sage that hands over to taupe. */
+.site-preview .about-rule {
+  background: linear-gradient(to right, var(--polish-sage-62) 55%, color-mix(in srgb, var(--site-secondary) 70%, transparent));
+  transform-origin: left center;
+}
+
+/* Staged: the media settles first, then the rule draws, then the copy follows it. */
+.site-preview [data-reveal="hidden"].about-media {
+  transform: translateY(14px) scale(0.985);
+}
+
+.site-preview [data-reveal="hidden"] .about-rule {
+  transform: scaleX(0);
+}
+
+.site-preview [data-reveal="hidden"].about-copy > :not(.about-rule) {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.site-preview [data-reveal="visible"] .about-rule {
+  transition: transform 520ms var(--polish-ease);
+  transition-delay: calc(var(--reveal-delay, 0ms) + 120ms);
+}
+
+.site-preview [data-reveal="visible"].about-copy > :not(.about-rule) {
+  transition:
+    opacity 560ms ease-out,
+    transform 600ms var(--polish-ease);
+  transition-delay: calc(var(--reveal-delay, 0ms) + 200ms);
+}
+
+.site-preview [data-reveal="visible"].about-copy > :nth-child(3) {
+  transition-delay: calc(var(--reveal-delay, 0ms) + 300ms);
+}
+
+/* ----- Navigation: light when at the top, denser once the page moves ----- */
+
+.site-preview .site-navigation-glass {
+  background-color: transparent;
+  transition:
+    background-color 320ms ease,
+    box-shadow 320ms ease,
+    border-color 320ms ease;
+}
+
+.site-preview nav[data-scrolled="true"] .site-navigation-glass {
+  background-color: color-mix(in srgb, var(--site-surface) 46%, transparent);
+  border-color: color-mix(in srgb, var(--site-surface) 84%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--site-surface) 80%, transparent),
+    0 1px 2px var(--polish-ink-05),
+    0 12px 32px -12px var(--polish-ink-16);
+}
+
+/* ----- Buttons ----- */
+
+.site-preview .polish-btn-primary,
+.site-preview .polish-btn-secondary {
+  transition:
+    transform 220ms var(--polish-ease),
+    box-shadow 220ms ease,
+    background-color 220ms ease,
+    border-color 220ms ease,
+    color 220ms ease;
+}
+
+.site-preview .polish-btn-primary {
+  box-shadow:
+    0 1px 2px var(--polish-ink-10),
+    0 8px 18px -8px var(--polish-ink-24);
+}
+
+.site-preview .polish-btn-primary:hover,
+.site-preview .polish-btn-primary:focus-visible {
+  transform: translateY(-1px);
+  background-color: color-mix(in srgb, var(--site-primary) 86%, var(--site-text));
+  box-shadow:
+    0 2px 4px var(--polish-ink-10),
+    0 14px 28px -10px color-mix(in srgb, var(--site-text) 30%, transparent);
+}
+
+.site-preview .polish-btn-primary:active {
+  transform: translateY(0) scale(0.985);
+  box-shadow: 0 1px 2px var(--polish-ink-10);
+  transition-duration: 90ms;
+}
+
+.site-preview .polish-btn-secondary {
+  background-color: color-mix(in srgb, var(--site-surface) 56%, transparent);
+  border-color: color-mix(in srgb, var(--site-surface) 62%, transparent);
+  box-shadow: 0 1px 2px var(--polish-ink-05);
+}
+
+.site-preview .polish-btn-secondary:hover,
+.site-preview .polish-btn-secondary:focus-visible {
+  transform: translateY(-1px);
+  background-color: color-mix(in srgb, var(--site-surface) 80%, transparent);
+  border-color: color-mix(in srgb, var(--site-surface) 94%, transparent);
+  color: var(--site-text);
+  box-shadow:
+    0 1px 2px var(--polish-ink-05),
+    0 10px 22px -10px var(--polish-ink-16);
+}
+
+.site-preview .polish-btn-secondary:active {
+  transform: translateY(0) scale(0.985);
+  box-shadow: 0 1px 2px var(--polish-ink-05);
+  transition-duration: 90ms;
+}
+
+/* ----- Final CTA: the closing moment of the page -----
+ *
+ * V3. The card is a shade lighter than the section (tonal separation, not
+ * contrast), edged by a sage hairline ring, and sits in a wide soft halo that
+ * lives outside its clipped bounds (`.polish-cta-halo`). The slow inner light
+ * drift from the previous pass stays; it is the only ambient motion here.
+ */
+
+.site-preview .polish-cta-halo {
+  z-index: -1;
+  background:
+    radial-gradient(
+      52% 60% at 50% 50%,
+      color-mix(in srgb, var(--site-surface) 46%, transparent),
+      transparent 72%
+    ),
+    radial-gradient(
+      80% 84% at 50% 50%,
+      transparent 44%,
+      color-mix(in srgb, var(--polish-sage-cool) 14%, transparent) 64%,
+      transparent 86%
+    );
+}
+
+.site-preview .polish-cta {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background-color: color-mix(in srgb, var(--site-surface) 56%, transparent);
+  border-color: color-mix(in srgb, var(--site-surface) 88%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--site-surface) 86%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--site-surface) 20%, transparent),
+    0 0 0 1px var(--polish-sage-12),
+    0 0 0 7px color-mix(in srgb, var(--site-surface) 14%, transparent),
+    var(--polish-shadow-rest),
+    0 40px 80px -36px var(--polish-ink-24);
+  transition:
+    transform 320ms var(--polish-ease),
+    box-shadow 320ms ease,
+    border-color 320ms ease,
+    background-color 320ms ease;
+}
+
+.site-preview .polish-cta::before {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      46% 42% at 50% 40%,
+      color-mix(in srgb, var(--site-surface) 56%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      40% 36% at 84% 90%,
+      color-mix(in srgb, var(--polish-sage-cool) 10%, transparent),
+      transparent 70%
+    );
+  animation: polish-cta-light 28s ease-in-out infinite alternate;
+}
+
+@keyframes polish-cta-light {
+  from { transform: translate(-1.5%, -1%); }
+  to { transform: translate(1.5%, 1.2%); }
+}
+
+.site-preview .polish-cta:hover,
+.site-preview .polish-cta:focus-within {
+  transform: translateY(-2px);
+  background-color: color-mix(in srgb, var(--site-surface) 62%, transparent);
+  border-color: color-mix(in srgb, var(--polish-sage-cool) 18%, color-mix(in srgb, var(--site-surface) 92%, transparent));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--site-surface) 92%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--site-surface) 26%, transparent),
+    0 0 0 1px var(--polish-sage-22),
+    0 0 0 7px color-mix(in srgb, var(--site-surface) 18%, transparent),
+    var(--polish-shadow-lift),
+    0 48px 90px -40px var(--polish-ink-24);
+}
+
+/* ----- V4: small text on mocha -----
+ *
+ * Only elements at 14px and below, and only where they sit on a section tint
+ * or a card: labels keep their hue (sage stays sage, muted stays muted) and
+ * their size, and move a step towards the text colour. Body copy, headings
+ * and buttons are untouched.
+ */
+
+/* The hero badge. An eyebrow, so it stays at the eyebrow step — but 11px with
+   0.12em tracking was below it, and this is the first small text on the page. */
+.site-preview .hero-badge p {
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  color: var(--polish-sage-ink);
+}
+
+.site-preview .polish-link {
+  color: var(--polish-sage-ink);
+}
+
+.site-preview .polish-card .polish-link:hover,
+.site-preview .polish-card .polish-link:focus-visible {
+  color: var(--site-text);
+}
+
+/*
+ * The muted reading ink, applied by tier rather than by location.
+ *
+ * This used to name four places, which was right while the ink was tuned for
+ * cards: the three that happened to sit on a section ground, plus the gallery
+ * caption. The rest of the muted copy kept `--site-muted-text` and quietly
+ * read at 3.4–3.9:1. Naming the tier instead of the instances is what stops
+ * the next paragraph added to a section from inheriting the faint reading by
+ * default. `warm-400` is untouched: that tier is the decorative one.
+ */
+.site-preview .text-warm-500,
+.site-preview .text-warm-600,
+.site-preview .polish-caption {
+  color: var(--polish-muted-ink);
+}
+
+/*
+ * The sage tier, for the same reason. `.polish-link` — the service card's CTA —
+ * already takes the small-text sage ink; the raw `text-sage-600` eyebrows that
+ * open the reservation shell and the two legal pages were still resolving to
+ * `--site-primary`, which is 2.7:1 on the page ground. They are uppercase meta
+ * labels, so they are held to the eyebrow tier rather than to body copy, and
+ * this is the ink the polish pass already tuned for that tier.
+ *
+ * It lands at 4.1:1 on the bare background and 4.5:1 on a card. Taking the
+ * bare-ground reading the rest of the way would mean mixing the accent so far
+ * towards the text colour that it stops reading as sage at all — the accent
+ * would be spent to buy a tenth of a point on a label that repeats the heading
+ * beneath it. That is a palette decision, and the palette is approved.
+ */
+.site-preview .text-sage-600,
+.site-preview .text-sage-700 {
+  color: var(--polish-sage-ink);
+}
+
+.site-preview nav a.text-warm-500:hover,
+.site-preview .site-section-footer a:hover {
+  color: var(--site-text);
+}
+
+/* ----- Reduced motion: reveal instantly, keep only short state feedback ----- */
+
+@media (prefers-reduced-motion: reduce) {
+  .site-preview [data-reveal],
+  .site-preview [data-reveal] .process-step,
+  .site-preview [data-reveal] .process-number,
+  .site-preview [data-reveal] .process-step::before,
+  .site-preview [data-reveal] .process-step::after,
+  .site-preview [data-reveal] .process-line::after,
+  .site-preview [data-reveal] .about-rule,
+  .site-preview [data-reveal].about-copy > * {
+    transform: none !important;
+    transition: none !important;
+    animation: none !important;
+  }
+
+  .site-preview [data-reveal="hidden"],
+  .site-preview [data-reveal="hidden"] .process-step,
+  .site-preview [data-reveal="hidden"].about-copy > * {
+    opacity: 1 !important;
+  }
+
+  .site-preview [data-reveal="hidden"] .process-number {
+    color: var(--polish-sage-ink);
+    opacity: 1 !important;
+  }
+
+  .site-preview .polish-cta::before {
+    animation: none;
+  }
+
+  .site-preview .polish-card,
+  .site-preview .polish-card:hover,
+  .site-preview .polish-card:focus-within,
+  .site-preview .polish-cta:hover,
+  .site-preview .polish-cta:focus-within,
+  .site-preview .polish-btn-primary:hover,
+  .site-preview .polish-btn-secondary:hover,
+  .site-preview .polish-btn-primary:active,
+  .site-preview .polish-btn-secondary:active {
+    transform: none;
+  }
+
+  .site-preview .polish-media,
+  .site-preview .media-fallback,
+  .site-preview .polish-card:hover .polish-media,
+  .site-preview .polish-card:hover .media-fallback,
+  .site-preview .polish-card:focus-within .polish-media,
+  .site-preview .polish-card:focus-within .media-fallback,
+  .site-preview .polish-card:hover .polish-link,
+  .site-preview .polish-card:hover .polish-caption,
+  .site-preview .polish-card:hover .media-fallback-label {
+    transform: none;
+    transition: none;
+  }
+
+  .site-preview .polish-card,
+  .site-preview .polish-btn-primary,
+  .site-preview .polish-btn-secondary,
+  .site-preview .polish-cta,
+  .site-preview .about-media-surface,
+  .site-preview .site-navigation-glass,
+  .site-preview .polish-media-veil {
+    transition-duration: 120ms;
+  }
+}
+
+/* =====================================================================
+ * The reservation surface (Package 10.4)
+ *
+ * The booking page renders inside `.site-preview`, and that is deliberate: it
+ * has to carry the same palette, the same section tones and the same warm
+ * material as the landing page, because it is the same brand and the visitor
+ * arrives on it mid-journey. What it must *not* inherit is the landing page's
+ * decoration. A form is read and typed into, not scrolled through.
+ *
+ * `.reservation-surface` is the one extra class on the booking root, and every
+ * rule below hangs off it. It never appears on the public pages, so nothing
+ * here can reach the approved landing design. It does three things and no
+ * more: it stills the page, it raises the small type to a reading size, and it
+ * makes the controls' boundaries real on a mocha ground.
+ *
+ * It adds no colour of its own. Every value below resolves from the `--site-*`
+ * palette or from the `--polish-*` inks already declared above, so a palette
+ * change in the appearance document still moves this page with the rest.
+ * ===================================================================== */
+
+.site-preview.reservation-surface {
+  /*
+   * Two inks, both pulled from the public palette rather than invented.
+   *
+   * `--res-sage-ink`: `--site-primary` at 14–15px on the booking ground falls
+   * to 2.7–3.0:1 — the "Réservation" eyebrow, the duration line, the privacy
+   * heading and the refresh link were all below it. Pulled halfway to the text
+   * colour the hue survives and the reading clears 4.65:1 on the page
+   * background and 5.15:1 on a card.
+   *
+   * `--res-control-border`: a form's borders are its structure. The public
+   * `warm-accent` hairline is a 1.3:1 edge here, which is a decorative rule and
+   * not a control boundary; WCAG 1.4.11 asks 3:1 of the things that bound an
+   * input. This clears it (3.2:1 on the page, 3.6:1 on a card) while staying a
+   * warm neutral rather than becoming a black outline.
+   */
+  --res-sage-ink: color-mix(in srgb, var(--site-primary) 50%, var(--site-text));
+  --res-control-border: color-mix(in srgb, var(--site-warm-accent) 46%, var(--site-text));
+}
+
+/* ----- Stillness -----
+ *
+ * The grain is a landing-page texture: at 4.5% over an entire scrolling page it
+ * is atmosphere, and over a field being typed into it is noise on the glyphs.
+ * The booking page drops it and keeps the palette that carried it. */
+.site-preview.reservation-surface::after {
+  content: none;
+}
+
+/* Belt and braces for the ambient fields: the component no longer applies the
+   drift classes, and if one ever came back through a shared card it would not
+   animate here. */
+.site-preview.reservation-surface .ambient-shape,
+.site-preview.reservation-surface .ambient-drift {
+  animation: none;
+}
+
+/* ----- Contrast -----
+ *
+ * `.site-preview` routes `warm-400/500/600` to `--site-muted-text`, which on
+ * the mocha ground reads 3.99:1 against the page and 4.42:1 on a card. On the
+ * landing page that ink lands mostly on long body copy at 16px+; here it lands
+ * on field hints, day labels, summary terms and the privacy notice — small
+ * text that is part of the task. The polish pass already defined the stronger
+ * reading of the same ink for exactly this; the booking page takes it as its
+ * default and lets the genuinely faint cases opt back out below. */
+.site-preview.reservation-surface .text-warm-400,
+.site-preview.reservation-surface .text-warm-500,
+.site-preview.reservation-surface .text-warm-600 {
+  color: var(--polish-muted-ink);
+}
+
+/* The sage accents that carry small text. `.polish-link` already resolves to
+   the polish sage ink; these are the reservation's own. */
+.site-preview.reservation-surface .text-sage-600,
+.site-preview.reservation-surface .text-sage-700 {
+  color: var(--res-sage-ink);
+}
+
+/* The footer renders in its `reservation` variant, which drops the
+   `site-section-footer` hook — so the footer ink rule in the polish block does
+   not reach it. It gets the same treatment here rather than a second variant. */
+.site-preview.reservation-surface footer a:hover {
+  color: var(--site-text);
+}
+
+/* ----- Type -----
+ *
+ * The booking page is written almost entirely in `text-sm`: labels, hints,
+ * day cells, summary terms, buttons and the step captions all share the one
+ * step, which is why raising it is a single decision rather than ninety.
+ * 15px is the secondary-body size the density here asks for; the step above
+ * it, the body copy under the title, is already 16px and untouched.
+ */
+.site-preview.reservation-surface .text-sm {
+  font-size: 0.9375rem;
+  line-height: 1.55;
+}
+
+.site-preview.reservation-surface .text-xs {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+/* The privacy notice, moved to the Review step in the approved ESZ-161
+   placement and staying there. Its typography is the only thing that changes:
+   six statements at 13px in the lightest muted ink is metadata styling for
+   text a visitor is expected to read before confirming. 14px, and the notice's
+   own heading keeps the eyebrow step. */
+.site-preview.reservation-surface [data-privacy-notice-id] .text-\[0\.8125rem\] {
+  font-size: 0.875rem;
+  line-height: 1.65;
+}
+
+/* Controls read at the body size, never at the label size — and never at the
+   size that makes iOS Safari zoom the page on focus. */
+.site-preview.reservation-surface :where(input, select, textarea) {
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.site-preview.reservation-surface :where(input, select, textarea).text-sm {
+  font-size: 1rem;
+}
+
+/* ----- Controls -----
+ *
+ * Structure, not decoration: the three utilities below are the ones the form's
+ * inputs, its day cells and its secondary buttons are drawn with. */
+.site-preview.reservation-surface :where(input, textarea, select).border-warm-300,
+.site-preview.reservation-surface button.border-warm-300 {
+  border-color: var(--res-control-border);
+}
+
+.site-preview.reservation-surface :where(input, textarea, select)::placeholder {
+  color: var(--polish-muted-ink);
+  opacity: 0.85;
+}
+
+/* A disabled day is a fact the visitor has to read — it is how the calendar
+   says "not this one" — so it is a stated surface rather than a faded one. The
+   40% opacity on the range buttons and the muted-on-muted day text both put it
+   under 2:1; here the fill carries the state, the strike-through repeats it,
+   and the label stays at the muted reading ink. `disabled` carries the same
+   fact to assistive technology, so the cue is never colour alone. */
+.site-preview.reservation-surface button:disabled.disabled\:line-through {
+  background-color: color-mix(in srgb, var(--site-warm-accent) 42%, transparent);
+  color: var(--polish-muted-ink);
+  opacity: 1;
+}
+
+/* The date-range steppers at either end of the 90-day window. `opacity-40` put
+   their label at roughly 1.6:1 — an unreadable control is not a clearer signal
+   than an inert-looking one. Same treatment: a stated taupe surface, a softened
+   boundary, and a label that keeps the muted reading ink, with
+   `disabled` and `cursor-not-allowed` carrying the state. */
+.site-preview.reservation-surface button:disabled.disabled\:opacity-40 {
+  opacity: 1;
+  background-color: color-mix(in srgb, var(--site-warm-accent) 34%, transparent);
+  color: var(--polish-muted-ink);
+  border-color: color-mix(in srgb, var(--res-control-border) 45%, transparent);
 }
 
 /* =====================================================================
@@ -402,9 +1581,12 @@ body {
  *
  * Public isolation, stated as a property rather than a hope:
  *   - no rule below matches anything outside `.admin-theme`;
- *   - `.admin-theme` is applied by `AdminShell` alone, which the protected admin
- *     layout is the only mount point for. The public pages, `/admin/login` and
- *     `/admin/preview` are all outside it;
+ *   - `.admin-theme` is applied by the admin's own roots and by nothing else:
+ *     `AdminShell`, the session provider's gate and expiry screens, the GDPR
+ *     modal, and — since Package 10.4 — `/admin/login`, which is an admin
+ *     surface and the first one an operator sees, so leaving it on the old
+ *     porcelain would have split the family at the front door. The public
+ *     pages and `/admin/preview` are outside it;
  *   - the live preview is an `<iframe>` with its own document, so it cannot
  *     inherit this scope even though its frame sits inside it. The preview shows
  *     the public theme, driven by the injected `--site-*` properties, exactly as
@@ -415,54 +1597,98 @@ body {
  * ===================================================================== */
 
 .admin-theme {
-  /* Canvas: the greige the work sits on. Never white. */
-  --admin-canvas: #ece9e1;
-  --admin-canvas-soft: #f2efe8;
+  /*
+   * Package 10.4 moves the admin off the pale ivory it was built on and into
+   * the mocha/taupe family the public site now carries. Only the *values*
+   * below change: every semantic name, every class that consumes them and
+   * every structural rule in this block is the ESZ-158 system, unaltered.
+   *
+   * The admin is one step lighter and one step quieter than the landing page
+   * on purpose. It shares the hue family, not the decoration: no halo, no
+   * grain, no ambient field and no reveal reaches this scope, and nothing
+   * below introduces one. Continuity is carried by colour, surface, border
+   * and type alone.
+   *
+   * Every pair stated in a comment was measured against its own surface
+   * rather than against an average one, because the canvas is now dark
+   * enough that a token passing on the cream surface can still fail on it.
+   */
 
-  /* Cream is the working surface — the tone that carries content. */
-  --admin-surface: #fbf8f1;
-  --admin-surface-quiet: #f5f1e8;
+  /* Canvas: the mocha the work sits on. Never white. */
+  --admin-canvas: #d8cdc2;
+  --admin-canvas-soft: #ded4ca;
 
-  /* Taupe is the secondary surface: sunken tiles, inert areas, rails. */
-  --admin-surface-muted: #e2dcd0;
-  --admin-surface-sunken: #e8e2d6;
+  /* The chrome band — sidebar on `lg`, banner below it. A step darker than
+     the canvas so the rail reads as chrome and not as another panel. */
+  --admin-nav: #d0c3b7;
+
+  /* The working surface — the tone that carries content. Warm sand, the
+     lightest thing in the admin, so a panel still lifts off the canvas. */
+  --admin-surface: #e8e0d8;
+  --admin-surface-quiet: #e2d9d0;
+
+  /* Taupe is the secondary surface: table bands, sunken tiles, inert areas.
+     The five surfaces form one monotone ladder — surface, quiet, muted,
+     sunken, canvas — so depth is always a step in the same direction and a
+     panel inside a panel is never brighter than its parent. */
+  --admin-surface-muted: #ddd2c7;
+  --admin-surface-sunken: #dbd0c5;
 
   /* `--admin-border` separates; `--admin-border-strong` *bounds* — it is the
-     outline of an input or a secondary button, so it clears 3:1 against cream
-     as WCAG 1.4.11 asks of a control boundary. */
-  --admin-border: #d8d1c3;
-  --admin-border-strong: #978b76;
+     outline of an input or a secondary button, so it clears 3:1 against the
+     canvas (3.07), the surface (3.67) and the quiet surface (3.44) as WCAG
+     1.4.11 asks of a control boundary. The taupe divider is not a boundary
+     and is not held to that bar. */
+  --admin-border: #b5a695;
+  --admin-border-strong: #7e7061;
 
-  /* Brown-black, not neutral grey. */
-  --admin-text: #2b2521;
-  --admin-text-muted: #554c43;
-  --admin-text-subtle: #6b6154;
+  /* Brown-black, not neutral grey.
+     Both muted inks are darker than their ivory-era values, and the reason is
+     the canvas rather than taste: the admin now sits on #d8cdc2 instead of
+     #ece9e1, which costs roughly a third of the headroom the old inks had.
+     `--admin-text-muted` carries copy that is read, so it clears 4.5:1 on
+     every surface in the ladder *and* on the nav band (4.80 nav, 5.30 canvas,
+     6.35 surface). `--admin-text-subtle` stays the faint step — placeholders,
+     ids, status meta — and still clears 4.5 on every surface it is used on
+     (4.66 canvas, 4.80 sunken, 5.58 surface). The one place it does not is
+     the inert `pending` navigation entry on the nav band (4.22), which is a
+     disabled control and carries `aria-disabled` — the case WCAG 1.4.3
+     exempts, and the only one in the admin that relies on the exemption.
+     The gap between the two inks is narrower than it was. That is the honest
+     consequence of a darker ground: there is less room below the reading
+     threshold, so less of the hierarchy can be spent on being faint. */
+  --admin-text: #302a26;
+  --admin-text-muted: #554d45;
+  --admin-text-subtle: #5f5549;
 
-  /* Sage is the single accent. It marks the primary write action and focus,
-     and it is never the only carrier of a state. It also carries small text —
-     the overview and CMS eyebrows — directly on `--admin-canvas`, so it is
-     held to 4.5:1 against the canvas and not only against the surfaces. */
-  --admin-accent: #5a6d62;
-  --admin-accent-strong: #47574e;
-  --admin-accent-soft: #dfe6e0;
-  --admin-accent-contrast: #fbf8f1;
-  --admin-focus: #3f4f46;
+  /* Sage remains the single accent, unchanged in role and only re-seated for
+     the darker ground. It marks the primary write action and focus, and it is
+     never the only carrier of a state. It also carries small text — the
+     overview and CMS eyebrows — directly on `--admin-canvas`, so it is held
+     to 4.5:1 against the canvas (4.62) and not only against the surfaces. */
+  --admin-accent: #4a5b51;
+  --admin-accent-strong: #3a4841;
+  --admin-accent-soft: #acb8aa;
+  --admin-accent-contrast: #f2eee8;
+  --admin-focus: #3a4841;
 
   /* Semantic states, warm-tinted so they belong to the same system. Each pair
-     is verified at 4.5:1 or better against its own surface. */
-  --admin-ok-surface: #e3eadf;
-  --admin-ok-border: #b9c9b4;
-  --admin-ok-text: #2f4a33;
+     is verified at 4.5:1 or better against its own surface, and each surface
+     stays separable from the taupe canvas so the family is still legible as a
+     family. */
+  --admin-ok-surface: #cfd9c9;
+  --admin-ok-border: #a9b9a2;
+  --admin-ok-text: #2e4632;
 
-  --admin-warn-surface: #f5e7ce;
-  --admin-warn-border: #ddbe85;
-  --admin-warn-text: #6b4a12;
+  --admin-warn-surface: #ebdcbe;
+  --admin-warn-border: #c8a968;
+  --admin-warn-text: #5e4010;
 
-  --admin-danger-surface: #f6e3de;
-  --admin-danger-border: #ddae9f;
-  --admin-danger-text: #7a2c1c;
+  --admin-danger-surface: #ebd2cb;
+  --admin-danger-border: #c99a8a;
+  --admin-danger-text: #6e2718;
 
-  --admin-inert-surface: #e7e1d6;
+  --admin-inert-surface: #d6cabe;
 
   background-color: var(--admin-canvas);
   color: var(--admin-text);
@@ -500,9 +1726,12 @@ body {
   color: var(--admin-text-muted);
 }
 
-/* The shell's own chrome band. */
+/* The shell's own chrome band. It used to borrow the quiet surface, which on
+   the ivory palette read as chrome because it was *darker* than the canvas. On
+   mocha the same token is lighter than the canvas, so the rail would have
+   floated forward as if it were the content. It takes its own token now. */
 .admin-theme .admin-chrome {
-  background-color: var(--admin-surface-quiet);
+  background-color: var(--admin-nav);
   color: var(--admin-text);
 }
 
@@ -778,8 +2007,18 @@ body {
   color: var(--admin-text-muted);
 }
 
-.admin-theme .text-warm-400,
+/* `warm-500` carries the transitional pages' *labels* — the calendar's `dt`
+   terms, the availability editor's field captions, the media editor's status
+   lines. On ivory the subtle ink cleared 4.5:1 and the split with `warm-400`
+   was cosmetic; on mocha it does not, and the split becomes a decision. It
+   resolves by role: `warm-500` is information the operator reads, so it takes
+   the muted ink, and `warm-400` stays subtle for what is genuinely faint
+   (out-of-month day cells, inert chrome). */
 .admin-theme .text-warm-500 {
+  color: var(--admin-text-muted);
+}
+
+.admin-theme .text-warm-400 {
   color: var(--admin-text-subtle);
 }
 
@@ -831,13 +2070,186 @@ body {
   color: var(--admin-danger-text);
 }
 
+/* The planning constraint kinds (`admin-booking-calendar`) are separated by
+   hue — sky for a soft pause, rose for an unavailability, taupe for a closure,
+   violet for leave — and that separation is load-bearing, so it is kept. What
+   changes is the cast: the stock Tailwind 50-tints are cool enough to read as
+   foreign objects on mocha. Each is re-seated on the same hue at a warmer,
+   slightly deeper value, keeping its own text at 7:1 or better and staying
+   separable both from its neighbours and from the canvas. */
+.admin-theme .bg-sky-50 {
+  background-color: #d3dce2;
+}
+.admin-theme .border-sky-300 {
+  border-color: #98aeba;
+}
+.admin-theme .text-sky-900 {
+  color: #1f3d4d;
+}
+
+.admin-theme .bg-violet-50 {
+  background-color: #dcd5e2;
+}
+.admin-theme .border-violet-300 {
+  border-color: #afa1be;
+}
+.admin-theme .text-violet-900 {
+  color: #3b2b52;
+}
+
+.admin-theme .bg-amber-50 {
+  background-color: var(--admin-warn-surface);
+}
+.admin-theme .border-amber-300 {
+  border-color: var(--admin-warn-border);
+}
+.admin-theme .text-amber-900 {
+  color: var(--admin-warn-text);
+}
+
+.admin-theme .bg-rose-100 {
+  background-color: var(--admin-danger-surface);
+}
+
+/* ----- The admin type scale -----
+ *
+ * Package 10.4. The admin was drawn against Tailwind's stock steps, and its
+ * lower end is where the density argument stopped paying: `text-xs` is 12px
+ * and `text-sm` 14px, and between them they carry nearly every label, hint,
+ * table cell and button in the product.
+ *
+ * Raising the floor here rather than at ~90 call sites is the same decision
+ * the palette above makes: the scale is a property of the admin, so it is
+ * declared once in the admin's scope. The steps keep their names and their
+ * order — nothing is promoted past its neighbour — and the jump is one notch
+ * each, which is what the surfaces needed and no more:
+ *
+ *   text-xs   12 → 13px   uppercase eyebrows, table heads, chips, meta
+ *   text-sm   14 → 15px   table cells, secondary body, button labels, labels
+ *   text-base       16px  unchanged; it was already the reading size
+ *
+ * Text that is *read* rather than scanned — field help, validation messages,
+ * the descriptions under a KPI or a CMS section — was moved from `text-xs` to
+ * `text-sm` at its call site instead, because that is a judgement about the
+ * text's role and not about the scale. Eyebrows, ids and status chips stayed.
+ *
+ * Line heights are restated because Tailwind pairs a fixed one with each step;
+ * left alone, 15px type would sit in a 20px box and lose the ratio.
+ */
+.admin-theme .text-xs {
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.admin-theme .text-sm {
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+
+/* The two hand-set steps below the scale, in the calendar's dense grid cells
+   and the shell's pending chip. They stay the smallest things in the admin —
+   each is a duplicate of an accessible name that is already on the element —
+   but 10px is below where a warm low-contrast ground can carry a glyph. */
+.admin-theme .text-\[11px\] {
+  font-size: 0.75rem;
+}
+
+.admin-theme .text-\[10px\] {
+  font-size: 0.6875rem;
+}
+
+/* Controls the operator types into read at the body size, never at the label
+   size. The second rule exists because `:where()` contributes no specificity,
+   so the bare element selector alone would lose to a `text-sm` on the same
+   input. */
+.admin-theme :where(input, select, textarea) {
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.admin-theme :where(input, select, textarea).text-xs,
+.admin-theme :where(input, select, textarea).text-sm,
+.admin-theme :where(input, select, textarea).text-\[11px\] {
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+/* The one responsive step in the admin — the account chip, which trades a
+   truncated label on a narrow screen for the full address on a wide one. It
+   follows the same scale rather than dropping back to the stock 14px. */
+@media (min-width: 40rem) {
+  .admin-theme .sm\:text-sm {
+    font-size: 0.9375rem;
+    line-height: 1.5;
+  }
+}
+
+/* A colour swatch is a control with no text; the inherited size would only
+   inflate its box. */
+.admin-theme input[type="color"] {
+  font-size: 0;
+}
+
+/* Table heads keep the eyebrow step, table bodies the secondary body step, so
+   a table that never spelled out a size still lands inside the scale. */
+.admin-theme :where(th) {
+  font-size: 0.8125rem;
+}
+
+.admin-theme :where(td) {
+  font-size: 0.9375rem;
+}
+
+/* The stragglers: one-off steps the transitional pages reach for that the
+   ESZ-158 sweep did not need to name, because on ivory each of them resolved
+   to something close enough to its neighbour. On mocha a stock Tailwind tint
+   is the one thing in the room that is not warm, so every colour utility the
+   admin actually uses is now accounted for here. */
+.admin-theme .border-warm-100,
+.admin-theme .border-sage-100 {
+  border-color: var(--admin-border);
+}
+
+.admin-theme .border-warm-400 {
+  border-color: var(--admin-border-strong);
+}
+
+.admin-theme .border-sky-200 {
+  border-color: #98aeba;
+}
+
+.admin-theme .bg-sky-50\/60 {
+  background-color: #d3dce2;
+}
+
+.admin-theme .bg-rose-50\/40 {
+  background-color: var(--admin-danger-surface);
+}
+
+.admin-theme .border-amber-200 {
+  border-color: var(--admin-warn-border);
+}
+
+.admin-theme .text-amber-950 {
+  color: var(--admin-warn-text);
+}
+
 /* Focus rings declared as Tailwind utilities follow the admin focus colour. */
+.admin-theme .ring-sage-200,
+.admin-theme .ring-sage-400,
 .admin-theme .ring-sage-300,
 .admin-theme .ring-sage-300\/50,
+.admin-theme .focus\:ring-sage-200:focus,
 .admin-theme .focus\:ring-sage-300:focus,
 .admin-theme .focus-within\:ring-sage-300:focus-within,
 .admin-theme .focus\:ring-sage-300\/50:focus {
   --tw-ring-color: var(--admin-focus);
+}
+
+/* The login form's focus border, the one place a control states focus with its
+   own boundary rather than only with the outline. */
+.admin-theme .focus\:border-sage-400:focus {
+  border-color: var(--admin-accent);
 }
 
 .admin-theme .ring-rose-300,

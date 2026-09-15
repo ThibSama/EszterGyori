@@ -77,15 +77,26 @@
             }
           },
           "durationMinutes": {
-            "type": "integer",
-            "minimum": 5,
-            "maximum": 480
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 480
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bookable": {
+            "type": "boolean"
           }
         },
         "required": [
           "key",
           "serviceKeys",
-          "durationMinutes"
+          "durationMinutes",
+          "bookable"
         ],
         "additionalProperties": false
       }

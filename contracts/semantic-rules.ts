@@ -354,8 +354,8 @@ export const parityCases: ParityCase[] = [
       "Legacy content without `appearance` validates and receives the default appearance.",
     patch: [{ op: "remove", path: "/appearance" }],
     expectedNormalization: {
-      "/appearance/palette/background": "#F5F4F1",
-      "/appearance/sectionTints/hero": "#DBE0DD",
+      "/appearance/palette/background": "#CABCAF",
+      "/appearance/sectionTints/hero": "#B8A492",
     },
   },
 

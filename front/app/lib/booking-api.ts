@@ -17,7 +17,13 @@ import { parseRetryAfterSeconds } from "./retry-after";
 
 export type PublicBookingCatalog = z.infer<typeof publicBookableServicesResponseSchema>;
 export type PublicBookableService = PublicBookingCatalog["services"][number];
-/** ESZ-150 — one combination that can be booked right now, with its validated duration. */
+/**
+ * ESZ-150, corrected in domain version 15 — one *exception* to the
+ * default-allow combination rule: an explicitly disabled membership
+ * (`bookable: false`) or one carrying a custom duration. Every other set of
+ * up to `maxServicesPerAppointment` active services is bookable without
+ * appearing in this list at all.
+ */
 export type PublicBookableCombination = PublicBookingCatalog["combinations"][number];
 export type BookingAvailability = z.infer<typeof bookingAvailabilityResponseSchema>;
 export type BookingSlot = BookingAvailability["slots"][number];

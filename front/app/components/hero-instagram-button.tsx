@@ -38,7 +38,7 @@ export function HeroInstagramButton({ ariaLabel }: HeroInstagramButtonProps) {
       type="button"
       aria-label={ariaLabel}
       onClick={handleClick}
-      className="float-gentle absolute bottom-5 left-5 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-white/55 text-warm-700 backdrop-blur-md border border-white/55 shadow-[0_4px_16px_rgba(0,0,0,0.05)] transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-white/70 hover:shadow-[0_8px_24px_rgba(0,0,0,0.08)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage-500">
+      className="hero-instagram absolute bottom-5 left-5 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-white/55 text-warm-700 backdrop-blur-md border border-white/55 shadow-[0_4px_16px_rgba(0,0,0,0.05)] transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-white/70 hover:shadow-[0_8px_24px_rgba(0,0,0,0.08)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sage-500">
       <svg
         aria-hidden="true"
         viewBox="0 0 24 24"

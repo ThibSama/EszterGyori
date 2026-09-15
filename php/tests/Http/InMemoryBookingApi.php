@@ -75,8 +75,9 @@ final class InMemoryBookingApi implements BookingApi
                 'durationMinutes' => 30,
                 'imageSrc' => null,
             ]],
-            // ESZ-150: the fixture deployment is single-service; no
-            // combination is validated, so none is offered.
+            // ESZ-150: the fixture deployment is single-service, so the
+            // default-allow rule offers no combination and there is no
+            // exception to publish either.
             'maxServicesPerAppointment' => 1,
             'combinations' => [],
         ];
@@ -89,8 +90,8 @@ final class InMemoryBookingApi implements BookingApi
         // The fixture catalog holds exactly one active service, so any other
         // well-formed key is the domain's refusal, not the schema's. ESZ-150:
         // the same parser the domain uses, so `serviceKeys: ["brows"]` is the
-        // single service and any multi-key selection has no validated
-        // combination here.
+        // single service and any multi-key selection is above this fixture's
+        // maximum of one.
         if (BookingRequestFields::serviceKeys($request) !== ['brows']) {
             throw new BookingValidationException('serviceKey', 'Service is not actively bookable.');
         }
@@ -198,7 +199,7 @@ final class InMemoryBookingApi implements BookingApi
                 $this->adminService('lashes', 'Cils (ancienne offre)', 45, 'archived'),
             ],
             'maxServicesPerAppointment' => 1,
-            // ESZ-150: one stored combination whose member is archived — listed
+            // ESZ-150: one stored override whose member is archived — listed
             // (history must stay nameable) but not bookable.
             'combinations' => [$this->adminCombination('validated', false)],
             'combinationsComplete' => true,
@@ -220,20 +221,33 @@ final class InMemoryBookingApi implements BookingApi
             return ['maxServicesPerAppointment' => $max];
         }
         if ($action === 'validateCombination') {
-            $duration = \is_int($request['durationMinutes'] ?? null) ? $request['durationMinutes'] : 75;
+            // Domain version 15: a null duration clears the override and the
+            // membership returns to the automatic sum.
+            $duration = \is_int($request['durationMinutes'] ?? null) ? $request['durationMinutes'] : null;
 
-            return ['combination' => $this->adminCombination('validated', false, $duration)];
+            return ['combination' => $this->adminCombination(
+                $duration === null ? 'default' : 'validated',
+                false,
+                $duration,
+            )];
         }
-        if ($action === 'disableCombination' || $action === 'enableCombination') {
+        if ($action === 'disableCombination') {
+            // Domain version 15: disabling names the membership, because a
+            // combination bookable by default has no row to name.
+            $keys = $request['serviceKeys'] ?? null;
+            if (!\is_array($keys) || array_values($keys) !== ['brows', 'lashes']) {
+                throw new BookableServiceNotFoundException('brows+lashes');
+            }
+
+            return ['combination' => $this->adminCombination('disabled', false, null)];
+        }
+        if ($action === 'enableCombination') {
             $key = \is_string($request['key'] ?? null) ? $request['key'] : '';
             if ($key !== 'brows+lashes') {
                 throw new BookableServiceNotFoundException($key);
             }
 
-            return ['combination' => $this->adminCombination(
-                $action === 'disableCombination' ? 'disabled' : 'validated',
-                false,
-            )];
+            return ['combination' => $this->adminCombination('validated', false)];
         }
 
         if ($action === 'create') {
@@ -287,13 +301,14 @@ final class InMemoryBookingApi implements BookingApi
     }
 
     /** @return array<string, mixed> */
-    private function adminCombination(string $status, bool $bookable, int $duration = 70): array
+    private function adminCombination(string $status, bool $bookable, ?int $duration = 70): array
     {
         return [
             'key' => 'brows+lashes',
             'serviceKeys' => ['brows', 'lashes'],
             'proposedDurationMinutes' => 75,
             'durationMinutes' => $duration,
+            'effectiveDurationMinutes' => $duration ?? 75,
             'status' => $status,
             'bookable' => $bookable,
             'updatedAt' => self::SERVICE_UPDATED_AT,

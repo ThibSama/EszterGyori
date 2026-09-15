@@ -1,14 +1,15 @@
-import { LEGAL_PAGE_LINKS } from "@eszter/contracts";
 import { HeroInstagramButton } from "./hero-instagram-button";
 import { EditorialImage } from "./editorial-image";
+import { EditorialFallback } from "./editorial-fallback";
 import { GallerySection } from "./site-gallery-section";
 import { Navigation } from "./navigation";
 import { Reveal } from "./reveal";
+import { SiteFooter } from "./site-footer";
 import { createSiteAppearanceVariables } from "../lib/site-appearance";
+import type { CSSProperties } from "react";
 import type {
   AboutContent,
   ContactContent,
-  FooterContent,
   HeroContent,
   ProcessContent,
   ReassuranceContent,
@@ -29,10 +30,8 @@ function GlassCard({
 }) {
   return (
     <div
-      className={`glass-card bg-white/40 backdrop-blur-2xl border border-white/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.4),0_4px_24px_rgba(0,0,0,0.05)] rounded-2xl ${
-        hover
-          ? "transition-all duration-500 ease-out hover:-translate-y-1 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_16px_48px_rgba(0,0,0,0.08)] hover:border-white/70"
-          : ""
+      className={`glass-card polish-surface bg-white/40 backdrop-blur-2xl border border-white/60 rounded-2xl ${
+        hover ? "polish-card" : ""
       } ${className}`}>
       {children}
     </div>
@@ -59,7 +58,7 @@ function HeroSection({ content }: { content: HeroContent }) {
           <div className="hero-entrance w-10 h-px bg-sage-400/60" />
           <h1 className="hero-entrance-delayed font-display text-[2.25rem] sm:text-[2.75rem] md:text-[4.25rem] font-light leading-[1.08] tracking-[-0.02em] text-warm-800">
             {content.title.prefix}{" "}
-            <em className="italic">{content.title.emphasized}</em>
+            <em className="hero-entrance-em italic">{content.title.emphasized}</em>
             {content.title.suffix}
           </h1>
           <p className="hero-entrance-delayed-2 text-base md:text-lg text-warm-500 leading-relaxed max-w-md">
@@ -68,20 +67,21 @@ function HeroSection({ content }: { content: HeroContent }) {
           <div className="hero-entrance-delayed-3 flex flex-col sm:flex-row flex-wrap gap-3 sm:gap-4 pt-2">
             <a
               href={content.primaryCta.href}
-              className="inline-flex items-center justify-center px-7 py-3 sm:py-3.5 bg-warm-800 text-porcelain font-medium rounded-full hover:bg-warm-700 transition-all duration-300 hover:shadow-[0_8px_24px_rgba(44,43,40,0.2)] hover:scale-[1.02] active:scale-[0.98]">
+              className="polish-btn-primary inline-flex items-center justify-center px-7 py-3 sm:py-3.5 bg-warm-800 text-porcelain font-medium rounded-full">
               {content.primaryCta.label}
             </a>
             <a
               href={content.secondaryCta.href}
-              className="inline-flex items-center justify-center px-7 py-3 sm:py-3.5 bg-white/50 backdrop-blur-sm border border-white/60 text-warm-600 font-medium rounded-full hover:bg-white/70 hover:border-white/80 transition-all duration-300 hover:shadow-[0_4px_16px_rgba(0,0,0,0.04)]">
+              className="polish-btn-secondary inline-flex items-center justify-center px-7 py-3 sm:py-3.5 bg-white/50 backdrop-blur-sm border border-white/60 text-warm-600 font-medium rounded-full">
               {content.secondaryCta.label}
             </a>
           </div>
         </div>
 
-        <div className="hero-entrance-delayed-2 relative aspect-[3/4] max-w-md mx-auto md:mx-0">
+        <div className="hero-visual relative aspect-[3/4] max-w-md mx-auto md:mx-0">
+          <div className="hero-visual-light absolute -inset-16 pointer-events-none" aria-hidden="true" />
           <div className="absolute -inset-8 bg-gradient-to-br from-sage-300/50 via-mist-200/60 to-warm-300/40 rounded-[3rem] blur-2xl pointer-events-none" />
-          <div className="relative h-full rounded-3xl overflow-hidden bg-gradient-to-br from-sage-200 via-mist-100 to-warm-200 border border-white/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_12px_48px_rgba(0,0,0,0.06)]">
+          <div className="polish-surface relative h-full rounded-3xl overflow-hidden bg-gradient-to-br from-sage-200 via-mist-100 to-warm-200 border border-white/40">
             <EditorialImage
               src={content.visual.src}
               alt={content.visual.alt}
@@ -90,27 +90,16 @@ function HeroSection({ content }: { content: HeroContent }) {
               fetchPriority="high"
               className="absolute inset-0 h-full w-full object-cover"
               fallback={
-                <div className="relative h-full flex flex-col items-center justify-center p-10">
-                  <div className="absolute inset-0 bg-gradient-to-t from-white/30 via-transparent to-white/10" />
-                  <div className="absolute inset-0 bg-gradient-to-br from-sage-300/25 via-transparent to-mist-200/20" />
-                  <div className="relative z-10 w-32 h-12 mb-5 border-b-[1.5px] border-sage-400/50 rounded-b-[55%]" />
-                  <div className="relative z-10 flex gap-3 mb-6">
-                    <div className="w-2 h-2 rounded-full bg-sage-400/45" />
-                    <div className="w-1.5 h-1.5 rounded-full bg-sage-400/35" />
-                    <div className="w-1 h-1 rounded-full bg-sage-400/40" />
-                    <div className="w-1.5 h-1.5 rounded-full bg-sage-400/35" />
-                    <div className="w-2 h-2 rounded-full bg-sage-400/45" />
-                  </div>
-                  <p className="relative z-10 text-sm text-warm-500 text-center leading-relaxed max-w-[200px]">
-                    {content.visual.alt}
-                  </p>
-                </div>
+                <EditorialFallback
+                  motif="portrait"
+                  label={content.visual.alt}
+                  tone={0}
+                  className="media-fallback-hero"
+                />
               }
             />
             <HeroInstagramButton ariaLabel={content.instagramAriaLabel} />
-            <div
-              className="float-gentle absolute top-5 right-5 bg-white/55 backdrop-blur-md border border-white/45 rounded-xl px-3 py-1.5 shadow-[0_4px_16px_rgba(0,0,0,0.04)]"
-              style={{ animationDelay: "-3s" }}>
+            <div className="hero-badge absolute top-5 right-5 bg-white/55 backdrop-blur-md border border-white/45 rounded-xl px-3 py-1.5 shadow-[0_4px_16px_rgba(0,0,0,0.04)]">
               <p className="text-[10px] uppercase tracking-wider text-sage-500">
                 {content.badgeLabel}
               </p>
@@ -145,7 +134,7 @@ function ReassuranceSection({
             <Reveal
               key={item.id}
               className="space-y-4"
-              delay={index * 100}
+              delay={index * 70}
               disabled={disableRevealAnimations}>
               <div className="w-8 h-px bg-sage-400/50" />
               <h3 className="font-display text-2xl font-normal text-warm-800">
@@ -162,7 +151,7 @@ function ReassuranceSection({
   );
 }
 
-function ServiceVisual({ item }: { item: ServiceItemContent }) {
+function ServiceVisual({ item, index }: { item: ServiceItemContent; index: number }) {
   const visualClassByKind: Record<ServiceVisualKind, string> = {
     brows: "bg-gradient-to-br from-sage-200 via-mist-100 to-warm-200",
     eyeliner: "bg-gradient-to-br from-mist-200 via-sage-100 to-warm-200",
@@ -172,44 +161,21 @@ function ServiceVisual({ item }: { item: ServiceItemContent }) {
 
   return (
     <div
-      className={`aspect-[5/3] ${visualClassByKind[item.visualKind]} relative overflow-hidden flex items-center justify-center transition-transform duration-700 group-hover:scale-[1.02]`}>
+      className={`aspect-[5/3] ${visualClassByKind[item.visualKind]} relative overflow-hidden`}>
       <EditorialImage
         src={item.visual.src}
         alt={item.visual.alt}
         surface={`service-${item.id}`}
-        className="absolute inset-0 h-full w-full object-cover"
+        className="polish-media absolute inset-0 h-full w-full object-cover"
         fallback={
-          <div className="relative h-full w-full flex items-center justify-center">
-            <div className="absolute inset-0 bg-gradient-to-t from-white/20 to-transparent" />
-            {item.visualKind === "brows" && (
-              <div className="w-32 h-12 border-b-[1.5px] border-sage-400/50 rounded-b-[55%] relative z-10" />
-            )}
-            {item.visualKind === "eyeliner" && (
-              <div className="w-28 h-px bg-gradient-to-r from-transparent via-sage-400/50 to-transparent rotate-[-8deg] relative z-10" />
-            )}
-            {item.visualKind === "lips" && (
-              <div className="relative w-14 h-9 z-10">
-                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-9 h-[18px] rounded-t-full border-t-[1.5px] border-x-[1.5px] border-warm-400/45" />
-                <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-11 h-[18px] rounded-b-full border-b-[1.5px] border-x-[1.5px] border-warm-400/45" />
-              </div>
-            )}
-            {item.visualKind === "freckles" && (
-              <div className="relative w-20 h-20 z-10">
-                <div className="absolute top-2 left-5 w-2 h-2 rounded-full bg-warm-500/40" />
-                <div className="absolute top-6 left-1 w-1.5 h-1.5 rounded-full bg-warm-400/35" />
-                <div className="absolute top-4 left-10 w-1.5 h-1.5 rounded-full bg-warm-500/38" />
-                <div className="absolute top-10 left-4 w-2 h-2 rounded-full bg-warm-400/42" />
-                <div className="absolute top-8 left-12 w-1 h-1 rounded-full bg-warm-500/32" />
-                <div className="absolute top-14 left-8 w-1.5 h-1.5 rounded-full bg-warm-400/38" />
-                <div className="absolute top-12 left-14 w-2 h-2 rounded-full bg-warm-500/40" />
-              </div>
-            )}
-            <div className="absolute bottom-3 left-3 text-[11px] tracking-wide uppercase text-warm-500/80 z-10">
-              {item.visual.alt}
-            </div>
-          </div>
+          <EditorialFallback
+            motif={item.visualKind}
+            label={item.visual.alt}
+            tone={index}
+          />
         }
       />
+      <div className="polish-media-veil" aria-hidden="true" />
     </div>
   );
 }
@@ -243,9 +209,9 @@ function ServicesSection({
         </Reveal>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           {content.items.map((item, index) => (
-            <Reveal key={item.id} delay={index * 100} disabled={disableRevealAnimations}>
+            <Reveal key={item.id} delay={index * 70} disabled={disableRevealAnimations}>
               <GlassCard className="overflow-hidden group">
-                <ServiceVisual item={item} />
+                <ServiceVisual item={item} index={index} />
                 <div className="p-7 space-y-3">
                   <h3 className="font-display text-2xl font-normal text-warm-800">
                     {item.title}
@@ -255,7 +221,7 @@ function ServicesSection({
                   </p>
                   <a
                     href="#contact"
-                    className="inline-block text-sm font-medium text-sage-600 hover:text-sage-500 transition-colors duration-300 group-hover:translate-x-1 transition-transform">
+                    className="polish-link inline-block text-sm font-medium text-sage-600 hover:text-sage-500">
                     {item.ctaLabel}
                   </a>
                   <a
@@ -291,6 +257,7 @@ function ProcessSection({
         className="ambient-shape absolute top-[20%] left-[15%] w-[450px] h-[450px] rounded-full bg-sage-300/50 blur-[90px] pointer-events-none"
         style={{ animationDelay: "-5s" }}
       />
+      <div className="process-light absolute inset-0 pointer-events-none" aria-hidden="true" />
 
       <div className="relative z-10 max-w-6xl mx-auto">
         <Reveal className="mb-16 max-w-xl" disabled={disableRevealAnimations}>
@@ -299,14 +266,16 @@ function ProcessSection({
             {content.title}
           </h2>
         </Reveal>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 sm:gap-10 lg:gap-8">
+        <Reveal
+          className="process-track relative grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 sm:gap-10 lg:gap-8"
+          disabled={disableRevealAnimations}>
+          <div className="process-line" aria-hidden="true" />
           {content.steps.map((step, index) => (
-            <Reveal
+            <div
               key={step.id}
-              className="space-y-5"
-              delay={index * 100}
-              disabled={disableRevealAnimations}>
-              <span className="font-display text-5xl font-light text-sage-300/80">
+              className="process-step space-y-5"
+              style={{ "--step-index": index } as CSSProperties}>
+              <span className="process-number font-display text-5xl font-light">
                 {step.number}
               </span>
               <h3 className="text-lg font-medium text-warm-800">
@@ -315,9 +284,9 @@ function ProcessSection({
               <p className="text-sm text-warm-500 leading-relaxed">
                 {step.description}
               </p>
-            </Reveal>
+            </div>
           ))}
-        </div>
+        </Reveal>
       </div>
     </section>
   );
@@ -342,30 +311,33 @@ function AboutSection({
         style={{ animationDelay: "-7s" }}
       />
 
-      <Reveal
-        className="relative z-10 max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-5 gap-12 md:gap-16 items-start"
-        disabled={disableRevealAnimations}>
-        <div className="md:col-span-2 relative">
+      <div className="relative z-10 max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-5 gap-12 md:gap-16 items-start">
+        <Reveal className="about-media md:col-span-2 relative" disabled={disableRevealAnimations}>
+          <div className="about-media-light absolute -inset-20 pointer-events-none" aria-hidden="true" />
           <div className="absolute -inset-6 bg-gradient-to-br from-sage-300/35 to-mist-200/30 rounded-[2rem] blur-xl pointer-events-none" />
-          <div className="relative aspect-[3/4] rounded-2xl overflow-hidden bg-gradient-to-br from-sage-200 via-mist-100 to-warm-200 border border-white/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_12px_40px_rgba(0,0,0,0.06)] flex items-center justify-center p-8 group transition-shadow duration-500 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_16px_48px_rgba(0,0,0,0.08)]">
+          <div className="about-media-frame absolute -inset-3 rounded-[1.4rem] pointer-events-none" aria-hidden="true" />
+          <div className="about-media-surface polish-surface polish-card group relative aspect-[3/4] rounded-2xl overflow-hidden bg-gradient-to-br from-sage-200 via-mist-100 to-warm-200 border border-white/40">
             <EditorialImage
               src={content.portrait.src}
               alt={content.portrait.alt}
               surface="about"
-              className="absolute inset-0 h-full w-full object-cover"
+              className="polish-media absolute inset-0 h-full w-full object-cover"
               fallback={
-                <div className="relative h-full w-full flex items-center justify-center">
-                  <div className="absolute inset-0 bg-gradient-to-t from-white/20 via-transparent to-white/10" />
-                  <p className="text-sm text-warm-500 text-center leading-relaxed relative z-10">
-                    {content.portrait.alt}
-                  </p>
-                </div>
+                <EditorialFallback
+                  motif="portrait"
+                  label={content.portrait.alt}
+                  tone={2}
+                />
               }
             />
+            <div className="polish-media-veil" aria-hidden="true" />
           </div>
-        </div>
-        <div className="md:col-span-3 space-y-6 md:pt-4">
-          <div className="w-10 h-px bg-sage-400/60" />
+        </Reveal>
+        <Reveal
+          className="about-copy md:col-span-3 space-y-6 md:pt-4"
+          delay={120}
+          disabled={disableRevealAnimations}>
+          <div className="about-rule w-10 h-px" />
           <h2 className="font-display text-3xl sm:text-4xl md:text-5xl font-light text-warm-800">
             {content.title}
           </h2>
@@ -376,8 +348,8 @@ function AboutSection({
               </p>
             ))}
           </div>
-        </div>
-      </Reveal>
+        </Reveal>
+      </div>
     </section>
   );
 }
@@ -405,9 +377,10 @@ function ContactSection({
       <Reveal
         className="relative z-10 max-w-2xl mx-auto"
         disabled={disableRevealAnimations}>
+        <div className="polish-cta-halo absolute -inset-x-16 -inset-y-12 sm:-inset-x-24 sm:-inset-y-16 pointer-events-none" aria-hidden="true" />
         <GlassCard
           hover={false}
-          className="p-6 sm:p-10 md:p-16 text-center space-y-6 sm:space-y-8 rounded-3xl">
+          className="polish-cta p-6 sm:p-10 md:p-16 text-center space-y-6 sm:space-y-8 rounded-3xl">
           <div className="w-10 h-px bg-sage-400/60 mx-auto" />
           <h2 className="font-display text-2xl sm:text-3xl md:text-[2.75rem] font-light leading-tight text-warm-800">
             {content.title}
@@ -420,62 +393,18 @@ function ContactSection({
               href={content.instagramCta.href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center justify-center px-7 py-3.5 bg-warm-800 text-porcelain font-medium rounded-full hover:bg-warm-700 transition-all duration-300 hover:shadow-[0_8px_24px_rgba(44,43,40,0.2)] hover:scale-[1.02] active:scale-[0.98]">
+              className="polish-btn-primary inline-flex items-center justify-center px-7 py-3.5 bg-warm-800 text-porcelain font-medium rounded-full">
               {content.instagramCta.label}
             </a>
             <a
               href={content.emailCta.href}
-              className="inline-flex items-center justify-center px-7 py-3.5 bg-white/50 backdrop-blur-sm border border-white/60 text-warm-600 font-medium rounded-full hover:bg-white/70 hover:border-white/80 transition-all duration-300 hover:shadow-[0_4px_16px_rgba(0,0,0,0.04)]">
+              className="polish-btn-secondary inline-flex items-center justify-center px-7 py-3.5 bg-white/50 backdrop-blur-sm border border-white/60 text-warm-600 font-medium rounded-full">
               {content.emailCta.label}
             </a>
           </div>
         </GlassCard>
       </Reveal>
     </section>
-  );
-}
-
-/**
- * The footer: the editable copyright line and the two content links
- * (Instagram, contact), then the two legal pages (ESZ-165). The legal
- * destinations are fixed constants of the contract, not `SiteContent`
- * fields: their paths are frozen (`/confidentialite` by the ESZ-161 booking
- * notice), so they are never editable URLs.
- */
-function Footer({ content }: { content: FooterContent }) {
-  return (
-    <footer
-      data-preview-section="site-section-footer"
-      className="site-section-footer relative z-10 border-t border-warm-300/50 py-8 md:py-10 px-4 md:px-6 bg-gradient-to-b from-warm-100/60 to-warm-200/40">
-      <div className="max-w-6xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
-        <p className="text-sm text-warm-600">
-          &copy; {new Date().getFullYear()} {content.copyrightName}.{" "}
-          {content.copyrightSuffix}
-        </p>
-        <div className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm text-warm-600">
-          {content.links.map((link) => (
-            <a
-              key={link.id}
-              href={link.href}
-              target={link.href.startsWith("http") ? "_blank" : undefined}
-              rel={
-                link.href.startsWith("http") ? "noopener noreferrer" : undefined
-              }
-              className="hover:text-warm-800 transition-colors duration-300">
-              {link.label}
-            </a>
-          ))}
-          {LEGAL_PAGE_LINKS.map((link) => (
-            <a
-              key={link.id}
-              href={link.href}
-              className="hover:text-warm-800 transition-colors duration-300">
-              {link.label}
-            </a>
-          ))}
-        </div>
-      </div>
-    </footer>
   );
 }
 
@@ -567,7 +496,7 @@ export function SitePreview({
           disableRevealAnimations={disableRevealAnimations}
         />
       </main>
-      <Footer content={content.footer} />
+      <SiteFooter content={content.footer} />
     </div>
   );
 }
