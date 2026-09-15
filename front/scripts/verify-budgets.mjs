@@ -60,8 +60,8 @@ const routeBudgets = [
   },
   { route: "reservation.html", total: 300_000, note: "The public booking flow (ESZ-050)." },
   { route: "admin.html", total: 315_000, note: "The admin shell." },
-  { route: "admin/bookings.html", total: 305_000, note: "The booking calendar (ESZ-061)." },
-  { route: "admin/availability.html", total: 305_000, note: "The availability editor (ESZ-063/064)." },
+  { route: "admin/bookings.html", total: 309_000, note: "The booking calendar (ESZ-061)." },
+  { route: "admin/availability.html", total: 309_000, note: "The availability editor (ESZ-063/064)." },
   { route: "admin/login.html", total: 295_000, note: "The one route an unauthenticated person reaches." },
 ];
 
@@ -134,8 +134,44 @@ const routeBudgets = [
  * they render themselves. Each ceiling again sits a few hundred bytes above the
  * build, so the ratchet keeps speaking; CSS and the other route totals were not
  * moved.
+ *
+ * Package 10.4 (the V1 visual polish) moves CSS from 17 000 to 21 000 and
+ * JavaScript from 381 000 to 388 000 gzipped bytes, and the same two admin
+ * route totals from 305 000 to 309 000 each. Measured the same way, on the
+ * acceptance-corrected candidate on top of c44f5176:
+ *
+ *                              10.3          10.4        delta
+ *   all CSS                  16 574 B      20 495 B     +3 921 B  (+23.7 %)
+ *   all JavaScript          380 479 B     387 395 B     +6 916 B   (+1.8 %)
+ *   admin/bookings.html     304 619 B     308 420 B     +3 801 B   (+1.2 %)
+ *   admin/availability.html 304 634 B     308 434 B     +3 800 B   (+1.2 %)
+ *
+ * No frontend dependency changed and neither package.json nor the lockfile moved
+ * anywhere in the package — `git diff 0bfbca07..HEAD -- '*package.json'
+ * '*package-lock.json'` is empty — so none of this is a library that arrived
+ * unnoticed. The growth is the reviewed product work: the visual system in
+ * `globals.css` (the ambient light fields, the section tints, the polish
+ * surface/card/media treatments and the CSS-only grain, which is nearly all of
+ * the CSS delta on its own), the extracted `SiteFooter` and editorial
+ * fallbacks, the administrable services and default-allow booking combinations,
+ * and the reservation detail work. The two admin routes again crossed through
+ * what every admin route imports rather than through anything they render
+ * themselves.
+ *
+ * The CSS ceiling is the one that moved by a visible proportion, and it is worth
+ * naming why: one stylesheet still serves the whole export, so the public routes
+ * download admin rules they never match. That was already true at ESZ-158 and
+ * the remedy is unchanged — split the admin stylesheet off the public one, which
+ * remains its own piece of work. The grain in that stylesheet is CSS-only by
+ * requirement, not by preference: its `data:image/svg+xml` predecessor was
+ * refused by the enforced public `img-src` CSP, and the CSP was not weakened to
+ * keep it.
+ *
+ * Each new ceiling again sits a few hundred bytes above the build (505 B on CSS,
+ * 605 B on JavaScript, 580 and 566 B on the two routes), so the ratchet stays
+ * tight; the other route totals were not moved.
  */
-const sharedBudgets = { css: 17_000, totalJavaScript: 381_000 };
+const sharedBudgets = { css: 21_000, totalJavaScript: 388_000 };
 
 const failures = [];
 const reported = [];

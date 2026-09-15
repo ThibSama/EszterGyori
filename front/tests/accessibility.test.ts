@@ -49,8 +49,9 @@ test("navigation has accessible labels and the closed mobile menu is not rendere
 
 test("focus visibility and reduced motion are globally covered", () => {
   const globalsSource = readFileSync(join(appRoot, "globals.css"), "utf8");
-  const sitePreviewSource = readFileSync(
-    join(appRoot, "components", "site-preview.tsx"),
+  // The footer is the shared `SiteFooter`, not inline markup in site-preview.
+  const siteFooterSource = readFileSync(
+    join(appRoot, "components", "site-footer.tsx"),
     "utf8",
   );
 
@@ -59,7 +60,7 @@ test("focus visibility and reduced motion are globally covered", () => {
   assert.match(globalsSource, /outline: 3px solid var\(--site-primary, #63726C\) !important/);
   assert.match(globalsSource, /prefers-reduced-motion: reduce/);
   assert.match(globalsSource, /scroll-behavior: auto !important/);
-  assert.match(sitePreviewSource, /<footer[\s\S]*text-warm-600/);
+  assert.match(siteFooterSource, /<footer[\s\S]*text-warm-600/);
 });
 
 test("admin forms and editor messages expose live feedback", () => {

@@ -213,7 +213,7 @@ final class ContentValidatorTest extends TestCase
         self::assertTrue($result->valid, $result->summary());
         /** @var array<string, mixed> $value */
         $value = $result->value;
-        self::assertSame('#F5F4F1', $value['appearance']['palette']['background']);
+        self::assertSame('#CABCAF', $value['appearance']['palette']['background']);
         self::assertSame('/media/hero.webp', $value['hero']['visual']['src']);
     }
 

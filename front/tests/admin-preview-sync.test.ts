@@ -127,8 +127,11 @@ test("admin editor sends the active section to the noninteractive preview", () =
 test("public sections expose approved preview targets", () => {
   const siteSource = readAppFile("components", "site-preview.tsx");
   const gallerySource = readAppFile("components", "site-gallery-section.tsx");
+  // The footer lives in the shared `SiteFooter`, which carries the hook only in
+  // its public variant — hence the conditional attribute form below.
+  const footerSource = readAppFile("components", "site-footer.tsx");
 
-  const combinedSource = `${siteSource}\n${gallerySource}`;
+  const combinedSource = `${siteSource}\n${gallerySource}\n${footerSource}`;
   const previewTargets = new Set(
     ADMIN_PREVIEW_SECTIONS.map((section) => section.previewTarget),
   );
@@ -136,7 +139,9 @@ test("public sections expose approved preview targets", () => {
   for (const target of previewTargets) {
     assert.match(
       combinedSource,
-      new RegExp(`data-preview-section="${target}"`),
+      new RegExp(
+        `data-preview-section=(?:"${target}"|\\{[^}]*"${target}"[^}]*\\})`,
+      ),
     );
   }
 });

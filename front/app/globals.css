@@ -582,8 +582,29 @@ body {
    * label's own alpha — are deliberately left where they are.
    */
   --polish-muted-ink: color-mix(in srgb, var(--site-muted-text) 45%, var(--site-text));
-  /* CSS-generated grain: a 160px tile of fractal noise, no asset. */
-  --polish-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.55 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+  /*
+   * Grain, CSS-only. This used to be an inline `data:image/svg+xml` turbulence
+   * tile, which the enforced public CSP refuses under `img-src` — and the CSP is
+   * not the thing that gives way. So the speckle is composed instead from six
+   * one-dot `radial-gradient` layers tiled at mutually awkward sizes: because no
+   * two layers share a period, the combined pattern only repeats over their
+   * common multiple, far past anything on screen, so it reads as noise rather
+   * than as a visible grid. The ink is the site's own text colour, so the grain
+   * warms and cools with the palette exactly as the turbulence tile did.
+   *
+   * It is coarser than fractal noise, which is the accepted trade: at the 0.045
+   * and 0.08 opacities it is used at, the difference is not legible, and no
+   * asset, request or data URI is involved.
+   */
+  --polish-grain-ink: color-mix(in srgb, var(--site-text) 62%, transparent);
+  --polish-grain:
+    radial-gradient(circle at 21% 33%, var(--polish-grain-ink) 0 0.55px, transparent 0.75px),
+    radial-gradient(circle at 74% 17%, var(--polish-grain-ink) 0 0.5px, transparent 0.7px),
+    radial-gradient(circle at 44% 81%, var(--polish-grain-ink) 0 0.6px, transparent 0.8px),
+    radial-gradient(circle at 88% 63%, var(--polish-grain-ink) 0 0.45px, transparent 0.65px),
+    radial-gradient(circle at 9% 72%, var(--polish-grain-ink) 0 0.55px, transparent 0.75px),
+    radial-gradient(circle at 58% 48%, var(--polish-grain-ink) 0 0.5px, transparent 0.7px);
+  --polish-grain-size: 23px 29px, 31px 26px, 37px 41px, 43px 34px, 47px 53px, 29px 37px;
 }
 
 /* ----- Texture: a barely-there global grain over the whole page ----- */
@@ -595,7 +616,7 @@ body {
   z-index: 60;
   pointer-events: none;
   background-image: var(--polish-grain);
-  background-size: 160px 160px;
+  background-size: var(--polish-grain-size);
   opacity: 0.045;
 }
 
@@ -837,7 +858,7 @@ body {
   position: absolute;
   inset: 0;
   background-image: var(--polish-grain);
-  background-size: 160px 160px;
+  background-size: var(--polish-grain-size);
   opacity: 0.08;
   pointer-events: none;
 }

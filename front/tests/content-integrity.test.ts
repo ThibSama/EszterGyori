@@ -194,12 +194,24 @@ test("appearance contrast validation rejects low contrast and accepts muted mini
     false,
   );
 
+  // The muted minimum is a *lower* bar than main text (3:1 against the
+  // background, not 4.5:1). Deriving the case from the canonical palette keeps
+  // it valid when the palette moves, and the two ratio assertions keep it an
+  // exercise of the muted rule rather than a value that trivially clears the
+  // main-text threshold too.
+  const canonicalMutedRatio = getContrastRatio(
+    defaultSiteAppearance.palette.mutedText,
+    defaultSiteAppearance.palette.background,
+  );
+  assert.equal(canonicalMutedRatio >= 3, true);
+  assert.equal(canonicalMutedRatio < 4.5, true);
+
   assert.equal(
     siteAppearanceSchema.safeParse({
       ...defaultSiteAppearance,
       palette: {
         ...defaultSiteAppearance.palette,
-        mutedText: "#6D6B67",
+        mutedText: defaultSiteAppearance.palette.mutedText,
       },
     }).success,
     true,
